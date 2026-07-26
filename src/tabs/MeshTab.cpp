@@ -27,6 +27,11 @@ const bool s_i18n = [] {
     I18n::reg("mst_with", "説明あり", "Annotated");
     I18n::reg("mst_without", "説明なし", "Plain");
     I18n::reg("mst_name", "名前", "Name");
+    // 軸別セクション見出しと座標列の見出し (mock: msh_axis_* / msh_coord)
+    I18n::reg("mst_axis_x", "X方向メッシュ", "X mesh");
+    I18n::reg("mst_axis_y", "Y方向メッシュ", "Y mesh");
+    I18n::reg("mst_axis_z", "Z方向メッシュ", "Z mesh");
+    I18n::reg("mst_coord", "座標値", "Coord");
     I18n::reg("mst_lambda_check", "λ/n チェック", "λ/n check");
     I18n::reg("mst_section", "メッシュ統計", "Mesh Statistics");
     I18n::reg("mst_dx_min", "最小Δx", "min Δx");
@@ -105,13 +110,17 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
     im->vbox()->addLayout(imRow);
     v->addWidget(im);
 
-    static const char *secKey[3] = { "me_axis_x", "me_axis_y", "me_axis_z" };
+    // 見出しは mock (tabs.jsx MeshTab) の msh_axis_* / msh_coord に合わせる
+    static const char *secKey[3] = { "mst_axis_x", "mst_axis_y", "mst_axis_z" };
     for (int a = 0; a < 3; ++a) {
         auto *s = new SectionBox(I18n::tr(secKey[a]), body);
 
         m_table[a] = new QTableWidget(0, 3, s);
         m_table[a]->setHorizontalHeaderLabels(
-            { I18n::tr("me_coord"), I18n::tr("me_div"), I18n::tr("mst_name") });
+            { I18n::tr("mst_coord"), I18n::tr("me_div"), I18n::tr("mst_name") });
+        // 単位はモックの見出しに無いので tooltip で補う (値は [m])
+        if (auto *h = m_table[a]->horizontalHeaderItem(0))
+            h->setToolTip(I18n::tr("me_coord"));
         m_table[a]->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         m_table[a]->verticalHeader()->setDefaultSectionSize(22);
         m_table[a]->setMinimumHeight(110);

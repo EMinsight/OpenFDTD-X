@@ -5,6 +5,9 @@
 // mock (tabs.jsx Post1Tab/Post2Tab) の構成のうち、このタブが受け持つもの:
 //   遠方界面上(2D) / 全方向(3D) — 表 + 成分 (far2dcomponent の 7 成分:
 //                                E/θ/φ/主軸/副軸/左旋/右旋) + スケール指定
+//     面の向き = X面/Y面/Z面/φ一定面/θ一定面 (plotfar1d の X/Y/Z/V/H)
+//     形式     = 円プロット/XYプロット (far1dstyle 0/1)
+//     最大値で正規化 (far1dnorm) / 角度分割数 θ・φ (plotfar2d)
 //   近傍界線上(2D)              — plotnear1d の表
 //   近傍界面上(2D+3D)           — plotnear2d の表 + 物体を描く/一部拡大/動画 +
 //                                描画方法 (カラー塗りつぶし/等高線/ベクトル)

@@ -21,8 +21,19 @@ using namespace ofd;
 // 接頭辞は本タブ専用の g_ (既存キーは I18n.cpp が優先される)。
 namespace {
 const bool s_i18nGeneral = [] {
+    I18n::reg("g_converge", "収束条件", "Convergence");
     I18n::reg("g_pml_sigma", "σ_max", "σ_max");
     I18n::reg("g_pml_sigma_unit", "×σopt", "×σopt");
+    I18n::reg("g_mur2", "Mur 2次", "Mur 2nd");
+    I18n::reg("g_mur2_note",
+              "Mur 2次は .ofd の abc キーに対応する値が無いため "
+              "(本家は 0=Mur 1次 / 1=PML のみ)、保存時は Mur 1次 として "
+              "書き出されます。",
+              "The .ofd abc key has no 2nd-order Mur value (upstream accepts only "
+              "0 = Mur 1st and 1 = PML), so this choice is written as Mur 1st.");
+    I18n::reg("g_periodic_x", "X方向", "X-direction");
+    I18n::reg("g_periodic_y", "Y方向", "Y-direction");
+    I18n::reg("g_periodic_z", "Z方向", "Z-direction");
     I18n::reg("g_far_warn",
               "⚠ 近傍界の周波数分割が大きいと計算時間とメモリーが比例増加します",
               "⚠ A large near-field frequency division increases run time and "
@@ -60,8 +71,9 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sTitle->form()->addRow(I18n::tr("g_title"), m_title);
     v->addWidget(sTitle);
 
-    // solver
-    auto *sSolver = new SectionBox(I18n::tr("g_solver"), body);
+    // 収束条件 (mock: <Section title={t("g_converge")}> — 最大反復回数/収束判定値)。
+    // 出力間隔 (nout) は .ofd の solver 行の一部なのでここに残す。
+    auto *sSolver = new SectionBox(I18n::tr("g_converge"), body);
     m_maxiter = new QSpinBox(sSolver);
     m_maxiter->setRange(1, 100000000);
     m_nout = new QSpinBox(sSolver);
@@ -78,6 +90,10 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     m_abc = new QComboBox(sAbc);
     m_abc->addItem(I18n::tr("g_mur1"));   // abc = 0
     m_abc->addItem(I18n::tr("g_pml"));    // abc = 1 L m R0
+    // mock (tabs.jsx) の Seg には Mur 2次 もあるが、本家 .ofd の abc は
+    // 0 (Mur 1次) / 1 (PML) の 2 値だけ (io/OfdIO.cpp)。よってこの項目は
+    // UI のみのローカル状態で、保存時は Mur 1次 (abc = 0) として書き出す。
+    m_abc->addItem(I18n::tr("g_mur2"));
     m_pmlL = new QSpinBox(sAbc);
     m_pmlL->setRange(1, 64);
     m_pmlM = new QDoubleSpinBox(sAbc);
@@ -101,14 +117,20 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sigRow->addWidget(new QLabel(I18n::tr("g_pml_sigma_unit"), m_pmlSigmaRow));
     sigRow->addStretch(1);
     sAbc->form()->addRow(I18n::tr("g_pml_sigma"), m_pmlSigmaRow);
+    // Mur 2次 を選んだときだけ出す注記 (保存されない旨)
+    m_mur2Note = new QLabel(I18n::tr("g_mur2_note"), sAbc);
+    m_mur2Note->setWordWrap(true);
+    m_mur2Note->setStyleSheet("color:#888888; font-size:11px;");
+    sAbc->vbox()->addWidget(m_mur2Note);
     v->addWidget(sAbc);
 
     // PBC
     auto *sPbc = new SectionBox(I18n::tr("g_periodic"), body);
     auto *pbcRow = new QHBoxLayout();
-    static const char *axisName[3] = { "X", "Y", "Z" };
+    static const char *axisKey[3] = { "g_periodic_x", "g_periodic_y",
+                                      "g_periodic_z" };
     for (int a = 0; a < 3; ++a) {
-        m_pbc[a] = new QCheckBox(axisName[a], sPbc);
+        m_pbc[a] = new QCheckBox(I18n::tr(axisKey[a]), sPbc);
         pbcRow->addWidget(m_pbc[a]);
     }
     pbcRow->addStretch(1);
@@ -176,7 +198,9 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
         g.maxiter = m_maxiter->value();
         g.nout    = m_nout->value();
         g.converg = m_converg->text().toDouble();
-        g.abc     = m_abc->currentIndex();
+        // combo → .ofd abc: 0=Mur 1次, 1=PML, 2=Mur 2次 (format に無いので 0)
+        m_mur2    = (m_abc->currentIndex() == 2);
+        g.abc     = (m_abc->currentIndex() == 1) ? 1 : 0;
         g.pmlL    = m_pmlL->value();
         g.pmlM    = m_pmlM->value();
         g.pmlR0   = m_pmlR0->text().toDouble();
@@ -213,7 +237,8 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     refresh();
 }
 
-// combo index: 0 = Mur 1次 (.ofd abc=0), 1 = PML (.ofd abc=1)。
+// combo index: 0 = Mur 1次 (.ofd abc=0), 1 = PML (.ofd abc=1),
+//              2 = Mur 2次 (UI のみ / .ofd には無い → 保存時は abc=0)。
 // PML 以外では層数 / 次数 / R0 / σ_max の行をラベルごと隠す。
 void GeneralTab::updateAbcView()
 {
@@ -224,6 +249,7 @@ void GeneralTab::updateAbcView()
         w->setVisible(pml);
         if (QWidget *lab = f->labelForField(w)) lab->setVisible(pml);
     }
+    m_mur2Note->setVisible(m_abc->currentIndex() == 2);
 }
 
 void GeneralTab::refresh()
@@ -234,7 +260,8 @@ void GeneralTab::refresh()
     m_maxiter->setValue(g.maxiter);
     m_nout->setValue(g.nout);
     m_converg->setText(QString::number(g.converg, 'g', 6));
-    m_abc->setCurrentIndex(g.abc);
+    // abc=0 のときは UI の Mur 次数 (ローカル状態) を保つ
+    m_abc->setCurrentIndex(g.abc == 1 ? 1 : (m_mur2 ? 2 : 0));
     m_pmlL->setValue(g.pmlL);
     m_pmlM->setValue(g.pmlM);
     m_pmlR0->setText(QString::number(g.pmlR0, 'g', 6));

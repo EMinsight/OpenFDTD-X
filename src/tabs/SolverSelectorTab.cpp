@@ -25,6 +25,8 @@ const bool s_i18n = [] {
               "Only solvers meaningful in the current domain are shown.");
     I18n::reg("ssel_recommended", "推奨", "Recommended");
     I18n::reg("ssel_suggest_title", "自動選定ヒント", "Auto-suggest");
+    // mock i18n の sv_bem (ソルバ共通語彙)。カード名だけ日英を切り替える。
+    I18n::reg("ssel_bem", "BEM (境界要素)", "BEM");
 
     // EM
     I18n::reg("ssel_em_size", "電気サイズ判定:", "Electrical size check:");
@@ -66,26 +68,31 @@ unsigned domainBit(ofd::Domain d)
     }
 }
 
-// mock の all[] をそのまま転記 (表示データ)
+// mock の all[] をそのまま転記 (表示データ)。カード名・説明文は mock のハード
+// コード表記そのまま (日本語固定)。nameKey が非 nullptr のものだけ、mock の i18n
+// テーブルに ja/en があるのでカード名を I18n 経由で切り替える。
 struct SolverDef {
     const char *ic, *name, *s, *best;
     unsigned domains, rec;
+    const char *nameKey;
 };
-const SolverDef kSolvers[14] = {
-    { "⏱", "Transient (FDTD)",        "広帯域・時間応答・パルス",   "アンテナ, EMC, 透過スペクトル", EM|OPT|AC|UW, EM|OPT|AC },
-    { "〰", "Frequency Domain (FEM)",  "単一周波数・高Q構造",       "フィルタ, 共振器, 散乱",        EM|OPT|AC, 0 },
-    { "⤓", "Eigenmode Solver",        "共振モード抽出",            "キャビティ, 結晶バンド構造",    EM|OPT|AC, 0 },
-    { "⏧", "RCWA (Rigorous CWA)",     "周期格子・厳密結合波解析",   "DBR, メタサーフェス周期",       OPT, 0 },
-    { "⫾", "STACK (Transfer Matrix)", "薄膜多層 (解析的)",          "反射防止膜, 偏光フィルタ",      OPT, 0 },
-    { "⌖", "Integral Equation (MoM)", "開放領域・遠方界",          "アンテナアレイ, RCS, 大型物体", EM, 0 },
-    { "⏎", "Multilayer Solver",       "層状構造",                  "PCB, 薄膜光学",                EM|OPT, 0 },
-    { "☼", "Asymptotic (SBR/PO)",     "波長 ≪ 物体",              "ミリ波RCS, 大型ステルス",       EM, 0 },
-    { "☄", "Ray Tracing (Geometric)", "幾何光学/音響",             "カメラ, 室内音響",              OPT|AC, 0 },
-    { "⌬", "Hybrid FDTD+Ray",         "マルチスケール",            "メタレンズ + 光学系",           OPT|AC, 0 },
-    { "🐬", "Bellhop (Gauss. beam)",   "水中音響レイトレース",       "SOFAR, 長距離(>10km)",         UW, UW },
-    { "~",  "Parabolic Equation (PE)", "放物方程式・RAM/RAMGeo",    "中距離水中, 低周波",            UW, 0 },
-    { "🏛", "Image-Source Method",     "鏡像法",                    "直方体ホール, 初期反射",        AC, 0 },
-    { "🎵", "Modal Analysis",          "室内モーダル",              "小規模ルーム<200Hz",           AC, 0 },
+const SolverDef kSolvers[15] = {
+    { "⏱", "Transient (FDTD)",        "広帯域・時間応答・パルス",   "アンテナ, EMC, 透過スペクトル", EM|OPT|AC|UW, EM|OPT|AC, nullptr },
+    { "〰", "Frequency Domain (FEM)",  "単一周波数・高Q構造",       "フィルタ, 共振器, 散乱",        EM|OPT|AC, 0, nullptr },
+    { "⤓", "Eigenmode Solver",        "共振モード抽出",            "キャビティ, 結晶バンド構造",    EM|OPT|AC, 0, nullptr },
+    { "⏧", "RCWA (Rigorous CWA)",     "周期格子・厳密結合波解析",   "DBR, メタサーフェス周期",       OPT, 0, nullptr },
+    { "⫾", "STACK (Transfer Matrix)", "薄膜多層 (解析的)",          "反射防止膜, 偏光フィルタ",      OPT, 0, nullptr },
+    { "⌖", "Integral Equation (MoM)", "開放領域・遠方界",          "アンテナアレイ, RCS, 大型物体", EM, 0, nullptr },
+    { "⏎", "Multilayer Solver",       "層状構造",                  "PCB, 薄膜光学",                EM|OPT, 0, nullptr },
+    { "☼", "Asymptotic (SBR/PO)",     "波長 ≪ 物体",              "ミリ波RCS, 大型ステルス",       EM, 0, nullptr },
+    { "☄", "Ray Tracing (Geometric)", "幾何光学/音響",             "カメラ, 室内音響",              OPT|AC, 0, nullptr },
+    { "⌬", "Hybrid FDTD+Ray",         "マルチスケール",            "メタレンズ + 光学系",           OPT|AC, 0, nullptr },
+    // mock i18n の sv_bem (BEM (境界要素) / BEM)。境界要素法 = 開放境界の放射・散乱。
+    { "◫", "BEM",                     "境界要素法・開放境界",       "音響放射, 散乱体, 水中ターゲット", AC|UW, 0, "ssel_bem" },
+    { "🐬", "Bellhop (Gauss. beam)",   "水中音響レイトレース",       "SOFAR, 長距離(>10km)",         UW, UW, nullptr },
+    { "~",  "Parabolic Equation (PE)", "放物方程式・RAM/RAMGeo",    "中距離水中, 低周波",            UW, 0, nullptr },
+    { "🏛", "Image-Source Method",     "鏡像法",                    "直方体ホール, 初期反射",        AC, 0, nullptr },
+    { "🎵", "Modal Analysis",          "室内モーダル",              "小規模ルーム<200Hz",           AC, 0, nullptr },
 };
 
 void clearLayout(QLayout *lay)
@@ -179,7 +186,8 @@ void SolverSelectorTab::rebuild()
         auto *ic = new QLabel(QString::fromUtf8(s.ic), card);
         ic->setStyleSheet("font-size:18px; color:#0078D4;");
         head->addWidget(ic);
-        auto *nameL = new QLabel(QString::fromUtf8(s.name), card);
+        auto *nameL = new QLabel(s.nameKey ? I18n::tr(s.nameKey)
+                                           : QString::fromUtf8(s.name), card);
         nameL->setStyleSheet("font-size:12px; font-weight:600;");
         head->addWidget(nameL);
         head->addStretch(1);

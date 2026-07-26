@@ -62,6 +62,7 @@ private:
 
     // 実行 / Run
     QComboBox *m_target;                 // ローカル / HPC / tidy3d
+    QCheckBox *m_pareto;                 // Paretoフロント出力 (多目的 FoM)
 };
 
 } // namespace ofd

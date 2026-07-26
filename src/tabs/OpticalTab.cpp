@@ -43,9 +43,13 @@ const bool s_i18nOptRay = [] {
     I18n::reg("optray_uniform", "一様", "Uniform");
     I18n::reg("optray_jittered", "ジッタ", "Jittered");
     I18n::reg("optray_qmc", "準モンテカルロ (QMC)", "Quasi-Monte Carlo");
+    // mock i18n の ray_importance (サンプリング方式の4番目)
+    I18n::reg("optray_importance", "重要度サンプリング", "Importance sampling");
     I18n::reg("optray_refl_model", "反射モデル", "Reflection model");
     I18n::reg("optray_specular", "鏡面反射", "Specular");
     I18n::reg("optray_diffuse", "拡散反射 (Lambert)", "Diffuse (Lambert)");
+    // mock i18n の ray_diff_ord (拡散反射を何段まで追跡するか)
+    I18n::reg("optray_diff_ord", "拡散次数", "Diffuse order");
     I18n::reg("optray_physics", "物理追跡", "Physical tracking");
     I18n::reg("optray_polarized", "偏波追跡", "Polarization tracking");
     I18n::reg("optray_dispersion", "分散追跡 (Sellmeier)",
@@ -94,6 +98,30 @@ const bool s_i18nOptRay = [] {
 // セクション見出しは既存の opt_* (モード名) をそのまま使う。
 const bool s_i18nOptModes = [] {
     using ofd::I18n;
+    // ── mock i18n テーブルにあって C++ 側に無かった語彙 (キー名もモックのまま) ──
+    // opt_nf_ff は I18n.cpp の opt_nf2ff (近傍界→遠方界変換) と同義。モックの
+    // 表記に合わせるため、こちらを見出し・モード名に使う。
+    I18n::reg("opt_nf_ff", "近接場/遠方場変換", "Near-to-far field");
+    I18n::reg("opt_raycast", "Raycast (幾何光学)", "Raycast (geometric)");
+    I18n::reg("opt_hybrid", "ハイブリッド FDTD+Ray", "Hybrid FDTD+Ray");
+    I18n::reg("opt_target_band", "目標通過帯域", "Target passband");
+    I18n::reg("opt_port_a", "入力ポート", "Input port");
+    I18n::reg("opt_port_b", "出力ポート", "Output port");
+    // 解法 (波動 / 幾何光学 / ハイブリッド) の行 — mock の Seg + ヒント文
+    I18n::reg("optm_geo_method", "解法 (波動/幾何)", "Method (wave/geometric)");
+    I18n::reg("optm_geo_fdtd", "FDTD (波動)", "FDTD (wave)");
+    I18n::reg("optm_geo_hint_fdtd",
+              "全波動FDTD — 小スケール構造、共振・回折・分散すべて正確",
+              "Full-wave FDTD — small-scale structures; resonance, diffraction "
+              "and dispersion are all accurate");
+    I18n::reg("optm_geo_hint_ray",
+              "幾何光学レイトレース — 大規模光学系・遠方・カメラに最適",
+              "Geometric ray tracing — best for large optical systems, far "
+              "field and cameras");
+    I18n::reg("optm_geo_hint_hybrid",
+              "ローカル領域はFDTD、伝搬域はRay — マルチスケール解析",
+              "FDTD in the local region, rays in the propagation region — "
+              "multi-scale analysis");
     // BPF 追加行
     I18n::reg("optm_bpf_il", "挿入損失 / IL", "Insertion loss / IL");
     I18n::reg("optm_bpf_stop", "阻止域減衰", "Stopband rejection");
@@ -256,6 +284,18 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     hint->setWordWrap(true);
     ss->vbox()->addWidget(hint);
 
+    // ── 解法: 波動 / 幾何光学 / ハイブリッド (mock の <Seg> 相当) ────────────
+    // OpticalSolver enum (FDTD/RCWA/BPM/FMM) は Runner のカーネル選択と .ofdx に
+    // 直結するため増やせない。mock の Raycast / ハイブリッドはここで UI 専用の
+    // ローカル state として持ち、ヒント文だけ mock どおり切り替える。
+    m_geoMethod = new QComboBox(ss);
+    m_geoMethod->addItem(I18n::tr("optm_geo_fdtd"));      // 0 = 全波動FDTD
+    m_geoMethod->addItem(I18n::tr("opt_raycast"));        // 1 = 幾何光学
+    m_geoMethod->addItem(I18n::tr("opt_hybrid"));         // 2 = FDTD+Ray
+    ss->form()->addRow(I18n::tr("optm_geo_method"), m_geoMethod);
+    m_geoHint = mutedLabel(I18n::tr("optm_geo_hint_fdtd"), ss);
+    ss->vbox()->addWidget(m_geoHint);
+
     // per-method parameter pages
     m_solverStack = new QStackedWidget(ss);
 
@@ -363,7 +403,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_mode->addItem(I18n::tr("opt_mzi"));
     m_mode->addItem(I18n::tr("opt_meta"));
     m_mode->addItem(I18n::tr("opt_phc"));
-    m_mode->addItem(I18n::tr("opt_nf2ff"));
+    // モックの表記 (近接場/遠方場変換) に合わせる。enum は OpticalMode::NF2FF。
+    m_mode->addItem(I18n::tr("opt_nf_ff"));
     m_mode->addItem(I18n::tr("opt_spara"));
     sm->vbox()->addWidget(m_mode);
     v->addWidget(sm);
@@ -374,8 +415,10 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_bpfMin = new QLineEdit(sb); m_bpfMin->setMaximumWidth(100);
     m_bpfMax = new QLineEdit(sb); m_bpfMax->setMaximumWidth(100);
     m_bpfQ = new QLineEdit(sb); m_bpfQ->setMaximumWidth(100);
-    sb->form()->addRow(I18n::tr("opt_band") + " min", m_bpfMin);
-    sb->form()->addRow(I18n::tr("opt_band") + " max", m_bpfMax);
+    // mock: <Row label={opt_target_band}> [min] ~ [max] nm — 1行にまとめる
+    sb->form()->addRow(I18n::tr("opt_target_band"),
+                       hrow({ m_bpfMin, mutedLabel("~", sb), m_bpfMax,
+                              mutedLabel("nm", sb) }));
     sb->form()->addRow(I18n::tr("opt_q"), m_bpfQ);
     // 挿入損失 / 阻止域減衰 — 設計目標値 (OpticalOpts に対応フィールドが無いので
     // ローカル state, mock 既定値 0.5 dB / 40 dB)。
@@ -493,8 +536,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     sph->vbox()->addLayout(hrow({ m_phcBand, m_phcDefect }));
     v->addWidget(sph);
 
-    // ── 近傍界→遠方界変換 (mode = NF2FF) ──────────────────────────────────
-    auto *snf = new SectionBox(I18n::tr("opt_nf2ff"), body);
+    // ── 近接場/遠方場変換 (mode = NF2FF) ──────────────────────────────────
+    auto *snf = new SectionBox(I18n::tr("opt_nf_ff"), body);
     m_secNfff = snf;
     m_nfffSurface = new QComboBox(snf);
     m_nfffSurface->addItem(I18n::tr("optm_nf_box"));
@@ -514,6 +557,20 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_spPorts->setValue(2);
     m_spPorts->setMaximumWidth(100);
     ssp->form()->addRow(I18n::tr("optm_sp_ports"), m_spPorts);
+    // 入力/出力ポート — S21 を取る対象ポート対 (mock 既定のポート数 2 に合わせ 1→2)。
+    // OpticalOpts に対応フィールドが無いためローカル state のみ。
+    m_spPortIn = new QSpinBox(ssp);
+    m_spPortIn->setRange(1, 64);
+    m_spPortIn->setValue(1);
+    m_spPortIn->setMaximumWidth(100);
+    ssp->form()->addRow(I18n::tr("opt_port_a"), m_spPortIn);
+    m_spPortOut = new QSpinBox(ssp);
+    m_spPortOut->setRange(1, 64);
+    m_spPortOut->setValue(2);
+    m_spPortOut->setMaximumWidth(100);
+    ssp->form()->addRow(I18n::tr("opt_port_b"), m_spPortOut);
+    m_spPortIn->setMaximum(m_spPorts->value());
+    m_spPortOut->setMaximum(m_spPorts->value());
     m_spS11 = makeCheck(I18n::tr("optm_sp_s11"), true, ssp);
     m_spS21 = makeCheck(I18n::tr("optm_sp_s21"), true, ssp);
     ssp->vbox()->addLayout(hrow({ m_spS11, m_spS21 }));
@@ -549,12 +606,19 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_raySampling->addItem(I18n::tr("optray_uniform"));
     m_raySampling->addItem(I18n::tr("optray_jittered"));
     m_raySampling->addItem(I18n::tr("optray_qmc"));
+    m_raySampling->addItem(I18n::tr("optray_importance"));
     m_raySampling->setCurrentIndex(2);           // mock 既定 = QMC
     sray->form()->addRow(I18n::tr("optray_sampling"), m_raySampling);
     m_raySpecular = makeCheck(I18n::tr("optray_specular"), true, sray);
     m_rayDiffuse  = makeCheck(I18n::tr("optray_diffuse"), true, sray);
     sray->form()->addRow(I18n::tr("optray_refl_model"),
                          hrow({ m_raySpecular, m_rayDiffuse }));
+    // 拡散次数 — 拡散反射を何段まで追跡するか (mock はウィジェット無しの語彙のみ)
+    m_rayDiffOrder = new QSpinBox(sray);
+    m_rayDiffOrder->setRange(0, 32);
+    m_rayDiffOrder->setValue(2);
+    m_rayDiffOrder->setMaximumWidth(100);
+    sray->form()->addRow(I18n::tr("optray_diff_ord"), m_rayDiffOrder);
     m_rayPolarized  = makeCheck(I18n::tr("optray_polarized"), false, sray);
     m_rayDispersion = makeCheck(I18n::tr("optray_dispersion"), true, sray);
     m_rayFresnel    = makeCheck(I18n::tr("optray_fresnel"), true, sray);
@@ -692,6 +756,20 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     connect(m_fmmLi, &QCheckBox::toggled, this, applyCb);
     connect(m_tpaEnable, &QCheckBox::toggled, this, applyCb);
     connect(m_psEnable, &QCheckBox::toggled, this, applyCb);
+
+    // 解法 (波動 / 幾何光学 / ハイブリッド): UI 専用なので apply() は呼ばず、
+    // mock と同じくヒント文だけ差し替える。
+    connect(m_geoMethod, &QComboBox::currentIndexChanged, this, [this](int i) {
+        const char *k = (i == 1) ? "optm_geo_hint_ray"
+                      : (i == 2) ? "optm_geo_hint_hybrid"
+                                 : "optm_geo_hint_fdtd";
+        m_geoHint->setText(I18n::tr(k));
+    });
+    // ポート数を変えたら入力/出力ポート番号の上限も追従 (ローカル state のみ)
+    connect(m_spPorts, &QSpinBox::valueChanged, this, [this](int n) {
+        m_spPortIn->setMaximum(std::max(1, n));
+        m_spPortOut->setMaximum(std::max(1, n));
+    });
 
     connect(project, &Project::loaded, this, &OpticalTab::refresh);
     refresh();
