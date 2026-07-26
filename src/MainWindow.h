@@ -20,6 +20,7 @@
 #include <QMainWindow>
 #include "core/Domain.h"
 #include "kernel/Runner.h"
+#include "Theme.h"
 
 class QStackedWidget;
 class QLabel;
@@ -68,6 +69,7 @@ public slots:
     void exportTidy3d();
     void setDomain(ofd::Domain d);
     void setUiLevel(bool expert);
+    void setViewStyle(int index);        // CLI --view-style / 表示メニュー用
     void selectLeftTab(const QString &titlePart);
     void showGallery();
     void showResources();
@@ -91,10 +93,14 @@ private:
     RunConfig currentRunConfig() const;
     void updateWindowTitle();
     void updateEngineItems(Domain d);
+    void applyTheme();               // QSS 再生成 (スタイル/テーマ/密度/ドメイン)
 
     Project *m_project = nullptr;
     Runner  *m_runner  = nullptr;
     bool     m_expert  = false;      // 表示モード (標準 / エキスパート)
+    UiStyle  m_uiStyle = UiStyle::Classic;
+    UiTheme  m_uiTheme = UiTheme::Light;
+    Density  m_density = Density::Normal;
 
     // ONN 光活性化: カーネルログ "ONN: A_eff = ... [m^2]" から抽出した
     // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。

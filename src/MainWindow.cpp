@@ -4,6 +4,7 @@
 #include "RightDock.h"
 #include "TabNavigator.h"
 #include "CenterPane.h"
+#include "Theme.h"
 #include "I18n.h"
 
 #include "core/Project.h"
@@ -104,7 +105,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_runner(new Runner(this))
 {
     setObjectName("OpenFDTD_MainWindow");
-    resize(1500, 940);
+    // 日本語ラベルのツールバー一式 (新規〜スレッド数) が収まる既定幅。
+    // モック同様に実行設定を右寄せしたまま欠けないようにする。
+    resize(1680, 940);
     setMinimumSize(1100, 700);
 
     m_expert = QSettings().value("ui/level", "standard").toString() == "expert";
@@ -182,6 +185,34 @@ void MainWindow::buildMenu()
             [this] { setUiLevel(false); });
     connect(m_levelExpert, &QAction::triggered, this,
             [this] { setUiLevel(true); });
+
+    // テーマ / 密度 / UIスタイル (モックの TweaksPanel 相当)
+    struct Opt { const char *labelKey; const char *value; };
+    auto addRadioMenu = [this, mView](const char *titleKey, const char *setting,
+                                      const QVector<Opt> &opts, const char *def) {
+        auto *menu = mView->addMenu(I18n::tr(titleKey));
+        auto *grp = new QActionGroup(this);
+        const QString cur = QSettings().value(setting, def).toString();
+        for (const Opt &o : opts) {
+            auto *a = menu->addAction(I18n::tr(o.labelKey));
+            a->setCheckable(true);
+            a->setChecked(cur == QString::fromLatin1(o.value));
+            grp->addAction(a);
+            const QString key = setting, val = QString::fromLatin1(o.value);
+            connect(a, &QAction::triggered, this, [this, key, val] {
+                QSettings().setValue(key, val);
+                applyTheme();
+            });
+        }
+    };
+    addRadioMenu("m_theme", "ui/theme",
+        { { "theme_light", "light" }, { "theme_dark", "dark" } }, "light");
+    addRadioMenu("m_density", "ui/density",
+        { { "density_compact", "compact" }, { "density_normal", "normal" },
+          { "density_comfortable", "comfortable" } }, "normal");
+    addRadioMenu("m_uistyle", "ui/style",
+        { { "uistyle_classic", "classic" }, { "uistyle_modern", "modern" },
+          { "uistyle_scientific", "scientific" } }, "classic");
 
     auto *langMenu = mView->addMenu(I18n::tr("m_lang"));
     for (const auto &[code, label] : std::initializer_list<
@@ -293,18 +324,23 @@ void MainWindow::buildToolbar()
     m_engineBox->addItem(I18n::tr("run_cpu_mpi"));  // Engine::CPU_MPI
     m_engineBox->addItem(I18n::tr("run_gpu"));      // Engine::GPU
     m_engineBox->addItem(I18n::tr("run_gpu_mpi"));  // Engine::GPU_MPI
+    // QSS の padding でコンボが太るとツールバー右端が溢れてスレッド数が
+    // 画面外に出るため、上限幅を与えておく
+    m_engineBox->setMaximumWidth(150);
     tb->addWidget(m_engineBox);
 
     m_modeBox = new QComboBox(tb);
     m_modeBox->addItem(I18n::tr("run_both"));        // RunMode::Both
     m_modeBox->addItem(I18n::tr("run_solver_only")); // RunMode::Solver
     m_modeBox->addItem(I18n::tr("run_post_only"));   // RunMode::Post
+    m_modeBox->setMaximumWidth(150);
     tb->addWidget(m_modeBox);
 
     tb->addWidget(new QLabel(" " + I18n::tr("run_threads") + ": ", tb));
     m_threadsBox = new QSpinBox(tb);
     m_threadsBox->setRange(1, 256);
     m_threadsBox->setValue(QSettings().value("run/threads", 4).toInt());
+    m_threadsBox->setMaximumWidth(70);
     tb->addWidget(m_threadsBox);
 }
 
@@ -583,10 +619,22 @@ void MainWindow::onDomainChanged(Domain d)
     m_domainBar->setActiveDomain(d);
     m_center->setDomain(d);
 
-    setStyleSheet(QStringLiteral(
-        "QToolButton#primaryAction { background: %1; color: white;"
-        " font-weight: 600; border-radius: 3px; padding: 3px 10px; }")
-        .arg(accentColor(d)));
+    // アクセント色はドメイン依存なのでテーマ全体を貼り替える。
+    // (ウィジェット単位の setStyleSheet はアプリ側 QSS に勝ってしまうため使わない)
+    applyTheme();
+}
+
+// 現在の (スタイル, テーマ, 密度, ドメイン) で QSS を生成し直して適用する
+void MainWindow::applyTheme()
+{
+    QSettings st;
+    m_uiStyle = Theme::styleFromKey(st.value("ui/style", "classic").toString());
+    m_uiTheme = Theme::themeFromKey(st.value("ui/theme", "light").toString());
+    m_density = Theme::densityFromKey(st.value("ui/density", "normal").toString());
+    qApp->setStyleSheet(Theme::qss(m_uiStyle, m_uiTheme, m_density,
+                                   m_project->activeDomain()));
+    // QPainter 描画のウィジェットは QSS の対象外なので明示的に伝える
+    m_viewport->setDarkPalette(Theme::isDarkPalette(m_uiStyle, m_uiTheme));
 }
 
 void MainWindow::setUiLevel(bool expert)
@@ -785,6 +833,11 @@ void MainWindow::runPostProcess()
     m_sbState->setText("● " + I18n::tr("sb_running"));
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
+}
+
+void MainWindow::setViewStyle(int index)
+{
+    m_center->setViewStyleIndex(index);
 }
 
 void MainWindow::setDomain(Domain d)

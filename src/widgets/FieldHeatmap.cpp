@@ -1,6 +1,7 @@
 // FieldHeatmap.cpp
 #include "FieldHeatmap.h"
 
+#include <QFontInfo>
 #include <QPainter>
 #include <QtMath>
 
@@ -54,8 +55,10 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
 
     if (titleH) {
         p.setPen(palette().color(QPalette::Text));
+        // アプリ QSS はフォントを px で指定しているため pointSizeF() は -1 を
+        // 返す。実効サイズは QFontInfo から取り、px 側で 1 段大きくする。
         QFont f = p.font();
-        f.setPointSizeF(f.pointSizeF() + 1);
+        f.setPixelSize(QFontInfo(f).pixelSize() + 1);
         f.setBold(true);
         p.setFont(f);
         p.drawText(QRect(0, 0, width(), titleH), Qt::AlignLeft | Qt::AlignVCenter,

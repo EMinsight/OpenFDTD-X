@@ -83,6 +83,8 @@ set(GUI_SOURCES
     src/CenterPane.h
     src/I18n.cpp
     src/I18n.h
+    src/Theme.cpp
+    src/Theme.h
 
     src/widgets/SectionBox.cpp
     src/widgets/SectionBox.h

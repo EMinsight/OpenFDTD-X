@@ -49,7 +49,8 @@ RightDock::RightDock(Project *project, QWidget *parent)
         b->setText(I18n::tr(segKeys[i]));
         b->setCheckable(true);
         b->setChecked(i == 0);
-        b->setFixedHeight(20);
+        // 高さは QSS の padding / font-size (密度設定) に任せる。
+        // ここで固定すると Comfortable 密度で文字が下端で切れる。
         segGroup->addButton(b, i);
         hh->addWidget(b);
     }

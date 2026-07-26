@@ -879,6 +879,19 @@ void I18n::loadTables() {
         "Undo is not supported in this build.");
     add("me_select_tab", "タブ一覧へフォーカス", "Focus tab list");
 
+    // テーマ / 密度 / UIスタイル (モック TweaksPanel)
+    add("m_theme",   "テーマ",       "Theme");
+    add("m_density", "密度",         "Density");
+    add("m_uistyle", "UI スタイル",  "UI style");
+    add("theme_light", "ライト", "Light");
+    add("theme_dark",  "ダーク", "Dark");
+    add("density_compact",     "Compact",     "Compact");
+    add("density_normal",      "Normal",      "Normal");
+    add("density_comfortable", "Comfortable", "Comfortable");
+    add("uistyle_classic",    "Qt Fusion (Classic)", "Qt Fusion (Classic)");
+    add("uistyle_modern",     "Qt Modern",           "Qt Modern");
+    add("uistyle_scientific", "Scientific (Dark)",   "Scientific (Dark)");
+
     // ステータスバー
     add("sb_dt", "Δt", "Δt");
     add("sb_cfl", "CFL", "CFL");

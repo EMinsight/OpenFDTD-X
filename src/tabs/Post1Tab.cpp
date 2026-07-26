@@ -13,6 +13,18 @@
 
 using namespace ofd;
 
+// ── タブ固有の翻訳キー (p1x_) — file-local 登録 (既存 p1_ は I18n.cpp) ────────
+namespace {
+const bool s_i18n = [] {
+    using ofd::I18n;
+    // 周波数特性(2D) の自動スケール (mock: pp_auto_scale)
+    I18n::reg("p1x_auto_scale", "自動スケール", "Auto-scale");
+    I18n::reg("p1x_auto_hint", "→ OFF時に最小/最大/分割数を指定",
+              "→ set min / max / div when off");
+    return true;
+}();
+} // namespace
+
 Post1Tab::Post1Tab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
 {
@@ -46,6 +58,16 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     addFreqRow(body, sf, I18n::tr("p1_ref"),      &po.ref);
     addFreqRow(body, sf, I18n::tr("p1_spara"),    &po.spara);
     addFreqRow(body, sf, I18n::tr("p1_coupling"), &po.coupling);
+
+    // 自動スケール (mock: <Check pp_auto_scale checked> + muted ヒント)
+    auto *asrow = new QHBoxLayout();
+    m_autoScale = new QCheckBox(I18n::tr("p1x_auto_scale"), sf);
+    auto *ashint = new QLabel(I18n::tr("p1x_auto_hint"), sf);
+    ashint->setWordWrap(true);
+    ashint->setStyleSheet("color:#888888; font-size:11px;");  // mock: muted text-sm
+    asrow->addWidget(m_autoScale);
+    asrow->addWidget(ashint, 1);
+    sf->vbox()->addLayout(asrow);
     v->addWidget(sf);
 
     v->addStretch(1);
@@ -56,6 +78,15 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     for (auto *c : { m_iter, m_feed, m_point, m_smith, m_matching })
         connect(c, &QCheckBox::toggled, this, [this] { apply(); });
     connect(m_freqdiv, &QSpinBox::valueChanged, this, [this] { apply(); });
+
+    // 自動スケール ON → 全行の「スケール指定」を外す / OFF → 全行に付ける
+    connect(m_autoScale, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_updating) return;
+        m_updating = true;
+        for (FreqRow &r : m_rows) r.userScale->setChecked(!on);
+        m_updating = false;
+        apply();
+    });
 
     connect(project, &Project::loaded, this, &Post1Tab::refresh);
     refresh();
@@ -109,7 +140,21 @@ void Post1Tab::apply()
         r.target->max = r.max->text().toDouble();
         r.target->div = r.div->value();
     }
+    syncAutoScale();
     m_p->touch();
+}
+
+// 1 行でも「スケール指定」が付いていれば自動スケールは OFF 表示。
+void Post1Tab::syncAutoScale()
+{
+    if (!m_autoScale) return;
+    bool anyUser = false;
+    for (const FreqRow &r : m_rows)
+        if (r.userScale->isChecked()) anyUser = true;
+    const bool guard = m_updating;
+    m_updating = true;                   // マスターの toggled を空回りさせる
+    m_autoScale->setChecked(!anyUser);
+    m_updating = guard;
 }
 
 void Post1Tab::refresh()
@@ -129,5 +174,6 @@ void Post1Tab::refresh()
         r.max->setText(QString::number(r.target->max, 'g', 6));
         r.div->setValue(r.target->div);
     }
+    syncAutoScale();
     m_updating = false;
 }

@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -17,8 +18,134 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <initializer_list>
 
 using namespace ofd;
+
+// ── Raycast / 光学系 / ハイブリッド セクション専用キー (optray_) ─────────────
+// 既存の光タブ語彙 (opt_*) は I18n.cpp にあるので、モック追加分だけ file-local
+// に登録する。reg は既存キー優先なので衝突しても安全。
+namespace {
+const bool s_i18nOptRay = [] {
+    using ofd::I18n;
+    // Raycast 設定 / Geometric Optics
+    I18n::reg("optray_section", "Raycast 設定 / Geometric Optics",
+              "Raycast settings / Geometric optics");
+    I18n::reg("optray_num_rays", "レイ数", "# rays");
+    I18n::reg("optray_rays_unit", "本", "rays");
+    I18n::reg("optray_max_bounces", "最大反射回数", "Max bounces");
+    I18n::reg("optray_min_energy", "最小エネルギー [dB]", "Min energy [dB]");
+    I18n::reg("optray_sampling", "サンプリング", "Sampling");
+    I18n::reg("optray_uniform", "一様", "Uniform");
+    I18n::reg("optray_jittered", "ジッタ", "Jittered");
+    I18n::reg("optray_qmc", "準モンテカルロ (QMC)", "Quasi-Monte Carlo");
+    I18n::reg("optray_refl_model", "反射モデル", "Reflection model");
+    I18n::reg("optray_specular", "鏡面反射", "Specular");
+    I18n::reg("optray_diffuse", "拡散反射 (Lambert)", "Diffuse (Lambert)");
+    I18n::reg("optray_physics", "物理追跡", "Physical tracking");
+    I18n::reg("optray_polarized", "偏波追跡", "Polarization tracking");
+    I18n::reg("optray_dispersion", "分散追跡 (Sellmeier)",
+              "Dispersion tracking");
+    I18n::reg("optray_fresnel", "フレネル係数", "Fresnel coefficients");
+    I18n::reg("optray_raydiag", "光線図出力", "Ray diagram output");
+    I18n::reg("optray_viz_rays", "可視化レイ数", "Visualized rays");
+    I18n::reg("optray_gpu", "GPU加速", "GPU accelerated");
+    I18n::reg("optray_gpu_hint", "OptiX / Embree 経由", "via OptiX / Embree");
+    // 光学系定義 / Optical system
+    I18n::reg("optray_sys_section", "光学系定義 / Optical system",
+              "Optical system definition");
+    I18n::reg("optray_col_type", "面タイプ", "Surface type");
+    I18n::reg("optray_col_thick", "厚さ", "Thickness");
+    I18n::reg("optray_col_mat", "材質", "Material");
+    I18n::reg("optray_col_stop", "絞り", "Stop");
+    I18n::reg("optray_sph", "球面", "Sphere");
+    I18n::reg("optray_stop", "絞り", "Stop");
+    I18n::reg("optray_asph", "非球面", "Asphere");
+    I18n::reg("optray_seidel", "収差解析 (Seidel)",
+              "Aberration analysis (Seidel)");
+    I18n::reg("optray_spot", "スポットダイアグラム", "Spot diagram");
+    I18n::reg("optray_mtf", "MTF", "MTF");
+    I18n::reg("optray_ray_aberr", "光線収差図", "Ray aberration plot");
+    // ハイブリッド連携 / FDTD↔Ray bridge
+    I18n::reg("optray_hyb_section", "ハイブリッド連携 / FDTD↔Ray bridge",
+              "Hybrid coupling / FDTD↔Ray bridge");
+    I18n::reg("optray_hyb_region", "FDTD領域", "FDTD region");
+    I18n::reg("optray_hyb_region_badge",
+              "[-2,2] μm × [-2,2] μm × [-2,2] μm",
+              "[-2,2] μm × [-2,2] μm × [-2,2] μm");
+    I18n::reg("optray_hyb_bconv", "境界モード変換", "Boundary mode conversion");
+    I18n::reg("optray_hyb_modedec", "モード分解", "Mode decomposition");
+    I18n::reg("optray_hyb_gauss", "ガウシアンビーム", "Gaussian beam");
+    I18n::reg("optray_hyb_prop", "伝搬モデル", "Propagation model");
+    I18n::reg("optray_hyb_hint",
+              "微細構造はFDTDで精密解析、遠方伝搬はRayで高速化",
+              "Fine structures are solved by FDTD; far-field propagation is "
+              "accelerated by ray tracing");
+    return true;
+}();
+
+// mock の <span className="badge"> 相当 (色は最小限)
+QLabel *makeBadge(const QString &text, bool accent, QWidget *parent)
+{
+    auto *l = new QLabel(text, parent);
+    QString ss = "border-radius:8px; padding:1px 7px; font-size:11px;";
+    if (accent)
+        ss += "background:#B83280; color:white; border:1px solid transparent;";
+    else
+        ss += "border:1px solid palette(mid);";
+    l->setStyleSheet(ss);
+    return l;
+}
+
+// mock の <span className="muted text-sm"> 相当
+QLabel *mutedLabel(const QString &text, QWidget *parent)
+{
+    auto *l = new QLabel(text, parent);
+    l->setWordWrap(true);
+    l->setStyleSheet("color:#7A7A7A; font-size:11px;");
+    return l;
+}
+
+QCheckBox *makeCheck(const QString &text, bool on, QWidget *parent)
+{
+    auto *c = new QCheckBox(text, parent);
+    c->setChecked(on);
+    return c;
+}
+
+// mock の <Row> 内に複数要素が並ぶケース (左寄せ + 余白)
+QHBoxLayout *hrow(std::initializer_list<QWidget *> ws)
+{
+    auto *h = new QHBoxLayout();
+    h->setContentsMargins(0, 0, 0, 0);
+    for (QWidget *w : ws)
+        h->addWidget(w);
+    h->addStretch(1);
+    return h;
+}
+
+// 光学系定義テーブルの行データ (mock の <tbody> そのまま)
+struct SurfaceRow {
+    const char *typeKey;
+    const char *r;
+    const char *thick;
+    const char *mat;
+    bool        stop;
+};
+const SurfaceRow kSurfaces[] = {
+    { "optray_sph",  "52.5",  "8.0",  "BK7",  false },
+    { "optray_sph",  "-43.3", "2.5",  "F2",   false },
+    { "optray_stop", "∞",     "15.0", "—",    true  },
+    { "optray_asph", "28.4",  "6.0",  "SF11", false },
+};
+
+QTableWidgetItem *alignedItem(const QString &text, Qt::Alignment a)
+{
+    auto *it = new QTableWidgetItem(text);
+    it->setTextAlignment(a | Qt::AlignVCenter);
+    return it;
+}
+} // namespace
 
 OpticalTab::OpticalTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
@@ -169,6 +296,111 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     sr->form()->addRow(I18n::tr("opt_radius"), m_ringR);
     sr->form()->addRow(I18n::tr("opt_gap"), m_ringGap);
     v->addWidget(sr);
+
+    // ── Raycast 設定 / Geometric Optics ────────────────────────────────────
+    // 幾何光学レイトレース (大規模光学系・遠方・カメラ) のトレース設定。
+    // Project に対応フィールドが無いのでローカル state のみ (モック既定値)。
+    auto *sray = new SectionBox(I18n::tr("optray_section"), body);
+    m_rayCount = new QSpinBox(sray);
+    m_rayCount->setRange(1, 1000000000);
+    m_rayCount->setGroupSeparatorShown(true);
+    m_rayCount->setValue(1000000);
+    m_rayCount->setMaximumWidth(140);
+    sray->form()->addRow(
+        I18n::tr("optray_num_rays"),
+        hrow({ m_rayCount, new QLabel(I18n::tr("optray_rays_unit"), sray) }));
+    m_rayBounces = new QSpinBox(sray);
+    m_rayBounces->setRange(1, 10000);
+    m_rayBounces->setValue(12);
+    m_rayBounces->setMaximumWidth(100);
+    sray->form()->addRow(I18n::tr("optray_max_bounces"), m_rayBounces);
+    m_rayMinEnergy = new QLineEdit("-60", sray);
+    m_rayMinEnergy->setMaximumWidth(100);
+    sray->form()->addRow(I18n::tr("optray_min_energy"),
+                         hrow({ m_rayMinEnergy, new QLabel("dB", sray) }));
+    m_raySampling = new QComboBox(sray);
+    m_raySampling->addItem(I18n::tr("optray_uniform"));
+    m_raySampling->addItem(I18n::tr("optray_jittered"));
+    m_raySampling->addItem(I18n::tr("optray_qmc"));
+    m_raySampling->setCurrentIndex(2);           // mock 既定 = QMC
+    sray->form()->addRow(I18n::tr("optray_sampling"), m_raySampling);
+    m_raySpecular = makeCheck(I18n::tr("optray_specular"), true, sray);
+    m_rayDiffuse  = makeCheck(I18n::tr("optray_diffuse"), true, sray);
+    sray->form()->addRow(I18n::tr("optray_refl_model"),
+                         hrow({ m_raySpecular, m_rayDiffuse }));
+    m_rayPolarized  = makeCheck(I18n::tr("optray_polarized"), false, sray);
+    m_rayDispersion = makeCheck(I18n::tr("optray_dispersion"), true, sray);
+    m_rayFresnel    = makeCheck(I18n::tr("optray_fresnel"), true, sray);
+    sray->form()->addRow(
+        I18n::tr("optray_physics"),
+        hrow({ m_rayPolarized, m_rayDispersion, m_rayFresnel }));
+    m_rayVizEnable = makeCheck(I18n::tr("optray_viz_rays"), false, sray);
+    m_rayVizCount = new QSpinBox(sray);
+    m_rayVizCount->setRange(1, 1000000);
+    m_rayVizCount->setValue(500);
+    m_rayVizCount->setMaximumWidth(100);
+    sray->form()->addRow(
+        I18n::tr("optray_raydiag"),
+        hrow({ m_rayVizEnable, m_rayVizCount,
+               new QLabel(I18n::tr("optray_rays_unit"), sray) }));
+    auto *gpuRow = new QHBoxLayout();
+    gpuRow->setContentsMargins(0, 0, 0, 0);
+    gpuRow->addWidget(makeBadge(I18n::tr("optray_gpu"), true, sray));
+    gpuRow->addWidget(mutedLabel(I18n::tr("optray_gpu_hint"), sray));
+    gpuRow->addStretch(1);
+    sray->vbox()->addLayout(gpuRow);
+    v->addWidget(sray);
+
+    // ── 光学系定義 / Optical system ────────────────────────────────────────
+    // レンズ面データ (mock の q-table) + 収差解析オプション。
+    auto *ssys = new SectionBox(I18n::tr("optray_sys_section"), body);
+    const int nSurf = int(sizeof(kSurfaces) / sizeof(kSurfaces[0]));
+    m_optSysTable = new QTableWidget(nSurf, 6, ssys);
+    m_optSysTable->setHorizontalHeaderLabels(
+        { "#", I18n::tr("optray_col_type"), "R [mm]",
+          I18n::tr("optray_col_thick"), I18n::tr("optray_col_mat"),
+          I18n::tr("optray_col_stop") });
+    m_optSysTable->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::Stretch);
+    m_optSysTable->verticalHeader()->setVisible(false);
+    m_optSysTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_optSysTable->setMinimumHeight(nSurf * 30 + 42);
+    for (int r = 0; r < nSurf; ++r) {
+        const SurfaceRow &s = kSurfaces[r];
+        m_optSysTable->setItem(r, 0,
+                               alignedItem(QString::number(r + 1),
+                                           Qt::AlignRight));
+        m_optSysTable->setItem(r, 1, new QTableWidgetItem(I18n::tr(s.typeKey)));
+        m_optSysTable->setItem(r, 2, alignedItem(s.r, Qt::AlignRight));
+        m_optSysTable->setItem(r, 3, alignedItem(s.thick, Qt::AlignRight));
+        m_optSysTable->setItem(r, 4, new QTableWidgetItem(QString(s.mat)));
+        m_optSysTable->setItem(r, 5,
+                               alignedItem(s.stop ? "●" : "—", Qt::AlignHCenter));
+    }
+    ssys->vbox()->addWidget(m_optSysTable);
+    m_optSeidel   = makeCheck(I18n::tr("optray_seidel"), true, ssys);
+    m_optSpot     = makeCheck(I18n::tr("optray_spot"), true, ssys);
+    m_optMtf      = makeCheck(I18n::tr("optray_mtf"), false, ssys);
+    m_optRayAberr = makeCheck(I18n::tr("optray_ray_aberr"), false, ssys);
+    ssys->vbox()->addLayout(
+        hrow({ m_optSeidel, m_optSpot, m_optMtf, m_optRayAberr }));
+    v->addWidget(ssys);
+
+    // ── ハイブリッド連携 / FDTD↔Ray bridge ─────────────────────────────────
+    auto *shyb = new SectionBox(I18n::tr("optray_hyb_section"), body);
+    shyb->form()->addRow(
+        I18n::tr("optray_hyb_region"),
+        hrow({ makeBadge(I18n::tr("optray_hyb_region_badge"), false, shyb) }));
+    m_hybModeDecomp = makeCheck(I18n::tr("optray_hyb_modedec"), true, shyb);
+    m_hybGaussian   = makeCheck(I18n::tr("optray_hyb_gauss"), false, shyb);
+    shyb->form()->addRow(I18n::tr("optray_hyb_bconv"),
+                         hrow({ m_hybModeDecomp, m_hybGaussian }));
+    m_hybPropModel = new QComboBox(shyb);
+    m_hybPropModel->addItems({ "Geometric", "BPM", "Physical Optics" });
+    m_hybPropModel->setCurrentIndex(0);          // mock 既定 = Geometric
+    shyb->form()->addRow(I18n::tr("optray_hyb_prop"), m_hybPropModel);
+    shyb->vbox()->addWidget(mutedLabel(I18n::tr("optray_hyb_hint"), shyb));
+    v->addWidget(shyb);
 
     // ── ONN 活性化カーブ結果 (obpm 実行後に activation_curve.csv を表示) ──
     auto *so = new SectionBox(I18n::tr("opt_onn_section"), body);

@@ -9,10 +9,12 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
+#include <QSettings>
 #include <QScrollBar>
 #include <QSlider>
 #include <QStackedWidget>
@@ -37,6 +39,11 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
     ofd::I18n::reg("vp_boundary","境界 (PML)",     "Boundary (PML)");
     ofd::I18n::reg("vp_rotlabel","Rotate:",        "Rotate:");
+    ofd::I18n::reg("vp_style",      "3D:",   "3D:");
+    ofd::I18n::reg("vp_style_wire", "Wire",  "Wire");
+    ofd::I18n::reg("vp_style_solid","Solid", "Solid");
+    ofd::I18n::reg("vp_style_field","+ Field","+ Field");
+    ofd::I18n::reg("vp_style_rays", "+ Rays", "+ Rays");
     ofd::I18n::reg("vp_snapshot","📷 Snap",        "📷 Snap");
     ofd::I18n::reg("vp_slice_title",
         "近傍界面上分布 / Near-field slice", "Near-field slice");
@@ -95,6 +102,15 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     auto *bnd = new QCheckBox(I18n::tr("vp_boundary"), m_vpToolbar);
     h->addWidget(grid);
     h->addWidget(bnd);
+
+    // 3D ビュースタイル (モックの TweaksPanel「3D ビュー / Viewport」相当)
+    h->addWidget(new QLabel(I18n::tr("vp_style"), m_vpToolbar));
+    m_styleBox = new QComboBox(m_vpToolbar);
+    m_styleBox->addItem(I18n::tr("vp_style_wire"));   // ViewStyle::Wireframe
+    m_styleBox->addItem(I18n::tr("vp_style_solid"));  // ViewStyle::Solid
+    m_styleBox->addItem(I18n::tr("vp_style_field"));  // ViewStyle::Field
+    m_styleBox->addItem(I18n::tr("vp_style_rays"));   // ViewStyle::Rays
+    h->addWidget(m_styleBox);
 
     h->addWidget(new QLabel(I18n::tr("vp_rotlabel"), m_vpToolbar));
     m_azSlider = new QSlider(Qt::Horizontal, m_vpToolbar);
@@ -161,6 +177,14 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     connect(grid, &QCheckBox::toggled, m_viewport, &Viewport3D::setGridVisible);
     connect(bnd,  &QCheckBox::toggled, m_viewport, &Viewport3D::setBoundaryVisible);
     connect(snap, &QToolButton::clicked, this, &CenterPane::saveSnapshot);
+    connect(m_styleBox, &QComboBox::currentIndexChanged, this, [this](int i) {
+        m_viewport->setViewStyle(ViewStyle(i));
+        QSettings().setValue("ui/viewStyle", i);
+    });
+    // 既定は Solid (モックの TWEAK_DEFAULTS と同じ)
+    const int vs = QSettings().value("ui/viewStyle", int(ViewStyle::Solid)).toInt();
+    m_styleBox->setCurrentIndex(qBound(0, vs, 3));
+    m_viewport->setViewStyle(ViewStyle(qBound(0, vs, 3)));
 
     connect(m_azSlider, &QSlider::valueChanged, this, [this](int val) {
         m_viewport->setAzimuth(val);
@@ -200,6 +224,11 @@ void CenterPane::setDomain(Domain d)
 {
     m_viewport->setDomain(d);
     m_plot->setDomain(d);
+}
+
+void CenterPane::setViewStyleIndex(int i)
+{
+    m_styleBox->setCurrentIndex(qBound(0, i, 3));   // combo → setViewStyle へ伝播
 }
 
 void CenterPane::showViewport() { m_tabs->setCurrentIndex(0); }

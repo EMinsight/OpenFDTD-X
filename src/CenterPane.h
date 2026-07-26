@@ -13,6 +13,7 @@
 #include <QWidget>
 #include "core/Domain.h"
 
+class QComboBox;
 class QSlider;
 class QStackedWidget;
 class QTabBar;
@@ -35,6 +36,7 @@ public:
     PlotPanel  *plotPanel() const { return m_plot; }
 
     void setDomain(Domain d);
+    void setViewStyleIndex(int i);   // 0=Wire 1=Solid 2=Field 3=Rays (CLI/メニュー用)
     void showViewport();      // 3D シーンへ切替 (図形表示3D)
     void showPlot();          // 結果プロットへ切替 (図形表示2D)
 
@@ -52,6 +54,7 @@ private:
     MeshPreview    *m_mesh;
 
     QWidget *m_vpToolbar;
+    QComboBox *m_styleBox;
     QSlider *m_azSlider, *m_elSlider;
     QLabel  *m_azLabel,  *m_elLabel;
 };

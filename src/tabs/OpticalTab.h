@@ -66,6 +66,23 @@ private:
     QLineEdit *m_bpfMin, *m_bpfMax, *m_bpfQ;
     QLineEdit *m_ringR, *m_ringGap;
 
+    // ── Raycast 設定 / Geometric Optics (mock: 幾何光学レイトレース) ──
+    // 対応する Project フィールドが無いためローカル state (モック既定値) のみ。
+    QSpinBox  *m_rayCount, *m_rayBounces, *m_rayVizCount;
+    QLineEdit *m_rayMinEnergy;
+    QComboBox *m_raySampling;
+    QCheckBox *m_raySpecular, *m_rayDiffuse;
+    QCheckBox *m_rayPolarized, *m_rayDispersion, *m_rayFresnel;
+    QCheckBox *m_rayVizEnable;
+
+    // ── 光学系定義 / Optical system (面データ表 + 解析オプション) ──
+    QTableWidget *m_optSysTable;
+    QCheckBox *m_optSeidel, *m_optSpot, *m_optMtf, *m_optRayAberr;
+
+    // ── ハイブリッド連携 / FDTD↔Ray bridge ──
+    QCheckBox *m_hybModeDecomp, *m_hybGaussian;
+    QComboBox *m_hybPropModel;
+
     // ONN 活性化カーブ結果表示
     QLabel       *m_onnStatus;
     MiniPlot     *m_onnPlotP, *m_onnPlotT;
