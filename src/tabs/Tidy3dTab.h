@@ -1,6 +1,12 @@
 // Tidy3dTab.h — tidy3d クラウド連携タブ (光ドメイン専用).
 // 設計判断: tidy3d は物理ドメインではなく光FDTDのクラウドバックエンド —
 // このタブは光ドメイン選択時のみ表示される (MainWindow::onDomainChanged)。
+//
+// mock (tabs.jsx / Tidy3DTab) のセクション構成:
+//   ☁ tidy3d クラウド計算 / 接続 / 自動変換マッピング / エクスポート設定 /
+//   ジョブ送信 / ジョブ一覧 / ローカル ↔ クラウド比較
+// Project へ永続化するのは Tidy3dOpts (projectName / resolution / autoPml) と
+// QSettings 上の APIキーのみ。他は mock の既定値を持つローカル状態。
 #pragma once
 #include <QScrollArea>
 
@@ -8,6 +14,7 @@ class QLineEdit;
 class QComboBox;
 class QCheckBox;
 class QLabel;
+class QTableWidget;
 
 namespace ofd {
 
@@ -21,9 +28,13 @@ public:
 private slots:
     void refresh();
     void exportScript();
+    void previewScript();       // プレビュー (.json) — 生成スクリプトを表示
+    void verifyKey();           // 接続セクションの「検証」
+    void submitJob();           // ジョブ送信 (実送信は生成スクリプト経由)
 
 private:
     void apply();
+    void updateConnBadge();     // APIキーの有無で接続バッジを更新
 
     Project   *m_p;
     bool       m_updating = false;
@@ -33,6 +44,17 @@ private:
     QComboBox *m_resolution;
     QCheckBox *m_autoPml;
     QLabel    *m_status;
+
+    // ── mock のローカル状態 (Project には持たない) ──
+    QLabel      *m_connBadge   = nullptr;
+    QCheckBox   *m_subpixel    = nullptr;   // サブピクセル平均化
+    QCheckBox   *m_dft         = nullptr;   // モニターで時間DFT記録
+    QComboBox   *m_priority    = nullptr;   // 優先度 (通常 / 高)
+    QLabel      *m_jobStatus   = nullptr;
+    QTableWidget *m_jobs       = nullptr;
+    QCheckBox   *m_cmpParallel = nullptr;
+    QCheckBox   *m_cmpDiff     = nullptr;
+    QCheckBox   *m_cmpNotify   = nullptr;
 };
 
 } // namespace ofd

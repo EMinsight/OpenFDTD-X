@@ -17,6 +17,52 @@
 
 using namespace ofd;
 
+// ── タブ固有の翻訳キー (p2x_) — file-local 登録 (既存 p2_ / pp_ は I18n.cpp) ──
+namespace {
+const bool s_i18n = [] {
+    using ofd::I18n;
+    // 遠方界の成分 (far2dcomponent) — mock: pp_main_axis / pp_sub_axis / pp_cp_*
+    I18n::reg("p2x_main_axis", "主軸", "Main axis");
+    I18n::reg("p2x_sub_axis", "副軸", "Cross axis");
+    I18n::reg("p2x_cp_l", "左旋円偏波", "LHCP");
+    I18n::reg("p2x_cp_r", "右旋円偏波", "RHCP");
+    I18n::reg("p2x_scale", "スケール", "Scale");
+    // 近傍界面上 (mock: pp_draw_body / pp_zoom / pp_animation + pp_frames)
+    I18n::reg("p2x_draw_body", "物体を描く", "Draw objects");
+    I18n::reg("p2x_zoom", "一部拡大", "Zoom");
+    I18n::reg("p2x_frames", "動画フレーム数", "Animation frames");
+    I18n::reg("p2x_frames_hint",
+              "フレーム数は .ofd に無いためローカル設定です。",
+              "Frame count has no .ofd key, so it is a local setting.");
+    I18n::reg("p2x_anim", "動画出力 (near2dframe)",
+              "Animation output (near2dframe)");
+    // 描画方法 (mock: pp_draw_method の select — 3 択)
+    I18n::reg("p2x_draw_method", "描画方法", "Render mode");
+    I18n::reg("p2x_draw_fill", "カラー塗りつぶし", "Color fill");
+    I18n::reg("p2x_draw_contour", "等高線", "Contour");
+    I18n::reg("p2x_draw_vector", "ベクトル", "Vector");
+    I18n::reg("p2x_draw_hint",
+              "等高線のみ .ofd (near2dcontour) に対応キーがあります。"
+              "ベクトル表示はローカル設定です。",
+              "Only 'contour' has an .ofd counterpart (near2dcontour); "
+              "vector rendering is a local setting.");
+    // エクスポート (mock: エクスポート / Export)
+    I18n::reg("p2x_export", "エクスポート", "Export");
+    I18n::reg("p2x_export_hint", "時系列データ・場分布を .h5 で保存",
+              "Saves time-series data and field distributions as .h5");
+    return true;
+}();
+
+// mock の <span className="badge acc"> 相当 (スタイルは最小限)
+QLabel *makeBadge(const QString &text, QWidget *parent)
+{
+    auto *l = new QLabel(text, parent);
+    l->setStyleSheet("QLabel { border: 1px solid palette(mid); border-radius: 3px;"
+                     " padding: 1px 6px; color: #0078D4; }");
+    return l;
+}
+} // namespace
+
 Post2Tab::Post2Tab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
 {
@@ -97,6 +143,36 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     r2->addWidget(new QLabel(I18n::tr("p2_obj"), s2));
     r2->addWidget(m_far2dObj);
     s2->vbox()->addLayout(r2);
+
+    // 成分 (mock: θ成分 / φ成分 / 主軸 / 副軸 / 左旋円偏波 / 右旋円偏波)
+    // far2dcomponent = E Eθ Eφ Emajor Eminor Elhcp Erhcp の 7 フラグ。
+    // 先頭 3 成分は記号そのまま、残り 4 成分は翻訳キー。
+    static const char *kComp[7] = { "E", "Eθ", "Eφ", "p2x_main_axis",
+                                    "p2x_sub_axis", "p2x_cp_l", "p2x_cp_r" };
+    auto *r2c = new QHBoxLayout();
+    r2c->addWidget(new QLabel(I18n::tr("p2_component"), s2));
+    for (int i = 0; i < 7; ++i) {
+        const QString label = (i < 3) ? QString::fromUtf8(kComp[i])
+                                      : I18n::tr(kComp[i]);
+        m_far2dComp[i] = new QCheckBox(label, s2);
+        r2c->addWidget(m_far2dComp[i]);
+    }
+    r2c->addStretch(1);
+    s2->vbox()->addLayout(r2c);
+
+    // スケール指定 (mock: pp_scale の dBi 範囲) — far2dscale = min max
+    auto *r2s = new QHBoxLayout();
+    r2s->addWidget(new QLabel(I18n::tr("p2x_scale"), s2));
+    m_far2dUserScale = new QCheckBox(I18n::tr("p1_user_scale"), s2);
+    m_far2dMin = new QLineEdit(s2); m_far2dMin->setMaximumWidth(80);
+    m_far2dMax = new QLineEdit(s2); m_far2dMax->setMaximumWidth(80);
+    r2s->addWidget(m_far2dUserScale);
+    r2s->addWidget(new QLabel(I18n::tr("p1_min"), s2));
+    r2s->addWidget(m_far2dMin);
+    r2s->addWidget(new QLabel(I18n::tr("p1_max"), s2));
+    r2s->addWidget(m_far2dMax);
+    r2s->addStretch(1);
+    s2->vbox()->addLayout(r2s);
     v->addWidget(s2);
 
     // near1d
@@ -148,7 +224,64 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     r4b->addWidget(m_near2dNoinc);
     r4b->addStretch(1);
     s4->vbox()->addLayout(r4b);
+
+    // 物体を描く (near2dobj) / 一部拡大 (near2dzoom) — mock の 2 行目のチェック
+    auto *r4c = new QHBoxLayout();
+    m_near2dDrawObj = new QCheckBox(I18n::tr("p2x_draw_body"), s4);
+    m_near2dZoom    = new QCheckBox(I18n::tr("p2x_zoom"), s4);
+    r4c->addWidget(m_near2dDrawObj);
+    r4c->addWidget(m_near2dZoom);
+    r4c->addStretch(1);
+    s4->vbox()->addLayout(r4c);
+
+    // 動画 (mock: 表の「動画」列 = 100)。ON/OFF は near2dframe に永続化し、
+    // フレーム数だけモデルに無いのでローカル。
+    auto *r4d = new QHBoxLayout();
+    m_near2dAnim = new QCheckBox(I18n::tr("p2x_anim"), s4);
+    r4d->addWidget(m_near2dAnim);
+    r4d->addWidget(new QLabel(I18n::tr("p2x_frames"), s4));
+    m_near2dFrames = new QLineEdit("100", s4);
+    m_near2dFrames->setMaximumWidth(80);
+    r4d->addWidget(m_near2dFrames);
+    auto *framesHint = new QLabel(I18n::tr("p2x_frames_hint"), s4);
+    framesHint->setWordWrap(true);
+    framesHint->setStyleSheet("color:#888888; font-size:11px;");  // mock: muted
+    r4d->addWidget(framesHint, 1);
+    s4->vbox()->addLayout(r4d);
+
+    // 描画方法 (mock: <Row label={t("pp_draw_method")}><select>…) — 3 択。
+    // 「等高線」は上の等高線チェック (near2dcontour) と同じ設定を指すので、
+    // 双方向に同期させて表示のずれが出ないようにする。
+    auto *r4e = new QHBoxLayout();
+    r4e->addWidget(new QLabel(I18n::tr("p2x_draw_method"), s4));
+    m_near2dDrawMethod = new QComboBox(s4);
+    m_near2dDrawMethod->addItems({ I18n::tr("p2x_draw_fill"),
+                                   I18n::tr("p2x_draw_contour"),
+                                   I18n::tr("p2x_draw_vector") });
+    r4e->addWidget(m_near2dDrawMethod);
+    auto *drawHint = new QLabel(I18n::tr("p2x_draw_hint"), s4);
+    drawHint->setWordWrap(true);
+    drawHint->setStyleSheet("color:#888888; font-size:11px;");  // mock: muted
+    r4e->addWidget(drawHint, 1);
+    s4->vbox()->addLayout(r4e);
     v->addWidget(s4);
+
+    // ── エクスポート / Export ────────────────────────────────────────────────
+    // mock どおりのボタン列。実際の出力はソルバ/ポスト実行時 (Runner) が行う
+    // ので、ここは要求の入口だけを持つ。
+    auto *s5 = new SectionBox(I18n::tr("p2x_export"), body);
+    auto *r5 = new QHBoxLayout();
+    r5->addWidget(new QPushButton(QString::fromUtf8("📄 ")
+                                  + I18n::tr("pp_export_csv"), s5));
+    r5->addWidget(new QPushButton(QString::fromUtf8("💾 ")
+                                  + I18n::tr("pp_export_h5"), s5));
+    r5->addWidget(makeBadge("HDF5", s5));
+    auto *exportHint = new QLabel(I18n::tr("p2x_export_hint"), s5);
+    exportHint->setWordWrap(true);
+    exportHint->setStyleSheet("color:#888888; font-size:11px;");  // mock: muted
+    r5->addWidget(exportHint, 1);
+    s5->vbox()->addLayout(r5);
+    v->addWidget(s5);
 
     v->addStretch(1);
     setWidget(body);
@@ -158,14 +291,30 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     // wiring
     for (auto *c : { m_far0d, m_far1dDb, m_far1dNorm, m_far1dCompE,
                      m_far1dCompTheta, m_far1dCompPhi, m_far2d, m_far2dDb,
-                     m_near1dDb, m_near1dNoinc, m_near2dDb, m_near2dContour,
-                     m_near2dNoinc })
+                     m_far2dUserScale, m_near1dDb, m_near1dNoinc, m_near2dDb,
+                     m_near2dContour, m_near2dNoinc, m_near2dDrawObj,
+                     m_near2dZoom, m_near2dAnim })
         connect(c, &QCheckBox::toggled, this, applyCb);
-    for (auto *e : { m_far0dTheta, m_far0dPhi, m_far2dObj })
+    for (auto *c : m_far2dComp)
+        connect(c, &QCheckBox::toggled, this, applyCb);
+    for (auto *e : { m_far0dTheta, m_far0dPhi, m_far2dObj,
+                     m_far2dMin, m_far2dMax })
         connect(e, &QLineEdit::editingFinished, this, applyCb);
     for (auto *sp : { m_far2dTheta, m_far2dPhi, m_near2dDim0, m_near2dDim1 })
         connect(sp, &QSpinBox::valueChanged, this, applyCb);
     connect(m_far1dStyle, &QComboBox::currentIndexChanged, this, applyCb);
+
+    // 描画方法 → 等高線チェック (near2dcontour) を追従させる。
+    // 「ベクトル」は .ofd に無いので等高線 OFF + ローカル状態のみ。
+    connect(m_near2dDrawMethod, &QComboBox::currentIndexChanged,
+            this, [this](int idx) {
+        if (m_updating) return;
+        m_drawMethod = idx;
+        m_updating = true;                       // 等高線側の apply を空回りさせる
+        m_near2dContour->setChecked(idx == 1);
+        m_updating = false;
+        apply();
+    });
 
     connect(add1, &QPushButton::clicked, this, [this] {
         m_p->post().far1d.push_back(Far1d{});
@@ -228,6 +377,11 @@ void Post2Tab::apply()
     po.far2dDivPhi   = m_far2dPhi->value();
     po.far2dDb = m_far2dDb->isChecked();
     po.far2dObj = m_far2dObj->text().toDouble();
+    for (int i = 0; i < 7; ++i)
+        po.far2dComp[i] = m_far2dComp[i]->isChecked() ? 1 : 0;
+    po.far2dUserScale = m_far2dUserScale->isChecked();
+    po.far2dMin = m_far2dMin->text().toDouble();
+    po.far2dMax = m_far2dMax->text().toDouble();
     po.near1dDb = m_near1dDb->isChecked();
     po.near1dNoinc = m_near1dNoinc->isChecked();
     po.near2dDim[0] = m_near2dDim0->value();
@@ -235,7 +389,27 @@ void Post2Tab::apply()
     po.near2dDb = m_near2dDb->isChecked();
     po.near2dContour = m_near2dContour->isChecked();
     po.near2dNoinc = m_near2dNoinc->isChecked();
+    // near2dobj は 0/1/2。チェック時は読み込んだ値 (既定 1) をそのまま戻す。
+    po.near2dObj = m_near2dDrawObj->isChecked() ? m_near2dObjValue : 0;
+    po.near2dZoom = m_near2dZoom->isChecked();
+    po.near2dFrame = m_near2dAnim->isChecked();
+    syncDrawMethod();
     m_p->touch();
+}
+
+// 等高線チェックを直接触られたときも描画方法コンボを合わせる。
+// 「ベクトル」は .ofd に無い選択なのでローカル状態から復元する。
+void Post2Tab::syncDrawMethod()
+{
+    if (!m_near2dDrawMethod) return;
+    const int idx = m_near2dContour->isChecked()
+                        ? 1
+                        : (m_drawMethod == 2 ? 2 : 0);
+    const bool guard = m_updating;
+    m_updating = true;                 // コンボの currentIndexChanged を空回りさせる
+    m_near2dDrawMethod->setCurrentIndex(idx);
+    m_updating = guard;
+    m_drawMethod = idx;
 }
 
 void Post2Tab::applyFar1dTable()
@@ -308,6 +482,11 @@ void Post2Tab::refresh()
     m_far2dPhi->setValue(po.far2dDivPhi);
     m_far2dDb->setChecked(po.far2dDb);
     m_far2dObj->setText(QString::number(po.far2dObj, 'g', 6));
+    for (int i = 0; i < 7; ++i)
+        m_far2dComp[i]->setChecked(po.far2dComp[i] != 0);
+    m_far2dUserScale->setChecked(po.far2dUserScale);
+    m_far2dMin->setText(QString::number(po.far2dMin, 'g', 6));
+    m_far2dMax->setText(QString::number(po.far2dMax, 'g', 6));
 
     m_near1d->setRowCount(po.near1d.size());
     for (int r = 0; r < po.near1d.size(); ++r) {
@@ -344,6 +523,11 @@ void Post2Tab::refresh()
     m_near2dDb->setChecked(po.near2dDb);
     m_near2dContour->setChecked(po.near2dContour);
     m_near2dNoinc->setChecked(po.near2dNoinc);
+    if (po.near2dObj > 0) m_near2dObjValue = po.near2dObj;
+    m_near2dDrawObj->setChecked(po.near2dObj != 0);
+    m_near2dZoom->setChecked(po.near2dZoom);
+    m_near2dAnim->setChecked(po.near2dFrame);
+    syncDrawMethod();
 
     m_updating = false;
 }

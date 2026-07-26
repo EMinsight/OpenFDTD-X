@@ -14,6 +14,38 @@
 
 using namespace ofd;
 
+// mock (tabs.jsx MaterialTab) にしか無かった文言。接頭辞は本タブ専用の ma_。
+namespace {
+const bool s_i18nMaterial = [] {
+    I18n::reg("ma_opt_suffix", " (光学定数)", " (optical constants)");
+    I18n::reg("ma_ac_suffix", " (音響パラメータ)", " (acoustic parameters)");
+    I18n::reg("ma_rho", "ρ [kg/m³]", "ρ [kg/m³]");
+    I18n::reg("ma_c_sound", "c [m/s]", "c [m/s]");
+    I18n::reg("ma_absorption", "吸音率α", "Absorption α");
+    I18n::reg("ma_impedance", "音響インピーダンス Z", "Acoustic Z");
+    I18n::reg("ma_disp_hint",
+              "分散モデル: Drude / Lorentz / Sellmeier — 種別を「分散性」にすると "
+              "ε∞ / a / b / c の詳細設定になります。",
+              "Dispersion models: Drude / Lorentz / Sellmeier — switch the type to "
+              "'Dispersive' to edit ε∞ / a / b / c.");
+    I18n::reg("ma_lib", "ライブラリ読込", "Load library");
+    I18n::reg("ma_lib_std", "標準ライブラリ:", "Standard libraries:");
+    I18n::reg("ma_lib_ri", "RefractiveIndex.info (光学定数データベース)",
+              "RefractiveIndex.info (optical constants database)");
+    I18n::reg("ma_lib_nist", "NIST 標準物性値", "NIST reference material data");
+    I18n::reg("ma_lib_astm", "ASTM 音響材料データ", "ASTM acoustic material data");
+    I18n::reg("ma_lib_ofd", "OpenFDTD 標準物性値ライブラリ",
+              "OpenFDTD standard material library");
+    I18n::reg("ma_lib_load", "読込", "Load");
+    I18n::reg("ma_lib_todo",
+              "%1: オンラインライブラリの直接取込は未対応です。"
+              "ガラスカタログ / 物性値エクスプローラの取込機能をご利用ください。",
+              "%1: direct online library import is not available yet. Use the glass "
+              "catalog / material explorer import instead.");
+    return true;
+}();
+}
+
 MaterialTab::MaterialTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
 {
@@ -24,6 +56,7 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
 
     // materials
     auto *sm = new SectionBox(I18n::tr("ma_section"), body);
+    m_matSection = sm;
     sm->vbox()->addWidget(new QLabel(I18n::tr("ma_builtin"), sm));
 
     m_mats = new QTableWidget(0, 7, sm);
@@ -44,6 +77,11 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
     mrow->addWidget(mdel);
     mrow->addStretch(1);
     sm->vbox()->addLayout(mrow);
+
+    // 分散モデルの案内 (mock: 光ドメインのみ表示)
+    m_dispHint = new QLabel(I18n::tr("ma_disp_hint"), sm);
+    m_dispHint->setWordWrap(true);
+    sm->vbox()->addWidget(m_dispHint);
     v->addWidget(sm);
 
     // lumped elements
@@ -65,6 +103,28 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
     lrow->addStretch(1);
     sl->vbox()->addLayout(lrow);
     v->addWidget(sl);
+
+    // ライブラリ読込 (mock の library サブタブ)
+    auto *slib = new SectionBox(I18n::tr("ma_lib"), body);
+    slib->vbox()->addWidget(new QLabel(I18n::tr("ma_lib_std"), slib));
+    static const char *libKeys[4] = { "ma_lib_ri", "ma_lib_nist",
+                                      "ma_lib_astm", "ma_lib_ofd" };
+    for (const char *key : libKeys) {
+        const QString name = I18n::tr(key);
+        auto *r = new QHBoxLayout();
+        r->addWidget(new QLabel(QString::fromUtf8("▸"), slib));
+        r->addWidget(new QLabel(name, slib), 1);
+        auto *load = new QPushButton(I18n::tr("ma_lib_load"), slib);
+        r->addWidget(load);
+        slib->vbox()->addLayout(r);
+        connect(load, &QPushButton::clicked, this, [this, name] {
+            m_libStatus->setText(I18n::tr("ma_lib_todo").arg(name));
+        });
+    }
+    m_libStatus = new QLabel(slib);
+    m_libStatus->setWordWrap(true);
+    slib->vbox()->addWidget(m_libStatus);
+    v->addWidget(slib);
 
     v->addStretch(1);
     setWidget(body);
@@ -90,6 +150,7 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
     connect(m_mats, &QTableWidget::cellChanged, this, [this] {
         if (m_updating) return;
         applyMaterials();
+        if (isAcousticDomain()) refresh();   // Z = ρc を再計算
         m_p->touch();
     });
 
@@ -115,7 +176,39 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
 
     connect(project, &Project::loaded, this, &MaterialTab::refresh);
     connect(project, &Project::materialsEdited, this, &MaterialTab::refresh);
+    // ドメイン切替で列の意味 (電磁 εr… / 音響 ρ,c,α,Z) と見出しが変わる
+    connect(project, &Project::domainChanged, this, [this] { refresh(); });
     refresh();
+}
+
+bool MaterialTab::isAcousticDomain() const
+{
+    const Domain d = m_p->activeDomain();
+    return d == Domain::Acoustic || d == Domain::Underwater;
+}
+
+bool MaterialTab::isOpticalDomain() const
+{
+    return m_p->activeDomain() == Domain::Optical;
+}
+
+// ドメイン別の見出し (mock の isOpt / isAc 分岐)
+void MaterialTab::updateColumns()
+{
+    const bool ac = isAcousticDomain();
+    m_mats->setHorizontalHeaderLabels(ac
+        ? QStringList{ I18n::tr("ma_type"), I18n::tr("ma_rho"),
+                       I18n::tr("ma_c_sound"), I18n::tr("ma_absorption"),
+                       I18n::tr("ma_impedance"), I18n::tr("ma_name"),
+                       I18n::tr("ma_id") }
+        : QStringList{ I18n::tr("ma_type"), QString::fromUtf8("εr / ε∞"),
+                       QString::fromUtf8("σ / a"), QString::fromUtf8("μr / b"),
+                       QString::fromUtf8("σm / c"), I18n::tr("ma_name"),
+                       I18n::tr("ma_id") });
+    m_matSection->setTitle(I18n::tr("ma_section")
+        + (isOpticalDomain() ? I18n::tr("ma_opt_suffix")
+                             : ac ? I18n::tr("ma_ac_suffix") : QString()));
+    m_dispHint->setVisible(isOpticalDomain());
 }
 
 void MaterialTab::applyMaterials()
@@ -129,7 +222,12 @@ void MaterialTab::applyMaterials()
             auto *it = m_mats->item(r, c);
             return it ? it->text() : QString();
         };
-        if (m.type == 2) {
+        if (isAcousticDomain()) {
+            // 音響/水中ドメイン: ρ, c, α を編集 (Z = ρc は計算値なので読取専用)
+            m.rho        = cell(1).toDouble();
+            m.soundSpeed = cell(2).toDouble();
+            m.absorption = cell(3).toDouble();
+        } else if (m.type == 2) {
             m.einf = cell(1).toDouble();
             m.ae   = cell(2).toDouble();
             m.be   = cell(3).toDouble();
@@ -167,6 +265,8 @@ void MaterialTab::applyLoads()
 void MaterialTab::refresh()
 {
     m_updating = true;
+    updateColumns();
+    const bool ac = isAcousticDomain();
 
     const auto &mats = m_p->materials();
     m_mats->setRowCount(mats.size());
@@ -185,13 +285,16 @@ void MaterialTab::refresh()
         m_mats->setCellWidget(r, 0, type);
 
         const double vals[4] = {
-            m.type == 2 ? m.einf : m.epsr,
-            m.type == 2 ? m.ae   : m.esgm,
-            m.type == 2 ? m.be   : m.amur,
-            m.type == 2 ? m.ce   : m.msgm };
-        for (int c = 0; c < 4; ++c)
-            m_mats->setItem(r, 1 + c, new QTableWidgetItem(
-                QString::number(vals[c], 'g', 8)));
+            ac ? m.rho        : m.type == 2 ? m.einf : m.epsr,
+            ac ? m.soundSpeed : m.type == 2 ? m.ae   : m.esgm,
+            ac ? m.absorption : m.type == 2 ? m.be   : m.amur,
+            ac ? m.rho * m.soundSpeed : m.type == 2 ? m.ce : m.msgm };
+        for (int c = 0; c < 4; ++c) {
+            auto *it = new QTableWidgetItem(QString::number(vals[c], 'g', 8));
+            if (ac && c == 3)   // 音響インピーダンス Z = ρc は計算値
+                it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+            m_mats->setItem(r, 1 + c, it);
+        }
         m_mats->setItem(r, 5, new QTableWidgetItem(m.name));
         auto *id = new QTableWidgetItem(QString::number(r + 2));
         id->setFlags(id->flags() & ~Qt::ItemIsEditable);

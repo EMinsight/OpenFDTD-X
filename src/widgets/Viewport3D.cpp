@@ -5,7 +5,9 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QTimer>
 #include <QWheelEvent>
+#include <algorithm>   // std::clamp (レイ反射の位置クランプ)
 #include <cmath>
 
 using namespace ofd;
@@ -19,6 +21,25 @@ Viewport3D::Viewport3D(Project *project, QWidget *parent)
     setAutoFillBackground(false);
     connect(project, &Project::changed, this, qOverload<>(&QWidget::update));
     connect(project, &Project::loaded, this, qOverload<>(&QWidget::update));
+
+    // Field オーバーレイ用のアニメーション。Field 以外では止めておく
+    // (ヘッドレス/リモートで無駄に再描画しないため)。
+    m_animTimer = new QTimer(this);
+    m_animTimer->setInterval(50);
+    connect(m_animTimer, &QTimer::timeout, this, [this] {
+        ++m_animTick;
+        update();
+    });
+}
+
+void Viewport3D::setViewStyle(ViewStyle s)
+{
+    if (m_viewStyle == s) return;
+    m_viewStyle = s;
+    m_solid = (s != ViewStyle::Wireframe);
+    if (s == ViewStyle::Field) m_animTimer->start();
+    else                       m_animTimer->stop();
+    update();
 }
 
 void Viewport3D::fitView()
@@ -26,6 +47,34 @@ void Viewport3D::fitView()
     m_zoom = 1.0;
     m_panPx = QPointF();
     update();
+}
+
+void Viewport3D::setAzimuth(double deg)
+{
+    if (qFuzzyCompare(m_azimuthDeg, deg)) return;
+    m_azimuthDeg = deg;
+    update();
+}
+
+void Viewport3D::setElevation(double deg)
+{
+    const double v = qBound(-89.0, deg, 89.0);
+    if (qFuzzyCompare(m_elevationDeg, v)) return;
+    m_elevationDeg = v;
+    update();
+}
+
+// モックの [XY][YZ][ZX] 軸タグ相当: 正射影で各主平面を正面に向ける
+void Viewport3D::setViewPlane(int plane)
+{
+    switch (plane) {
+    case 0: m_azimuthDeg =   0; m_elevationDeg =  89; break;  // XY (上から)
+    case 1: m_azimuthDeg =  90; m_elevationDeg =   0; break;  // YZ (X軸方向)
+    case 2: m_azimuthDeg =   0; m_elevationDeg =   0; break;  // ZX (Y軸方向)
+    default: return;
+    }
+    update();
+    emit viewChanged(m_azimuthDeg, m_elevationDeg);
 }
 
 QPointF Viewport3D::projectPoint(double x, double y, double z) const
@@ -97,8 +146,22 @@ void Viewport3D::paintEvent(QPaintEvent *)
     };
     drawBox(lo, hi, QPen(QColor(255,255,255,70), 1, Qt::DashLine));
 
+    // PML 境界の可視化 (境界チェックボックス) — 解析領域を内側へ縮めた箱
+    if (m_showBoundary && m_project->general().abc == 1) {
+        const int L = qMax(1, m_project->general().pmlL);
+        double plo[3], phi[3];
+        for (int a = 0; a < 3; ++a) {
+            const MeshAxis &ax = m_project->mesh(a);
+            const double d = (ax.minSpacing() < 1e307) ? ax.minSpacing() * L : 0.0;
+            plo[a] = lo[a] + d;
+            phi[a] = hi[a] - d;
+        }
+        if (plo[0] < phi[0] && plo[1] < phi[1] && plo[2] < phi[2])
+            drawBox(plo, phi, QPen(QColor(245, 158, 11, 150), 1, Qt::DotLine));
+    }
+
     // mesh grid ticks on the bottom face (z = lo[2])
-    {
+    if (m_showGrid) {
         p.setPen(QPen(QColor(255,255,255,28), 1));
         const MeshAxis &mx = m_project->mesh(0);
         const MeshAxis &my = m_project->mesh(1);
@@ -206,6 +269,10 @@ void Viewport3D::paintEvent(QPaintEvent *)
         p.drawEllipse(to, 3, 3);
     }
 
+    // ビュースタイル別オーバーレイ (モックの fieldOverlay / rayOverlay)
+    if (m_viewStyle == ViewStyle::Field) drawFieldOverlay(p);
+    if (m_viewStyle == ViewStyle::Rays)  drawRayOverlay(p);
+
     // overlay text
     p.setPen(QColor(255,255,255,150));
     p.drawText(8, height() - 10,
@@ -213,6 +280,104 @@ void Viewport3D::paintEvent(QPaintEvent *)
                .arg(domainKey(m_domain))
                .arg(m_project->totalCells())
                .arg(int(m_azimuthDeg)).arg(int(m_elevationDeg)));
+    // モックと同じ左上のスタイル注記
+    if (m_viewStyle == ViewStyle::Field || m_viewStyle == ViewStyle::Rays) {
+        p.setPen(QColor(accentColor(m_domain)));
+        p.drawText(8, 16, m_viewStyle == ViewStyle::Field
+            ? QStringLiteral("field overlay enabled")
+            : QStringLiteral("raycast: 24 rays · 4 bounces"));
+    }
+}
+
+// 界分布オーバーレイ — モックの v = sin(8r - 0.08t)·exp(-0.6r) を
+// 領域中心の水平面上に市松模様で散布する。赤=正, 青=負, 透明度=|v|。
+void Viewport3D::drawFieldOverlay(QPainter &p)
+{
+    const double ext = std::max({ m_project->mesh(0).max() - m_project->mesh(0).min(),
+                                  m_project->mesh(1).max() - m_project->mesh(1).min(),
+                                  m_project->mesh(2).max() - m_project->mesh(2).min() });
+    if (ext <= 0) return;
+    const double step = ext * 0.06;          // モックの 0.06 を領域スケールへ
+    const int N = 28;
+    const double zPlane = m_cz - ext * 0.05;
+
+    p.setPen(Qt::NoPen);
+    for (int i = -N; i <= N; ++i)
+        for (int j = -N; j <= N; ++j) {
+            if ((i + j) % 2 != 0) continue;   // 市松 (モックと同じ間引き)
+            const double x = i * step, y = j * step;
+            const double r = std::sqrt(x*x + y*y) / ext * 2.0;
+            const double v = std::sin(r * 8.0 - m_animTick * 0.08) * std::exp(-r * 0.6);
+            const double a = std::min(1.0, std::fabs(v) * 0.8);
+            if (a < 0.02) continue;
+            QColor c(v > 0 ? "#EF4444" : "#3B82F6");
+            c.setAlphaF(a);
+            p.setBrush(c);
+            p.drawEllipse(projectPoint(m_cx + x, m_cy + y, zPlane), 1.6, 1.6);
+        }
+}
+
+// レイトレースオーバーレイ — モックと同じ 24本 × 最大4反射。
+// 領域境界で支配軸を反転させ、反射ごとにエネルギーを 0.7 倍する。
+void Viewport3D::drawRayOverlay(QPainter &p)
+{
+    double lo[3], hi[3];
+    for (int a = 0; a < 3; ++a) {
+        lo[a] = m_project->mesh(a).min();
+        hi[a] = m_project->mesh(a).max();
+        if (!(hi[a] > lo[a])) return;
+    }
+    // 波源: feed があればその位置、無ければ領域中心
+    double src[3] = { m_cx, m_cy, m_cz };
+    if (!m_project->feeds().isEmpty()) {
+        const Feed &f = m_project->feeds().first();
+        src[0] = f.x; src[1] = f.y; src[2] = f.z;
+    }
+
+    const int N = 24, bounces = 4;
+    const double diag = std::sqrt((hi[0]-lo[0])*(hi[0]-lo[0])
+                                + (hi[1]-lo[1])*(hi[1]-lo[1])
+                                + (hi[2]-lo[2])*(hi[2]-lo[2]));
+    const double stepLen = diag * 0.02;
+
+    QColor col(accentColor(m_domain));
+    col.setAlphaF(0.55);
+    p.setPen(QPen(col, 0.9));
+    p.setBrush(Qt::NoBrush);
+
+    for (int i = 0; i < N; ++i) {
+        const double theta = double(i) / N * 2.0 * M_PI;
+        const double phi = M_PI / 2.0 + std::sin(i * 0.7) * 0.4;
+        double dir[3] = { std::cos(theta) * std::sin(phi),
+                          std::cos(phi),
+                          std::sin(theta) * std::sin(phi) };
+        double pos[3] = { src[0], src[1], src[2] };
+
+        QPainterPath path;
+        path.moveTo(projectPoint(pos[0], pos[1], pos[2]));
+        double energy = 1.0;
+        for (int b = 0; b < bounces; ++b) {
+            for (int s = 0; s < 80; ++s) {
+                for (int k = 0; k < 3; ++k) pos[k] += dir[k] * stepLen;
+                if (pos[0] < lo[0] || pos[0] > hi[0] ||
+                    pos[1] < lo[1] || pos[1] > hi[1] ||
+                    pos[2] < lo[2] || pos[2] > hi[2]) break;
+            }
+            path.lineTo(projectPoint(pos[0], pos[1], pos[2]));
+            // 最も外へ出ている軸で反射させ、位置を領域内へ戻す
+            int axis = 0;
+            double worst = 0;
+            for (int k = 0; k < 3; ++k) {
+                const double over = std::max(lo[k] - pos[k], pos[k] - hi[k]);
+                if (over > worst) { worst = over; axis = k; }
+            }
+            dir[axis] *= -1.0;
+            pos[axis] = std::clamp(pos[axis], lo[axis], hi[axis]);
+            energy *= 0.7;
+            if (energy < 0.1) break;
+        }
+        p.drawPath(path);
+    }
 }
 
 void Viewport3D::mousePressEvent(QMouseEvent *e)
@@ -229,6 +394,7 @@ void Viewport3D::mouseMoveEvent(QMouseEvent *e)
         m_azimuthDeg  += d.x() * 0.5;
         m_elevationDeg = qBound(-89.0, m_elevationDeg + d.y() * 0.5, 89.0);
         update();
+        emit viewChanged(m_azimuthDeg, m_elevationDeg);   // ツールバー同期
     } else if (m_dragButton == Qt::MiddleButton) {
         m_panPx += d;
         update();

@@ -14,7 +14,9 @@ DomainBar::DomainBar(QWidget *parent)
 {
     setObjectName("DomainBar");
     setFixedHeight(30);
-    setAutoFillBackground(true);
+    // 素の QWidget 派生では QSS の background が無視されるため明示的に有効化する
+    // (これが無いと palette の明色で塗られ、QSS の明色文字と同系色になって読めない)
+    setAttribute(Qt::WA_StyledBackground, true);
 
     auto *h = new QHBoxLayout(this);
     h->setContentsMargins(8, 0, 8, 0);
@@ -35,12 +37,15 @@ DomainBar::DomainBar(QWidget *parent)
         btn->setCheckable(true);
         btn->setAutoRaise(true);
         btn->setCursor(Qt::PointingHandCursor);
+        // 選択時の上罫線だけドメイン色を指定する。地色/hover はアプリ全体の
+        // QSS (Theme) に任せる — ここで palette(...) を焼くとダーク/Scientific
+        // でウィジェット単位の指定がアプリ QSS に勝ってしまい明色のまま残る。
+        btn->setObjectName("domainTab");
+        btn->setProperty("accent", accentColor(it.d));
         btn->setStyleSheet(QStringLiteral(
             "QToolButton { padding: 5px 14px; border: none;"
             "  border-top: 2px solid transparent; }"
-            "QToolButton:hover { background: palette(midlight); }"
-            "QToolButton:checked { background: palette(base);"
-            "  border-top-color: %1; font-weight: 600; }")
+            "QToolButton:checked { border-top-color: %1; font-weight: 600; }")
             .arg(accentColor(it.d)));
         h->addWidget(btn);
         m_group->addButton(btn, id++);

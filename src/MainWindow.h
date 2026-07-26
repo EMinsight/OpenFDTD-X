@@ -8,11 +8,11 @@
 //   │         …  engine / mode / threads               │
 //   │ domain tabs [電磁 | 光 | 室内音響 | 水中]          │
 //   ├──────┬──────────┬─────────────────────┬──────────┤
-//   │ nav  │ page     │ center              │ right    │
-//   │ 縦カテ│ QStacked │ Viewport3D/PlotPanel│ tree+log │
-//   │ ゴリ  │ Widget   │ + EvViewer bar      │          │
+//   │ nav  │ page     │ center (CenterPane) │ right    │
+//   │ 縦カテ│ QStacked │ [3D][2D断面][プロット]│ Tree/Log │
+//   │ ゴリ  │ Widget   │ [メッシュ]+EvViewer  │ /Props   │
 //   └──────┴──────────┴─────────────────────┴──────────┘
-//   statusbar: state | cells | mem | Δt | step | progress
+//   statusbar: state | cells | mem | Δt | CFL | step | progress
 //
 // 左ナビは Workbench 風カテゴリ (Setup/Library/Solve/Post/ドメイン) 構成で、
 // 標準/エキスパート表示モードとドメインで項目をフィルタする (TabNavigator)。
@@ -20,6 +20,7 @@
 #include <QMainWindow>
 #include "core/Domain.h"
 #include "kernel/Runner.h"
+#include "Theme.h"
 
 class QStackedWidget;
 class QLabel;
@@ -34,6 +35,7 @@ class Project;
 class DomainBar;
 class RightDock;
 class TabNavigator;
+class CenterPane;
 class Viewport3D;
 class PlotPanel;
 class EvViewer;
@@ -67,6 +69,8 @@ public slots:
     void exportTidy3d();
     void setDomain(ofd::Domain d);
     void setUiLevel(bool expert);
+    void setViewStyle(int index);        // CLI --view-style / 表示メニュー用
+    void setThemeOverride(UiStyle style, UiTheme theme, Density density);
     void selectLeftTab(const QString &titlePart);
     void showGallery();
     void showResources();
@@ -90,10 +94,14 @@ private:
     RunConfig currentRunConfig() const;
     void updateWindowTitle();
     void updateEngineItems(Domain d);
+    void applyTheme();               // QSS 再生成 (スタイル/テーマ/密度/ドメイン)
 
     Project *m_project = nullptr;
     Runner  *m_runner  = nullptr;
     bool     m_expert  = false;      // 表示モード (標準 / エキスパート)
+    UiStyle  m_uiStyle = UiStyle::Classic;
+    UiTheme  m_uiTheme = UiTheme::Light;
+    Density  m_density = Density::Normal;
 
     // ONN 光活性化: カーネルログ "ONN: A_eff = ... [m^2]" から抽出した
     // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。
@@ -101,12 +109,12 @@ private:
 
     DomainBar      *m_domainBar = nullptr;
     TabNavigator   *m_nav = nullptr;
+    CenterPane     *m_center = nullptr;
     QStackedWidget *m_pages = nullptr;
     RightDock      *m_rightDock = nullptr;
     Viewport3D     *m_viewport = nullptr;
     PlotPanel      *m_plotPanel = nullptr;
     EvViewer       *m_evViewer = nullptr;
-    QStackedWidget *m_centerStack = nullptr;
 
     // モーダル/モードレスダイアログ (遅延生成)
     RunDialog            *m_runDialog = nullptr;
@@ -157,6 +165,7 @@ private:
     QLabel       *m_sbCells = nullptr;
     QLabel       *m_sbMem = nullptr;
     QLabel       *m_sbDt = nullptr;
+    QLabel       *m_sbCfl = nullptr;
     QLabel       *m_sbStep = nullptr;
     QProgressBar *m_sbProgress = nullptr;
 };

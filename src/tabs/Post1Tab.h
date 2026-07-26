@@ -33,12 +33,17 @@ private:
     void addFreqRow(QWidget *parent, class SectionBox *s,
                     const QString &label, FreqPlot *target);
     void apply();
+    // 自動スケール (mock: pp_auto_scale) を各行の「スケール指定」から復元する
+    void syncAutoScale();
 
     Project   *m_p;
     bool       m_updating = false;
     QCheckBox *m_iter, *m_feed, *m_point, *m_smith, *m_matching;
     QSpinBox  *m_freqdiv;
     QVector<FreqRow> m_rows;
+    // mock の「自動スケール」— 各行の userScale をまとめて反転するマスター。
+    // モデルを持つのは各行なので、ここはウィジェット操作のみ。
+    QCheckBox *m_autoScale = nullptr;
 };
 
 } // namespace ofd

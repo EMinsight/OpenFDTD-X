@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -15,6 +16,24 @@
 #include <QVBoxLayout>
 
 using namespace ofd;
+
+// mock (tabs.jsx GeneralTab) 側にしか無かった文言を file-local に登録する。
+// 接頭辞は本タブ専用の g_ (既存キーは I18n.cpp が優先される)。
+namespace {
+const bool s_i18nGeneral = [] {
+    I18n::reg("g_pml_sigma", "σ_max", "σ_max");
+    I18n::reg("g_pml_sigma_unit", "×σopt", "×σopt");
+    I18n::reg("g_far_warn",
+              "⚠ 近傍界の周波数分割が大きいと計算時間とメモリーが比例増加します",
+              "⚠ A large near-field frequency division increases run time and "
+              "memory proportionally");
+    I18n::reg("g_opt", "計算条件オプション", "Run options");
+    I18n::reg("g_opt_match", "整合損を含む", "Include matching loss");
+    I18n::reg("g_opt_pol", "偏波回転", "Polarization rotation");
+    I18n::reg("g_opt_iter_skip", "イテレーション飛ばし", "Iteration skip");
+    return true;
+}();
+}
 
 // scientific-notation line edit for [Hz] / [s] quantities
 static QLineEdit *sciEdit(QWidget *parent)
@@ -55,6 +74,7 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
 
     // ABC
     auto *sAbc = new SectionBox(I18n::tr("g_abc"), body);
+    m_abcSection = sAbc;
     m_abc = new QComboBox(sAbc);
     m_abc->addItem(I18n::tr("g_mur1"));   // abc = 0
     m_abc->addItem(I18n::tr("g_pml"));    // abc = 1 L m R0
@@ -68,6 +88,19 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sAbc->form()->addRow(I18n::tr("g_pml_layers"), m_pmlL);
     sAbc->form()->addRow(I18n::tr("g_pml_order"), m_pmlM);
     sAbc->form()->addRow(I18n::tr("g_pml_r0"), m_pmlR0);
+    // σ_max スケール (mock の g_pml_sigma) — .ofd には無い量なのでローカル状態。
+    m_pmlSigma = new QDoubleSpinBox(sAbc);
+    m_pmlSigma->setRange(0.1, 10.0);
+    m_pmlSigma->setDecimals(3);
+    m_pmlSigma->setSingleStep(0.1);
+    m_pmlSigma->setValue(1.5);
+    m_pmlSigmaRow = new QWidget(sAbc);
+    auto *sigRow = new QHBoxLayout(m_pmlSigmaRow);
+    sigRow->setContentsMargins(0, 0, 0, 0);
+    sigRow->addWidget(m_pmlSigma);
+    sigRow->addWidget(new QLabel(I18n::tr("g_pml_sigma_unit"), m_pmlSigmaRow));
+    sigRow->addStretch(1);
+    sAbc->form()->addRow(I18n::tr("g_pml_sigma"), m_pmlSigmaRow);
     v->addWidget(sAbc);
 
     // PBC
@@ -100,9 +133,14 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
         row->addStretch(1);
         s->vbox()->addLayout(row);
         v->addWidget(s);
+        return s;
     };
     addFreqSection(I18n::tr("g_freq1"), m_f1min, m_f1max, m_f1div);
-    addFreqSection(I18n::tr("g_freq2"), m_f2min, m_f2max, m_f2div);
+    auto *sFar = addFreqSection(I18n::tr("g_freq2"), m_f2min, m_f2max, m_f2div);
+    // 遠方界/近傍界の分割数に対する注意 (mock の warn 行)
+    auto *farWarn = new QLabel(I18n::tr("g_far_warn"), sFar);
+    farWarn->setWordWrap(true);
+    sFar->vbox()->addWidget(farWarn);
 
     // advanced
     auto *sAdv = new SectionBox(I18n::tr("g_advanced"), body);
@@ -115,6 +153,15 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sAdv->form()->addRow(I18n::tr("g_rfeed"), m_rfeed);
     sAdv->form()->addRow(I18n::tr("g_plot3dgeom"), m_plot3dgeom);
     v->addWidget(sAdv);
+
+    // 計算条件オプション (mock の g_opt) — 本家 .ofd には無いのでローカル状態。
+    auto *sOpt = new SectionBox(I18n::tr("g_opt"), body);
+    m_optMatch     = new QCheckBox(I18n::tr("g_opt_match"), sOpt);
+    m_optPol       = new QCheckBox(I18n::tr("g_opt_pol"), sOpt);
+    m_optIterSkip  = new QCheckBox(I18n::tr("g_opt_iter_skip"), sOpt);
+    for (auto *c : { m_optMatch, m_optPol, m_optIterSkip })
+        sOpt->vbox()->addWidget(c);
+    v->addWidget(sOpt);
 
     v->addStretch(1);
     setWidget(body);
@@ -158,8 +205,25 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     for (auto *c : { m_pbc[0], m_pbc[1], m_pbc[2], m_plot3dgeom })
         connect(c, &QCheckBox::toggled, this, apply);
 
+    // ABC 種別 → PML 詳細行の表示 (mock の条件付きレンダリング)
+    connect(m_abc, &QComboBox::currentIndexChanged,
+            this, &GeneralTab::updateAbcView);
+
     connect(project, &Project::loaded, this, &GeneralTab::refresh);
     refresh();
+}
+
+// combo index: 0 = Mur 1次 (.ofd abc=0), 1 = PML (.ofd abc=1)。
+// PML 以外では層数 / 次数 / R0 / σ_max の行をラベルごと隠す。
+void GeneralTab::updateAbcView()
+{
+    const bool pml = (m_abc->currentIndex() == 1);
+    QFormLayout *f = m_abcSection->form();
+    QWidget *rows[4] = { m_pmlL, m_pmlM, m_pmlR0, m_pmlSigmaRow };
+    for (QWidget *w : rows) {
+        w->setVisible(pml);
+        if (QWidget *lab = f->labelForField(w)) lab->setVisible(pml);
+    }
 }
 
 void GeneralTab::refresh()
@@ -188,4 +252,5 @@ void GeneralTab::refresh()
     m_rfeed->setText(QString::number(g.rfeed, 'g', 6));
     m_plot3dgeom->setChecked(g.plot3dgeom != 0);
     m_updating = false;
+    updateAbcView();
 }

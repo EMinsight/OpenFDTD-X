@@ -39,12 +39,13 @@ void TabNavigator::rebuild(Domain d, bool expert)
             lastCat = e.categoryKey;
             auto *cat = new QListWidgetItem(I18n::tr(e.categoryKey), this);
             cat->setFlags(Qt::NoItemFlags);          // 見出し: 選択不可
+            // 色とサイズは QSS の #tabNavigator::item:disabled に任せる。
+            // ここで setForeground / setPointSizeF すると QSS を上書きしてしまう
+            // (かつ QSS が px 指定なので pointSizeF() は -1 を返す)。
             QFont f = cat->font();
-            f.setPointSizeF(f.pointSizeF() - 1.5);
             f.setBold(true);
             f.setCapitalization(QFont::AllUppercase);
             cat->setFont(f);
-            cat->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
         }
         auto *it = new QListWidgetItem("  " + I18n::tr(e.labelKey), this);
         it->setData(Qt::UserRole, e.key);

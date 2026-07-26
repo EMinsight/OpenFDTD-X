@@ -1,4 +1,4 @@
-# OpenFDTD-X (GUI) CI — Linux/Windows で Qt6 ビルド + 自己テスト。
+# OpenFDTD-X (GUI) CI — Linux/Windows/macOS で Qt6 ビルド + 自己テスト。
 # 処理ロジック (ofd/orcwa/obpm) はビルドに不要 (実行時に QProcess で起動する
 # 疎結合) のため、この CI はカーネル無しで完結する。
 name: CI
@@ -94,3 +94,48 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure
         env:
           TMPDIR: ${{ runner.temp }}
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # Homebrew の qt は 6.x 最新 (現行 6.11)。formula 名は "qt" で、
+      # CMake から見つけるには prefix を CMAKE_PREFIX_PATH に渡す必要がある
+      # (keg-only ではないが、Qt6Config.cmake は opt/qt/lib/cmake 配下)。
+      - name: Install Qt6
+        run: brew install qt
+
+      - name: Configure
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+
+      - name: Build
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Self test
+        run: ./build/ofdx_selftest
+
+      - name: Acoustics tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
+      # macOS は MACOSX_BUNDLE ON のため実体は .app バンドル内にある
+      # (./build/openfdtd_x では見つからない — Linux とパスが異なる)。
+      - name: GUI smoke (offscreen screenshot)
+        run: |
+          export QT_QPA_PLATFORM=offscreen
+          BIN=build/openfdtd_x.app/Contents/MacOS/openfdtd_x
+          test -x "$BIN"
+          for d in em optical acoustic underwater; do
+            "$BIN" tests/data/dipole.ofd \
+              --domain "$d" --screenshot "$RUNNER_TEMP/gui-$d.png"
+            test -s "$RUNNER_TEMP/gui-$d.png"
+          done
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshots-macos
+          path: ${{ runner.temp }}/gui-*.png
