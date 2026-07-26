@@ -70,6 +70,7 @@ public slots:
     void setDomain(ofd::Domain d);
     void setUiLevel(bool expert);
     void setViewStyle(int index);        // CLI --view-style / 表示メニュー用
+    void setThemeOverride(UiStyle style, UiTheme theme, Density density);
     void selectLeftTab(const QString &titlePart);
     void showGallery();
     void showResources();

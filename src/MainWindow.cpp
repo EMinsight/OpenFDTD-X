@@ -110,7 +110,13 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1680, 940);
     setMinimumSize(1100, 700);
 
-    m_expert = QSettings().value("ui/level", "standard").toString() == "expert";
+    {
+        QSettings st;
+        m_expert  = st.value("ui/level", "standard").toString() == "expert";
+        m_uiStyle = Theme::styleFromKey(st.value("ui/style", "classic").toString());
+        m_uiTheme = Theme::themeFromKey(st.value("ui/theme", "light").toString());
+        m_density = Theme::densityFromKey(st.value("ui/density", "normal").toString());
+    }
 
     buildMenu();
     buildToolbar();
@@ -201,6 +207,9 @@ void MainWindow::buildMenu()
             const QString key = setting, val = QString::fromLatin1(o.value);
             connect(a, &QAction::triggered, this, [this, key, val] {
                 QSettings().setValue(key, val);
+                if (key == "ui/theme")        m_uiTheme = Theme::themeFromKey(val);
+                else if (key == "ui/density") m_density = Theme::densityFromKey(val);
+                else                          m_uiStyle = Theme::styleFromKey(val);
                 applyTheme();
             });
         }
@@ -627,10 +636,6 @@ void MainWindow::onDomainChanged(Domain d)
 // 現在の (スタイル, テーマ, 密度, ドメイン) で QSS を生成し直して適用する
 void MainWindow::applyTheme()
 {
-    QSettings st;
-    m_uiStyle = Theme::styleFromKey(st.value("ui/style", "classic").toString());
-    m_uiTheme = Theme::themeFromKey(st.value("ui/theme", "light").toString());
-    m_density = Theme::densityFromKey(st.value("ui/density", "normal").toString());
     qApp->setStyleSheet(Theme::qss(m_uiStyle, m_uiTheme, m_density,
                                    m_project->activeDomain()));
     // QPainter 描画のウィジェットは QSS の対象外なので明示的に伝える
@@ -833,6 +838,15 @@ void MainWindow::runPostProcess()
     m_sbState->setText("● " + I18n::tr("sb_running"));
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
+}
+
+// CLI --ui-* 用: QSettings を汚さずセッション限りでテーマを差し替える
+void MainWindow::setThemeOverride(UiStyle style, UiTheme theme, Density density)
+{
+    m_uiStyle = style;
+    m_uiTheme = theme;
+    m_density = density;
+    applyTheme();
 }
 
 void MainWindow::setViewStyle(int index)

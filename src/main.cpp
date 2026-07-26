@@ -56,28 +56,30 @@ int main(int argc, char *argv[])
         : QSettings().value("ui/language", "ja").toString();
     ofd::I18n::instance().setLanguage(lang);
 
-    // モックの CSS 変数テーマ (スタイル×テーマ×密度) を QSS へ生成して適用。
+    // テーマ (スタイル×テーマ×密度) を解決して QSS を生成・適用する。
+    // ウィンドウ生成より先に貼ることで最初の描画から正しい配色になる。
     // 静的な resources/styles/openfdtd.qss は Theme に置き換わった。
+    // --ui-* はセッション限りの上書きで、QSettings は書き換えない (--lang と同様)。
+    const bool themeOverridden =
+        cli.isSet(styleOpt) || cli.isSet(themeOpt) || cli.isSet(densOpt);
+    ofd::UiStyle uiStyle;
+    ofd::UiTheme uiTheme;
+    ofd::Density uiDens;
     {
         QSettings st;
-        const auto uiStyle = ofd::Theme::styleFromKey(
-            cli.isSet(styleOpt) ? cli.value(styleOpt)
-                                : st.value("ui/style", "classic").toString());
-        const auto uiTheme = ofd::Theme::themeFromKey(
-            cli.isSet(themeOpt) ? cli.value(themeOpt)
-                                : st.value("ui/theme", "light").toString());
-        const auto uiDens = ofd::Theme::densityFromKey(
-            cli.isSet(densOpt) ? cli.value(densOpt)
-                               : st.value("ui/density", "normal").toString());
-        if (cli.isSet(styleOpt)) st.setValue("ui/style", ofd::Theme::styleKey(uiStyle));
-        if (cli.isSet(themeOpt)) st.setValue("ui/theme", ofd::Theme::themeKey(uiTheme));
-        if (cli.isSet(densOpt))  st.setValue("ui/density", ofd::Theme::densityKey(uiDens));
-        const ofd::Domain d0 = cli.isSet(domainOpt)
-            ? ofd::domainFromKey(cli.value(domainOpt)) : ofd::Domain::EM;
-        app.setStyleSheet(ofd::Theme::qss(uiStyle, uiTheme, uiDens, d0));
+        uiStyle = ofd::Theme::styleFromKey(cli.isSet(styleOpt) ? cli.value(styleOpt)
+            : st.value("ui/style", "classic").toString());
+        uiTheme = ofd::Theme::themeFromKey(cli.isSet(themeOpt) ? cli.value(themeOpt)
+            : st.value("ui/theme", "light").toString());
+        uiDens  = ofd::Theme::densityFromKey(cli.isSet(densOpt) ? cli.value(densOpt)
+            : st.value("ui/density", "normal").toString());
     }
+    const ofd::Domain startDomain = cli.isSet(domainOpt)
+        ? ofd::domainFromKey(cli.value(domainOpt)) : ofd::Domain::EM;
+    app.setStyleSheet(ofd::Theme::qss(uiStyle, uiTheme, uiDens, startDomain));
 
     ofd::MainWindow w;
+    if (themeOverridden) w.setThemeOverride(uiStyle, uiTheme, uiDens);
     w.show();
 
     const QStringList args = cli.positionalArguments();

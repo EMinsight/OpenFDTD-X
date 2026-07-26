@@ -2,6 +2,10 @@
 // Settings persist in the .ofdx sidecar; RCWA/BPM run the OpenRCWA (orcwa) /
 // OpenBPM (obpm) sister kernels through Runner.
 //
+// 光解析モード (BPF / 導波路 / リング / MZI / メタサーフェス / フォトニック結晶
+// / NF→FF / S パラメータ) はモード別セクションを持ち、選択中のモードのものだけを
+// 表示する (updateModeSections)。末尾に分散モデル (Drude/Lorentz/Sellmeier)。
+//
 // 非線形 (TPA) / ONN 活性化 (Honda, Shoji, Amemiya, Opt. Lett. 49, 5811
 // (2024)): BPM セクションで tpa / powersweep キーを設定し、obpm 実行後の
 // activation_curve.csv を活性化カーブ P_out(P_in)・透過率 T(P_in) として表示。
@@ -11,6 +15,7 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSpinBox;
 class QCheckBox;
 class QStackedWidget;
@@ -20,6 +25,7 @@ namespace ofd {
 
 class Project;
 class MiniPlot;
+class SectionBox;
 
 class OpticalTab : public QScrollArea {
     Q_OBJECT
@@ -37,6 +43,8 @@ private slots:
 private:
     void apply();
     void updateTpaWidgetState();
+    // mock の {mode === "…" && <Section…>} 相当: 選択モードのセクションだけ表示
+    void updateModeSections();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -66,6 +74,37 @@ private:
     QLineEdit *m_bpfMin, *m_bpfMax, *m_bpfQ;
     QLineEdit *m_ringR, *m_ringGap;
 
+    // ── 光解析モード別セクション (mock: mode ごとの条件付き <Section>) ────────
+    // モードに対応するセクションのみ表示する (updateModeSections)。
+    SectionBox *m_secBpf, *m_secWg, *m_secRing, *m_secMzi;
+    SectionBox *m_secMeta, *m_secPhc, *m_secNfff, *m_secSparam;
+
+    // BPF: 挿入損失 / 阻止域 + 透過スペクトル (Project フィールド無し → local)
+    QLineEdit *m_bpfIL, *m_bpfStop;
+    MiniPlot  *m_bpfPlot;
+    // Ring: thru / drop ポート出力
+    QCheckBox *m_ringThru, *m_ringDrop;
+    // 導波路モード解析 (opt_wg)
+    QCheckBox *m_wgTe0, *m_wgTe1, *m_wgTm0, *m_wgTm1;
+    QLineEdit *m_wgLoss;
+    // MZI
+    QLineEdit *m_mziDeltaL;
+    QCheckBox *m_mziThermo, *m_mziElectro;
+    // メタサーフェス
+    QLineEdit *m_metaPeriod;
+    QComboBox *m_metaShape, *m_metaPhase;
+    // フォトニック結晶
+    QComboBox *m_phcLattice;
+    QLineEdit *m_phcA, *m_phcRa;
+    QCheckBox *m_phcBand, *m_phcDefect;
+    // 近傍界→遠方界変換
+    QComboBox *m_nfffSurface;
+    QLineEdit *m_nfffDistance;
+    // S パラメータ
+    QSpinBox    *m_spPorts;
+    QCheckBox   *m_spS11, *m_spS21, *m_spPhase, *m_spGroupDelay;
+    QPushButton *m_spExport;
+
     // ── Raycast 設定 / Geometric Optics (mock: 幾何光学レイトレース) ──
     // 対応する Project フィールドが無いためローカル state (モック既定値) のみ。
     QSpinBox  *m_rayCount, *m_rayBounces, *m_rayVizCount;
@@ -82,6 +121,9 @@ private:
     // ── ハイブリッド連携 / FDTD↔Ray bridge ──
     QCheckBox *m_hybModeDecomp, *m_hybGaussian;
     QComboBox *m_hybPropModel;
+
+    // ── 分散モデル / Dispersion model (Drude / Lorentz / Sellmeier) ──
+    QComboBox *m_dispModel;
 
     // ONN 活性化カーブ結果表示
     QLabel       *m_onnStatus;

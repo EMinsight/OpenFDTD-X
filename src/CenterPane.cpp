@@ -181,10 +181,16 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
         m_viewport->setViewStyle(ViewStyle(i));
         QSettings().setValue("ui/viewStyle", i);
     });
-    // 既定は Solid (モックの TWEAK_DEFAULTS と同じ)
-    const int vs = QSettings().value("ui/viewStyle", int(ViewStyle::Solid)).toInt();
-    m_styleBox->setCurrentIndex(qBound(0, vs, 3));
-    m_viewport->setViewStyle(ViewStyle(qBound(0, vs, 3)));
+    // 既定は Solid (モックの TWEAK_DEFAULTS と同じ)。
+    // 初期化時の setCurrentIndex で上の connect が走ると、ユーザーが何も
+    // 触っていないのに QSettings へ書き込んでしまうので信号を止めておく。
+    {
+        const int vs = qBound(0,
+            QSettings().value("ui/viewStyle", int(ViewStyle::Solid)).toInt(), 3);
+        QSignalBlocker block(m_styleBox);
+        m_styleBox->setCurrentIndex(vs);
+        m_viewport->setViewStyle(ViewStyle(vs));
+    }
 
     connect(m_azSlider, &QSlider::valueChanged, this, [this](int val) {
         m_viewport->setAzimuth(val);
