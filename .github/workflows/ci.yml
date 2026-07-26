@@ -52,6 +52,10 @@ jobs:
           timeout 60 ./build/openfdtd_x tests/data/dipole.ofd \
             --domain acoustic --screenshot /tmp/gui-acoustic.png
           test -s /tmp/gui-optical.png && test -s /tmp/gui-acoustic.png
+          # OpenUWA (水中音響 分離アプリ) も同じ手順で起動確認する
+          timeout 60 ./build/openuwa tests/data/dipole.ofd \
+            --screenshot /tmp/gui-openuwa.png
+          test -s /tmp/gui-openuwa.png
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
@@ -133,6 +137,11 @@ jobs:
               --domain "$d" --screenshot "$RUNNER_TEMP/gui-$d.png"
             test -s "$RUNNER_TEMP/gui-$d.png"
           done
+          # OpenUWA (水中音響 分離アプリ)
+          UWA=build/openuwa.app/Contents/MacOS/openuwa
+          test -x "$UWA"
+          "$UWA" tests/data/dipole.ofd --screenshot "$RUNNER_TEMP/gui-openuwa.png"
+          test -s "$RUNNER_TEMP/gui-openuwa.png"
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
