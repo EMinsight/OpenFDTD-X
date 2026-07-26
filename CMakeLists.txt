@@ -47,6 +47,7 @@ set(CORE_SOURCES
     src/core/GlassCatalog.h
     src/core/RoomAcoustics.cpp
     src/core/RoomAcoustics.h
+    src/core/OperaHalls.h
 
     src/io/OfdIO.cpp
     src/io/OfdIO.h
@@ -76,6 +77,8 @@ set(GUI_SOURCES
     src/DomainBar.h
     src/RightDock.cpp
     src/RightDock.h
+    src/TabNavigator.cpp
+    src/TabNavigator.h
     src/I18n.cpp
     src/I18n.h
 
@@ -120,6 +123,80 @@ set(GUI_SOURCES
     src/tabs/GlassCatalogTab.h
     src/tabs/RoomAcousticsTab.cpp
     src/tabs/RoomAcousticsTab.h
+
+    # Workbench 拡張タブ (design mock 全カテゴリ)
+    src/tabs/SolverRegionTab.cpp
+    src/tabs/SolverRegionTab.h
+    src/tabs/MonitorsTab.cpp
+    src/tabs/MonitorsTab.h
+    src/tabs/PerFaceBCTab.cpp
+    src/tabs/PerFaceBCTab.h
+    src/tabs/ComponentsTab.cpp
+    src/tabs/ComponentsTab.h
+    src/tabs/MaterialExplorerTab.cpp
+    src/tabs/MaterialExplorerTab.h
+    src/tabs/LensEditorTab.cpp
+    src/tabs/LensEditorTab.h
+    src/tabs/LayoutGDSTab.cpp
+    src/tabs/LayoutGDSTab.h
+    src/tabs/SchematicTab.cpp
+    src/tabs/SchematicTab.h
+    src/tabs/PhotonicsSolversTab.cpp
+    src/tabs/PhotonicsSolversTab.h
+    src/tabs/AcousticSourceTab.cpp
+    src/tabs/AcousticSourceTab.h
+    src/tabs/OceanEnvironmentTab.cpp
+    src/tabs/OceanEnvironmentTab.h
+    src/tabs/SoundproofTab.cpp
+    src/tabs/SoundproofTab.h
+    src/tabs/OutdoorNoiseTab.cpp
+    src/tabs/OutdoorNoiseTab.h
+    src/tabs/CabinAcousticsTab.cpp
+    src/tabs/CabinAcousticsTab.h
+    src/tabs/UltrasoundTab.cpp
+    src/tabs/UltrasoundTab.h
+    src/tabs/FamilySolverTab.cpp
+    src/tabs/FamilySolverTab.h
+    src/tabs/SolverSelectorTab.cpp
+    src/tabs/SolverSelectorTab.h
+    src/tabs/VerificationTab.cpp
+    src/tabs/VerificationTab.h
+    src/tabs/OptimizeTab.cpp
+    src/tabs/OptimizeTab.h
+    src/tabs/ToleranceTab.cpp
+    src/tabs/ToleranceTab.h
+    src/tabs/ScriptsTab.cpp
+    src/tabs/ScriptsTab.h
+    src/tabs/MultiphysicsTab.cpp
+    src/tabs/MultiphysicsTab.h
+    src/tabs/AnalysisGroupsTab.cpp
+    src/tabs/AnalysisGroupsTab.h
+    src/tabs/DatasetsTab.cpp
+    src/tabs/DatasetsTab.h
+    src/tabs/H5ViewerTab.cpp
+    src/tabs/H5ViewerTab.h
+    src/tabs/InteropTab.cpp
+    src/tabs/InteropTab.h
+    src/tabs/AntennaCharTab.cpp
+    src/tabs/AntennaCharTab.h
+    src/tabs/TransmissionLineTab.cpp
+    src/tabs/TransmissionLineTab.h
+    src/tabs/ScatteringTab.cpp
+    src/tabs/ScatteringTab.h
+    src/tabs/CircuitSolversTab.cpp
+    src/tabs/CircuitSolversTab.h
+
+    # ダイアログ (app.jsx / ansys-workflow.jsx のモーダル)
+    src/dialogs/RunDialog.cpp
+    src/dialogs/RunDialog.h
+    src/dialogs/CloudDialog.cpp
+    src/dialogs/CloudDialog.h
+    src/dialogs/AppGalleryDialog.cpp
+    src/dialogs/AppGalleryDialog.h
+    src/dialogs/ResourceDialog.cpp
+    src/dialogs/ResourceDialog.h
+    src/dialogs/GettingStartedDialog.cpp
+    src/dialogs/GettingStartedDialog.h
 
     # オペラ音響分析 (実測RIR分析) — Qt アダプターと分析タブ
     src/acoustics/qt/QtAcousticAdapter.cpp

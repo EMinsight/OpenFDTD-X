@@ -9,6 +9,13 @@ I18n::I18n() { loadTables(); }
 
 void I18n::setLanguage(const QString &lang) { m_lang = lang; }
 
+void I18n::reg(const char *key, const char *ja, const char *en) {
+    auto &I = instance();
+    if (I.m_ja.contains(key)) return;   // loadTables() entries win
+    I.m_ja[key] = QString::fromUtf8(ja);
+    I.m_en[key] = QString::fromUtf8(en);
+}
+
 QString I18n::tr(const QString &key) {
     auto &I = instance();
     const QString ja = I.m_ja.value(key, key);
@@ -796,4 +803,72 @@ void I18n::loadTables() {
     add("ev_open3d", "ev3d を開く", "Open ev3d");
     add("ev_nofile", "出力ファイルが見つかりません。先にポスト処理を実行してください。",
         "No output file found. Run post-processing first.");
+
+    // ── カテゴリ付き左ナビ (app.jsx LeftDock 相当) ──────────────────────────
+    add("cat_setup",   "セットアップ / Setup",  "Setup");
+    add("cat_library", "ライブラリ / Library",  "Library");
+    add("cat_solve",   "解析 / Solve",          "Solve");
+    add("cat_post",    "ポスト / Post",         "Post");
+    add("cat_dom_em",         "電磁ドメイン", "EM domain");
+    add("cat_dom_optical",    "光ドメイン",   "Optical domain");
+    add("cat_dom_acoustic",   "音響ドメイン", "Acoustic domain");
+    add("cat_dom_underwater", "水中ドメイン", "Underwater domain");
+
+    // nav ラベル (モックのタブ名そのまま)
+    add("nav_geometry",     "① 形状",        "① Geometry");
+    add("nav_material",     "② 物性値",      "② Materials");
+    add("nav_solverregion", "③ ソルバ領域",  "③ Solver region");
+    add("nav_source",       "④ 波源",        "④ Sources");
+    add("nav_monitors",     "⑤ モニター",    "⑤ Monitors");
+    add("nav_general",      "全般",           "General");
+    add("nav_mesh",         "メッシュ詳細",   "Mesh detail");
+    add("nav_perface",      "境界面詳細",     "Per-face BC");
+    add("nav_components",   "コンポーネント", "Components");
+    add("nav_matexplorer",  "🔬 材料Explorer", "🔬 Material Explorer");
+    add("nav_glasscatalog", "🔷 ガラスカタログ", "🔷 Glass Catalog");
+    add("nav_lens",         "Lens",           "Lens");
+    add("nav_layoutgds",    "GDS",            "GDS");
+    add("nav_schematic",    "Schematic",      "Schematic");
+    add("nav_photonics",    "FDTD/RCWA/BPM/FMM", "FDTD/RCWA/BPM/FMM");
+    add("nav_acsource",     "🎤 音源/WAV/指向性", "🎤 Source/WAV/Directivity");
+    add("nav_oceanenv",     "🌏 海洋環境",    "🌏 Ocean Environment");
+    add("nav_roomac",       "🏛 ホール解析",  "🏛 Hall Analysis");
+    add("nav_soundproof",   "🔇 防音設計",    "🔇 Soundproofing");
+    add("nav_outdoor",      "🌳 屋外騒音",    "🌳 Outdoor Noise");
+    add("nav_cabin",        "🚗 車内NVH",     "🚗 Cabin NVH");
+    add("nav_ultrasound",   "🩺 超音波",      "🩺 Ultrasound");
+    add("nav_family",       "🌳 姉妹ソルバ",  "🌳 Solver Family");
+    add("nav_solver",       "ソルバ詳細",     "Solver detail");
+    add("nav_verification", "🔍 検証",        "🔍 Verification");
+    add("nav_optimize",     "最適化",         "Optimization");
+    add("nav_tolerance",    "ばらつき",       "Tolerance");
+    add("nav_scripts",      "スクリプト",     "Scripts");
+    add("nav_multiphysics", "連成",           "Multiphysics");
+    add("nav_tidy3d",       "☁ tidy3d",       "☁ tidy3d");
+    add("nav_analysisgroups", "解析グループ", "Analysis groups");
+    add("nav_datasets",     "Datasets",       "Datasets");
+    add("nav_h5viewer",     "🎬 H5アニメ",    "🎬 H5 Animation");
+    add("nav_interop",      "🔗 ツール連携",  "🔗 Interop");
+    add("nav_antennachar",  "📡 アンテナ特性", "📡 Antenna Char.");
+    add("nav_txline",       "🔌 伝送線路",    "🔌 Transmission Line");
+    add("nav_scattering",   "🎯 散乱/RCS",    "🎯 Scattering/RCS");
+    add("nav_circuit",      "⚡ 回路 PEEC/FEM", "⚡ Circuit PEEC/FEM");
+    add("nav_post1",        "ポスト(1)",      "Post (1)");
+    add("nav_post2",        "ポスト(2)",      "Post (2)");
+    add("nav_optical",      "光解析",         "Optical");
+    add("nav_acoustic",     "音響解析",       "Acoustic");
+    add("nav_underwater",   "水中音響",       "Underwater");
+
+    // 表示モード (標準 / エキスパート)
+    add("m_uilevel",        "表示モード",     "UI level");
+    add("uilevel_standard", "標準",           "Standard");
+    add("uilevel_expert",   "エキスパート (全機能)", "Expert (all features)");
+
+    // ツールバー追加分 (Resources / はじめに / ギャラリー)
+    add("tb_resources",  "Resources", "Resources");
+    add("tb_gettingstarted", "🎓 はじめに", "🎓 Getting Started");
+    add("tb_gallery_tip", "新規 — アプリケーションギャラリー",
+        "New — Application Gallery");
+    add("run_console",   "計算コンソール", "Run console");
+    add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
 }

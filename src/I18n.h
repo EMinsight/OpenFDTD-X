@@ -16,6 +16,12 @@ public:
 
     static QString tr(const QString &key);
 
+    // Register a key from outside I18n.cpp. Tabs that own a large private
+    // vocabulary (the Ansys/Lumerical-style panels) call this from a file-local
+    // static initialiser instead of growing loadTables() into a merge magnet.
+    // An existing key is left alone, so loadTables() always wins.
+    static void reg(const char *key, const char *ja, const char *en);
+
 private:
     I18n();
     void loadTables();

@@ -1,0 +1,1045 @@
+// OceanEnvironmentTab.cpp
+#include "OceanEnvironmentTab.h"
+#include "../core/Project.h"
+#include "../widgets/SectionBox.h"
+#include "../I18n.h"
+
+#include <QBrush>
+#include <QCheckBox>
+#include <QColor>
+#include <QComboBox>
+#include <QFileDialog>
+#include <QFont>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPolygonF>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QRandomGenerator>
+#include <QTableWidget>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <algorithm>
+#include <cmath>
+
+using namespace ofd;
+
+// ── file-local vocabulary (oe_) ─────────────────────────────────────────────
+namespace {
+const bool s_i18n = [] {
+    using ofd::I18n;
+    // location query
+    I18n::reg("oe_loc_section", "位置指定", "Location query");
+    I18n::reg("oe_loc_hint",
+              "緯度・経度から、ローカル配置済みデータセットの地形・水温・塩分を"
+              "照会し SSP を自動生成。\n"
+              "データはあらかじめローカルに変換配置 (ネットワーク接続不要)。",
+              "Queries bathymetry, temperature and salinity from the locally "
+              "staged datasets for a latitude/longitude and generates the SSP "
+              "automatically.\n"
+              "The data is converted and staged locally beforehand (no network "
+              "connection required).");
+    I18n::reg("oe_lat", "緯度", "Latitude");
+    I18n::reg("oe_lon", "経度", "Longitude");
+    I18n::reg("oe_month", "月 (季節)", "Month (season)");
+    I18n::reg("oe_month_fmt", "%1月", "%1");
+    I18n::reg("oe_annual", "年平均も併記", "Also show annual mean");
+    I18n::reg("oe_query_btn", "🔍 データ照会", "🔍 Query data");
+    I18n::reg("oe_query_ok", "照会成功: %1", "Query succeeded: %1");
+    // local datasets
+    I18n::reg("oe_ds_section", "ローカルデータセット", "Local datasets");
+    I18n::reg("oe_ds_hint",
+              "国内 (JODC) + 海外の公開データセットを同一パイプラインで照会。"
+              "全球データがあれば世界中の海域に適用可。",
+              "Domestic (JODC) and overseas public datasets are queried through "
+              "the same pipeline. With global data any sea area can be used.");
+    I18n::reg("oe_col_dataset", "データセット", "Dataset");
+    I18n::reg("oe_col_provider", "提供元", "Provider");
+    I18n::reg("oe_col_content", "内容", "Content");
+    I18n::reg("oe_col_res", "解像度", "Resolution");
+    I18n::reg("oe_col_state", "状態", "State");
+    I18n::reg("oe_ds1", "JODC 各層観測 (J-DOSS)",
+              "JODC layered observations (J-DOSS)");
+    I18n::reg("oe_ds1c", "水温・塩分", "Temperature / salinity");
+    I18n::reg("oe_ds1r", "観測点", "Station");
+    I18n::reg("oe_ds2c", "海底地形 (日本周辺)", "Bathymetry (around Japan)");
+    I18n::reg("oe_ds3c", "水温・塩分 月別気候値 (全球)",
+              "Monthly climatology of temperature / salinity (global)");
+    I18n::reg("oe_ds4c", "海底地形 (全球)", "Bathymetry (global)");
+    I18n::reg("oe_ds5c", "海底地形 (全球・航海精度)",
+              "Bathymetry (global, navigational accuracy)");
+    I18n::reg("oe_ds6", "Argo フロート (GDAC)", "Argo floats (GDAC)");
+    I18n::reg("oe_ds6c", "水温・塩分 実測プロファイル (準リアルタイム)",
+              "Measured T/S profiles (near real time)");
+    I18n::reg("oe_ds6r", "フロート位置", "Float position");
+    I18n::reg("oe_ds7", "Copernicus CMEMS 再解析", "Copernicus CMEMS reanalysis");
+    I18n::reg("oe_ds7c", "水温・塩分・海流 (時系列)",
+              "Temperature / salinity / currents (time series)");
+    I18n::reg("oe_ds8", "HYCOM 再解析", "HYCOM reanalysis");
+    I18n::reg("oe_ds8c", "海流・渦 (時系列)", "Currents / eddies (time series)");
+    I18n::reg("oe_ds9", "GDEM-V (音響用気候値)",
+              "GDEM-V (acoustic climatology)");
+    I18n::reg("oe_ds9c", "水温・塩分 (ソナー解析向け)",
+              "Temperature / salinity (for sonar analysis)");
+    I18n::reg("oe_ds10c", "底質 (粒度・音響パラメータ)",
+              "Sediment (grain size / acoustic parameters)");
+    I18n::reg("oe_staged", "配置済 %1", "Staged %1");
+    I18n::reg("oe_notstaged", "未配置", "Not staged");
+    I18n::reg("oe_notstaged_argo", "未配置 (選択海域のみ推奨)",
+              "Not staged (recommended for the selected area only)");
+    I18n::reg("oe_restricted", "公開制限あり", "Distribution restricted");
+    I18n::reg("oe_ds_folder", "📁 データセットフォルダ設定…",
+              "📁 Dataset folder…");
+    I18n::reg("oe_ds_fetch", "📦 データセット取得 (媒体取込/DL)",
+              "📦 Fetch datasets (media import / download)");
+    I18n::reg("oe_ds_prio",
+              "▸ 優先順位: 実測 (JODC/Argo) > 再解析 (CMEMS/HYCOM) > 気候値 "
+              "(WOA23)。同一地点に複数ソースがある場合は上位を採用し出典を記録。",
+              "▸ Priority: measured (JODC/Argo) > reanalysis (CMEMS/HYCOM) > "
+              "climatology (WOA23). Where several sources cover one point the "
+              "highest is used and its provenance recorded.");
+    // query result
+    I18n::reg("oe_result", "照会結果", "Query result");
+    I18n::reg("oe_b_depth", "水深 %1 m", "Depth %1 m");
+    I18n::reg("oe_b_sst", "表層水温 %1°C (%2月)",
+              "Surface temperature %1°C (month %2)");
+    I18n::reg("oe_b_sss", "表層塩分 %1 psu", "Surface salinity %1 psu");
+    I18n::reg("oe_b_bottom", "底質: %1", "Sediment: %1");
+    I18n::reg("oe_bottom_shelf", "砂泥 (大陸棚)", "Sandy mud (shelf)");
+    I18n::reg("oe_bottom_deep", "泥 (深海平原)", "Mud (abyssal plain)");
+    I18n::reg("oe_col_z", "深度 [m]", "Depth [m]");
+    I18n::reg("oe_col_t", "水温 [°C]", "Temperature [°C]");
+    I18n::reg("oe_col_s", "塩分 [psu]", "Salinity [psu]");
+    I18n::reg("oe_col_c", "音速 [m/s]", "Sound speed [m/s]");
+    I18n::reg("oe_layer_note",
+              "▸ 音速式: Mackenzie (1981)。UNESCO (Chen-Millero) も選択可。"
+              "全%1層。",
+              "▸ Sound-speed formula: Mackenzie (1981); UNESCO (Chen-Millero) "
+              "also available. %1 layers total.");
+    // SSP preview
+    I18n::reg("oe_ssp_section", "音速プロファイル", "SSP preview");
+    I18n::reg("oe_ssp_okhotsk",
+              "▸ 中冷水層による浅い音道 (表層ダクト) が形成されています",
+              "▸ The dichothermal layer forms a shallow surface duct");
+    I18n::reg("oe_ssp_shelf",
+              "▸ 浅海のため海底反射が支配的。底質減衰の設定が重要",
+              "▸ Shallow water: bottom reflection dominates, so the sediment "
+              "attenuation setting matters");
+    I18n::reg("oe_ssp_sofar", "▸ SOFAR チャネル軸: 深度 %1m",
+              "▸ SOFAR channel axis: depth %1 m");
+    // bathymetry
+    I18n::reg("oe_bty_section", "地形断面", "Bathymetry along track");
+    I18n::reg("oe_bearing", "伝搬方位", "Propagation bearing");
+    I18n::reg("oe_bearing_unit", "° (東向き)", "° (eastward)");
+    I18n::reg("oe_dist", "距離", "Distance");
+    // apply
+    I18n::reg("oe_apply_section", "ソルバへ反映", "Apply to solver");
+    I18n::reg("oe_chk_ssp", "SSPを水中音響タブへ転送",
+              "Transfer the SSP to the underwater acoustics tab");
+    I18n::reg("oe_chk_bty", "地形断面をBellhop .btyへ",
+              "Write the bathymetry section to a Bellhop .bty");
+    I18n::reg("oe_chk_bottom", "底質パラメータも設定",
+              "Also set the sediment parameters");
+    I18n::reg("oe_apply_btn", "✓ 環境を適用 (SSP + 地形 + 底質)",
+              "✓ Apply environment (SSP + bathymetry + sediment)");
+    I18n::reg("oe_export_btn", "📄 .env / .bty / .ssp 書出し",
+              "📄 Export .env / .bty / .ssp");
+    I18n::reg("oe_apply_note",
+              "▸ Bellhop環境ファイル (.env)、地形 (.bty)、SSP (.ssp) を出力し"
+              "水中音響タブのソルバ設定に自動接続",
+              "▸ Writes the Bellhop environment (.env), bathymetry (.bty) and "
+              "SSP (.ssp) and wires them into the underwater acoustics solver "
+              "settings");
+    // download manager
+    I18n::reg("oe_dl_title", "📦 データセット取得マネージャ",
+              "📦 Dataset fetch manager");
+    I18n::reg("oe_dl_standalone",
+              "スタンドアロン運用 (外部ネットワーク非接続前提)",
+              "Standalone operation (external network assumed disconnected)");
+    I18n::reg("oe_dl_dest", "保存先: D:/ocean_data/",
+              "Destination: D:/ocean_data/");
+    I18n::reg("oe_dl_s1", "① オフライン媒体から取込 (推奨・既定)",
+              "① Import from offline media (recommended, default)");
+    I18n::reg("oe_dl_s1_hint",
+              "別環境 (インターネット接続端末) で取得・検証済みのデータセット"
+              "パッケージを USB/光学媒体・共有フォルダ経由で取込みます。"
+              "チェックサム (SHA-256) で改竄・破損を検証。",
+              "Imports a dataset package that was fetched and verified on a "
+              "separate, internet-connected machine, via USB / optical media or "
+              "a shared folder. A SHA-256 checksum verifies integrity.");
+    I18n::reg("oe_dl_pkg", "パッケージ", "Package");
+    I18n::reg("oe_dl_browse", "📁 参照…", "📁 Browse…");
+    I18n::reg("oe_dl_import", "📦 検証して取込", "📦 Verify and import");
+    I18n::reg("oe_dl_sha", "SHA-256 検証", "SHA-256 verification");
+    I18n::reg("oe_dl_reindex", "取込後に索引再構築",
+              "Rebuild the index after import");
+    I18n::reg("oe_dl_cli",
+              "▸ パッケージ作成用CLI: ofdx-dataset pack --region "
+              "30,-70,45,-40 --sets woa23,gebco (接続端末側で実行)",
+              "▸ Packaging CLI: ofdx-dataset pack --region 30,-70,45,-40 "
+              "--sets woa23,gebco (run on the connected machine)");
+    I18n::reg("oe_dl_s2", "② 直接ダウンロード (接続環境のみ・要明示許可)",
+              "② Direct download (connected environments only, explicit "
+              "permission required)");
+    I18n::reg("oe_dl_allow", "この端末での外部ネットワークアクセスを許可する",
+              "Allow external network access from this machine");
+    I18n::reg("oe_dl_online", "● オンライン — ダウンロード可能",
+              "● Online — download available");
+    I18n::reg("oe_dl_linkdown", "● 回線未接続", "● Link down");
+    I18n::reg("oe_dl_offline", "● ネットワーク不使用 (既定)",
+              "● Network unused (default)");
+    I18n::reg("oe_dl_clip", "海域切出し", "Area subset");
+    I18n::reg("oe_dl_center", "中心 (%1°, %2°) ± ", "Centre (%1°, %2°) ± ");
+    I18n::reg("oe_dl_range", "° 範囲", "° range");
+    I18n::reg("oe_dl_global", "全球 (切出しなし)", "Global (no subset)");
+    I18n::reg("oe_col_src", "取得元", "Source");
+    I18n::reg("oe_col_size", "サイズ", "Size");
+    I18n::reg("oe_col_prog", "進捗", "Progress");
+    I18n::reg("oe_job_argo", "Argo フロート GDAC", "Argo floats GDAC");
+    I18n::reg("oe_job_argo_sz", "~180MB (選択海域)", "~180 MB (selected area)");
+    I18n::reg("oe_job_cmems_sz", "~2.4GB (海域×12ヶ月)",
+              "~2.4 GB (area × 12 months)");
+    I18n::reg("oe_job_hycom_sz", "~1.8GB (海域切出し)", "~1.8 GB (area subset)");
+    I18n::reg("oe_job_seabed", "usSEABED 底質", "usSEABED sediment");
+    I18n::reg("oe_job_woa", "WOA23 差分更新", "WOA23 incremental update");
+    I18n::reg("oe_job_gebco", "GEBCO 2024 差分更新",
+              "GEBCO 2024 incremental update");
+    I18n::reg("oe_job_noupd", "更新なし", "No update");
+    I18n::reg("oe_dl_fetch", "⬇ 取得", "⬇ Fetch");
+    I18n::reg("oe_dl_abort", "■ 中止", "■ Abort");
+    I18n::reg("oe_dl_refetch", "↻ 再取得", "↻ Re-fetch");
+    I18n::reg("oe_dl_done", "✓ 完了", "✓ Done");
+    I18n::reg("oe_dl_needperm", "ネットワークアクセス許可が必要",
+              "Network access permission is required");
+    I18n::reg("oe_dl_autoindex", "取得後に自動でローカル索引を再構築",
+              "Rebuild the local index automatically after fetching");
+    I18n::reg("oe_dl_note",
+              "▸ 自動更確認・定期通信は行いません (オフライン前提のため)。"
+              "GDEM-V は公開制限のため対象外。",
+              "▸ No automatic update checks or periodic traffic (offline by "
+              "design). GDEM-V is excluded because its distribution is "
+              "restricted.");
+    I18n::reg("oe_close", "閉じる", "Close");
+    return true;
+}();
+
+// ── 配色 (mock の badge / var(--acc) 相当) ──────────────────────────────────
+const char *kAcc  = "#0078D4";
+const char *kOk   = "#2E8B57";
+const char *kWarn = "#B8860B";
+const char *kErr  = "#C62828";
+const char *kRed  = "#E53935";
+
+// バッジ風 QLabel (badge / badge ok / badge acc / badge warn / badge err 相当)
+QLabel *oeBadge(const QString &text, QWidget *parent, const char *color = nullptr)
+{
+    auto *l = new QLabel(text, parent);
+    l->setStyleSheet(QStringLiteral(
+        "QLabel { border: 1px solid palette(mid); border-radius: 3px;"
+        " padding: 1px 6px; %1 }")
+        .arg(color ? QStringLiteral("color: %1;")
+                         .arg(QString::fromLatin1(color))
+                   : QString()));
+    return l;
+}
+
+// 読取専用データ表 (q-table 相当) の共通初期化
+void oeSetupTable(QTableWidget *t, const QStringList &headers, int minH)
+{
+    t->setColumnCount(headers.size());
+    t->setHorizontalHeaderLabels(headers);
+    t->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    t->horizontalHeader()->setStretchLastSection(true);
+    t->verticalHeader()->setVisible(false);
+    t->verticalHeader()->setDefaultSectionSize(22);
+    t->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    t->setMinimumHeight(minH);
+}
+
+// ── 局所データセットのモック: 代表海域の WOA 風プロファイル (OE_REGIONS) ────
+const OeRegion kRegions[] = {
+    // name,                     latMin, latMax, lonMin, lonMax, depth, sst, sss, type
+    { "日本海 (大和堆周辺)",        36,  42,  130,   139,    1650, 18, 34.1, "japan_sea" },
+    { "太平洋 (黒潮域)",            30,  36,  135,   145,    4200, 24, 34.7, "kuroshio" },
+    { "オホーツク海",               44,  55,  142,   155,     850,  8, 32.9, "okhotsk" },
+    { "東シナ海 (大陸棚)",          26,  32,  122,   130,     120, 26, 34.3, "shelf" },
+    { "フィリピン海 (深海)",        15,  26,  125,   140,    5600, 28, 34.5, "deep_pacific" },
+    { "津軽海峡",                   41,  42,  139.5, 141.5,   250, 15, 33.8, "strait" },
+    // ── 海外海域 (全球データセット WOA23/GEBCO から) ──
+    { "北大西洋 (メキシコ湾流域)",  35,  45,  -70,   -40,    4800, 20, 36.2, "deep_pacific" },
+    { "地中海 (深海平原)",          33,  40,    5,    25,    2600, 22, 38.4, "med" },
+    { "メキシコ湾",                 22,  29,  -96,   -84,    3200, 27, 36.3, "deep_pacific" },
+    { "北極海 (バレンツ海)",        70,  80,   20,    50,     350,  3, 34.8, "okhotsk" },
+    { "南シナ海",                    5,  20,  108,   120,    4000, 29, 33.8, "deep_pacific" },
+    { "インド洋 (中央海岺域)",     -20,   5,   60,    90,    4500, 28, 34.9, "deep_pacific" },
+};
+const int kRegionCount = int(sizeof(kRegions) / sizeof(kRegions[0]));
+
+// Mackenzie (1981) 音速式 (mock の oeSoundSpeed をそのまま移植)
+double oeSoundSpeed(double T, double S, double z)
+{
+    return 1448.96 + 4.591 * T - 0.05304 * T * T + 2.374e-4 * T * T * T
+         + 1.340 * (S - 35) + 0.0163 * z + 1.675e-7 * z * z
+         - 0.01025 * T * (S - 35) - 7.139e-13 * T * z * z * z;
+}
+
+// 小数丸め (mock の +x.toFixed(n) 相当)
+double oeRound(double v, int digits)
+{
+    const double f = std::pow(10.0, digits);
+    return std::round(v * f) / f;
+}
+} // namespace
+
+// ── OeSspView — mock の SSP SVG を QPainter で再現 ──────────────────────────
+OeSspView::OeSspView(QWidget *parent)
+    : QWidget(parent)
+{
+    setMinimumSize(280, 200);
+    setMaximumWidth(340);
+}
+
+void OeSspView::setProfile(const QVector<OeSspPoint> &ssp, double depth,
+                           int cMinIdx)
+{
+    m_ssp = ssp;
+    m_depth = depth > 0 ? depth : 1;
+    m_cMinIdx = cMinIdx;
+    update();
+}
+
+void OeSspView::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    if (m_ssp.size() < 2) return;
+
+    // viewBox "0 0 300 200" → ウィジェット座標
+    const double sx = width() / 300.0;
+    const double sy = height() / 200.0;
+    auto vx = [sx](double x) { return x * sx; };
+    auto vy = [sy](double y) { return y * sy; };
+
+    double cLo = m_ssp.first().c, cHi = m_ssp.first().c;
+    for (const OeSspPoint &q : m_ssp) {
+        cLo = std::min(cLo, q.c);
+        cHi = std::max(cHi, q.c);
+    }
+    const double span = (cHi - cLo) != 0.0 ? (cHi - cLo) : 1.0;
+    auto X = [&](double c) { return vx(30.0 + (c - cLo) / span * 250.0); };
+    auto Y = [&](double z) { return vy(15.0 + (z / m_depth) * 170.0); };
+
+    QPainterPath path;
+    for (int i = 0; i < m_ssp.size(); ++i) {
+        const QPointF pt(X(m_ssp[i].c), Y(m_ssp[i].z));
+        if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+    }
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(kAcc), 1.8));
+    p.drawPath(path);
+
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+
+    // SOFAR 軸マーカ
+    const OeSspPoint &cm = m_ssp.at(qBound(0, m_cMinIdx, int(m_ssp.size()) - 1));
+    p.setPen(QPen(QColor(kRed), 1.5));
+    p.drawLine(QPointF(X(cm.c), Y(cm.z) - 8 * sy),
+               QPointF(X(cm.c), Y(cm.z) + 8 * sy));
+    p.setPen(QColor(kRed));
+    p.drawText(QPointF(X(cm.c) + 5 * sx, Y(cm.z) + 4 * sy),
+               QStringLiteral("SOFAR軸 %1m / %2m/s")
+                   .arg(cm.z).arg(cm.c, 0, 'f', 1));
+
+    // 目盛りラベル (最小 / 最大音速・最大深度)
+    p.setPen(palette().mid().color());
+    p.drawText(QPointF(vx(32), vy(12)),
+               QStringLiteral("%1 m/s").arg(cLo, 0, 'f', 0));
+    p.drawText(QRectF(vx(170), 0, vx(126), vy(14)),
+               Qt::AlignRight | Qt::AlignVCenter,
+               QStringLiteral("%1 m/s").arg(cHi, 0, 'f', 0));
+    p.drawText(QPointF(vx(4), vy(190)),
+               QStringLiteral("%1m").arg(m_depth, 0, 'f', 0));
+}
+
+// ── OeBathyView — mock の合成海底断面 SVG を QPainter で再現 ────────────────
+OeBathyView::OeBathyView(QWidget *parent)
+    : QWidget(parent)
+{
+    setMinimumSize(300, 120);
+    setMaximumWidth(380);
+}
+
+void OeBathyView::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    if (m_depth <= 0) return;
+
+    // viewBox "0 0 340 120" → ウィジェット座標
+    const double sx = width() / 340.0;
+    const double sy = height() / 120.0;
+    auto vx = [sx](double x) { return x * sx; };
+    auto vy = [sy](double y) { return y * sy; };
+
+    // d = depth·(0.75 + 0.25·sin(5.1x)·sin(2.3x+1) + 0.12x)   (mock と同式)
+    QPolygonF line;
+    for (int i = 0; i < 50; ++i) {
+        const double x = i / 49.0;
+        const double d = m_depth * (0.75
+                       + 0.25 * std::sin(x * 5.1) * std::sin(x * 2.3 + 1.0)
+                       + 0.12 * x);
+        line << QPointF(vx(10 + x * 320),
+                        vy(18 + std::min(d / m_depth, 1.15) * 80));
+    }
+
+    QPolygonF fillPoly;
+    fillPoly << QPointF(vx(10), vy(18));
+    fillPoly << line;
+    fillPoly << QPointF(vx(330), vy(110)) << QPointF(vx(10), vy(110));
+    QColor sed("#5D4037");
+    sed.setAlphaF(0.55);
+    p.setPen(Qt::NoPen);
+    p.setBrush(sed);
+    p.drawPolygon(fillPoly);
+
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor("#8D6E63"), 1.5));
+    p.drawPolyline(line);
+
+    // 海面 (accent 破線)
+    QPen sea(QColor(kAcc), 1);
+    sea.setDashPattern({ 3, 2 });
+    p.setPen(sea);
+    p.drawLine(QPointF(vx(10), vy(18)), QPointF(vx(330), vy(18)));
+
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+    p.setPen(QColor(kAcc));
+    p.drawText(QPointF(vx(12), vy(14)), QStringLiteral("海面"));
+    p.setPen(palette().mid().color());
+    p.drawText(QRectF(vx(150), vy(108), vx(185), vy(12)),
+               Qt::AlignRight | Qt::AlignVCenter,
+               QStringLiteral("J-EGG500 / ETOPO 断面"));
+}
+
+// ── OeDownloadManager — データセット取得マネージャ (オフラインファースト) ───
+OeDownloadManager::OeDownloadManager(double lat, double lon, QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(I18n::tr("oe_dl_title"));
+    setModal(true);
+    resize(660, 720);
+
+    m_jobs = {
+        { I18n::tr("oe_job_argo"),  "ftp.ifremer.fr",
+          I18n::tr("oe_job_argo_sz"),  0,   0 },
+        { I18n::tr("oe_ds7"),       "data.marine.copernicus.eu",
+          I18n::tr("oe_job_cmems_sz"), 0,   0 },
+        { I18n::tr("oe_ds8"),       "ncss.hycom.org",
+          I18n::tr("oe_job_hycom_sz"), 0,   0 },
+        { I18n::tr("oe_job_seabed"), "usgs.gov", "~45MB",          0,   0 },
+        { I18n::tr("oe_job_woa"),   "ncei.noaa.gov",
+          I18n::tr("oe_job_noupd"),    2, 100 },
+        { I18n::tr("oe_job_gebco"), "gebco.net",
+          I18n::tr("oe_job_noupd"),    2, 100 },
+    };
+
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *body = new QWidget(scroll);
+    auto *v = new QVBoxLayout(body);
+    v->setContentsMargins(10, 10, 10, 10);
+    v->setSpacing(8);
+
+    auto *head = new QHBoxLayout();
+    head->addWidget(oeBadge(I18n::tr("oe_dl_standalone"), body, kAcc));
+    head->addWidget(new QLabel(I18n::tr("oe_dl_dest"), body));
+    head->addStretch(1);
+    v->addLayout(head);
+
+    // ── ① オフライン媒体から取込 ────────────────────────────────────────
+    auto *s1 = new SectionBox(I18n::tr("oe_dl_s1"), body);
+    auto *h1 = new QLabel(I18n::tr("oe_dl_s1_hint"), s1);
+    h1->setWordWrap(true);
+    s1->vbox()->addWidget(h1);
+    auto *pkgRow = new QHBoxLayout();
+    auto *pkg = new QLineEdit("E:/packages/woa23_nwpac_2026-06.ofdpkg", s1);
+    auto *pkgBrowse = new QPushButton(I18n::tr("oe_dl_browse"), s1);
+    pkgRow->addWidget(pkg, 1);
+    pkgRow->addWidget(pkgBrowse);
+    s1->form()->addRow(I18n::tr("oe_dl_pkg"), pkgRow);
+    auto *impRow = new QHBoxLayout();
+    impRow->addWidget(new QPushButton(I18n::tr("oe_dl_import"), s1));
+    auto *sha = new QCheckBox(I18n::tr("oe_dl_sha"), s1);
+    sha->setChecked(true);
+    auto *reidx = new QCheckBox(I18n::tr("oe_dl_reindex"), s1);
+    reidx->setChecked(true);
+    impRow->addWidget(sha);
+    impRow->addWidget(reidx);
+    impRow->addStretch(1);
+    s1->vbox()->addLayout(impRow);
+    auto *cli = new QLabel(I18n::tr("oe_dl_cli"), s1);
+    cli->setWordWrap(true);
+    s1->vbox()->addWidget(cli);
+    v->addWidget(s1);
+
+    // ── ② 直接ダウンロード ──────────────────────────────────────────────
+    auto *s2 = new SectionBox(I18n::tr("oe_dl_s2"), body);
+    auto *netRow = new QHBoxLayout();
+    m_netAllow = new QCheckBox(I18n::tr("oe_dl_allow"), s2);
+    m_netBadge = oeBadge(I18n::tr("oe_dl_offline"), s2);
+    netRow->addWidget(m_netAllow);
+    netRow->addWidget(m_netBadge);
+    netRow->addStretch(1);
+    s2->vbox()->addLayout(netRow);
+
+    auto *clipRow = new QHBoxLayout();
+    clipRow->addWidget(new QLabel(
+        I18n::tr("oe_dl_center").arg(lat, 0, 'g', 6).arg(lon, 0, 'g', 6), s2));
+    auto *clipDeg = new QLineEdit("5", s2);
+    clipDeg->setMaximumWidth(60);
+    clipRow->addWidget(clipDeg);
+    clipRow->addWidget(new QLabel(I18n::tr("oe_dl_range"), s2));
+    clipRow->addWidget(new QCheckBox(I18n::tr("oe_dl_global"), s2));
+    clipRow->addStretch(1);
+    s2->form()->addRow(I18n::tr("oe_dl_clip"), clipRow);
+
+    m_jobsTable = new QTableWidget(0, 5, s2);
+    oeSetupTable(m_jobsTable, { I18n::tr("oe_col_dataset"),
+                                I18n::tr("oe_col_src"),
+                                I18n::tr("oe_col_size"),
+                                I18n::tr("oe_col_prog"), "" }, 190);
+    s2->vbox()->addWidget(m_jobsTable);
+
+    auto *autoIdx = new QCheckBox(I18n::tr("oe_dl_autoindex"), s2);
+    autoIdx->setChecked(true);
+    s2->vbox()->addWidget(autoIdx);
+    auto *note = new QLabel(I18n::tr("oe_dl_note"), s2);
+    note->setWordWrap(true);
+    s2->vbox()->addWidget(note);
+    v->addWidget(s2);
+    v->addStretch(1);
+
+    scroll->setWidget(body);
+    outer->addWidget(scroll, 1);
+
+    // ── フッタ ──────────────────────────────────────────────────────────
+    auto *foot = new QWidget(this);
+    auto *fh = new QHBoxLayout(foot);
+    fh->setContentsMargins(10, 8, 10, 8);
+    fh->addStretch(1);
+    auto *closeBtn = new QPushButton(I18n::tr("oe_close"), foot);
+    fh->addWidget(closeBtn);
+    outer->addWidget(foot);
+
+    m_timer = new QTimer(this);
+    m_timer->setInterval(300);          // mock の setInterval(…, 300)
+
+    connect(m_timer, &QTimer::timeout, this, &OeDownloadManager::tick);
+    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
+    connect(pkgBrowse, &QPushButton::clicked, this, [this, pkg] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("oe_dl_pkg"), QString(),
+            "OpenFDTD-X dataset package (*.ofdpkg);;All files (*)");
+        if (!path.isEmpty()) pkg->setText(path);
+    });
+    connect(m_netAllow, &QCheckBox::toggled, this, [this](bool on) {
+        // 回線の実接続確認は QtNetwork 依存になるため、ここでは
+        // 「許可 = 接続あり」として扱う (mock の navigator.onLine 相当)。
+        m_netBadge->setText(I18n::tr(on ? "oe_dl_online" : "oe_dl_offline"));
+        m_netBadge->setStyleSheet(QStringLiteral(
+            "QLabel { border: 1px solid palette(mid); border-radius: 3px;"
+            " padding: 1px 6px; color: %1; }")
+            .arg(QString::fromLatin1(on ? kOk : kWarn)));
+        rebuildJobsTable();
+    });
+    rebuildJobsTable();
+}
+
+void OeDownloadManager::rebuildJobsTable()
+{
+    const bool online = m_netAllow->isChecked();
+    const int n = int(m_jobs.size());
+    m_jobsTable->setRowCount(n);
+    for (int i = 0; i < n; ++i) {
+        const Job &j = m_jobs.at(i);
+        m_jobsTable->setItem(i, 0, new QTableWidgetItem(j.name));
+        m_jobsTable->setItem(i, 1, new QTableWidgetItem(j.src));
+        m_jobsTable->setItem(i, 2, new QTableWidgetItem(j.size));
+
+        if (j.state == 1) {                       // 実行中 → プログレスバー
+            auto *bar = new QProgressBar;
+            bar->setRange(0, 100);
+            bar->setValue(int(j.pct));
+            bar->setTextVisible(false);
+            bar->setFixedHeight(12);
+            m_jobsTable->setCellWidget(i, 3, bar);
+        } else {
+            m_jobsTable->removeCellWidget(i, 3);
+            auto *it = new QTableWidgetItem(
+                j.state == 2 ? I18n::tr("oe_dl_done") : QStringLiteral("—"));
+            if (j.state == 2) it->setForeground(QBrush(QColor(kOk)));
+            m_jobsTable->setItem(i, 3, it);
+        }
+
+        auto *btn = new QPushButton;
+        if (j.state == 0) {
+            btn->setText(I18n::tr("oe_dl_fetch"));
+            btn->setEnabled(online);
+            if (!online) btn->setToolTip(I18n::tr("oe_dl_needperm"));
+            connect(btn, &QPushButton::clicked, this, [this, i] { startJob(i); });
+        } else if (j.state == 1) {
+            btn->setText(I18n::tr("oe_dl_abort"));
+            connect(btn, &QPushButton::clicked, this, [this, i] {
+                m_jobs[i].state = 0;
+                m_jobs[i].pct = 0;
+                // 送信元ボタンを自身のシグナル中に破棄しないよう遅延再構築
+                QTimer::singleShot(0, this, [this] { rebuildJobsTable(); });
+            });
+        } else {
+            btn->setText(I18n::tr("oe_dl_refetch"));
+            btn->setEnabled(online);
+            connect(btn, &QPushButton::clicked, this, [this, i] { startJob(i); });
+        }
+        m_jobsTable->setCellWidget(i, 4, btn);
+    }
+}
+
+void OeDownloadManager::startJob(int i)
+{
+    if (i < 0 || i >= m_jobs.size()) return;
+    m_jobs[i].state = 1;
+    m_jobs[i].pct = 0;
+    if (!m_timer->isActive()) m_timer->start();
+    QTimer::singleShot(0, this, [this] { rebuildJobsTable(); });
+}
+
+// 進捗シミュレーション: pct += 4 + rand·9 (mock と同じ増分)
+void OeDownloadManager::tick()
+{
+    bool running = false;
+    for (Job &j : m_jobs) {
+        if (j.state != 1) continue;
+        j.pct = std::min(100.0,
+                         j.pct + 4.0 + QRandomGenerator::global()->generateDouble() * 9.0);
+        if (j.pct >= 100.0) j.state = 2;
+        else running = true;
+    }
+    if (!running) m_timer->stop();
+    rebuildJobsTable();
+}
+
+// ── OceanEnvironmentTab ─────────────────────────────────────────────────────
+OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
+    : QScrollArea(parent), m_p(project)
+{
+    auto *body = new QWidget(this);
+    auto *v = new QVBoxLayout(body);
+    v->setContentsMargins(8, 8, 8, 8);
+    v->setSpacing(8);
+
+    // ── 位置指定 / Location query ───────────────────────────────────────────
+    auto *sl = new SectionBox(I18n::tr("oe_loc_section"), body);
+    auto *locHint = new QLabel(I18n::tr("oe_loc_hint"), sl);
+    locHint->setWordWrap(true);
+    sl->vbox()->addWidget(locHint);
+
+    auto *llRow = new QHBoxLayout();
+    m_lat = new QLineEdit("34.5", sl);
+    m_lat->setMaximumWidth(90);
+    m_lon = new QLineEdit("139.2", sl);
+    m_lon->setMaximumWidth(90);
+    llRow->addWidget(m_lat);
+    llRow->addWidget(new QLabel(QStringLiteral("°N"), sl));
+    llRow->addSpacing(8);
+    llRow->addWidget(new QLabel(I18n::tr("oe_lon"), sl));
+    llRow->addWidget(m_lon);
+    llRow->addWidget(new QLabel(QStringLiteral("°E"), sl));
+    llRow->addStretch(1);
+    sl->form()->addRow(I18n::tr("oe_lat"), llRow);
+
+    auto *monthRow = new QHBoxLayout();
+    m_month = new QComboBox(sl);
+    for (int i = 1; i <= 12; ++i)
+        m_month->addItem(I18n::tr("oe_month_fmt").arg(i));
+    m_month->setCurrentIndex(6);          // 既定 7月
+    monthRow->addWidget(m_month);
+    monthRow->addWidget(new QCheckBox(I18n::tr("oe_annual"), sl));
+    monthRow->addStretch(1);
+    sl->form()->addRow(I18n::tr("oe_month"), monthRow);
+
+    auto *qRow = new QHBoxLayout();
+    auto *queryBtn = new QPushButton(I18n::tr("oe_query_btn"), sl);
+    m_queryBadge = oeBadge(QString(), sl, kOk);
+    qRow->addWidget(queryBtn);
+    qRow->addWidget(m_queryBadge);
+    qRow->addStretch(1);
+    sl->vbox()->addLayout(qRow);
+    v->addWidget(sl);
+
+    // ── ローカルデータセット / Local datasets ───────────────────────────────
+    auto *sd = new SectionBox(I18n::tr("oe_ds_section"), body);
+    auto *dsHint = new QLabel(I18n::tr("oe_ds_hint"), sd);
+    dsHint->setWordWrap(true);
+    sd->vbox()->addWidget(dsHint);
+
+    auto *dsTable = new QTableWidget(10, 6, sd);
+    oeSetupTable(dsTable, { "", I18n::tr("oe_col_dataset"),
+                            I18n::tr("oe_col_provider"),
+                            I18n::tr("oe_col_content"),
+                            I18n::tr("oe_col_res"),
+                            I18n::tr("oe_col_state") }, 250);
+    struct Ds {
+        bool ck;
+        const char *nameKey, *nameRaw, *provider, *contentKey, *resKey,
+                   *resRaw, *stateKey, *stateArg;
+        const char *color;
+    };
+    static const Ds kDs[10] = {
+        { true,  "oe_ds1", nullptr, "🇯🇵 JODC", "oe_ds1c", "oe_ds1r", nullptr,
+          "oe_staged", "2.1GB", kOk },
+        { true,  nullptr, "J-EGG500", "🇯🇵 JODC", "oe_ds2c", nullptr, "500m",
+          "oe_staged", "1.2GB", kOk },
+        { true,  nullptr, "WOA23 (World Ocean Atlas)", "🇺🇸 NOAA/NCEI",
+          "oe_ds3c", nullptr, "0.25°", "oe_staged", "8.4GB", kOk },
+        { true,  nullptr, "ETOPO 2022", "🇺🇸 NOAA", "oe_ds4c", nullptr, "15秒",
+          "oe_staged", "6.7GB", kOk },
+        { true,  nullptr, "GEBCO 2024", "🇬🇧 IHO/IOC", "oe_ds5c", nullptr,
+          "15秒", "oe_staged", "7.5GB", kOk },
+        { false, "oe_ds6", nullptr, "🌐 Argo/Ifremer", "oe_ds6c", "oe_ds6r",
+          nullptr, "oe_notstaged_argo", nullptr, kWarn },
+        { false, "oe_ds7", nullptr, "🇪🇺 EU", "oe_ds7c", nullptr, "1/12°",
+          "oe_notstaged", nullptr, kWarn },
+        { false, "oe_ds8", nullptr, "🇺🇸 US Navy/NOPP", "oe_ds8c", nullptr,
+          "1/12°", "oe_notstaged", nullptr, kWarn },
+        { false, "oe_ds9", nullptr, "🇺🇸 US Navy", "oe_ds9c", nullptr, "0.25°",
+          "oe_restricted", nullptr, kErr },
+        { false, nullptr, "usSEABED / dbSEABED", "🇺🇸 USGS", "oe_ds10c",
+          "oe_ds1r", nullptr, "oe_notstaged", nullptr, kWarn },
+    };
+    for (int r = 0; r < 10; ++r) {
+        const Ds &d = kDs[r];
+        auto *ck = new QTableWidgetItem;
+        ck->setCheckState(d.ck ? Qt::Checked : Qt::Unchecked);
+        ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        dsTable->setItem(r, 0, ck);
+        dsTable->setItem(r, 1, new QTableWidgetItem(
+            d.nameKey ? I18n::tr(d.nameKey) : QString::fromUtf8(d.nameRaw)));
+        dsTable->setItem(r, 2, new QTableWidgetItem(
+            QString::fromUtf8(d.provider)));
+        dsTable->setItem(r, 3, new QTableWidgetItem(I18n::tr(d.contentKey)));
+        dsTable->setItem(r, 4, new QTableWidgetItem(
+            d.resKey ? I18n::tr(d.resKey) : QString::fromUtf8(d.resRaw)));
+        QString state = I18n::tr(d.stateKey);
+        if (d.stateArg) state = state.arg(QString::fromUtf8(d.stateArg));
+        auto *st = new QTableWidgetItem(state);
+        st->setForeground(QBrush(QColor(d.color)));
+        dsTable->setItem(r, 5, st);
+    }
+    sd->vbox()->addWidget(dsTable);
+
+    auto *dsRow = new QHBoxLayout();
+    auto *folderBtn = new QPushButton(I18n::tr("oe_ds_folder"), sd);
+    auto *fetchBtn = new QPushButton(I18n::tr("oe_ds_fetch"), sd);
+    auto *folderLbl = new QLabel(QStringLiteral("D:/ocean_data/ (25.9GB)"), sd);
+    dsRow->addWidget(folderBtn);
+    dsRow->addWidget(fetchBtn);
+    dsRow->addWidget(folderLbl);
+    dsRow->addStretch(1);
+    sd->vbox()->addLayout(dsRow);
+    auto *prio = new QLabel(I18n::tr("oe_ds_prio"), sd);
+    prio->setWordWrap(true);
+    sd->vbox()->addWidget(prio);
+    v->addWidget(sd);
+
+    // ── 照会結果 / Query result ─────────────────────────────────────────────
+    m_resultSection = new SectionBox(I18n::tr("oe_result"), body);
+    auto *badgeRow = new QHBoxLayout();
+    m_bDepth  = oeBadge(QString(), m_resultSection, kAcc);
+    m_bSst    = oeBadge(QString(), m_resultSection);
+    m_bSss    = oeBadge(QString(), m_resultSection);
+    m_bBottom = oeBadge(QString(), m_resultSection);
+    badgeRow->addWidget(m_bDepth);
+    badgeRow->addWidget(m_bSst);
+    badgeRow->addWidget(m_bSss);
+    badgeRow->addWidget(m_bBottom);
+    badgeRow->addStretch(1);
+    m_resultSection->vbox()->addLayout(badgeRow);
+
+    m_sspTable = new QTableWidget(8, 4, m_resultSection);
+    oeSetupTable(m_sspTable, { I18n::tr("oe_col_z"), I18n::tr("oe_col_t"),
+                               I18n::tr("oe_col_s"), I18n::tr("oe_col_c") },
+                 210);
+    m_resultSection->vbox()->addWidget(m_sspTable);
+    m_layerNote = new QLabel(m_resultSection);
+    m_layerNote->setWordWrap(true);
+    m_resultSection->vbox()->addWidget(m_layerNote);
+    v->addWidget(m_resultSection);
+
+    // ── 音速プロファイル / SSP preview ──────────────────────────────────────
+    auto *sp = new SectionBox(I18n::tr("oe_ssp_section"), body);
+    m_sspView = new OeSspView(sp);
+    sp->vbox()->addWidget(m_sspView);
+    m_sspNote = new QLabel(sp);
+    m_sspNote->setWordWrap(true);
+    sp->vbox()->addWidget(m_sspNote);
+    v->addWidget(sp);
+
+    // ── 地形断面 / Bathymetry along track ───────────────────────────────────
+    auto *sb = new SectionBox(I18n::tr("oe_bty_section"), body);
+    auto *brRow = new QHBoxLayout();
+    m_bearing = new QLineEdit("90", sb);
+    m_bearing->setMaximumWidth(60);
+    m_dist = new QLineEdit("50", sb);
+    m_dist->setMaximumWidth(60);
+    brRow->addWidget(m_bearing);
+    brRow->addWidget(new QLabel(I18n::tr("oe_bearing_unit"), sb));
+    brRow->addSpacing(8);
+    brRow->addWidget(new QLabel(I18n::tr("oe_dist"), sb));
+    brRow->addWidget(m_dist);
+    brRow->addWidget(new QLabel(QStringLiteral("km"), sb));
+    brRow->addStretch(1);
+    sb->form()->addRow(I18n::tr("oe_bearing"), brRow);
+    m_bathy = new OeBathyView(sb);
+    sb->vbox()->addWidget(m_bathy);
+    v->addWidget(sb);
+
+    // ── ソルバへ反映 / Apply to solver ──────────────────────────────────────
+    auto *sa = new SectionBox(I18n::tr("oe_apply_section"), body);
+    auto *chkRow = new QHBoxLayout();
+    m_chkSsp    = new QCheckBox(I18n::tr("oe_chk_ssp"), sa);
+    m_chkBty    = new QCheckBox(I18n::tr("oe_chk_bty"), sa);
+    m_chkBottom = new QCheckBox(I18n::tr("oe_chk_bottom"), sa);
+    m_chkSsp->setChecked(true);
+    m_chkBty->setChecked(true);
+    m_chkBottom->setChecked(true);
+    chkRow->addWidget(m_chkSsp);
+    chkRow->addWidget(m_chkBty);
+    chkRow->addWidget(m_chkBottom);
+    chkRow->addStretch(1);
+    sa->vbox()->addLayout(chkRow);
+    auto *btnRow = new QHBoxLayout();
+    auto *applyBtn = new QPushButton(I18n::tr("oe_apply_btn"), sa);
+    auto *exportBtn = new QPushButton(I18n::tr("oe_export_btn"), sa);
+    btnRow->addWidget(applyBtn);
+    btnRow->addWidget(exportBtn);
+    btnRow->addStretch(1);
+    sa->vbox()->addLayout(btnRow);
+    auto *applyNote = new QLabel(I18n::tr("oe_apply_note"), sa);
+    applyNote->setWordWrap(true);
+    sa->vbox()->addWidget(applyNote);
+    v->addWidget(sa);
+
+    v->addStretch(1);
+    setWidget(body);
+    setWidgetResizable(true);
+    setFrameShape(QFrame::NoFrame);
+
+    connect(queryBtn, &QPushButton::clicked, this,
+            &OceanEnvironmentTab::requery);
+    connect(m_lat, &QLineEdit::editingFinished, this,
+            &OceanEnvironmentTab::requery);
+    connect(m_lon, &QLineEdit::editingFinished, this,
+            &OceanEnvironmentTab::requery);
+    connect(m_month, &QComboBox::currentIndexChanged, this,
+            [this] { requery(); });
+    connect(fetchBtn, &QPushButton::clicked, this,
+            &OceanEnvironmentTab::openDownloadManager);
+    connect(folderBtn, &QPushButton::clicked, this, [this, folderLbl] {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, I18n::tr("oe_ds_folder"));
+        if (!dir.isEmpty()) folderLbl->setText(dir);
+    });
+    connect(applyBtn, &QPushButton::clicked, this,
+            &OceanEnvironmentTab::applyToSolver);
+    connect(project, &Project::loaded, this, &OceanEnvironmentTab::requery);
+
+    requery();
+}
+
+// 緯度・経度 → 海域 (mock の oeFindRegion。該当なしは黒潮域にフォールバック)
+const OeRegion &OceanEnvironmentTab::findRegion(double lat, double lon)
+{
+    for (int i = 0; i < kRegionCount; ++i) {
+        const OeRegion &r = kRegions[i];
+        if (lat >= r.latMin && lat <= r.latMax
+            && lon >= r.lonMin && lon <= r.lonMax)
+            return r;
+    }
+    return kRegions[1];
+}
+
+// 水温プロファイル生成 (型別の典型形状) + Mackenzie 式で音速
+// mock の oeTempProfile / oeSoundSpeed をそのまま移植 (N=40 → 41層)
+void OceanEnvironmentTab::computeSsp()
+{
+    m_ssp.clear();
+    if (!m_region) return;
+    const OeRegion &r = *m_region;
+    const double depth = r.depth;
+    const QString type = QString::fromUtf8(r.type);
+    const int N = 40;
+
+    for (int i = 0; i <= N; ++i) {
+        const double z = depth * std::pow(double(i) / N, 1.6);  // 浅部を密に
+        double T;
+        if (type == QLatin1String("okhotsk")) {
+            // 中冷水 (dichothermal layer)
+            T = z < 30  ? r.sst - z * 0.15
+              : z < 120 ? 3.5 - (z - 30) * 0.025
+              : z < 400 ? 1.2 + (z - 120) * 0.003
+                        : 2.0;
+        } else if (type == QLatin1String("shelf")) {
+            T = z < 40 ? r.sst - z * 0.12
+                       : r.sst - 4.8 - (z - 40) * 0.05;
+            T = std::max(T, 16.0);
+        } else if (type == QLatin1String("med")) {
+            // 地中海: 深層が暖かく (~13°C) 塩分が高い
+            const double mixed = 30;
+            T = z < mixed ? r.sst
+              : z < 500   ? r.sst - (z - mixed) * (r.sst - 13.5) / 470
+                          : 13.5;
+        } else {
+            // 標準: 混合層 → 主躍層 → 深層
+            const double mixed = 45;
+            T = z < mixed ? r.sst
+              : z < 900   ? r.sst - (z - mixed) * (r.sst - 4) / 855
+                          : std::max(1.6, 4 - (z - 900) * 0.0005);
+        }
+        // 塩分: 表層値 → 深層 34.62
+        const double S = z < 100
+            ? r.sss
+            : r.sss + (34.62 - r.sss) * std::min(1.0, (z - 100) / 1500.0);
+
+        OeSspPoint pt;
+        pt.z = int(std::round(z));
+        pt.T = oeRound(T, 2);
+        pt.S = oeRound(S, 2);
+        pt.c = oeRound(oeSoundSpeed(pt.T, pt.S, pt.z), 1);
+        m_ssp.push_back(pt);
+    }
+
+    // 最小音速層 (SOFAR 軸) — 最初に現れる最小値 (mock の reduce と同じ)
+    m_cMinIdx = 0;
+    for (int i = 1; i < m_ssp.size(); ++i)
+        if (m_ssp[i].c < m_ssp[m_cMinIdx].c) m_cMinIdx = i;
+}
+
+void OceanEnvironmentTab::requery()
+{
+    const double lat = m_lat->text().toDouble();
+    const double lon = m_lon->text().toDouble();
+    m_region = &findRegion(lat, lon);
+    computeSsp();
+
+    const OeRegion &r = *m_region;
+    const QString name = QString::fromUtf8(r.name);
+    const bool shelf = (QString::fromUtf8(r.type) == QLatin1String("shelf"));
+    const int month = m_month->currentIndex() + 1;
+
+    m_queryBadge->setText(I18n::tr("oe_query_ok").arg(name));
+    m_resultSection->setTitle(I18n::tr("oe_result") + QStringLiteral(" — ")
+                              + name);
+
+    m_bDepth->setText(I18n::tr("oe_b_depth")
+        .arg(QLocale(QLocale::English).toString(qlonglong(r.depth))));
+    m_bSst->setText(I18n::tr("oe_b_sst")
+        .arg(QString::number(r.sst, 'g', 4)).arg(month));
+    m_bSss->setText(I18n::tr("oe_b_sss").arg(QString::number(r.sss, 'g', 4)));
+    m_bBottom->setText(I18n::tr("oe_b_bottom")
+        .arg(I18n::tr(shelf ? "oe_bottom_shelf" : "oe_bottom_deep")));
+
+    // 代表 8 層 (mock の [0,4,8,14,20,27,34,40])
+    static const int kRows[8] = { 0, 4, 8, 14, 20, 27, 34, 40 };
+    m_sspTable->setRowCount(8);
+    const int cMinZ = m_ssp.isEmpty() ? -1 : m_ssp[m_cMinIdx].z;
+    for (int i = 0; i < 8; ++i) {
+        const int k = kRows[i];
+        const bool valid = (k < m_ssp.size());
+        const OeSspPoint p = valid ? m_ssp[k] : OeSspPoint{ 0, 0, 0, 0 };
+        const QString cells[4] = {
+            valid ? QString::number(p.z) : QString(),
+            valid ? QString::number(p.T, 'f', 1) : QString(),
+            valid ? QString::number(p.S, 'f', 2) : QString(),
+            valid ? QString::number(p.c, 'f', 1) : QString(),
+        };
+        for (int c = 0; c < 4; ++c) {
+            auto *it = new QTableWidgetItem(cells[c]);
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (valid && p.z == cMinZ) {          // "sel" 行 (SOFAR 軸)
+                QFont f = it->font();
+                f.setBold(true);
+                it->setFont(f);
+                it->setForeground(QBrush(QColor(kAcc)));
+            }
+            m_sspTable->setItem(i, c, it);
+        }
+    }
+    m_layerNote->setText(I18n::tr("oe_layer_note").arg(m_ssp.size()));
+
+    m_sspView->setProfile(m_ssp, r.depth, m_cMinIdx);
+    m_bathy->setDepth(r.depth);
+
+    const QString type = QString::fromUtf8(r.type);
+    if (type == QLatin1String("okhotsk"))
+        m_sspNote->setText(I18n::tr("oe_ssp_okhotsk"));
+    else if (shelf)
+        m_sspNote->setText(I18n::tr("oe_ssp_shelf"));
+    else
+        m_sspNote->setText(I18n::tr("oe_ssp_sofar").arg(cMinZ));
+}
+
+// SSP / 底質 / 伝搬距離を UnderwaterOpts に転送 (地形は .bty 書出し側の担当)
+void OceanEnvironmentTab::applyToSolver()
+{
+    if (!m_region || m_ssp.isEmpty()) return;
+    UnderwaterOpts &u = m_p->underwater();
+    const bool shelf =
+        (QString::fromUtf8(m_region->type) == QLatin1String("shelf"));
+
+    if (m_chkSsp->isChecked()) {
+        u.ssp.clear();
+        u.ssp.reserve(m_ssp.size());
+        for (const OeSspPoint &p : m_ssp)
+            u.ssp.push_back({ double(p.z), p.c });
+        u.waterTemp_C  = m_ssp.first().T;
+        u.salinity_psu = m_ssp.first().S;
+        // 深海で SOFAR 軸が中層にあれば音道解析を有効化
+        u.sofar = !shelf && m_cMinIdx > 0 && m_cMinIdx < m_ssp.size() - 1;
+    }
+    if (m_chkBottom->isChecked()) {
+        u.bottomType     = shelf ? QStringLiteral("sand") : QStringLiteral("mud");
+        u.bottomC_mps    = shelf ? 1650.0 : 1520.0;
+        u.bottomRho_kgm3 = shelf ? 1900.0 : 1500.0;
+    }
+    const double km = m_dist->text().toDouble();
+    if (km > 0) u.rangeMax_km = km;
+    m_p->touch();
+}
+
+void OceanEnvironmentTab::openDownloadManager()
+{
+    OeDownloadManager dlg(m_lat->text().toDouble(), m_lon->text().toDouble(),
+                          this);
+    dlg.exec();
+}
