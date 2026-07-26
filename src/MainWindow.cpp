@@ -3,6 +3,7 @@
 #include "DomainBar.h"
 #include "RightDock.h"
 #include "TabNavigator.h"
+#include "CenterPane.h"
 #include "I18n.h"
 
 #include "core/Project.h"
@@ -133,6 +134,7 @@ void MainWindow::buildMenu()
 {
     auto *mb = menuBar();
     auto *mFile = mb->addMenu(I18n::tr("m_file"));
+    auto *mEdit = mb->addMenu(I18n::tr("m_edit"));
     auto *mView = mb->addMenu(I18n::tr("m_view"));
     auto *mRun  = mb->addMenu(I18n::tr("m_run"));
     auto *mPost = mb->addMenu(I18n::tr("m_post"));
@@ -149,6 +151,22 @@ void MainWindow::buildMenu()
                      this, &MainWindow::saveProjectAs);
     mFile->addSeparator();
     mFile->addAction(I18n::tr("m_exit"), this, [] { qApp->quit(); });
+
+    // 編集メニュー — モックのメニューバーに合わせる。表の行編集は各タブが
+    // 持つため、ここはドメイン横断で意味のある操作だけを置く。
+    mEdit->addAction(I18n::tr("me_undo"), QKeySequence::Undo, this, [this] {
+        statusBar()->showMessage(I18n::tr("me_undo_na"), 3000);
+    });
+    mEdit->addAction(I18n::tr("me_redo"), QKeySequence::Redo, this, [this] {
+        statusBar()->showMessage(I18n::tr("me_undo_na"), 3000);
+    });
+    mEdit->addSeparator();
+    mEdit->addAction(I18n::tr("me_select_tab"), QKeySequence("Ctrl+L"), this, [this] {
+        m_nav->setFocus();
+    });
+    mEdit->addAction(I18n::tr("m_uilevel"), this, [this] {
+        setUiLevel(!m_expert);
+    });
 
     // 表示モード (標準 / エキスパート) — モックの uiLevel トグル相当
     auto *levelMenu = mView->addMenu(I18n::tr("m_uilevel"));
@@ -328,19 +346,19 @@ void MainWindow::buildCentral()
     buildLeftNav(leftWrap);
     lh->addWidget(m_nav);
     lh->addWidget(m_pages, 1);
+    // ナビ + ページの実用最小幅 (これを下回るとタブ内の表が読めなくなる)
+    leftWrap->setMinimumWidth(430);
 
-    // center: viewport / plot stack + ev viewer bar
+    // center: ビュータブ + ツールバー + ページスタック (CenterPane) + ev viewer bar
     auto *centerWrap = new QWidget(split);
     auto *cv = new QVBoxLayout(centerWrap);
     cv->setContentsMargins(0, 0, 0, 0);
     cv->setSpacing(2);
 
-    m_centerStack = new QStackedWidget(centerWrap);
-    m_viewport = new Viewport3D(m_project, m_centerStack);
-    m_plotPanel = new PlotPanel(m_project, m_centerStack);
-    m_centerStack->addWidget(m_viewport);
-    m_centerStack->addWidget(m_plotPanel);
-    cv->addWidget(m_centerStack, 1);
+    m_center = new CenterPane(m_project, centerWrap);
+    m_viewport = m_center->viewport();
+    m_plotPanel = m_center->plotPanel();
+    cv->addWidget(m_center, 1);
 
     m_evViewer = new EvViewer(centerWrap);
     cv->addWidget(m_evViewer);
@@ -532,6 +550,7 @@ void MainWindow::buildStatusBar()
     m_sbCells = new QLabel;
     m_sbMem = new QLabel;
     m_sbDt = new QLabel;
+    m_sbCfl = new QLabel;
     m_sbStep = new QLabel;
     m_sbProgress = new QProgressBar;
     m_sbProgress->setRange(0, 100);
@@ -542,6 +561,7 @@ void MainWindow::buildStatusBar()
     sb->addPermanentWidget(m_sbCells);
     sb->addPermanentWidget(m_sbMem);
     sb->addPermanentWidget(m_sbDt);
+    sb->addPermanentWidget(m_sbCfl);
     sb->addPermanentWidget(m_sbStep);
     sb->addPermanentWidget(m_sbProgress);
     sb->addPermanentWidget(new QLabel("Qt " QT_VERSION_STR));
@@ -561,8 +581,7 @@ void MainWindow::onDomainChanged(Domain d)
     updateEngineItems(d);
 
     m_domainBar->setActiveDomain(d);
-    m_viewport->setDomain(d);
-    m_plotPanel->setDomain(d);
+    m_center->setDomain(d);
 
     setStyleSheet(QStringLiteral(
         "QToolButton#primaryAction { background: %1; color: white;"
@@ -584,10 +603,19 @@ void MainWindow::onProjectChanged()
     m_sbCells->setText(QStringLiteral("cells: %L1").arg(m_project->totalCells()));
     m_sbMem->setText(QStringLiteral("mem: %1 MB")
         .arg(m_project->estimatedMemoryMB(), 0, 'f', 1));
-    const double dt = m_project->courantDt();
+    const double dtLimit = m_project->courantDt();
+    // 実際に使う Δt: 0 なら自動 (= CFL 限界)
+    const double dt = (m_project->general().dt > 0) ? m_project->general().dt
+                                                    : dtLimit;
     m_sbDt->setText(dt > 0
-        ? QStringLiteral("Δt(CFL): %1 s").arg(QString::number(dt, 'g', 3))
+        ? QStringLiteral("%1: %2 s").arg(I18n::tr("sb_dt"),
+                                         QString::number(dt, 'g', 3))
         : QStringLiteral("Δt: -"));
+    // クーラン数 = Δt / Δt_CFL (1.0 を超えると発散)
+    m_sbCfl->setText((dt > 0 && dtLimit > 0)
+        ? QStringLiteral("%1: %2").arg(I18n::tr("sb_cfl"),
+              QString::number(dt / dtLimit, 'f', 2))
+        : QStringLiteral("%1: -").arg(I18n::tr("sb_cfl")));
 }
 
 // ── File actions ────────────────────────────────────────────────────────────
@@ -772,12 +800,12 @@ void MainWindow::selectLeftTab(const QString &titlePart)
 
 void MainWindow::show2DPlot()
 {
-    m_centerStack->setCurrentWidget(m_plotPanel);
+    m_center->showPlot();
 }
 
 void MainWindow::show3DPlot()
 {
-    m_centerStack->setCurrentWidget(m_viewport);
+    m_center->showViewport();
 }
 
 void MainWindow::exportHdf5()

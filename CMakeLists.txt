@@ -79,6 +79,8 @@ set(GUI_SOURCES
     src/RightDock.h
     src/TabNavigator.cpp
     src/TabNavigator.h
+    src/CenterPane.cpp
+    src/CenterPane.h
     src/I18n.cpp
     src/I18n.h
 
@@ -86,6 +88,10 @@ set(GUI_SOURCES
     src/widgets/SectionBox.h
     src/widgets/MiniPlot.cpp
     src/widgets/MiniPlot.h
+    src/widgets/FieldHeatmap.cpp
+    src/widgets/FieldHeatmap.h
+    src/widgets/MeshPreview.cpp
+    src/widgets/MeshPreview.h
     src/widgets/UnitNav.cpp
     src/widgets/UnitNav.h
     src/widgets/Viewport3D.cpp

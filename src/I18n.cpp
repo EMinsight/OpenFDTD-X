@@ -871,4 +871,15 @@ void I18n::loadTables() {
         "New — Application Gallery");
     add("run_console",   "計算コンソール", "Run console");
     add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
+
+    // 編集メニュー
+    add("me_undo", "元に戻す", "Undo");
+    add("me_redo", "やり直す", "Redo");
+    add("me_undo_na", "このビルドでは元に戻す操作に未対応です。",
+        "Undo is not supported in this build.");
+    add("me_select_tab", "タブ一覧へフォーカス", "Focus tab list");
+
+    // ステータスバー
+    add("sb_dt", "Δt", "Δt");
+    add("sb_cfl", "CFL", "CFL");
 }

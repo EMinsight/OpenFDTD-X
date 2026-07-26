@@ -28,6 +28,34 @@ void Viewport3D::fitView()
     update();
 }
 
+void Viewport3D::setAzimuth(double deg)
+{
+    if (qFuzzyCompare(m_azimuthDeg, deg)) return;
+    m_azimuthDeg = deg;
+    update();
+}
+
+void Viewport3D::setElevation(double deg)
+{
+    const double v = qBound(-89.0, deg, 89.0);
+    if (qFuzzyCompare(m_elevationDeg, v)) return;
+    m_elevationDeg = v;
+    update();
+}
+
+// モックの [XY][YZ][ZX] 軸タグ相当: 正射影で各主平面を正面に向ける
+void Viewport3D::setViewPlane(int plane)
+{
+    switch (plane) {
+    case 0: m_azimuthDeg =   0; m_elevationDeg =  89; break;  // XY (上から)
+    case 1: m_azimuthDeg =  90; m_elevationDeg =   0; break;  // YZ (X軸方向)
+    case 2: m_azimuthDeg =   0; m_elevationDeg =   0; break;  // ZX (Y軸方向)
+    default: return;
+    }
+    update();
+    emit viewChanged(m_azimuthDeg, m_elevationDeg);
+}
+
 QPointF Viewport3D::projectPoint(double x, double y, double z) const
 {
     // center + rotate (azimuth around Z, then elevation around screen-X)
@@ -97,8 +125,22 @@ void Viewport3D::paintEvent(QPaintEvent *)
     };
     drawBox(lo, hi, QPen(QColor(255,255,255,70), 1, Qt::DashLine));
 
+    // PML 境界の可視化 (境界チェックボックス) — 解析領域を内側へ縮めた箱
+    if (m_showBoundary && m_project->general().abc == 1) {
+        const int L = qMax(1, m_project->general().pmlL);
+        double plo[3], phi[3];
+        for (int a = 0; a < 3; ++a) {
+            const MeshAxis &ax = m_project->mesh(a);
+            const double d = (ax.minSpacing() < 1e307) ? ax.minSpacing() * L : 0.0;
+            plo[a] = lo[a] + d;
+            phi[a] = hi[a] - d;
+        }
+        if (plo[0] < phi[0] && plo[1] < phi[1] && plo[2] < phi[2])
+            drawBox(plo, phi, QPen(QColor(245, 158, 11, 150), 1, Qt::DotLine));
+    }
+
     // mesh grid ticks on the bottom face (z = lo[2])
-    {
+    if (m_showGrid) {
         p.setPen(QPen(QColor(255,255,255,28), 1));
         const MeshAxis &mx = m_project->mesh(0);
         const MeshAxis &my = m_project->mesh(1);
@@ -229,6 +271,7 @@ void Viewport3D::mouseMoveEvent(QMouseEvent *e)
         m_azimuthDeg  += d.x() * 0.5;
         m_elevationDeg = qBound(-89.0, m_elevationDeg + d.y() * 0.5, 89.0);
         update();
+        emit viewChanged(m_azimuthDeg, m_elevationDeg);   // ツールバー同期
     } else if (m_dragButton == Qt::MiddleButton) {
         m_panPx += d;
         update();
