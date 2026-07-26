@@ -54,6 +54,7 @@ void Project::clear()
         absRow(AbsorptionRow::Air,      "空気吸収", 0,
                { 0, 0, 0, 0, 0, 0 }, 38),
     };
+    m_operaAcoustic = OperaAcousticSettings{};
     m_underwater = UnderwaterOpts{};
     m_underwater.ssp = { {0, 1525}, {100, 1510}, {500, 1490}, {1000, 1485},
                          {1500, 1488}, {3000, 1510}, {5000, 1540} };

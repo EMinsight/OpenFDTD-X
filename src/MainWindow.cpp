@@ -6,6 +6,7 @@
 #include "I18n.h"
 
 #include "core/Project.h"
+#include "io/ActivationCurve.h"
 #include "io/H5Writer.h"
 #include "io/Tidy3dExporter.h"
 #include "io/Touchstone.h"
@@ -28,6 +29,10 @@
 #include "tabs/Tidy3dTab.h"
 #include "tabs/GlassCatalogTab.h"
 #include "tabs/RoomAcousticsTab.h"
+// オペラ音響解析 (PR #1)
+#include "tabs/RirAnalysisTab.h"
+#include "tabs/VocalAnalysisTab.h"
+#include "tabs/AuralizationTab.h"
 // Workbench 拡張タブ (design mock 全カテゴリ)
 #include "tabs/SolverRegionTab.h"
 #include "tabs/MonitorsTab.h"
@@ -377,6 +382,9 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabAcSource     = new AcousticSourceTab(P);
     m_tabOceanEnv     = new OceanEnvironmentTab(P);
     m_tabRoomAc       = new RoomAcousticsTab(P);
+    m_tabRirAnalysis  = new RirAnalysisTab(P);
+    m_tabVocal        = new VocalAnalysisTab(P);
+    m_tabAuralization = new AuralizationTab(P);
     m_tabSoundproof   = new SoundproofTab(P);
     m_tabOutdoor      = new OutdoorNoiseTab(P);
     m_tabCabin        = new CabinAcousticsTab(P);
@@ -483,6 +491,13 @@ void MainWindow::buildLeftNav(QWidget *parent)
           { D::Optical }, true },
         { "acoustic",     "cat_dom_acoustic",   "nav_acoustic",   m_tabAcoustic,
           { D::Acoustic }, true },
+        // オペラ音響解析 (PR #1) — 実測RIR / 歌声 / 可聴化
+        { "riranalysis",  "cat_dom_acoustic", "t_riranalysis",  m_tabRirAnalysis,
+          { D::Acoustic }, true },
+        { "vocalanalysis","cat_dom_acoustic", "t_vocalanalysis", m_tabVocal,
+          { D::Acoustic }, true },
+        { "auralization", "cat_dom_acoustic", "t_auralization", m_tabAuralization,
+          { D::Acoustic }, true },
         { "underwater",   "cat_dom_underwater", "nav_underwater", m_tabUnderwater,
           { D::Underwater }, true },
     };
@@ -535,6 +550,8 @@ void MainWindow::buildStatusBar()
 // ── Domain switching ────────────────────────────────────────────────────────
 void MainWindow::onDomainChanged(Domain d)
 {
+    // ドメイン/表示レベルに応じてナビ項目を組み直す
+    // (旧実装の removeTab/addTab は TabNavigator::rebuild が担う)
     m_nav->rebuild(d, m_expert);
 
     // cloud submission is optical-only
@@ -718,6 +735,7 @@ void MainWindow::runSimulation()
         return;
     }
     m_plotPanel->clearConvergence();
+    m_lastAeff_m2 = 0.0;
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
@@ -833,10 +851,18 @@ void MainWindow::onRunnerLog(const QString &line)
         m_plotPanel->addConvergencePoint(m.captured(1).toInt(),
                                          m.captured(2).toDouble(),
                                          m.captured(3).toDouble());
+    // ONN パワースイープ: obpm が出す実効断面積を控えておく (解析解用)
+    const double aeff = ActivationCurve::aeffFromLogLine(line);
+    if (aeff > 0) m_lastAeff_m2 = aeff;
 }
 
 void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
+    // obpm 実行後: 作業ディレクトリに activation_curve.csv があれば
+    // 光タブに ONN 活性化カーブを表示する (無ければ何もしない)。
+    if (ok)
+        m_tabOptical->showActivationResult(m_runner->workingDir(),
+                                           m_lastAeff_m2);
 }

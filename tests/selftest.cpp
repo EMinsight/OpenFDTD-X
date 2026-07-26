@@ -12,12 +12,16 @@
 #include <cstdio>
 
 #include "core/Project.h"
+#include "io/ActivationCurve.h"
 #include "io/OfdIO.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
 #include "core/RoomAcoustics.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -181,6 +185,17 @@ static void compareProjects(const Project &a, const Project &b)
     check(pa.near2d.size() == pb.near2d.size(), "plotnear2d count");
     check(pa.far1dDb == pb.far1dDb, "far1ddb");
     check(a.extraLines() == b.extraLines(), "extra lines round-trip");
+
+    // ONN 光活性化 (tpa / powersweep) — .ofd キーの往復
+    const OpticalOpts &oa = a.optical(), &ob = b.optical();
+    check(oa.tpaEnabled == ob.tpaEnabled &&
+          oa.tpaMaterialId == ob.tpaMaterialId &&
+          nearlyEq(oa.tpaBeta_cmGW, ob.tpaBeta_cmGW), "tpa round-trip");
+    check(oa.powerSweepEnabled == ob.powerSweepEnabled &&
+          nearlyEq(oa.psPmin_W, ob.psPmin_W) &&
+          nearlyEq(oa.psPmax_W, ob.psPmax_W) &&
+          oa.psPoints == ob.psPoints && oa.psLog == ob.psLog,
+          "powersweep round-trip");
 }
 
 
@@ -323,6 +338,298 @@ static void testRoomAcoustics()
     }
 }
 
+// 実測 RIR 分析設定 (OperaAcousticSettings) の既定値と .ofdx 永続化。
+static void testOperaAcousticSettings()
+{
+    g_file = "opera";
+
+    // 1) 既定値 (指示仕様)
+    {
+        const OperaAcousticSettings s;
+        check(s.enabled == false, "opera default enabled=false");
+        check(s.rirPath.isEmpty() && s.voicePath.isEmpty(),
+              "opera default paths empty");
+        check(s.voiceType == 6, "opera default voiceType=Unknown");
+        check(s.calibrationState == 2, "opera default calibration=Uncalibrated");
+        check(s.directSoundMethod == 1, "opera default directSound=Envelope");
+        check(s.bandMode == 0, "opera default bandMode=Compat6");
+        check(s.noiseCorrection == true, "opera default noiseCorrection=true");
+        check(s.minimumDynamicRangeDb == 35.0, "opera default minDR=35dB");
+        check(s.channelMode == 2, "opera default channelMode=mono");
+        // 可聴化 (フェーズ4) / 歌声分析 (フェーズ3) の既定値
+        check(s.auralizationDryFile.isEmpty() &&
+              s.auralizationOutputFile.isEmpty(),
+              "opera default auralization paths empty");
+        check(s.auralizationGainMode == 0, "opera default gainMode=as-is");
+        check(s.vocalF0MinHz == 0.0 && s.vocalF0MaxHz == 0.0,
+              "opera default vocal F0 override=auto(0)");
+    }
+
+    // 2) .ofdx 往復 (設定変更 → save → load → 一致)
+    {
+        Project p1;
+        OperaAcousticSettings &s = p1.operaAcoustic();
+        s.enabled = true;
+        s.rirPath = "/tmp/hall_stage.wav";
+        s.voicePath = "/tmp/aria.wav";
+        s.voiceType = 0;
+        s.calibrationState = 1;
+        s.directSoundMethod = 2;
+        s.bandMode = 3;
+        s.noiseCorrection = false;
+        s.minimumDynamicRangeDb = 42.5;
+        s.channelMode = 0;
+        s.auralizationDryFile = "/tmp/aria_dry.wav";
+        s.auralizationOutputFile = "/tmp/aria_wet.wav";
+        s.auralizationGainMode = 1;
+        s.vocalF0MinHz = 200.0;
+        s.vocalF0MaxHz = 1200.0;
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_opera_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "opera ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "opera ofdx load");
+            const OperaAcousticSettings &q = p2.operaAcoustic();
+            check(q.enabled == true, "opera rt enabled");
+            check(q.rirPath == "/tmp/hall_stage.wav", "opera rt rirPath");
+            check(q.voicePath == "/tmp/aria.wav", "opera rt voicePath");
+            check(q.voiceType == 0, "opera rt voiceType");
+            check(q.calibrationState == 1, "opera rt calibrationState");
+            check(q.directSoundMethod == 2, "opera rt directSoundMethod");
+            check(q.bandMode == 3, "opera rt bandMode");
+            check(q.noiseCorrection == false, "opera rt noiseCorrection");
+            check(nearlyEq(q.minimumDynamicRangeDb, 42.5), "opera rt minDR");
+            check(q.channelMode == 0, "opera rt channelMode");
+            check(q.auralizationDryFile == "/tmp/aria_dry.wav",
+                  "opera rt auralization dryFile");
+            check(q.auralizationOutputFile == "/tmp/aria_wet.wav",
+                  "opera rt auralization outputFile");
+            check(q.auralizationGainMode == 1, "opera rt auralization gainMode");
+            check(nearlyEq(q.vocalF0MinHz, 200.0), "opera rt vocal f0Min");
+            check(nearlyEq(q.vocalF0MaxHz, 1200.0), "opera rt vocal f0Max");
+
+            // 4) 保存 JSON に既存 acoustic キーが残ること
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "opera ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject ac = root.value("acoustic").toObject();
+            check(ac.contains("rt60") && ac.contains("c80") &&
+                  ac.contains("d50") && ac.contains("sti") &&
+                  ac.contains("edt"), "opera json keeps metric flags");
+            check(ac.contains("sample_rate") && ac.contains("src_directivity") &&
+                  ac.contains("mic_count"), "opera json keeps fdtd keys");
+            check(ac.contains("room_l") && ac.contains("volume") &&
+                  ac.contains("absorption") && ac.contains("noise_levels"),
+                  "opera json keeps hall keys");
+            const QJsonObject oa = ac.value("opera_analysis").toObject();
+            check(oa.value("rir_file").toString() == "/tmp/hall_stage.wav",
+                  "opera json rir_file key");
+            check(oa.value("analysis_settings").toObject()
+                      .value("minimum_dynamic_range_db").toDouble() == 42.5,
+                  "opera json nested analysis_settings");
+            // docs §2.1 / 指示書: auralization と vocal のネスト
+            const QJsonObject au = oa.value("auralization").toObject();
+            check(au.value("dry_file").toString() == "/tmp/aria_dry.wav",
+                  "opera json auralization dry_file");
+            check(au.value("output_file").toString() == "/tmp/aria_wet.wav",
+                  "opera json auralization output_file");
+            check(au.value("gain_mode").toInt() == 1,
+                  "opera json auralization gain_mode");
+            const QJsonObject vo = oa.value("vocal").toObject();
+            check(vo.value("f0_min_hz").toDouble() == 200.0 &&
+                  vo.value("f0_max_hz").toDouble() == 1200.0,
+                  "opera json vocal f0 range");
+        }
+    }
+
+    // 3) 旧 .ofdx (opera_analysis 無し): 既定値のまま + 既存キーは読める
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"rt60\": false, \"sample_rate\": 96000,"
+                "                  \"room_l\": 25.5, \"occupancy\": 1 } }";
+            old.write(legacy);
+            old.flush();
+            Project p3;
+            // ロード前に非既定値を入れ、旧ファイルで上書きされないことを確認
+            p3.operaAcoustic().bandMode = 2;
+            check(OfdxIO::load(old.fileName(), p3), "legacy ofdx load");
+            const OperaAcousticSettings &q = p3.operaAcoustic();
+            check(q.bandMode == 2 && q.calibrationState == 2 &&
+                  q.minimumDynamicRangeDb == 35.0 && !q.enabled,
+                  "legacy ofdx leaves opera settings untouched");
+            check(q.auralizationDryFile.isEmpty() &&
+                  q.auralizationOutputFile.isEmpty() &&
+                  q.auralizationGainMode == 0,
+                  "legacy ofdx leaves auralization defaults");
+            check(q.vocalF0MinHz == 0.0 && q.vocalF0MaxHz == 0.0,
+                  "legacy ofdx leaves vocal defaults");
+            const AcousticOpts &a = p3.acoustic();
+            check(a.rt60 == false && a.sampleRate == 96000,
+                  "legacy ofdx acoustic keys still load");
+            check(nearlyEq(a.roomL, 25.5) && a.occupancy == 1,
+                  "legacy ofdx hall keys still load");
+        }
+    }
+}
+
+// ONN 光活性化関数 (TPA / powersweep) — .ofd/.ofdx 永続化 + CSV パーサ。
+// 出典: Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024).
+static void testOnnActivation()
+{
+    g_file = "onn";
+
+    // 1) 既定値 (無効): .ofd 出力に tpa/powersweep が現れず、
+    //    有効化→無効化で従来出力とバイト一致 (後方互換)
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        check(!base.contains("tpa"), "onn: no tpa line by default");
+        check(!base.contains("powersweep"), "onn: no powersweep by default");
+
+        OpticalOpts &o = p.optical();
+        o.tpaEnabled = true;
+        o.powerSweepEnabled = true;
+        const QString on = OfdIO::serialize(p);
+        check(on.contains("\ntpa = 2 424\n"), "onn: tpa line emitted");
+        check(on.contains("\npowersweep = 0.001 10 41 log\n"),
+              "onn: powersweep line emitted");
+
+        o.tpaEnabled = false;
+        o.powerSweepEnabled = false;
+        check(OfdIO::serialize(p) == base,
+              "onn: disabled output byte-identical to legacy");
+    }
+
+    // 2) .ofd 往復: tpa/powersweep 行 → 構造 → 再シリアライズ
+    {
+        const QString text =
+            "OpenFDTD 4 2\n"
+            "tpa = 3 250.5\n"
+            "powersweep = 0.01 5 21 lin\n"
+            "end\n";
+        Project p;
+        QString err;
+        check(OfdIO::parse(text, p, &err), "onn: parse tpa/powersweep");
+        const OpticalOpts &o = p.optical();
+        check(o.tpaEnabled && o.tpaMaterialId == 3 &&
+              nearlyEq(o.tpaBeta_cmGW, 250.5), "onn: tpa parsed");
+        check(o.powerSweepEnabled && nearlyEq(o.psPmin_W, 0.01) &&
+              nearlyEq(o.psPmax_W, 5.0) && o.psPoints == 21 && !o.psLog,
+              "onn: powersweep parsed (lin)");
+        check(p.extraLines().isEmpty(),
+              "onn: tpa keys not duplicated into extraLines");
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\ntpa = 3 250.5\n") &&
+              out.contains("\npowersweep = 0.01 5 21 lin\n"),
+              "onn: reserialize keeps tpa/powersweep");
+    }
+
+    // 3) .ofdx 往復 + 既存 optical キーが保存されること
+    {
+        Project p1;
+        OpticalOpts &o = p1.optical();
+        o.solver = OpticalSolver::BPM;
+        o.tpaEnabled = true;
+        o.tpaMaterialId = 4;
+        o.tpaBeta_cmGW = 500.0;
+        o.powerSweepEnabled = true;
+        o.psPmin_W = 0.002;
+        o.psPmax_W = 20.0;
+        o.psPoints = 33;
+        o.psLog = false;
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_onn_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "onn ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "onn ofdx load");
+            const OpticalOpts &q = p2.optical();
+            check(q.tpaEnabled && q.tpaMaterialId == 4 &&
+                  nearlyEq(q.tpaBeta_cmGW, 500.0), "onn ofdx tpa round-trip");
+            check(q.powerSweepEnabled && nearlyEq(q.psPmin_W, 0.002) &&
+                  nearlyEq(q.psPmax_W, 20.0) && q.psPoints == 33 && !q.psLog,
+                  "onn ofdx powersweep round-trip");
+
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "onn ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject opt = root.value("optical").toObject();
+            check(opt.contains("solver") && opt.contains("mode") &&
+                  opt.contains("wavelength") && opt.contains("rcwa") &&
+                  opt.contains("bpm") && opt.contains("fmm") &&
+                  opt.contains("bpf") && opt.contains("ring"),
+                  "onn json keeps existing optical keys");
+            check(opt.value("tpa").toObject().value("beta_cm_gw")
+                      .toDouble() == 500.0, "onn json tpa key");
+            check(opt.value("powersweep").toObject().value("scale")
+                      .toString() == "lin", "onn json powersweep key");
+        }
+    }
+
+    // 4) 旧 .ofdx (tpa/powersweep 無し): 既定値のまま (旧ファイル互換)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_onn_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 2 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "onn legacy ofdx load");
+            const OpticalOpts &q = p.optical();
+            check(!q.tpaEnabled && q.tpaMaterialId == 2 &&
+                  q.tpaBeta_cmGW == 424.0,
+                  "onn legacy ofdx leaves tpa defaults");
+            check(!q.powerSweepEnabled && q.psPmin_W == 0.001 &&
+                  q.psPmax_W == 10.0 && q.psPoints == 41 && q.psLog,
+                  "onn legacy ofdx leaves powersweep defaults");
+        }
+    }
+
+    // 5) activation_curve.csv パーサ
+    {
+        const QString csv =
+            "P_in_W,P_out_W,transmission\n"
+            "0.001,0.000999,0.999\n"
+            "\n"
+            "# comment line\n"
+            "10,3.2,0.32\n";
+        QVector<ActivationPoint> pts;
+        QString err;
+        check(ActivationCurve::parse(csv, pts, &err), "onn csv parse ok");
+        check(pts.size() == 2, "onn csv row count");
+        check(nearlyEq(pts[0].pin, 0.001) && nearlyEq(pts[0].pout, 0.000999) &&
+              nearlyEq(pts[0].T, 0.999), "onn csv first row");
+        check(nearlyEq(pts[1].pin, 10.0) && nearlyEq(pts[1].T, 0.32),
+              "onn csv last row");
+        check(!ActivationCurve::parse("P_in_W,P_out_W,transmission\n",
+                                      pts, &err),
+              "onn csv header-only fails");
+        check(!ActivationCurve::load(QDir::tempPath() +
+                  "/ofdx_no_such_dir/activation_curve.csv", pts),
+              "onn csv missing file fails");
+
+        // カーネルログからの A_eff 抽出
+        check(nearlyEq(ActivationCurve::aeffFromLogLine(
+                  "ONN: A_eff = 2.5e-13 [m^2]"), 2.5e-13),
+              "onn aeff extracted from log");
+        check(ActivationCurve::aeffFromLogLine(
+                  "ONN: P_in=1 -> P_out=0.5 (T=0.5)") == 0.0,
+              "onn non-aeff log line ignored");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -379,6 +686,8 @@ int main(int argc, char *argv[])
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();
+    testOperaAcousticSettings();
+    testOnnActivation();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

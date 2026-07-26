@@ -5,7 +5,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "claude/**" ]
   pull_request:
     branches: [ main ]
 
@@ -30,6 +30,19 @@ jobs:
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
         run: ./build/ofdx_selftest
 
+      # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
+      # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の
+      # 検証は acoustics.reverberation (test_reverberation) が担う。
+      # acoustics.c_api (tests/acoustics/test_c_api.c) は CMake により
+      # C コンパイラで -std=c99 としてビルドされるため、この ctest 実行が
+      # 「C API が純 C としてコンパイル・リンクできる」ことの検証を兼ねる。
+      # 実外部ソルバーは不要: 人工 RIR はその場で生成し、フェーズ5 の
+      # acoustics.runner はビルド済みモックソルバー
+      # (ofdx_mock_acoustic_solver — 出力契約の参照実装) を起動して
+      # AcousticRunner → 契約検証 → RirAnalyzer の統合経路を検証する。
+      - name: Acoustics tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
       - name: GUI smoke (offscreen screenshot)
         run: |
           export QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp/xdg
@@ -52,11 +65,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Qt 6.5.x は qvarlengtharray.h が stdext::checked_array_iterator を
+      # 参照しており、VS2022 17.13 (MSVC 14.43) でこれが削除されたため
+      # windows-latest の現行ツールセットではコンパイル不能
+      # ("stdext is not a class or namespace name")。stdext 不使用の
+      # Qt 6.8 LTS (msvc2022) へ更新して根本解決する。
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.5.3"
-          arch: win64_msvc2019_64
+          version: "6.8.*"
+          arch: win64_msvc2022_64
           cache: true
 
       - name: Configure
@@ -68,3 +86,11 @@ jobs:
       - name: Self test
         run: build/Release/ofdx_selftest.exe
         shell: bash
+
+      # Linux と同様: CTest 登録済みの acoustics.* を実行する
+      # (acoustics.c_api は C99 としてコンパイルされた純 C テスト)。
+      # TMPDIR は test_wav の一時 wav 出力先 (既定 /tmp は Windows に無い)。
+      - name: Acoustics tests (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure
+        env:
+          TMPDIR: ${{ runner.temp }}

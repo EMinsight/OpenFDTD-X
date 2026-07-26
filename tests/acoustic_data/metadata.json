@@ -1,0 +1,22 @@
+{
+  "_comment": "人工 RIR の標準生成条件。wav ファイルはリポジトリにコミットしない設計とし、各テスト (tests/acoustics/) が実行時に同一モデルで都度生成する。tests/generators/generate_synthetic_rir を以下のパラメータで実行すれば同じ wav を再現できる。",
+  "generator": "tests/generators/generate_synthetic_rir.cpp",
+  "model": "h(t) = delta(t-t0) + sum_i a_i*delta(t-t0-tau_i) + n(t)*exp(-6.91*(t-t0)/RT) + noiseFloor*w(t)",
+  "rng": "LCG (state = state*1664525 + 1013904223), uniform [-1,1]",
+  "sampleRateHz": 48000,
+  "directDelayMs": 10.0,
+  "directAmplitude": 1.0,
+  "decayNoiseRms": 0.3,
+  "seed": 20260716,
+  "cases": [
+    { "name": "rt050", "rt60Seconds": 0.5, "durationSeconds": 1.05, "noiseFloorDb": null },
+    { "name": "rt100", "rt60Seconds": 1.0, "durationSeconds": 1.80, "noiseFloorDb": null },
+    { "name": "rt150", "rt60Seconds": 1.5, "durationSeconds": 2.55, "noiseFloorDb": null },
+    { "name": "rt200", "rt60Seconds": 2.0, "durationSeconds": 3.30, "noiseFloorDb": null },
+    { "name": "rt300", "rt60Seconds": 3.0, "durationSeconds": 4.80, "noiseFloorDb": null },
+    { "name": "rt100_noise60", "rt60Seconds": 1.0, "durationSeconds": 1.80, "noiseFloorDb": -60.0 },
+    { "name": "rt200_noise60", "rt60Seconds": 2.0, "durationSeconds": 3.30, "noiseFloorDb": -60.0 },
+    { "name": "rt200_noise35_lowrange", "rt60Seconds": 2.0, "durationSeconds": 3.30, "noiseFloorDb": -35.0,
+      "_note": "動的範囲不足ケース: T20/T30 は valid=false になることをテストで確認する" }
+  ]
+}

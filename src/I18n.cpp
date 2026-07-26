@@ -281,6 +281,65 @@ void I18n::loadTables() {
         "RCWA は OpenRCWA (orcwa)、BPM は OpenBPM (obpm) のカーネルを実行します。",
         "RCWA runs the OpenRCWA kernel (orcwa); BPM runs OpenBPM (obpm).");
 
+    // 非線形 (TPA) / ONN 光活性化関数 (Opt. Lett. 49, 5811 (2024))
+    add("opt_tpa_section", "非線形 (TPA) / ONN 活性化",
+        "Nonlinear (TPA) / ONN activation");
+    add("opt_tpa_enable", "TPA (二光子吸収) を有効化",
+        "Enable TPA (two-photon absorption)");
+    add("opt_tpa_tip",
+        "メタマテリアル装荷 Si 導波路の二光子吸収による飽和型 (ReLU 相当) "
+        "光活性化関数。出典: Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024).",
+        "Saturating (ReLU-like) optical activation function via two-photon "
+        "absorption in a metamaterial-loaded Si waveguide. Ref: Honda, Shoji, "
+        "Amemiya, Opt. Lett. 49, 5811 (2024).");
+    add("opt_tpa_mat", "TPA 材料 ID", "TPA material ID");
+    add("opt_tpa_mat_tip",
+        "TPA を適用する材料の ID (material 行の並び順)。",
+        "ID of the material the TPA coefficient applies to.");
+    add("opt_tpa_beta", "β [cm/GW]", "β [cm/GW]");
+    add("opt_tpa_beta_tip",
+        "TPA 係数 β。既定値 424 cm/GW はメタマテリアル装荷 Si 導波路の実測値 "
+        "(Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024))。",
+        "TPA coefficient β. The default 424 cm/GW is the measured value for "
+        "the metamaterial-loaded Si waveguide (Honda, Shoji, Amemiya, "
+        "Opt. Lett. 49, 5811 (2024)).");
+    add("opt_ps_enable", "パワースイープ (活性化カーブ出力)",
+        "Power sweep (activation curve output)");
+    add("opt_ps_tip",
+        "入力パワー P_in を掃引し activation_curve.csv "
+        "(P_in, P_out, 透過率) を出力します。",
+        "Sweeps the input power P_in and writes activation_curve.csv "
+        "(P_in, P_out, transmission).");
+    add("opt_ps_pmin", "P_min [W]", "P_min [W]");
+    add("opt_ps_pmax", "P_max [W]", "P_max [W]");
+    add("opt_ps_points", "掃引点数", "Sweep points");
+    add("opt_ps_scale", "間隔", "Spacing");
+    add("opt_ps_log", "対数 (log)", "Logarithmic (log)");
+    add("opt_ps_lin", "線形 (lin)", "Linear (lin)");
+    add("opt_tpa_warn_beta", "β は正の値を入力してください (例: 424)。",
+        "β must be positive (e.g. 424).");
+    add("opt_ps_warn_range",
+        "パワー範囲は 0 < P_min ≤ P_max を満たしてください。",
+        "Power range must satisfy 0 < P_min ≤ P_max.");
+    add("opt_onn_section", "ONN 活性化カーブ (結果)",
+        "ONN activation curve (results)");
+    add("opt_onn_no_data",
+        "BPM ソルバーでパワースイープを実行すると activation_curve.csv "
+        "がここに表示されます。",
+        "Run the BPM solver with a power sweep to display "
+        "activation_curve.csv here.");
+    add("opt_onn_loaded", "activation_curve.csv を読み込みました (%1 点)。",
+        "Loaded activation_curve.csv (%1 points).");
+    add("opt_onn_parse_err", "activation_curve.csv の読み込みに失敗: %1",
+        "Failed to read activation_curve.csv: %1");
+    add("opt_onn_pin", "P_in [W]", "P_in [W]");
+    add("opt_onn_pout", "P_out [W]", "P_out [W]");
+    add("opt_onn_trans", "透過率 T", "Transmission T");
+    add("opt_onn_measured", "BPM 実測", "BPM computed");
+    add("opt_onn_analytic", "解析解 1/(1+βPL/A_eff)",
+        "Analytic 1/(1+βPL/A_eff)");
+    add("opt_onn_aeff", "A_eff = %1 m²", "A_eff = %1 m²");
+
     // Acoustic tab
     add("ac_metrics", "室内音響指標", "Room-acoustic metrics");
     add("ac_rt60", "残響時間 RT60", "Reverb time RT60");
@@ -552,6 +611,188 @@ void I18n::loadTables() {
     add("ra_export_png", "📊 分布マップ (PNG)", "📊 Coverage map (PNG)");
     add("ra_report_title", "音響設計レポート (OpenFDTD-X ホール解析)",
         "Room-acoustics design report (OpenFDTD-X)");
+
+    // RIR analysis tab (measured impulse response)
+    add("t_riranalysis", "🎤 実測RIR分析", "🎤 Measured RIR");
+    add("rir_model_hint",
+        "実測した室内インパルス応答 (RIR) の WAV ファイルを ISO 3382-1 に基づき"
+        "分析します。「🏛 ホール解析」タブは統計モデルによる設計段階の推定、"
+        "本タブは実測RIRの分析です (FDTD 実行によるシミュレーションRIRの分析は"
+        "別途カーネル出力に対して行います)。",
+        "Analyzes a measured room impulse response (RIR) WAV per ISO 3382-1. "
+        "The Hall Analysis tab gives design-stage statistical estimates; this "
+        "tab analyzes measured RIRs (simulated RIRs from FDTD runs are "
+        "analyzed separately on kernel output).");
+    add("rir_input_section", "入力 (実測RIR)", "Input (measured RIR)");
+    add("rir_file", "RIR WAVファイル", "RIR WAV file");
+    add("rir_file_placeholder", "WAV ファイルを選択…", "Choose a WAV file…");
+    add("rir_browse", "参照…", "Browse…");
+    add("rir_wav_filter", "WAV ファイル (*.wav);;すべてのファイル (*)",
+        "WAV files (*.wav);;All files (*)");
+    add("rir_channel", "チャンネル", "Channel");
+    add("rir_ch_left", "L", "L");
+    add("rir_ch_right", "R", "R");
+    add("rir_ch_mono", "平均モノ", "Averaged mono");
+    add("rir_calibration", "校正状態", "Calibration");
+    add("rir_calib_absolute", "絶対校正済 (SPL 換算可)", "Absolute (SPL known)");
+    add("rir_calib_relative", "相対校正", "Relative");
+    add("rir_calib_uncalibrated", "未校正", "Uncalibrated");
+    add("rir_direct_method", "直接音検出", "Direct-sound detection");
+    add("rir_dm_peak", "ピーク", "Peak");
+    add("rir_dm_envelope", "包絡線閾値", "Envelope threshold");
+    add("rir_dm_movingrms", "移動RMS閾値", "Moving-RMS threshold");
+    add("rir_band_mode", "帯域モード", "Band mode");
+    add("rir_bm_compat6", "互換6帯域 (125Hz-4kHz)", "Compat 6 bands (125Hz-4kHz)");
+    add("rir_bm_oct", "1オクターブ (63Hz-8kHz)", "1 octave (63Hz-8kHz)");
+    add("rir_bm_thirdoct", "1/3オクターブ (100Hz-5kHz)", "1/3 octave (100Hz-5kHz)");
+    add("rir_bm_formant", "歌手フォルマント帯域 (2-4kHz)",
+        "Singer-formant bands (2-4kHz)");
+    add("rir_noise_correction", "ノイズ補正 (Chu 1978)",
+        "Noise correction (Chu 1978)");
+    add("rir_min_dr", "最小動的範囲", "Minimum dynamic range");
+    add("rir_run_section", "実行", "Run");
+    add("rir_run", "▶ RIR を分析", "▶ Analyze RIR");
+    add("rir_status_idle", "WAV ファイルを選択して実行してください。",
+        "Choose a WAV file and run the analysis.");
+    add("rir_status_nofile", "RIR WAV ファイルが選択されていません。",
+        "No RIR WAV file selected.");
+    add("rir_status_error", "分析失敗: %1 — %2", "Analysis failed: %1 — %2");
+    add("rir_status_ok",
+        "分析完了 — 総合品質: %1 / 動的範囲 %2 dB / 直接音 %3 ms",
+        "Done — overall quality: %1 / dynamic range %2 dB / direct sound %3 ms");
+    add("rir_result_section", "結果 (ISO 3382-1 指標)", "Results (ISO 3382-1)");
+    add("rir_metric", "指標", "Metric");
+    add("rir_band", "帯域", "Band");
+    add("rir_value", "値", "Value");
+    add("rir_unit", "単位", "Unit");
+    add("rir_quality", "品質", "Quality");
+    add("rir_note", "備考", "Note");
+    add("rir_not_computable", "算出不可", "Not computable");
+    add("rir_q_valid", "有効", "Valid");
+    add("rir_q_warning", "参考", "Warning");
+    add("rir_q_invalid", "無効", "Invalid");
+    add("rir_plot_section", "プロット", "Plots");
+    add("rir_waveform", "波形 (分析チャンネル)", "Waveform (analyzed channel)");
+    add("rir_decay", "エネルギー減衰曲線 (Schroeder)",
+        "Energy decay curve (Schroeder)");
+    add("rir_decay_label", "減衰", "decay");
+    add("rir_noise_floor", "ノイズフロア", "noise floor");
+    add("rir_time_ms", "時間 [ms]", "time [ms]");
+    add("rir_amplitude", "振幅", "amplitude");
+    add("rir_level_db", "レベル [dB]", "level [dB]");
+    add("rir_refl_section", "初期反射一覧 (0-20 / 20-80 / 80-200 / 200+ ms)",
+        "Early reflections (0-20 / 20-80 / 80-200 / 200+ ms)");
+    add("rir_refl_no", "#", "#");
+    add("rir_refl_time", "時刻 [ms]", "Arrival [ms]");
+    add("rir_refl_delay", "遅延 [ms]", "Delay [ms]");
+    add("rir_refl_level", "相対レベル [dB]", "Rel. level [dB]");
+    add("rir_refl_bin", "区分", "Bin");
+    add("rir_export_section", "出力", "Export");
+    add("rir_export_csv", "📄 CSV 保存", "📄 Save CSV");
+    add("rir_export_json", "📄 JSON 保存", "📄 Save JSON");
+
+    // Vocal analysis tab (single unaccompanied monophonic singing)
+    add("t_vocalanalysis", "🎶 歌声分析", "🎶 Vocal Analysis");
+    add("vocal_scope_note",
+        "単一・無伴奏・モノフォニック歌唱の WAV が分析対象です (合唱・伴奏付き・"
+        "ポリフォニック音源は対象外)。本タブは物理量の測定のみを行い、声種は "
+        "F0 探索範囲プリセットの選択にのみ使用します。",
+        "Analyzes a WAV of a single unaccompanied monophonic voice (choirs, "
+        "accompanied or polyphonic sources are out of scope). This tab only "
+        "measures physical quantities; the voice type merely selects the F0 "
+        "search-range preset.");
+    add("vocal_input_section", "入力 (歌唱 WAV)", "Input (singing WAV)");
+    add("vocal_file", "歌唱 WAVファイル", "Singing WAV file");
+    add("vocal_voice_type", "声種 (F0探索範囲)", "Voice type (F0 search range)");
+    add("vocal_vt_soprano", "ソプラノ (220-1400 Hz)", "Soprano (220-1400 Hz)");
+    add("vocal_vt_mezzo", "メゾソプラノ (180-1000 Hz)",
+        "Mezzo-soprano (180-1000 Hz)");
+    add("vocal_vt_contralto", "アルト (150-800 Hz)", "Contralto (150-800 Hz)");
+    add("vocal_vt_tenor", "テノール (120-700 Hz)", "Tenor (120-700 Hz)");
+    add("vocal_vt_baritone", "バリトン (90-500 Hz)", "Baritone (90-500 Hz)");
+    add("vocal_vt_bass", "バス (70-400 Hz)", "Bass (70-400 Hz)");
+    add("vocal_vt_unknown", "不明 (60-1500 Hz)", "Unknown (60-1500 Hz)");
+    add("vocal_f0_min", "F0 探索下限の上書き", "F0 search min override");
+    add("vocal_f0_max", "F0 探索上限の上書き", "F0 search max override");
+    add("vocal_f0_auto", "自動 (声種プリセット)", "Auto (voice-type preset)");
+    add("vocal_calibration", "校正状態 (実測RIR分析タブで設定)",
+        "Calibration (set in Measured RIR tab)");
+    add("vocal_calib_spl_ok", "SPL 系指標を算出します",
+        "SPL metrics will be computed");
+    add("vocal_calib_spl_na", "SPL 系指標は算出不可 (dBFS 相対値のみ)",
+        "SPL metrics not computable (dBFS only)");
+    add("vocal_run_section", "実行", "Run");
+    add("vocal_run", "▶ 歌声を分析", "▶ Analyze voice");
+    add("vocal_status_idle", "歌唱 WAV ファイルを選択して実行してください。",
+        "Choose a singing WAV file and run the analysis.");
+    add("vocal_status_nofile", "歌唱 WAV ファイルが選択されていません。",
+        "No singing WAV file selected.");
+    add("vocal_status_error", "分析失敗: %1 — %2", "Analysis failed: %1 — %2");
+    add("vocal_status_ok",
+        "分析完了 — 総合品質: %1 / 有声率 %2% / F0中央値 %3",
+        "Done — overall quality: %1 / voiced %2% / F0 median %3");
+    add("vocal_result_section", "結果 (歌声指標)", "Results (vocal metrics)");
+    add("vocal_plot_section", "プロット", "Plots");
+    add("vocal_f0_plot", "F0 軌跡 (無声区間は欠落)",
+        "F0 contour (gaps = unvoiced)");
+    add("vocal_ltas_plot", "LTAS (長時間平均スペクトル)",
+        "LTAS (long-term average spectrum)");
+    add("vocal_time_s", "時間 [s]", "time [s]");
+    add("vocal_f0_hz", "F0 [Hz]", "F0 [Hz]");
+    add("vocal_freq_hz", "周波数 [Hz]", "frequency [Hz]");
+
+    // Auralization tab (dry voice × RIR convolution)
+    add("t_auralization", "🔊 可聴化", "🔊 Auralization");
+    add("aur_model_hint",
+        "ドライ (無響/近接収録) 歌唱 WAV と実測 RIR WAV を畳み込み、ホールで"
+        "歌ったときの音をウェット WAV (float32) として書き出します。自動正規化"
+        "とリサンプリングは行いません (fs 不一致はエラーになります)。",
+        "Convolves a dry (anechoic/close-mic) singing WAV with a measured RIR "
+        "WAV and writes the wet result as a float32 WAV. No automatic "
+        "normalization or resampling is performed (a sample-rate mismatch is "
+        "an error).");
+    add("aur_input_section", "入力", "Input");
+    add("aur_dry_file", "ドライ歌唱 WAV", "Dry singing WAV");
+    add("aur_rir_file", "RIR WAV (実測RIR分析タブと共用)",
+        "RIR WAV (shared with Measured RIR tab)");
+    add("aur_output_file", "出力 WAV (ウェット)", "Output WAV (wet)");
+    add("aur_output_placeholder", "保存先を選択…", "Choose an output file…");
+    add("aur_gain_mode", "ゲインモード", "Gain mode");
+    add("aur_gain_asis", "そのまま (ゲイン適用なし)", "As-is (no gain)");
+    add("aur_gain_suggested", "推奨ゲイン適用 (ピーク→フルスケール)",
+        "Apply suggested gain (peak → full scale)");
+    add("aur_run_section", "実行", "Run");
+    add("aur_run", "▶ 畳み込みを実行", "▶ Convolve");
+    add("aur_status_idle",
+        "ドライ WAV と RIR WAV を選択して実行してください。",
+        "Choose a dry WAV and an RIR WAV, then run.");
+    add("aur_status_nofile",
+        "ドライ WAV または RIR WAV が選択されていません。",
+        "Dry WAV or RIR WAV not selected.");
+    add("aur_status_nooutput", "出力 WAV の保存先が指定されていません。",
+        "No output WAV file chosen.");
+    add("aur_status_error", "畳み込み失敗: %1 — %2",
+        "Convolution failed: %1 — %2");
+    add("aur_no_resample_note",
+        "サンプルレートが一致していません。本機能はリサンプリングを行わない"
+        "ため、外部ツールで fs を揃えてから再実行してください。",
+        "Sample rates do not match. This feature does not resample; convert "
+        "the files to a common rate externally and retry.");
+    add("aur_status_ok", "完了 — 出力: %1", "Done — output: %1");
+    add("aur_result_section", "結果", "Results");
+    add("aur_output_peak", "出力ピーク", "Output peak");
+    add("aur_suggested_gain", "推奨ゲイン", "Suggested gain");
+    add("aur_clipped_samples", "クリップ", "Clipping");
+    add("aur_clipped_yes", "あり (%1 サンプル)", "Yes (%1 samples)");
+    add("aur_clipped_no", "なし", "None");
+    add("aur_ab_section", "A/B 比較 (波形)", "A/B comparison (waveforms)");
+    add("aur_dry_wave", "ドライ (入力)", "Dry (input)");
+    add("aur_wet_wave", "ウェット (出力)", "Wet (output)");
+    add("aur_playback_note",
+        "アプリ内での再生は未対応です。書き出した WAV を外部プレイヤーで"
+        "ドライ音源と聴き比べてください。",
+        "In-app playback is not supported. Compare the exported WAV with the "
+        "dry source in an external audio player.");
 
     // ev viewer
     add("ev_backend", "表示バックエンド", "Viewer backend");

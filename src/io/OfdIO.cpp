@@ -207,6 +207,16 @@ QString OfdIO::serialize(const Project &p)
                 << " " << num(po.near2dVzoom[1]) << "\n";
     }
 
+    // ── 非線形 (TPA) / ONN 活性化キー (OpenBPM: tpa+powersweep, OpenFDTD:
+    // tpa)。無効時は一切出力しない (従来ファイルとバイト一致 = 後方互換)。
+    const OpticalOpts &oo = p.optical();
+    if (oo.tpaEnabled)
+        out << "tpa = " << oo.tpaMaterialId << " "
+            << num(oo.tpaBeta_cmGW) << "\n";
+    if (oo.powerSweepEnabled)
+        out << "powersweep = " << num(oo.psPmin_W) << " " << num(oo.psPmax_W)
+            << " " << oo.psPoints << " " << (oo.psLog ? "log" : "lin") << "\n";
+
     // keys the GUI doesn't model — preserved from the loaded file
     for (const QString &line : p.extraLines())
         out << line << "\n";
@@ -475,6 +485,22 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             po.near2dVzoom[0] = qMin(d(2), d(3));
             po.near2dVzoom[1] = qMax(d(2), d(3));
         }
+        // ── 非線形 (TPA) / ONN 活性化キー ───────────────────────────────
+        else if (key == "tpa" && t.size() >= 2) {
+            OpticalOpts &o = project.optical();
+            o.tpaEnabled = true;
+            o.tpaMaterialId = n(0);
+            o.tpaBeta_cmGW = d(1);
+        }
+        else if (key == "powersweep" && t.size() >= 3) {
+            OpticalOpts &o = project.optical();
+            o.powerSweepEnabled = true;
+            o.psPmin_W = d(0);
+            o.psPmax_W = d(1);
+            o.psPoints = n(2);
+            if (t.size() >= 4)
+                o.psLog = (t[3].compare("lin", Qt::CaseInsensitive) != 0);
+        }
         else {
             // unknown key — keep verbatim for round-trip safety
             project.extraLines().push_back(line);
@@ -515,6 +541,18 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"band_nm", QJsonArray{ o.bpfBandMin, o.bpfBandMax }}, {"Q", o.bpfQ} };
         opt["ring"] = QJsonObject{
             {"radius_um", o.ringRadius_um}, {"gap_nm", o.ringGap_nm} };
+        // 非線形 (TPA) / ONN 活性化 (Opt. Lett. 49, 5811 (2024)) — 追加キー
+        // のみ。既存キーの改名・削除・順序変更は後方互換のため禁止。
+        opt["tpa"] = QJsonObject{
+            {"enabled", o.tpaEnabled},
+            {"material_id", o.tpaMaterialId},
+            {"beta_cm_gw", o.tpaBeta_cmGW} };
+        opt["powersweep"] = QJsonObject{
+            {"enabled", o.powerSweepEnabled},
+            {"pmin_w", o.psPmin_W},
+            {"pmax_w", o.psPmax_W},
+            {"points", o.psPoints},
+            {"scale", o.psLog ? QStringLiteral("log") : QStringLiteral("lin")} };
         root["optical"] = opt;
     }
     {
@@ -529,7 +567,7 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         }
         QJsonArray noise;
         for (double v : a.noiseLevels) noise.append(v);
-        root["acoustic"] = QJsonObject{
+        QJsonObject ac{
             {"rt60", a.rt60}, {"c80", a.c80}, {"d50", a.d50},
             {"sti", a.sti}, {"edt", a.edt},
             {"impulse_response", a.impulseResponse},
@@ -542,6 +580,32 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
             {"absorption", budget}, {"noise_levels", noise} };
+        // 実測 RIR 分析 (RirAnalysisTab, 指示書 §15) — 追加キーのみ。
+        // 既存キーの改名・削除・型変更は後方互換のため禁止。
+        const OperaAcousticSettings &oa = p.operaAcoustic();
+        ac["opera_analysis"] = QJsonObject{
+            {"enabled", oa.enabled},
+            {"rir_file", oa.rirPath},
+            {"voice_file", oa.voicePath},
+            {"voice_type", oa.voiceType},
+            {"calibration_state", oa.calibrationState},
+            {"direct_sound_method", oa.directSoundMethod},
+            {"band_mode", oa.bandMode},
+            {"channel_mode", oa.channelMode},
+            {"analysis_settings", QJsonObject{
+                {"noise_correction", oa.noiseCorrection},
+                {"minimum_dynamic_range_db", oa.minimumDynamicRangeDb} }},
+            // 可聴化 (フェーズ4) — ネスト追加のみ (docs §2.1)。RIR は
+            // rir_file を共用する (単一ソース原則)。分析結果は保存しない。
+            {"auralization", QJsonObject{
+                {"dry_file", oa.auralizationDryFile},
+                {"output_file", oa.auralizationOutputFile},
+                {"gain_mode", oa.auralizationGainMode} }},
+            // 歌声分析 (フェーズ3) — F0 探索範囲の上書き (0 = 声種プリセット)
+            {"vocal", QJsonObject{
+                {"f0_min_hz", oa.vocalF0MinHz},
+                {"f0_max_hz", oa.vocalF0MaxHz} }} };
+        root["acoustic"] = ac;
     }
     {
         const UnderwaterOpts &u = p.underwater();
@@ -624,6 +688,18 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         const QJsonObject ring = opt["ring"].toObject();
         o.ringRadius_um = ring.value("radius_um").toDouble(o.ringRadius_um);
         o.ringGap_nm = ring.value("gap_nm").toDouble(o.ringGap_nm);
+        // 非線形 (TPA) / ONN 活性化 — 欠落キーは既定値のまま (旧ファイル互換)
+        const QJsonObject tpa = opt["tpa"].toObject();
+        o.tpaEnabled = tpa.value("enabled").toBool(o.tpaEnabled);
+        o.tpaMaterialId = tpa.value("material_id").toInt(o.tpaMaterialId);
+        o.tpaBeta_cmGW = tpa.value("beta_cm_gw").toDouble(o.tpaBeta_cmGW);
+        const QJsonObject ps = opt["powersweep"].toObject();
+        o.powerSweepEnabled = ps.value("enabled").toBool(o.powerSweepEnabled);
+        o.psPmin_W = ps.value("pmin_w").toDouble(o.psPmin_W);
+        o.psPmax_W = ps.value("pmax_w").toDouble(o.psPmax_W);
+        o.psPoints = ps.value("points").toInt(o.psPoints);
+        if (ps.contains("scale"))
+            o.psLog = (ps.value("scale").toString() != QLatin1String("lin"));
     }
     if (root.contains("acoustic")) {
         const QJsonObject ac = root["acoustic"].toObject();
@@ -666,6 +742,38 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             const QJsonArray noise = ac["noise_levels"].toArray();
             for (int i = 0; i < 7 && i < noise.size(); ++i)
                 a.noiseLevels[i] = noise[i].toDouble();
+        }
+        // 実測 RIR 分析設定 — 欠落キーは既定値のまま (旧ファイル互換)
+        if (ac.contains("opera_analysis")) {
+            const QJsonObject oa = ac["opera_analysis"].toObject();
+            OperaAcousticSettings &s = p.operaAcoustic();
+            s.enabled = oa.value("enabled").toBool(s.enabled);
+            s.rirPath = oa.value("rir_file").toString(s.rirPath);
+            s.voicePath = oa.value("voice_file").toString(s.voicePath);
+            s.voiceType = oa.value("voice_type").toInt(s.voiceType);
+            s.calibrationState =
+                oa.value("calibration_state").toInt(s.calibrationState);
+            s.directSoundMethod =
+                oa.value("direct_sound_method").toInt(s.directSoundMethod);
+            s.bandMode = oa.value("band_mode").toInt(s.bandMode);
+            s.channelMode = oa.value("channel_mode").toInt(s.channelMode);
+            const QJsonObject as = oa["analysis_settings"].toObject();
+            s.noiseCorrection =
+                as.value("noise_correction").toBool(s.noiseCorrection);
+            s.minimumDynamicRangeDb =
+                as.value("minimum_dynamic_range_db")
+                    .toDouble(s.minimumDynamicRangeDb);
+            // 可聴化 / 歌声分析 — 欠落キーは既定値のまま (旧ファイル互換)
+            const QJsonObject au = oa["auralization"].toObject();
+            s.auralizationDryFile =
+                au.value("dry_file").toString(s.auralizationDryFile);
+            s.auralizationOutputFile =
+                au.value("output_file").toString(s.auralizationOutputFile);
+            s.auralizationGainMode =
+                au.value("gain_mode").toInt(s.auralizationGainMode);
+            const QJsonObject vo = oa["vocal"].toObject();
+            s.vocalF0MinHz = vo.value("f0_min_hz").toDouble(s.vocalF0MinHz);
+            s.vocalF0MaxHz = vo.value("f0_max_hz").toDouble(s.vocalF0MaxHz);
         }
     }
     if (root.contains("underwater")) {

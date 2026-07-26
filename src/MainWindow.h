@@ -38,6 +38,9 @@ class Viewport3D;
 class PlotPanel;
 class EvViewer;
 
+// 具体型が必要なタブのみ前方宣言 (それ以外は QWidget* でナビへ登録する)
+class OpticalTab;
+
 class RunDialog;
 class CloudDialog;
 class AppGalleryDialog;
@@ -92,6 +95,10 @@ private:
     Runner  *m_runner  = nullptr;
     bool     m_expert  = false;      // 表示モード (標準 / エキスパート)
 
+    // ONN 光活性化: カーネルログ "ONN: A_eff = ... [m^2]" から抽出した
+    // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。
+    double   m_lastAeff_m2 = 0.0;
+
     DomainBar      *m_domainBar = nullptr;
     TabNavigator   *m_nav = nullptr;
     QStackedWidget *m_pages = nullptr;
@@ -109,13 +116,19 @@ private:
     GettingStartedDialog *m_gettingStarted = nullptr;
 
     // Tab pages — TabNavigator へ登録される。ポインタ保持は選択切替用。
+    // 型付きが必要なのは OpticalTab のみ (ONN 活性化カーブの表示を呼ぶため)。
+    OpticalTab *m_tabOptical = nullptr;
+
     QWidget *m_tabGeneral = nullptr,  *m_tabMesh = nullptr,
             *m_tabMaterial = nullptr, *m_tabGeometry = nullptr,
             *m_tabSource = nullptr,   *m_tabPost1 = nullptr,
-            *m_tabPost2 = nullptr,    *m_tabOptical = nullptr,
+            *m_tabPost2 = nullptr,
             *m_tabAcoustic = nullptr, *m_tabUnderwater = nullptr,
             *m_tabTidy3d = nullptr,   *m_tabGlass = nullptr,
             *m_tabRoomAc = nullptr;
+    // オペラ音響解析 (PR #1) — 音響ドメインの解析タブ
+    QWidget *m_tabRirAnalysis = nullptr, *m_tabVocal = nullptr,
+            *m_tabAuralization = nullptr;
     // 新設タブ (design mock の全カテゴリ)
     QWidget *m_tabSolverRegion = nullptr, *m_tabMonitors = nullptr,
             *m_tabPerFace = nullptr,      *m_tabComponents = nullptr,
