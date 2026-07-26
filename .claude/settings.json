@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cmake -B build*)",
+      "Bash(cmake --build*)",
+      "Bash(ctest*)",
+      "Bash(./build/ofdx_selftest*)",
+      "Bash(./build/openfdtd_x*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(grep*)",
+      "Bash(rg*)",
+      "Bash(find*)"
+    ],
+    "deny": [
+      "Read(./secrets/**)",
+      "Bash(git push --force*)"
+    ]
+  },
+  "attribution": {
+    "commit": true,
+    "pr": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/check-new-source.js"
+          }
+        ]
+      }
+    ]
+  }
+}

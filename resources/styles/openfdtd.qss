@@ -91,3 +91,30 @@ QStatusBar QLabel {
 QPushButton {
     padding: 3px 12px;
 }
+
+/* ── TabNavigator — カテゴリ付き縦タブ (app.jsx qt-tabbar 相当) ── */
+#tabNavigator {
+    background: #eef1f5;
+    border: none;
+    border-right: 1px solid #d4d4d4;
+    outline: 0;
+    font-size: 12px;
+}
+#tabNavigator::item {
+    padding: 4px 8px;
+    border: none;
+    border-left: 3px solid transparent;
+}
+#tabNavigator::item:selected {
+    background: #ffffff;
+    border-left: 3px solid #0078D4;
+    color: #1a1a1a;
+}
+#tabNavigator::item:hover:!selected:enabled {
+    background: #e2e8f0;
+}
+#tabNavigator::item:disabled {
+    padding: 8px 6px 3px 6px;
+    color: #7a8390;
+    background: transparent;
+}

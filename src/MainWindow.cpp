@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 #include "DomainBar.h"
 #include "RightDock.h"
+#include "TabNavigator.h"
 #include "I18n.h"
 
 #include "core/Project.h"
@@ -13,6 +14,7 @@
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
 
+// 本家章立てタブ
 #include "tabs/GeneralTab.h"
 #include "tabs/MeshTab.h"
 #include "tabs/MaterialTab.h"
@@ -26,7 +28,45 @@
 #include "tabs/Tidy3dTab.h"
 #include "tabs/GlassCatalogTab.h"
 #include "tabs/RoomAcousticsTab.h"
+// Workbench 拡張タブ (design mock 全カテゴリ)
+#include "tabs/SolverRegionTab.h"
+#include "tabs/MonitorsTab.h"
+#include "tabs/PerFaceBCTab.h"
+#include "tabs/ComponentsTab.h"
+#include "tabs/MaterialExplorerTab.h"
+#include "tabs/LensEditorTab.h"
+#include "tabs/LayoutGDSTab.h"
+#include "tabs/SchematicTab.h"
+#include "tabs/PhotonicsSolversTab.h"
+#include "tabs/AcousticSourceTab.h"
+#include "tabs/OceanEnvironmentTab.h"
+#include "tabs/SoundproofTab.h"
+#include "tabs/OutdoorNoiseTab.h"
+#include "tabs/CabinAcousticsTab.h"
+#include "tabs/UltrasoundTab.h"
+#include "tabs/FamilySolverTab.h"
+#include "tabs/SolverSelectorTab.h"
+#include "tabs/VerificationTab.h"
+#include "tabs/OptimizeTab.h"
+#include "tabs/ToleranceTab.h"
+#include "tabs/ScriptsTab.h"
+#include "tabs/MultiphysicsTab.h"
+#include "tabs/AnalysisGroupsTab.h"
+#include "tabs/DatasetsTab.h"
+#include "tabs/H5ViewerTab.h"
+#include "tabs/InteropTab.h"
+#include "tabs/AntennaCharTab.h"
+#include "tabs/TransmissionLineTab.h"
+#include "tabs/ScatteringTab.h"
+#include "tabs/CircuitSolversTab.h"
+// ダイアログ
+#include "dialogs/RunDialog.h"
+#include "dialogs/CloudDialog.h"
+#include "dialogs/AppGalleryDialog.h"
+#include "dialogs/ResourceDialog.h"
+#include "dialogs/GettingStartedDialog.h"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
 #include <QDockWidget>
@@ -35,6 +75,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
@@ -45,7 +86,6 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStyle>
-#include <QTabWidget>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -60,6 +100,8 @@ MainWindow::MainWindow(QWidget *parent)
     setObjectName("OpenFDTD_MainWindow");
     resize(1500, 940);
     setMinimumSize(1100, 700);
+
+    m_expert = QSettings().value("ui/level", "standard").toString() == "expert";
 
     buildMenu();
     buildToolbar();
@@ -103,6 +145,21 @@ void MainWindow::buildMenu()
     mFile->addSeparator();
     mFile->addAction(I18n::tr("m_exit"), this, [] { qApp->quit(); });
 
+    // 表示モード (標準 / エキスパート) — モックの uiLevel トグル相当
+    auto *levelMenu = mView->addMenu(I18n::tr("m_uilevel"));
+    auto *lvGroup = new QActionGroup(this);
+    m_levelStandard = levelMenu->addAction(I18n::tr("uilevel_standard"));
+    m_levelExpert   = levelMenu->addAction(I18n::tr("uilevel_expert"));
+    for (auto *a : { m_levelStandard, m_levelExpert }) {
+        a->setCheckable(true);
+        lvGroup->addAction(a);
+    }
+    (m_expert ? m_levelExpert : m_levelStandard)->setChecked(true);
+    connect(m_levelStandard, &QAction::triggered, this,
+            [this] { setUiLevel(false); });
+    connect(m_levelExpert, &QAction::triggered, this,
+            [this] { setUiLevel(true); });
+
     auto *langMenu = mView->addMenu(I18n::tr("m_lang"));
     for (const auto &[code, label] : std::initializer_list<
              std::pair<const char *, const char *>>{
@@ -130,8 +187,13 @@ void MainWindow::buildMenu()
     mPost->addAction(I18n::tr("pp_export_h5"), this, &MainWindow::exportHdf5);
     mPost->addAction(I18n::tr("pp_export_s2p"), this, &MainWindow::exportTouchstone);
 
-    mTools->addAction(I18n::tr("tb_cloud"), this, &MainWindow::exportTidy3d);
+    mTools->addAction(I18n::tr("tb_cloud"), this, &MainWindow::showCloudDialog);
+    mTools->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
+    mTools->addAction(I18n::tr("tb_gettingstarted"),
+                      this, &MainWindow::showGettingStarted);
 
+    mHelp->addAction(I18n::tr("tb_gettingstarted"),
+                     this, &MainWindow::showGettingStarted);
     mHelp->addAction("About OpenFDTD-X…", this, [this] {
         QMessageBox::about(this, "OpenFDTD-X",
             QStringLiteral("<b>OpenFDTD-X</b><br>%1<br><br>"
@@ -150,8 +212,10 @@ void MainWindow::buildToolbar()
     tb->setIconSize({ 16, 16 });
     auto icon = [this](QStyle::StandardPixmap sp) { return style()->standardIcon(sp); };
 
-    tb->addAction(icon(QStyle::SP_FileIcon), I18n::tr("tb_new"),
-                  this, &MainWindow::newProject);
+    // モック同様「新規」はアプリケーションギャラリーを開く
+    auto *newAct = tb->addAction(icon(QStyle::SP_FileIcon), I18n::tr("tb_new"),
+                                 this, &MainWindow::showGallery);
+    newAct->setToolTip(I18n::tr("tb_gallery_tip"));
     tb->addAction(icon(QStyle::SP_DialogOpenButton), I18n::tr("tb_open"),
                   this, [this] { openProject(); });
     tb->addAction(icon(QStyle::SP_DialogSaveButton), I18n::tr("tb_save"),
@@ -171,7 +235,30 @@ void MainWindow::buildToolbar()
     tb->addSeparator();
 
     m_cloudAction = tb->addAction(icon(QStyle::SP_ArrowUp), I18n::tr("tb_cloud"),
-                                  this, &MainWindow::exportTidy3d);
+                                  this, &MainWindow::showCloudDialog);
+
+    // 📤 エクスポート (CSV / HDF5 / S2P / tidy3d py)
+    auto *exportBtn = new QToolButton(tb);
+    exportBtn->setText(I18n::tr("tb_export"));
+    exportBtn->setIcon(icon(QStyle::SP_DialogSaveButton));
+    exportBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    exportBtn->setPopupMode(QToolButton::InstantPopup);
+    auto *exportMenu = new QMenu(exportBtn);
+    exportMenu->addAction(I18n::tr("pp_export_csv"), this, [this] {
+        const QString p = QFileDialog::getSaveFileName(
+            this, I18n::tr("pp_export_csv"), "convergence.csv", "CSV (*.csv)");
+        if (!p.isEmpty()) m_plotPanel->exportCsv(p);
+    });
+    exportMenu->addAction(I18n::tr("pp_export_h5"), this, &MainWindow::exportHdf5);
+    exportMenu->addAction(I18n::tr("pp_export_s2p"), this, &MainWindow::exportTouchstone);
+    exportMenu->addAction(I18n::tr("t3_export"), this, &MainWindow::exportTidy3d);
+    exportBtn->setMenu(exportMenu);
+    tb->addWidget(exportBtn);
+
+    tb->addSeparator();
+    tb->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
+    tb->addAction(I18n::tr("tb_gettingstarted"),
+                  this, &MainWindow::showGettingStarted);
 
     auto *spacer = new QWidget(tb);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -198,6 +285,20 @@ void MainWindow::buildToolbar()
     tb->addWidget(m_threadsBox);
 }
 
+// エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)
+void MainWindow::updateEngineItems(Domain d)
+{
+    constexpr int kTidy3dIndex = 4;
+    const bool has = m_engineBox->count() > kTidy3dIndex;
+    if (d == Domain::Optical && !has)
+        m_engineBox->addItem(I18n::tr("run_engine_tidy3d"));
+    else if (d != Domain::Optical && has) {
+        if (m_engineBox->currentIndex() >= kTidy3dIndex)
+            m_engineBox->setCurrentIndex(0);
+        m_engineBox->removeItem(kTidy3dIndex);
+    }
+}
+
 // ── Central widget ──────────────────────────────────────────────────────────
 void MainWindow::buildCentral()
 {
@@ -214,33 +315,14 @@ void MainWindow::buildCentral()
     auto *split = new QSplitter(Qt::Horizontal, central);
     split->setChildrenCollapsible(false);
 
-    // left: tabs
-    m_leftTabs = new QTabWidget(split);
-    m_leftTabs->setDocumentMode(true);
-    m_leftTabs->setUsesScrollButtons(true);
-
-    m_tabGeneral   = new GeneralTab(m_project);
-    m_tabMesh      = new MeshTab(m_project);
-    m_tabMaterial  = new MaterialTab(m_project);
-    m_tabGeometry  = new GeometryTab(m_project);
-    m_tabSource    = new SourceTab(m_project);
-    m_tabPost1     = new Post1Tab(m_project);
-    m_tabPost2     = new Post2Tab(m_project);
-    m_tabOptical   = new OpticalTab(m_project);
-    m_tabAcoustic  = new AcousticTab(m_project);
-    m_tabUnderwater= new UnderwaterTab(m_project);
-    m_tabTidy3d    = new Tidy3dTab(m_project);
-    m_tabGlass     = new GlassCatalogTab(m_project);
-    m_tabRoomAc    = new RoomAcousticsTab(m_project);
-
-    m_leftTabs->addTab(m_tabGeneral, I18n::tr("t_general"));
-    m_leftTabs->addTab(m_tabMesh, I18n::tr("t_mesh"));
-    m_leftTabs->addTab(m_tabMaterial, I18n::tr("t_material"));
-    m_leftTabs->addTab(m_tabGeometry, I18n::tr("t_geometry"));
-    m_leftTabs->addTab(m_tabSource, I18n::tr("t_source"));
-    m_leftTabs->addTab(m_tabPost1, I18n::tr("t_post1"));
-    m_leftTabs->addTab(m_tabPost2, I18n::tr("t_post2"));
-    // domain tabs are added/removed in onDomainChanged()
+    // left: カテゴリナビ + ページスタック
+    auto *leftWrap = new QWidget(split);
+    auto *lh = new QHBoxLayout(leftWrap);
+    lh->setContentsMargins(0, 0, 0, 0);
+    lh->setSpacing(0);
+    buildLeftNav(leftWrap);
+    lh->addWidget(m_nav);
+    lh->addWidget(m_pages, 1);
 
     // center: viewport / plot stack + ev viewer bar
     auto *centerWrap = new QWidget(split);
@@ -258,14 +340,160 @@ void MainWindow::buildCentral()
     m_evViewer = new EvViewer(centerWrap);
     cv->addWidget(m_evViewer);
 
-    split->addWidget(m_leftTabs);
+    split->addWidget(leftWrap);
     split->addWidget(centerWrap);
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 1);
-    split->setSizes({ 480, 720 });
+    split->setSizes({ 620, 720 });
 
     v->addWidget(split, 1);
     setCentralWidget(central);
+}
+
+// 左ナビ: 全タブ生成 + カテゴリ/ドメイン/表示レベル登録 (app.jsx LeftDock 準拠)
+void MainWindow::buildLeftNav(QWidget *parent)
+{
+    m_nav = new TabNavigator(parent);
+    m_pages = new QStackedWidget(parent);
+
+    auto *P = m_project;
+    // ── Setup ──
+    m_tabGeometry     = new GeometryTab(P);
+    m_tabMaterial     = new MaterialTab(P);
+    m_tabSolverRegion = new SolverRegionTab(P);
+    m_tabSource       = new SourceTab(P);
+    m_tabMonitors     = new MonitorsTab(P);
+    m_tabGeneral      = new GeneralTab(P);
+    m_tabMesh         = new MeshTab(P);
+    m_tabPerFace      = new PerFaceBCTab(P);
+    // ── Library ──
+    m_tabComponents   = new ComponentsTab(P);
+    m_tabMatExplorer  = new MaterialExplorerTab(P);
+    m_tabGlass        = new GlassCatalogTab(P);
+    m_tabLens         = new LensEditorTab(P);
+    m_tabGds          = new LayoutGDSTab(P);
+    m_tabSchematic    = new SchematicTab(P);
+    m_tabPhotonics    = new PhotonicsSolversTab(P);
+    m_tabAcSource     = new AcousticSourceTab(P);
+    m_tabOceanEnv     = new OceanEnvironmentTab(P);
+    m_tabRoomAc       = new RoomAcousticsTab(P);
+    m_tabSoundproof   = new SoundproofTab(P);
+    m_tabOutdoor      = new OutdoorNoiseTab(P);
+    m_tabCabin        = new CabinAcousticsTab(P);
+    m_tabUltrasound   = new UltrasoundTab(P);
+    // ── Solve ──
+    m_tabFamily       = new FamilySolverTab(P);
+    m_tabSolverSel    = new SolverSelectorTab(P);
+    m_tabVerification = new VerificationTab(P);
+    m_tabOptimize     = new OptimizeTab(P);
+    m_tabTolerance    = new ToleranceTab(P);
+    m_tabScripts      = new ScriptsTab(P);
+    m_tabMultiphysics = new MultiphysicsTab(P);
+    m_tabTidy3d       = new Tidy3dTab(P);
+    // ── Post ──
+    m_tabAnalysisGroups = new AnalysisGroupsTab(P);
+    m_tabDatasets     = new DatasetsTab(P);
+    m_tabH5Viewer     = new H5ViewerTab(P);
+    m_tabInterop      = new InteropTab(P);
+    m_tabAntennaChar  = new AntennaCharTab(P);
+    m_tabTxLine       = new TransmissionLineTab(P);
+    m_tabScattering   = new ScatteringTab(P);
+    m_tabCircuit      = new CircuitSolversTab(P);
+    // ── ドメイン別 ──
+    m_tabOptical      = new OpticalTab(P);
+    m_tabAcoustic     = new AcousticTab(P);
+    m_tabUnderwater   = new UnderwaterTab(P);
+    m_tabPost1        = new Post1Tab(P);
+    m_tabPost2        = new Post2Tab(P);
+
+    using D = Domain;
+    const QVector<D> ALL;                       // 空 = 全ドメイン
+    struct Def {
+        const char *key, *cat, *label;
+        QWidget *page;
+        QVector<D> domains;
+        bool core;
+    };
+    const QVector<Def> defs = {
+        // セットアップ (Lumerical canonical order ①〜⑤ + 詳細)
+        { "geometry",     "cat_setup", "nav_geometry",     m_tabGeometry,     ALL, true  },
+        { "material",     "cat_setup", "nav_material",     m_tabMaterial,     ALL, true  },
+        { "solverregion", "cat_setup", "nav_solverregion", m_tabSolverRegion, ALL, true  },
+        { "source",       "cat_setup", "nav_source",       m_tabSource,       ALL, true  },
+        { "monitors",     "cat_setup", "nav_monitors",     m_tabMonitors,     ALL, true  },
+        { "general",      "cat_setup", "nav_general",      m_tabGeneral,      ALL, false },
+        { "mesh",         "cat_setup", "nav_mesh",         m_tabMesh,         ALL, false },
+        { "perface",      "cat_setup", "nav_perface",      m_tabPerFace,      ALL, false },
+        // ライブラリ
+        { "components",   "cat_library", "nav_components",   m_tabComponents,  ALL, true },
+        { "matexplorer",  "cat_library", "nav_matexplorer",  m_tabMatExplorer,
+          { D::EM, D::Optical }, true },
+        { "glasscatalog", "cat_library", "nav_glasscatalog", m_tabGlass,
+          { D::Optical }, false },
+        { "lens",         "cat_library", "nav_lens",         m_tabLens,
+          { D::Optical }, false },
+        { "layoutgds",    "cat_library", "nav_layoutgds",    m_tabGds,
+          { D::Optical }, false },
+        { "schematic",    "cat_library", "nav_schematic",    m_tabSchematic,
+          { D::Optical }, false },
+        { "photonics",    "cat_library", "nav_photonics",    m_tabPhotonics,
+          { D::Optical }, true },
+        { "acsource",     "cat_library", "nav_acsource",     m_tabAcSource,
+          { D::Acoustic, D::Underwater }, true },
+        { "oceanenv",     "cat_library", "nav_oceanenv",     m_tabOceanEnv,
+          { D::Underwater }, true },
+        { "roomac",       "cat_library", "nav_roomac",       m_tabRoomAc,
+          { D::Acoustic }, true },
+        { "soundproof",   "cat_library", "nav_soundproof",   m_tabSoundproof,
+          { D::Acoustic }, true },
+        { "outdoor",      "cat_library", "nav_outdoor",      m_tabOutdoor,
+          { D::Acoustic }, true },
+        { "cabin",        "cat_library", "nav_cabin",        m_tabCabin,
+          { D::Acoustic }, true },
+        { "ultrasound",   "cat_library", "nav_ultrasound",   m_tabUltrasound,
+          { D::Acoustic }, true },
+        // 解析
+        { "family",       "cat_solve", "nav_family",       m_tabFamily,       ALL, true  },
+        { "solver",       "cat_solve", "nav_solver",       m_tabSolverSel,    ALL, false },
+        { "verification", "cat_solve", "nav_verification", m_tabVerification, ALL, false },
+        { "optimize",     "cat_solve", "nav_optimize",     m_tabOptimize,     ALL, false },
+        { "tolerance",    "cat_solve", "nav_tolerance",    m_tabTolerance,    ALL, false },
+        { "scripts",      "cat_solve", "nav_scripts",      m_tabScripts,      ALL, false },
+        { "multiphysics", "cat_solve", "nav_multiphysics", m_tabMultiphysics, ALL, false },
+        { "tidy3d",       "cat_solve", "nav_tidy3d",       m_tabTidy3d,
+          { D::Optical }, false },
+        // ポスト
+        { "analysisgroups", "cat_post", "nav_analysisgroups", m_tabAnalysisGroups,
+          ALL, false },
+        { "datasets",     "cat_post", "nav_datasets",     m_tabDatasets,     ALL, true  },
+        { "h5viewer",     "cat_post", "nav_h5viewer",     m_tabH5Viewer,     ALL, true  },
+        { "interop",      "cat_post", "nav_interop",      m_tabInterop,      ALL, true  },
+        { "antennachar",  "cat_post", "nav_antennachar",  m_tabAntennaChar,
+          { D::EM }, false },
+        { "txline",       "cat_post", "nav_txline",       m_tabTxLine,
+          { D::EM }, false },
+        { "scattering",   "cat_post", "nav_scattering",   m_tabScattering,
+          { D::EM }, false },
+        { "circuit",      "cat_post", "nav_circuit",      m_tabCircuit,
+          { D::EM }, true },
+        { "post1",        "cat_post", "nav_post1",        m_tabPost1,        ALL, true  },
+        { "post2",        "cat_post", "nav_post2",        m_tabPost2,        ALL, false },
+        // ドメイン別カテゴリ
+        { "optical",      "cat_dom_optical",    "nav_optical",    m_tabOptical,
+          { D::Optical }, true },
+        { "acoustic",     "cat_dom_acoustic",   "nav_acoustic",   m_tabAcoustic,
+          { D::Acoustic }, true },
+        { "underwater",   "cat_dom_underwater", "nav_underwater", m_tabUnderwater,
+          { D::Underwater }, true },
+    };
+
+    for (const Def &d : defs) {
+        m_pages->addWidget(d.page);
+        m_nav->addEntry({ d.key, d.cat, d.label, d.page, d.domains, d.core });
+    }
+
+    connect(m_nav, &TabNavigator::pageSelected,
+            m_pages, &QStackedWidget::setCurrentWidget);
 }
 
 // ── Docks ───────────────────────────────────────────────────────────────────
@@ -307,39 +535,13 @@ void MainWindow::buildStatusBar()
 // ── Domain switching ────────────────────────────────────────────────────────
 void MainWindow::onDomainChanged(Domain d)
 {
-    auto removeTab = [this](QWidget *w) {
-        const int idx = m_leftTabs->indexOf(w);
-        if (idx >= 0) m_leftTabs->removeTab(idx);
-    };
-    removeTab(m_tabOptical);
-    removeTab(m_tabAcoustic);
-    removeTab(m_tabUnderwater);
-    removeTab(m_tabTidy3d);
-    removeTab(m_tabGlass);
-    removeTab(m_tabRoomAc);
-
-    switch (d) {
-    case Domain::Optical:
-        m_leftTabs->addTab(m_tabOptical, I18n::tr("t_optical"));
-        m_leftTabs->addTab(m_tabGlass, I18n::tr("t_glass"));
-        // tidy3d は光FDTD専用のクラウドバックエンド (独立ドメインではない)
-        m_leftTabs->addTab(m_tabTidy3d, I18n::tr("t_tidy3d"));
-        break;
-    case Domain::Acoustic:
-        m_leftTabs->addTab(m_tabAcoustic, I18n::tr("t_acoustic"));
-        m_leftTabs->addTab(m_tabRoomAc, I18n::tr("t_roomac"));
-        break;
-    case Domain::Underwater:
-        m_leftTabs->addTab(m_tabUnderwater, I18n::tr("t_underwater"));
-        break;
-    case Domain::EM:
-        break;
-    }
+    m_nav->rebuild(d, m_expert);
 
     // cloud submission is optical-only
     m_cloudAction->setEnabled(d == Domain::Optical);
     m_cloudAction->setText(d == Domain::Optical
         ? I18n::tr("tb_cloud") : I18n::tr("tb_cloud_optical_only"));
+    updateEngineItems(d);
 
     m_domainBar->setActiveDomain(d);
     m_viewport->setDomain(d);
@@ -349,6 +551,15 @@ void MainWindow::onDomainChanged(Domain d)
         "QToolButton#primaryAction { background: %1; color: white;"
         " font-weight: 600; border-radius: 3px; padding: 3px 10px; }")
         .arg(accentColor(d)));
+}
+
+void MainWindow::setUiLevel(bool expert)
+{
+    if (m_expert == expert) return;
+    m_expert = expert;
+    QSettings().setValue("ui/level", expert ? "expert" : "standard");
+    (expert ? m_levelExpert : m_levelStandard)->setChecked(true);
+    m_nav->rebuild(m_project->activeDomain(), m_expert);
 }
 
 void MainWindow::onProjectChanged()
@@ -423,11 +634,61 @@ void MainWindow::saveProjectAs()
     updateWindowTitle();
 }
 
+// ── Dialogs ─────────────────────────────────────────────────────────────────
+void MainWindow::showGallery()
+{
+    if (!m_galleryDialog) {
+        m_galleryDialog = new AppGalleryDialog(this);
+        connect(m_galleryDialog, &AppGalleryDialog::templatePicked, this,
+                [this](const QString &domain, const QString &name) {
+            // tidy3d グループは光ドメインのクラウドテンプレート
+            if (domain != "tidy3d")
+                m_project->setActiveDomain(domainFromKey(domain));
+            m_project->general().title = name;
+            m_project->touch();
+            updateWindowTitle();
+        });
+    }
+    m_galleryDialog->open();
+}
+
+void MainWindow::showResources()
+{
+    if (!m_resourceDialog)
+        m_resourceDialog = new ResourceDialog(this);
+    m_resourceDialog->open();
+}
+
+void MainWindow::showGettingStarted()
+{
+    if (!m_gettingStarted) {
+        m_gettingStarted = new GettingStartedDialog(this);
+        connect(m_gettingStarted, &GettingStartedDialog::jumpTo, this,
+                [this](const QString &target) {
+            if (target == "gallery")   showGallery();
+            else if (target == "run")  runSimulation();
+            else                       selectLeftTab(target);
+        });
+    }
+    m_gettingStarted->open();
+}
+
+void MainWindow::showCloudDialog()
+{
+    if (m_project->activeDomain() != Domain::Optical) return;
+    if (!m_cloudDialog) {
+        m_cloudDialog = new CloudDialog(m_project, this);
+        connect(m_cloudDialog, &CloudDialog::submitted,
+                this, &MainWindow::exportTidy3d);
+    }
+    m_cloudDialog->open();
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 RunConfig MainWindow::currentRunConfig() const
 {
     RunConfig cfg;
-    cfg.engine = Engine(m_engineBox->currentIndex());
+    cfg.engine = Engine(qMin(m_engineBox->currentIndex(), 3));
     cfg.mode = (m_modeBox->currentIndex() == 1) ? RunMode::Solver
              : (m_modeBox->currentIndex() == 2) ? RunMode::Post
                                                 : RunMode::Both;
@@ -451,10 +712,21 @@ void MainWindow::runSimulation()
         m_runner->stop();
         return;
     }
+    // エンジンに tidy3d Cloud を選択中はクラウド送信ダイアログへ
+    if (m_engineBox->currentIndex() > 3) {
+        showCloudDialog();
+        return;
+    }
     m_plotPanel->clearConvergence();
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
+
+    if (!m_runDialog)
+        m_runDialog = new RunDialog(m_runner, this);
+    m_runDialog->clearLog();
+    m_runDialog->show();
+
     m_runner->start(m_project, currentRunConfig());
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -476,11 +748,8 @@ void MainWindow::setDomain(Domain d)
 
 void MainWindow::selectLeftTab(const QString &titlePart)
 {
-    for (int i = 0; i < m_leftTabs->count(); ++i)
-        if (m_leftTabs->tabText(i).contains(titlePart, Qt::CaseInsensitive)) {
-            m_leftTabs->setCurrentIndex(i);
-            return;
-        }
+    if (m_nav->selectKey(titlePart)) return;
+    m_nav->selectByLabel(titlePart);
 }
 
 void MainWindow::show2DPlot()
@@ -555,6 +824,7 @@ void MainWindow::onRunnerProgress(int step, int total)
 void MainWindow::onRunnerLog(const QString &line)
 {
     m_rightDock->appendLog(line);
+    if (m_runDialog) m_runDialog->appendLine(line);
     // feed convergence points to the plot ("%7d %f %f")
     static const QRegularExpression stepRe(
         "^\\s*(\\d+)\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s*$");
