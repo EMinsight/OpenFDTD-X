@@ -37,9 +37,17 @@ cmake --build build -j
 | `-DBUILD_TESTS=ON`| ON  | `.ofd` ラウンドトリップ + ボクセル化 自己テスト (`ofdx_selftest`) |
 
 ### 実行
+本体 `openfdtd_x` と、水中音響の分離アプリ `openuwa` の 2 つが生成される
+(共有 GUI は `ofdx_gui` 静的ライブラリとして 1 度だけコンパイルされる)。
+
 ```bash
 # 既存プロジェクトを開く
 ./build/openfdtd_x tests/data/dipole.ofd
+
+# OpenUWA (水中音響 分離アプリ) — ドメイン切替を持たず水中固定。
+# 海洋環境 / 伝搬解析 (SSP/Bellhop/PE) / 音源・指向性 / H5アニメ /
+# ツール連携 の 5 タブを本体と同じ実装で再利用する。
+./build/openuwa tests/data/dipole.ofd
 
 # 起動ドメイン・言語を指定 (ja|en|both)
 ./build/openfdtd_x --domain optical --lang both

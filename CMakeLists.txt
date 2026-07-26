@@ -70,7 +70,6 @@ set(CORE_SOURCES
 )
 
 set(GUI_SOURCES
-    src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
     src/DomainBar.cpp
@@ -225,27 +224,52 @@ set(GUI_SOURCES
     resources/openfdtd.qrc
 )
 
-qt_add_executable(openfdtd_x ${CORE_SOURCES} ${GUI_SOURCES})
-
-target_include_directories(openfdtd_x PRIVATE src)
-target_link_libraries(openfdtd_x PRIVATE Qt6::Widgets)
+# ── 共有 GUI ライブラリ ─────────────────────────────────────────────────────
+# 本体 (openfdtd_x) と水中音響の分離アプリ (openuwa) が同じタブ実装を使うため、
+# main.cpp を除く全 GUI/コアを一度だけコンパイルして両方からリンクする。
+qt_add_library(ofdx_gui STATIC ${CORE_SOURCES} ${GUI_SOURCES})
+target_include_directories(ofdx_gui PUBLIC src)
+target_link_libraries(ofdx_gui PUBLIC Qt6::Widgets)
 
 if(USE_HDF5)
-    target_link_libraries(openfdtd_x PRIVATE ${HDF5_C_LIBRARIES})
-    target_include_directories(openfdtd_x PRIVATE ${HDF5_INCLUDE_DIRS})
-    target_compile_definitions(openfdtd_x PRIVATE OFD_USE_HDF5)
+    target_link_libraries(ofdx_gui PUBLIC ${HDF5_C_LIBRARIES})
+    target_include_directories(ofdx_gui PUBLIC ${HDF5_INCLUDE_DIRS})
+    target_compile_definitions(ofdx_gui PUBLIC OFD_USE_HDF5)
 endif()
 
 if(USE_LIBIGL)
-    target_link_libraries(openfdtd_x PRIVATE igl::core)
-    target_compile_definitions(openfdtd_x PRIVATE OFD_USE_LIBIGL)
+    target_link_libraries(ofdx_gui PUBLIC igl::core)
+    target_compile_definitions(ofdx_gui PUBLIC OFD_USE_LIBIGL)
 endif()
 
 if(MSVC)
-    target_compile_options(openfdtd_x PRIVATE /utf-8 /W3)
+    target_compile_options(ofdx_gui PRIVATE /utf-8 /W3)
 else()
-    target_compile_options(openfdtd_x PRIVATE -Wall -Wextra)
+    target_compile_options(ofdx_gui PRIVATE -Wall -Wextra)
 endif()
+
+# ── 本体 GUI ────────────────────────────────────────────────────────────────
+qt_add_executable(openfdtd_x src/main.cpp)
+target_link_libraries(openfdtd_x PRIVATE ofdx_gui)
+
+# ── OpenUWA: 水中音響 分離アプリ (OpenUWA-Underwater.html) ──────────────────
+# ドメインタブを持たず水中固定。共有タブ (海洋環境/伝搬解析/音源/H5/連携) を
+# そのまま再利用する派生シェル。
+qt_add_executable(openuwa
+    src/main_uwa.cpp
+    src/UnderwaterWindow.cpp
+    src/UnderwaterWindow.h
+)
+target_link_libraries(openuwa PRIVATE ofdx_gui)
+if(MSVC)
+    target_compile_options(openuwa PRIVATE /utf-8 /W3)
+else()
+    target_compile_options(openuwa PRIVATE -Wall -Wextra)
+endif()
+set_target_properties(openuwa PROPERTIES
+    WIN32_EXECUTABLE ON
+    MACOSX_BUNDLE    ON
+)
 
 set_target_properties(openfdtd_x PROPERTIES
     WIN32_EXECUTABLE ON
@@ -273,7 +297,7 @@ add_library(ofdx_acoustic_core STATIC
 target_include_directories(ofdx_acoustic_core PUBLIC src)
 
 # GUI (QtAcousticAdapter 経由) から C++14 コアを利用する
-target_link_libraries(openfdtd_x PRIVATE ofdx_acoustic_core)
+target_link_libraries(ofdx_gui PUBLIC ofdx_acoustic_core)
 set_target_properties(ofdx_acoustic_core PROPERTIES
     AUTOMOC               OFF
     CXX_STANDARD          14
