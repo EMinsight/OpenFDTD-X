@@ -840,10 +840,10 @@ void I18n::loadTables() {
     add("nav_family",       "🌳 姉妹ソルバ",  "🌳 Solver Family");
     add("nav_solver",       "ソルバ詳細",     "Solver detail");
     add("nav_verification", "🔍 検証",        "🔍 Verification");
-    add("nav_optimize",     "最適化",         "Optimization");
+    add("nav_optimize",     "最適化・スイープ", "Optimization && sweep");
     add("nav_tolerance",    "ばらつき",       "Tolerance");
     add("nav_scripts",      "スクリプト",     "Scripts");
-    add("nav_multiphysics", "連成",           "Multiphysics");
+    add("nav_multiphysics", "マルチフィジクス", "Multiphysics");
     add("nav_tidy3d",       "☁ tidy3d",       "☁ tidy3d");
     add("nav_analysisgroups", "解析グループ", "Analysis groups");
     add("nav_datasets",     "Datasets",       "Datasets");
@@ -871,6 +871,9 @@ void I18n::loadTables() {
         "New — Application Gallery");
     add("run_console",   "計算コンソール", "Run console");
     add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
+    add("run_device", "デバイス番号", "Device no.");
+    add("log_starting", "計算開始", "Starting computation");
+    add("log_validate", "入力データを検証中…", "Validating input data…");
 
     // 編集メニュー
     add("me_undo", "元に戻す", "Undo");

@@ -157,6 +157,10 @@ private:
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;
     QSpinBox  *m_threadsBox = nullptr;
+    QSpinBox  *m_deviceBox = nullptr;        // GPU デバイス番号
+    QLabel    *m_deviceLabel = nullptr;
+    QAction   *m_deviceAction = nullptr;     // ラベル/スピンの表示制御用
+    QAction   *m_deviceBoxAction = nullptr;
     QAction   *m_cloudAction = nullptr;
     QAction   *m_levelStandard = nullptr;
     QAction   *m_levelExpert = nullptr;

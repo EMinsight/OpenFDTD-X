@@ -351,6 +351,24 @@ void MainWindow::buildToolbar()
     m_threadsBox->setValue(QSettings().value("run/threads", 4).toInt());
     m_threadsBox->setMaximumWidth(70);
     tb->addWidget(m_threadsBox);
+
+    // GPU デバイス番号 — GPU 系エンジンのときだけ意味を持つので連動表示する
+    m_deviceLabel = new QLabel(" " + I18n::tr("run_device") + ": ", tb);
+    m_deviceBox = new QSpinBox(tb);
+    m_deviceBox->setRange(0, 15);
+    m_deviceBox->setValue(QSettings().value("run/device", 0).toInt());
+    m_deviceBox->setMaximumWidth(60);
+    m_deviceAction = tb->addWidget(m_deviceLabel);
+    m_deviceBoxAction = tb->addWidget(m_deviceBox);
+    const auto syncDevice = [this] {
+        const bool gpu = (m_engineBox->currentIndex() == int(Engine::GPU)
+                       || m_engineBox->currentIndex() == int(Engine::GPU_MPI));
+        m_deviceAction->setVisible(gpu);
+        m_deviceBoxAction->setVisible(gpu);
+    };
+    connect(m_engineBox, &QComboBox::currentIndexChanged, this,
+            [syncDevice](int) { syncDevice(); });
+    syncDevice();
 }
 
 // エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)
@@ -791,6 +809,8 @@ RunConfig MainWindow::currentRunConfig() const
              : (m_modeBox->currentIndex() == 2) ? RunMode::Post
                                                 : RunMode::Both;
     cfg.threads = m_threadsBox->value();
+    cfg.device = m_deviceBox->value();
+    QSettings().setValue("run/device", cfg.device);
     QSettings().setValue("run/threads", cfg.threads);
 
     // 光ドメイン: RCWA/BPM は姉妹カーネル (orcwa / obpm) を使う
@@ -817,6 +837,9 @@ void MainWindow::runSimulation()
     }
     m_plotPanel->clearConvergence();
     m_lastAeff_m2 = 0.0;
+    // モックの計算コンソール冒頭 2 行
+    m_rightDock->appendLog("=== " + I18n::tr("log_starting") + " ===");
+    m_rightDock->appendLog(I18n::tr("log_validate"));
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
