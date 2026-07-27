@@ -153,6 +153,10 @@ private:
             *m_tabH5Viewer = nullptr,     *m_tabInterop = nullptr,
             *m_tabAntennaChar = nullptr,  *m_tabTxLine = nullptr,
             *m_tabScattering = nullptr,   *m_tabCircuit = nullptr;
+    // 応用画面 (mock: em-applications / optical-applications)
+    QWidget *m_tabEmc = nullptr,      *m_tabSar = nullptr,
+            *m_tabChannel = nullptr,  *m_tabThinFilm = nullptr,
+            *m_tabIllum = nullptr,    *m_tabDisplayOpt = nullptr;
 
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;
