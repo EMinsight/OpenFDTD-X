@@ -844,6 +844,14 @@ void I18n::loadTables() {
     add("nav_tolerance",    "ばらつき",       "Tolerance");
     add("nav_scripts",      "スクリプト",     "Scripts");
     add("nav_multiphysics", "マルチフィジクス", "Multiphysics");
+    // 応用画面 (mock: em-applications.jsx / optical-applications.jsx)
+    add("nav_emc",        "📜 EMC/EMI",        "📜 EMC/EMI");
+    add("nav_sar",        "🧬 SAR/生体",       "🧬 SAR / bio");
+    add("nav_channel",    "📶 電波伝搬",       "📶 Propagation");
+    add("nav_thinfilm",   "🌈 多層膜コート",   "🌈 Thin-film coating");
+    add("nav_illum",      "💡 照明/測色",      "💡 Illumination / color");
+    // モックのラベルは「ディスプレAR/VR」で「イ」が欠落しているため補正
+    add("nav_displayopt", "👓 ディスプレイAR/VR", "👓 Display AR/VR");
     add("nav_tidy3d",       "☁ tidy3d",       "☁ tidy3d");
     add("nav_analysisgroups", "解析グループ", "Analysis groups");
     add("nav_datasets",     "Datasets",       "Datasets");

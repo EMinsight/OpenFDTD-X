@@ -193,6 +193,20 @@ set(GUI_SOURCES
     src/tabs/CircuitSolversTab.cpp
     src/tabs/CircuitSolversTab.h
 
+    # 応用画面 (em-applications.jsx / optical-applications.jsx)
+    src/tabs/EmcTab.cpp
+    src/tabs/EmcTab.h
+    src/tabs/SarTab.cpp
+    src/tabs/SarTab.h
+    src/tabs/ChannelTab.cpp
+    src/tabs/ChannelTab.h
+    src/tabs/ThinFilmTab.cpp
+    src/tabs/ThinFilmTab.h
+    src/tabs/IlluminationTab.cpp
+    src/tabs/IlluminationTab.h
+    src/tabs/DisplayOpticsTab.cpp
+    src/tabs/DisplayOpticsTab.h
+
     # ダイアログ (app.jsx / ansys-workflow.jsx のモーダル)
     src/dialogs/RunDialog.cpp
     src/dialogs/RunDialog.h

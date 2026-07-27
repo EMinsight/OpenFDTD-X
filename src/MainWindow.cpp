@@ -66,6 +66,13 @@
 #include "tabs/TransmissionLineTab.h"
 #include "tabs/ScatteringTab.h"
 #include "tabs/CircuitSolversTab.h"
+// 応用画面 (mock 更新分)
+#include "tabs/EmcTab.h"
+#include "tabs/SarTab.h"
+#include "tabs/ChannelTab.h"
+#include "tabs/ThinFilmTab.h"
+#include "tabs/IlluminationTab.h"
+#include "tabs/DisplayOpticsTab.h"
 // ダイアログ
 #include "dialogs/RunDialog.h"
 #include "dialogs/CloudDialog.h"
@@ -488,6 +495,12 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabTxLine       = new TransmissionLineTab(P);
     m_tabScattering   = new ScatteringTab(P);
     m_tabCircuit      = new CircuitSolversTab(P);
+    m_tabEmc          = new EmcTab(P);
+    m_tabSar          = new SarTab(P);
+    m_tabChannel      = new ChannelTab(P);
+    m_tabThinFilm     = new ThinFilmTab(P);
+    m_tabIllum        = new IlluminationTab(P);
+    m_tabDisplayOpt   = new DisplayOpticsTab(P);
     // ── ドメイン別 ──
     m_tabOptical      = new OpticalTab(P);
     m_tabAcoustic     = new AcousticTab(P);
@@ -527,6 +540,12 @@ void MainWindow::buildLeftNav(QWidget *parent)
           { D::Optical }, false },
         { "photonics",    "cat_library", "nav_photonics",    m_tabPhotonics,
           { D::Optical }, true },
+        { "thinfilm",     "cat_library", "nav_thinfilm",     m_tabThinFilm,
+          { D::Optical }, true },
+        { "illum",        "cat_library", "nav_illum",        m_tabIllum,
+          { D::Optical }, true },
+        { "displayopt",   "cat_library", "nav_displayopt",   m_tabDisplayOpt,
+          { D::Optical }, true },
         { "acsource",     "cat_library", "nav_acsource",     m_tabAcSource,
           { D::Acoustic, D::Underwater }, true },
         { "oceanenv",     "cat_library", "nav_oceanenv",     m_tabOceanEnv,
@@ -564,6 +583,12 @@ void MainWindow::buildLeftNav(QWidget *parent)
         { "scattering",   "cat_post", "nav_scattering",   m_tabScattering,
           { D::EM }, false },
         { "circuit",      "cat_post", "nav_circuit",      m_tabCircuit,
+          { D::EM }, true },
+        { "emc",          "cat_post", "nav_emc",          m_tabEmc,
+          { D::EM }, true },
+        { "sar",          "cat_post", "nav_sar",          m_tabSar,
+          { D::EM }, true },
+        { "channel",      "cat_post", "nav_channel",      m_tabChannel,
           { D::EM }, true },
         { "post1",        "cat_post", "nav_post1",        m_tabPost1,        ALL, true  },
         { "post2",        "cat_post", "nav_post2",        m_tabPost2,        ALL, false },
