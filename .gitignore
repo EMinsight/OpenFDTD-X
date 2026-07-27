@@ -3,6 +3,10 @@ build/
 build-*/
 cmake-build-*/
 
+# Compiler artifacts (12MB のプリコンパイル済みヘッダ混入事故の前例あり)
+*.gch
+*.pch
+
 # Qt / moc artifacts (if any leak outside build/)
 *_autogen/
 moc_*.cpp
