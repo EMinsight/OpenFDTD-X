@@ -32,6 +32,13 @@ const bool s_i18n = [] {
     I18n::reg("mph_c_note", "備考", "Note");
     I18n::reg("mph_none", "このドメインに対応する連成モジュールはありません",
               "No coupling module is available for this domain");
+    // 連成モジュールの正式名称 (i18n.js の mp_*) — 一覧行のツールチップに使う。
+    // 行の表示テキスト自体は mock (ansys-tabs.jsx) の badge + name をそのまま使う
+    // ため、ここでは重複表示させない。en は i18n.js に無いので同流儀で補う。
+    I18n::reg("mp_charge",  "CHARGE (半導体)",     "CHARGE (semiconductor)");
+    I18n::reg("mp_heat",    "HEAT (熱)",           "HEAT (thermal)");
+    I18n::reg("mp_stress",  "STRESS (応力)",       "STRESS (mechanical)");
+    I18n::reg("mp_circuit", "回路 (INTERCONNECT)", "Circuit (INTERCONNECT)");
 
     I18n::reg("mph_scheme", "連成方式", "Coupling scheme");
     I18n::reg("mph_weak", "弱連成 (順次)", "Weak (sequential)");
@@ -105,31 +112,32 @@ unsigned domainBit(ofd::Domain d)
     }
 }
 
-// mock の modules[] をそのまま転記
+// mock の modules[] をそのまま転記 (labelKey = i18n.js の正式名称キー / 無しは nullptr)
 struct ModuleDef {
     bool ck;
     const char *badge, *name, *coup, *note;
     unsigned domains;
+    const char *labelKey;
 };
 const ModuleDef kModules[9] = {
     { true,  "CHARGE",  "半導体電子輸送", "FDTD ↔ CHARGE",
-      "電流→屈折率変調 (プラズマ効果)", OPT },
+      "電流→屈折率変調 (プラズマ効果)", OPT,      "mp_charge"  },
     { true,  "HEAT",    "熱伝導",         "FDTD → HEAT",
-      "光吸収→温度上昇→熱光学",         OPT | EM },
+      "光吸収→温度上昇→熱光学",         OPT | EM, "mp_heat"    },
     { false, "STRESS",  "応力解析",       "STRESS → FDTD",
-      "応力光学効果",                   OPT },
+      "応力光学効果",                   OPT,      "mp_stress"  },
     { false, "RF",      "回路",           "FDTD ↔ Circuit",
-      "SPICE/INTERCONNECT 連携",        EM | OPT },
+      "SPICE/INTERCONNECT 連携",        EM | OPT, "mp_circuit" },
     { false, "CFD",     "流体",           "CFD → 音響",
-      "流体騒音 (Aeroacoustics)",       AC },
+      "流体騒音 (Aeroacoustics)",       AC,       nullptr      },
     { false, "BIOHEAT", "生体熱輸送",     "FDTD → BioHeat",
-      "SAR→温度上昇 (Pennes方程式)",    EM },
+      "SAR→温度上昇 (Pennes方程式)",    EM,       nullptr      },
     { false, "VIBRO",   "構造振動",       "VIBRO ↔ Acoustic",
-      "振動音響 (車体/楽器)",           AC | UW },
+      "振動音響 (車体/楽器)",           AC | UW,  nullptr      },
     { false, "FSI",     "流体構造連成",   "FSI ↔ Acoustic",
-      "波浪・水中構造振動",             UW },
+      "波浪・水中構造振動",             UW,       nullptr      },
     { false, "OCEAN",   "海洋環境",       "OCEAN → Acoustic",
-      "水温/塩分/流れ→音速分布",        UW },
+      "水温/塩分/流れ→音速分布",        UW,       nullptr      },
 };
 
 QLabel *hintLabel(const QString &text, QWidget *parent)
@@ -348,9 +356,15 @@ void MultiphysicsTab::rebuildDomain()
             ck->setCheckState(m.ck ? Qt::Checked : Qt::Unchecked);
             ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
             m_modules->setItem(r, 0, ck);
-            m_modules->setCellWidget(r, 1,
-                moduleCell(QString::fromUtf8(m.badge),
-                           QString::fromUtf8(m.name), m.ck));
+            QWidget *cell = moduleCell(QString::fromUtf8(m.badge),
+                                       QString::fromUtf8(m.name), m.ck);
+            // 正式名称 (mp_charge / mp_heat / mp_stress / mp_circuit) を行のヒントに
+            if (m.labelKey) {
+                const QString label = I18n::tr(m.labelKey);
+                cell->setToolTip(label);
+                ck->setToolTip(label);
+            }
+            m_modules->setCellWidget(r, 1, cell);
             m_modules->setItem(r, 2, new QTableWidgetItem(QString::fromUtf8(m.coup)));
             m_modules->setItem(r, 3, new QTableWidgetItem(QString::fromUtf8(m.note)));
             ++r;

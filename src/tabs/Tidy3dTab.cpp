@@ -38,6 +38,13 @@ const bool s_i18n = [] {
     I18n::reg("t3_done", "完了", "Done");
     I18n::reg("t3_running", "実行中", "Running");
     I18n::reg("t3_failed", "失敗", "Failed");
+    I18n::reg("t3_status", "ジョブ状態", "Job status");
+    I18n::reg("t3_download", "結果ダウンロード", "Download results");
+    I18n::reg("t3_pending", "待機中", "Pending");
+    // t3_export は I18n.cpp 側が「Pythonスクリプト生成…」で先取りしており
+    // (reg は既存優先 / I18n.cpp は編集不可)、このタブのボタンだけ mock 表記に
+    // 揃えるためタブ固有キーで持つ。
+    I18n::reg("t3x_export", "tidy3dへエクスポート", "Export to tidy3d");
     // ☁ 概要
     I18n::reg("t3x_cloud_section", "tidy3d クラウド計算 (光FDTD専用バックエンド)",
               "tidy3d cloud compute (photonic-FDTD-only backend)");
@@ -328,7 +335,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     se->vbox()->addWidget(m_dft);
 
     // mock: "📤 {t3_export} (.py)" (primary) + "プレビュー (.json)"
-    auto *exportBtn = new QPushButton("📤 " + I18n::tr("t3_export") + " (.py)", se);
+    auto *exportBtn = new QPushButton("📤 " + I18n::tr("t3x_export") + " (.py)", se);
     exportBtn->setStyleSheet("font-weight:600;");
     auto *previewBtn = new QPushButton(I18n::tr("t3x_preview"), se);
     auto *expRow = new QHBoxLayout();
@@ -354,6 +361,11 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     m_priority->addItems({ I18n::tr("t3x_prio_normal"),
                            I18n::tr("t3x_prio_high") });
     sj->form()->addRow(I18n::tr("t3x_priority"), m_priority);
+    // ジョブ状態: GUI から直接送信はしないので既定は「待機中」
+    auto *stateRow = new QHBoxLayout();
+    stateRow->addWidget(makeBadge(I18n::tr("t3_pending"), "warn", sj));
+    stateRow->addStretch(1);
+    sj->form()->addRow(I18n::tr("t3_status"), stateRow);
     auto *submitBtn = new QPushButton("🚀 " + I18n::tr("t3_submit"), sj);
     submitBtn->setStyleSheet("font-weight:600;");
     auto *pauseBtn = new QPushButton(I18n::tr("t3x_pause"), sj);
@@ -379,8 +391,12 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
                                               kJobs[r].kind,
                                               QString::fromUtf8(kJobs[r].extra)));
         m_jobs->setItem(r, 3, monoItem(QString::fromUtf8(kJobs[r].time)));
-        m_jobs->setCellWidget(r, 4, new QPushButton(
-                                        QString::fromUtf8(kJobs[r].btn), m_jobs));
+        // mock の行ボタンは "DL" / "…" / "log"。DL は結果ダウンロードなので
+        // 正式名称 (t3_download) をヒントに出す。
+        auto *rowBtn = new QPushButton(QString::fromUtf8(kJobs[r].btn), m_jobs);
+        if (qstrcmp(kJobs[r].btn, "DL") == 0)
+            rowBtn->setToolTip(I18n::tr("t3_download"));
+        m_jobs->setCellWidget(r, 4, rowBtn);
     }
     m_jobs->resizeRowsToContents();
     sl->vbox()->addWidget(m_jobs);
@@ -436,7 +452,7 @@ void Tidy3dTab::apply()
 void Tidy3dTab::exportScript()
 {
     const QString path = QFileDialog::getSaveFileName(
-        this, I18n::tr("t3_export"),
+        this, I18n::tr("t3x_export"),
         m_p->tidy3d().projectName + ".py", "Python (*.py)");
     if (path.isEmpty()) return;
     QString err;

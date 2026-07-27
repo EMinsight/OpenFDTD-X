@@ -9,6 +9,7 @@ class QSpinBox;
 class QComboBox;
 class QCheckBox;
 class QDoubleSpinBox;
+class QLabel;
 class QWidget;
 
 namespace ofd {
@@ -38,6 +39,10 @@ private:
     QLineEdit *m_converg;
     SectionBox *m_abcSection;        // PML 行の表示切替に使う
     QComboBox *m_abc;
+    // mock の Seg にある「Mur 2次」。.ofd の abc は 0/1 のみなので UI 専用の
+    // ローカル状態として持ち、保存時は Mur 1次 (abc=0) に落とす。
+    bool       m_mur2 = false;
+    QLabel    *m_mur2Note = nullptr;  // 保存されない旨の注記
     QSpinBox  *m_pmlL;
     QDoubleSpinBox *m_pmlM;
     QLineEdit *m_pmlR0;

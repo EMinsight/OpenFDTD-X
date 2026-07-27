@@ -30,9 +30,12 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_acoustic",  "音響",                        "Acoustic");
     ofd::I18n::reg("cl_source",    "波源",                        "Sources");
     ofd::I18n::reg("cl_monitor",   "モニター",                    "Monitors");
+    ofd::I18n::reg("cl_imported",  "取込モデル",                  "Imported models");
     ofd::I18n::reg("cl_components","コンポーネント",              "Components");
     ofd::I18n::reg("cl_drag_hint", "ドラッグでビューポートへ配置",
                    "Drag into the viewport to place");
+    ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
+    ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
     return true;
 }();
@@ -107,6 +110,9 @@ const Component kComponents[] = {
     { "monitor",  "▶",  "Movie monitor",        "動画" },
     { "monitor",  "≡",  "Flux monitor",         "電力 (Poynting)" },
     { "monitor",  "⌛", "Time monitor",         "時間応答" },
+    // Imported models — 取込モデル (GeometryTab の STL/OBJ 取込 と LayoutGDS に対応)
+    { "imported", "⧉",  "Imported mesh",        "取込3Dモデル (STL/OBJ)" },
+    { "imported", "▤",  "GDSII layout",         "レイアウト取込 (GDS)" },
 };
 
 // カテゴリボタン定義 ("all" + 9 カテゴリ)
@@ -122,18 +128,21 @@ const Cat kCats[] = {
     { "acoustic", "cl_acoustic", "♫" },
     { "source",   "cl_source",   "⚡" },
     { "monitor",  "cl_monitor",  "⊙" },
+    { "imported", "cl_imported", "⧉" },
 };
 
 // ドメインに関係するカテゴリのみ表示 (それ以外は非表示)
+// 取込モデル (imported) は形状取込なのでどのドメインでも意味を持つ。
 QStringList allowedCats(const QString &d)
 {
     if (d == "em")
-        return { "basic", "antenna", "metal", "source", "monitor" };
+        return { "basic", "antenna", "metal", "source", "monitor", "imported" };
     if (d == "optical")
-        return { "basic", "photonic", "grating", "lens", "metal", "source", "monitor" };
+        return { "basic", "photonic", "grating", "lens", "metal", "source",
+                 "monitor", "imported" };
     if (d == "acoustic" || d == "underwater")
-        return { "basic", "acoustic", "source", "monitor" };
-    return { "basic", "source", "monitor" };
+        return { "basic", "acoustic", "source", "monitor", "imported" };
+    return { "basic", "source", "monitor", "imported" };
 }
 
 // 許可カテゴリ内での優先順 (グリッドの並び)
@@ -187,6 +196,12 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     m_gridSection->vbox()->addLayout(m_grid);
     v->addWidget(m_gridSection);
 
+    // お気に入り (カードの ☆ で登録/解除 — mock の cl_favorites)
+    m_favSection = new SectionBox(I18n::tr("cl_favorites"), body);
+    m_favRow = new QHBoxLayout();
+    m_favSection->vbox()->addLayout(m_favRow);
+    v->addWidget(m_favSection);
+
     // 最近使用
     auto *sRecent = new SectionBox(I18n::tr("cl_recent"), body);
     auto *recentRow = new QHBoxLayout();
@@ -215,7 +230,31 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     connect(project, &Project::loaded,
             this, &ComponentsTab::rebuildCats);
 
+    rebuildFavorites();
     rebuildCats();
+}
+
+// お気に入りチップ行 (空なら登録方法のヒントを出す)
+void ComponentsTab::rebuildFavorites()
+{
+    while (QLayoutItem *it = m_favRow->takeAt(0)) {
+        delete it->widget();
+        delete it;
+    }
+    if (m_favorites.isEmpty()) {
+        auto *hint = new QLabel(I18n::tr("cl_fav_hint"), m_favSection);
+        hint->setStyleSheet("font-size:11px; color:gray;");
+        m_favRow->addWidget(hint);
+    } else {
+        for (const QString &name : m_favorites) {
+            auto *chip = new QLabel(QStringLiteral("★ ") + name, m_favSection);
+            chip->setCursor(Qt::PointingHandCursor);
+            chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
+                                "padding:1px 6px; font-size:11px;");
+            m_favRow->addWidget(chip);
+        }
+    }
+    m_favRow->addStretch(1);
 }
 
 // ドメインが変わった → 表示カテゴリボタンを作り直し、選択をリセット
@@ -298,10 +337,28 @@ void ComponentsTab::rebuildGrid()
         top->setSpacing(6);
         auto *ic = new QLabel(QString::fromUtf8(c.icon), card);
         ic->setStyleSheet(QStringLiteral("font-size:16px; color:%1;").arg(acc));
-        auto *nm = new QLabel(QString::fromUtf8(c.name), card);
+        const QString name = QString::fromUtf8(c.name);
+        auto *nm = new QLabel(name, card);
         nm->setStyleSheet("font-size:11px; font-weight:600;");
         top->addWidget(ic);
         top->addWidget(nm, 1);
+        // ☆ / ★ = お気に入り登録トグル
+        auto *fav = new QPushButton(m_favorites.contains(name)
+                                        ? QStringLiteral("★") : QStringLiteral("☆"),
+                                    card);
+        fav->setFlat(true);
+        fav->setCursor(Qt::PointingHandCursor);
+        fav->setToolTip(I18n::tr("cl_favorites"));
+        fav->setFixedWidth(20);
+        fav->setStyleSheet("border:none; font-size:12px;");
+        connect(fav, &QPushButton::clicked, this, [this, name, fav] {
+            if (m_favorites.contains(name)) m_favorites.removeAll(name);
+            else                            m_favorites.append(name);
+            fav->setText(m_favorites.contains(name) ? QStringLiteral("★")
+                                                    : QStringLiteral("☆"));
+            rebuildFavorites();
+        });
+        top->addWidget(fav);
         cv->addLayout(top);
         auto *sub = new QLabel(QString::fromUtf8(c.sub), card);
         sub->setStyleSheet("font-size:10px; color:gray;");

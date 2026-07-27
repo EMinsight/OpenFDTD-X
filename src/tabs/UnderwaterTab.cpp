@@ -74,8 +74,18 @@ const bool s_i18nUnderwater = [] {
     I18n::reg("uwx_calc_value", "(計算値)", "(computed)");
     I18n::reg("uwx_sofar_depth", "→ SOFARチャネル深度 ~%1m",
               "→ SOFAR channel axis ≈ %1 m");
+    // 海洋環境 — 水温はモック (i18n.js uw_temp) が「水温 [℃] / Water temp [℃]」。
+    // I18n.cpp の共通 uw_temp は旧表記なので、表示だけモックに合わせる。
+    I18n::reg("uwx_temp", "水温 [℃]", "Water temp [℃]");
     // 海底特性
     I18n::reg("uwx_bottom_alpha", "吸収係数 α [dB/λ]", "Absorption α [dB/λ]");
+    // 底質の種類 — モック (tabs.jsx の 底質 セレクタ) の 4 種 + 既存 .ofdx 値。
+    I18n::reg("uwx_bottom_sand", "砂", "Sand");
+    I18n::reg("uwx_bottom_silt", "シルト", "Silt");
+    I18n::reg("uwx_bottom_clay", "粘土", "Clay");
+    I18n::reg("uwx_bottom_rock", "岩盤", "Rock");
+    I18n::reg("uwx_bottom_mud", "泥", "Mud");
+    I18n::reg("uwx_bottom_gravel", "礫", "Gravel");
     // 海面
     I18n::reg("uwx_surface_section", "海面", "Sea surface");
     I18n::reg("uwx_wave_height", "波高 [m]", "Wave height [m]");
@@ -304,7 +314,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_salinity = new QDoubleSpinBox(se);
     m_salinity->setRange(0, 45);
     m_sofar = new QCheckBox(se);
-    se->form()->addRow(I18n::tr("uw_temp"), m_temp);
+    se->form()->addRow(I18n::tr("uwx_temp"), m_temp);
     se->form()->addRow(I18n::tr("uw_salinity"), m_salinity);
     // 基準音速 c₀ — 水温・塩分からの計算値 (mock の「基準音速 c₀ … (計算値)」)
     m_c0 = new QLabel(se);
@@ -341,7 +351,20 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     // seabed
     auto *sb = new SectionBox(I18n::tr("uw_bottom"), body);
     m_bottomType = new QComboBox(sb);
-    m_bottomType->addItems({ "sand", "mud", "gravel", "rock" });
+    // 表示ラベルはモックの語彙 (砂/シルト/粘土/岩盤)、保存値は .ofdx の
+    // bottom_type と互換の英小文字コード (OceanEnvironmentTab も "sand"/"mud" を
+    // 書く) を itemData に持たせる。既存コード mud/gravel はモック外だが温存。
+    struct BottomKind { const char *code; const char *key; };
+    static const BottomKind kBottoms[] = {
+        { "sand",   "uwx_bottom_sand"   },   // ← モックの 4 種 (この順)
+        { "silt",   "uwx_bottom_silt"   },
+        { "clay",   "uwx_bottom_clay"   },
+        { "rock",   "uwx_bottom_rock"   },
+        { "mud",    "uwx_bottom_mud"    },   // ← 既存 .ofdx 値 (モック外)
+        { "gravel", "uwx_bottom_gravel" }
+    };
+    for (const BottomKind &b : kBottoms)
+        m_bottomType->addItem(I18n::tr(b.key), QString::fromLatin1(b.code));
     m_bottomC = new QDoubleSpinBox(sb);
     m_bottomC->setRange(1000, 6000);
     m_bottomRho = new QDoubleSpinBox(sb);
@@ -470,7 +493,7 @@ void UnderwaterTab::apply()
     u.waterTemp_C = m_temp->value();
     u.salinity_psu = m_salinity->value();
     u.sofar = m_sofar->isChecked();
-    u.bottomType = m_bottomType->currentText();
+    u.bottomType = m_bottomType->currentData().toString();   // 表示名ではなくコード
     u.bottomC_mps = m_bottomC->value();
     u.bottomRho_kgm3 = m_bottomRho->value();
     u.sonarFreq_kHz = m_sonarFreq->value();
@@ -536,7 +559,13 @@ void UnderwaterTab::refresh()
     m_temp->setValue(u.waterTemp_C);
     m_salinity->setValue(u.salinity_psu);
     m_sofar->setChecked(u.sofar);
-    m_bottomType->setCurrentText(u.bottomType);
+    // .ofdx の底質コード → コンボ。未知コードは項目として足し、値を落とさない。
+    int bi = m_bottomType->findData(u.bottomType);
+    if (bi < 0 && !u.bottomType.isEmpty()) {
+        m_bottomType->addItem(u.bottomType, u.bottomType);
+        bi = m_bottomType->count() - 1;
+    }
+    m_bottomType->setCurrentIndex(bi < 0 ? 0 : bi);
     m_bottomC->setValue(u.bottomC_mps);
     m_bottomRho->setValue(u.bottomRho_kgm3);
     m_sonarFreq->setValue(u.sonarFreq_kHz);

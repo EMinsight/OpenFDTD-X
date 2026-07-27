@@ -93,6 +93,13 @@ const bool s_i18n = [] {
     I18n::reg("opz_pause", "⏸ 一時停止", "⏸ Pause");
     I18n::reg("opz_stop", "■ 停止", "■ Stop");
     I18n::reg("opz_target", "ジョブ実行先", "Job target");
+    // mock i18n の opt_pareto (多目的 FoM の結果ビュー)。en テーブルには
+    // 最適化ブロックが無いので英語は "Pareto front" とする。
+    I18n::reg("opz_pareto", "Paretoフロント", "Pareto front");
+    I18n::reg("opz_pareto_tip",
+              "多目的 FoM のとき非劣解集合 (Paretoフロント) を出力します。",
+              "Outputs the non-dominated set (Pareto front) for a "
+              "multi-objective FoM.");
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
@@ -296,6 +303,11 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
 
     m_target = new QComboBox(sRun);
     sRun->form()->addRow(I18n::tr("opz_target"), m_target);
+    // Paretoフロント出力 (mock i18n の opt_pareto)。対応する Project フィールドが
+    // 無いためローカル state のみ。
+    m_pareto = new QCheckBox(I18n::tr("opz_pareto"), sRun);
+    m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
+    sRun->vbox()->addWidget(m_pareto);
     v->addWidget(sRun);
 
     v->addStretch(1);

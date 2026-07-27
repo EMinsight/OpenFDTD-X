@@ -12,6 +12,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <cmath>
+
 using namespace ofd;
 
 // mock (tabs.jsx MaterialTab) にしか無かった文言。接頭辞は本タブ専用の ma_。
@@ -42,9 +44,52 @@ const bool s_i18nMaterial = [] {
               "ガラスカタログ / 物性値エクスプローラの取込機能をご利用ください。",
               "%1: direct online library import is not available yet. Use the glass "
               "catalog / material explorer import instead.");
+    // 光ドメインの列見出し (mock: mat_n / mat_k)
+    I18n::reg("ma_n", "n", "n");
+    I18n::reg("ma_k", "k (消衰係数)", "k (ext. coef.)");
+    I18n::reg("ma_nk_tip",
+              "n / k は光解析の中心波長 %1 nm で .ofd の εr / σ に換算して "
+              "保存します (εr = n² − k², σ = 2nkωε₀)。",
+              "n / k are converted to the .ofd εr / σ at the optical centre "
+              "wavelength %1 nm (εr = n² − k², σ = 2nkωε₀).");
     return true;
 }();
+
+// ── 光ドメインの n / k ↔ .ofd の εr / σ 換算 ────────────────────────────────
+// 複素誘電率 εc = (n − jk)² = εr − jσ/(ωε₀) より
+//   εr = n² − k²,  σ = 2nk·ω·ε₀        (ω = 2πc/λc)
+// λc は光解析の中心波長 (OpticalOpts::lambdaMin/Max [nm])。
+// 逆変換は B = σ/(ωε₀) として n = √((εr + √(εr²+B²))/2), k = B/(2n)。
+const double kPi   = 3.14159265358979323846;
+const double kC0   = 2.99792458e8;      // [m/s]
+const double kEps0 = 8.8541878128e-12;  // [F/m]
+
+double centerLambdaNm(const OpticalOpts &o)
+{
+    const double lam = 0.5 * (o.lambdaMin + o.lambdaMax);
+    return (lam > 0) ? lam : 0.0;
 }
+
+double omegaOf(const OpticalOpts &o)
+{
+    const double lam = centerLambdaNm(o);
+    return (lam > 0) ? (2.0 * kPi * kC0 / (lam * 1e-9)) : 0.0;
+}
+
+void epsSgmToNk(double epsr, double esgm, double omega, double &n, double &k)
+{
+    const double b = (omega > 0) ? esgm / (omega * kEps0) : 0.0;
+    const double r = std::sqrt(epsr * epsr + b * b);
+    n = std::sqrt(qMax(0.0, 0.5 * (epsr + r)));
+    k = (n > 0) ? b / (2.0 * n) : 0.0;
+}
+
+void nkToEpsSgm(double n, double k, double omega, double &epsr, double &esgm)
+{
+    epsr = n * n - k * k;
+    esgm = (omega > 0) ? 2.0 * n * k * omega * kEps0 : 0.0;
+}
+} // namespace
 
 MaterialTab::MaterialTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
@@ -193,22 +238,35 @@ bool MaterialTab::isOpticalDomain() const
 }
 
 // ドメイン別の見出し (mock の isOpt / isAc 分岐)
+// 光ドメインは mock どおり n / k (消衰係数) 列にする (通常媒質の行のみ換算)。
 void MaterialTab::updateColumns()
 {
     const bool ac = isAcousticDomain();
+    const bool opt = isOpticalDomain();
     m_mats->setHorizontalHeaderLabels(ac
         ? QStringList{ I18n::tr("ma_type"), I18n::tr("ma_rho"),
                        I18n::tr("ma_c_sound"), I18n::tr("ma_absorption"),
                        I18n::tr("ma_impedance"), I18n::tr("ma_name"),
                        I18n::tr("ma_id") }
+        : opt
+        ? QStringList{ I18n::tr("ma_type"), I18n::tr("ma_n"), I18n::tr("ma_k"),
+                       QString::fromUtf8("μr / b"), QString::fromUtf8("σm / c"),
+                       I18n::tr("ma_name"), I18n::tr("ma_id") }
         : QStringList{ I18n::tr("ma_type"), QString::fromUtf8("εr / ε∞"),
                        QString::fromUtf8("σ / a"), QString::fromUtf8("μr / b"),
                        QString::fromUtf8("σm / c"), I18n::tr("ma_name"),
                        I18n::tr("ma_id") });
+    if (opt) {
+        // n / k と .ofd の εr / σ の関係を見出しの tooltip で明示する
+        const QString tip = I18n::tr("ma_nk_tip")
+            .arg(QString::number(centerLambdaNm(m_p->optical()), 'f', 1));
+        for (int c : { 1, 2 })
+            if (auto *h = m_mats->horizontalHeaderItem(c)) h->setToolTip(tip);
+    }
     m_matSection->setTitle(I18n::tr("ma_section")
-        + (isOpticalDomain() ? I18n::tr("ma_opt_suffix")
-                             : ac ? I18n::tr("ma_ac_suffix") : QString()));
-    m_dispHint->setVisible(isOpticalDomain());
+        + (opt ? I18n::tr("ma_opt_suffix")
+               : ac ? I18n::tr("ma_ac_suffix") : QString()));
+    m_dispHint->setVisible(opt);
 }
 
 void MaterialTab::applyMaterials()
@@ -232,6 +290,12 @@ void MaterialTab::applyMaterials()
             m.ae   = cell(2).toDouble();
             m.be   = cell(3).toDouble();
             m.ce   = cell(4).toDouble();
+        } else if (isOpticalDomain()) {
+            // 光ドメイン: n / k 入力 → .ofd の εr / σ へ換算 (書式は不変)
+            nkToEpsSgm(cell(1).toDouble(), cell(2).toDouble(),
+                       omegaOf(m_p->optical()), m.epsr, m.esgm);
+            m.amur = cell(3).toDouble();
+            m.msgm = cell(4).toDouble();
         } else {
             m.epsr = cell(1).toDouble();
             m.esgm = cell(2).toDouble();
@@ -267,6 +331,8 @@ void MaterialTab::refresh()
     m_updating = true;
     updateColumns();
     const bool ac = isAcousticDomain();
+    const bool opt = isOpticalDomain();
+    const double omega = opt ? omegaOf(m_p->optical()) : 0.0;
 
     const auto &mats = m_p->materials();
     m_mats->setRowCount(mats.size());
@@ -284,9 +350,13 @@ void MaterialTab::refresh()
         });
         m_mats->setCellWidget(r, 0, type);
 
+        // 光ドメインの通常媒質は εr / σ を n / k に戻して見せる (mock の列)
+        const bool nk = (opt && m.type != 2);
+        double nOpt = 0.0, kOpt = 0.0;
+        if (nk) epsSgmToNk(m.epsr, m.esgm, omega, nOpt, kOpt);
         const double vals[4] = {
-            ac ? m.rho        : m.type == 2 ? m.einf : m.epsr,
-            ac ? m.soundSpeed : m.type == 2 ? m.ae   : m.esgm,
+            ac ? m.rho        : nk ? nOpt : m.type == 2 ? m.einf : m.epsr,
+            ac ? m.soundSpeed : nk ? kOpt : m.type == 2 ? m.ae   : m.esgm,
             ac ? m.absorption : m.type == 2 ? m.be   : m.amur,
             ac ? m.rho * m.soundSpeed : m.type == 2 ? m.ce : m.msgm };
         for (int c = 0; c < 4; ++c) {

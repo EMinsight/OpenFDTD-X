@@ -28,6 +28,9 @@ const bool s_i18n = [] {
     I18n::reg("sox_src_type", "波源の種類 / Source type", "Source type");
     I18n::reg("sox_feed", "給電点", "Feed");
     I18n::reg("sox_plane", "平面波入射", "Plane wave");
+    // 給電点表の位相列 (mock: src_phase)。.ofd feed 行の 6 番目 = 位相 [deg]
+    // (Feed::delay) と同じ値なので、見出しをモックの語に合わせる。
+    I18n::reg("sox_phase", "位相 [°]", "Phase [°]");
     // 波形 / Waveform
     I18n::reg("sox_waveform", "波形", "Waveform");
     I18n::reg("sox_pulse", "ガウシアンパルス", "Gaussian pulse");
@@ -109,7 +112,10 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
     m_feeds = new QTableWidget(0, 7, sf);
     m_feeds->setHorizontalHeaderLabels({
         I18n::tr("ma_dir"), "X [m]", "Y [m]", "Z [m]",
-        I18n::tr("so_volt"), I18n::tr("so_delay"), I18n::tr("so_z0") });
+        I18n::tr("so_volt"), I18n::tr("sox_phase"), I18n::tr("so_z0") });
+    // 旧見出し「遅延 [deg]」は同じ量 (feed 行の delay) — tooltip で補足
+    if (auto *h = m_feeds->horizontalHeaderItem(5))
+        h->setToolTip(I18n::tr("so_delay"));
     m_feeds->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_feeds->verticalHeader()->setDefaultSectionSize(24);
     m_feeds->setMinimumHeight(110);

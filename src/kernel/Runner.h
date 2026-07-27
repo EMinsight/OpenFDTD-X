@@ -31,6 +31,7 @@ struct RunConfig {
     RunMode mode      = RunMode::Both;
     int     threads   = 4;       // OpenMP threads
     int     processes = 2;       // MPI processes
+    int     device    = 0;       // GPU device no. (CUDA_VISIBLE_DEVICES)
     bool    evHtml    = false;   // post: -html → ev2d.htm / ev3d.htm
     QString workingDir;          // where .ofd lives — outputs land here too
     QString binaryDir;           // explicit kernel location (optional)

@@ -27,6 +27,20 @@ const bool s_i18n = [] {
     I18n::reg("p2x_cp_l", "左旋円偏波", "LHCP");
     I18n::reg("p2x_cp_r", "右旋円偏波", "RHCP");
     I18n::reg("p2x_scale", "スケール", "Scale");
+    // 遠方界面上(2D) の表 (mock: 面の向き列 / 形式列) と正規化。
+    // .ofd の plotfar1d 第1引数 X/Y/Z/V/H に対応する表示名。
+    // 近傍界面上の「面」列でも X面/Y面/Z面 を使う。
+    I18n::reg("p2x_face_x", "X面", "X-plane");
+    I18n::reg("p2x_face_y", "Y面", "Y-plane");
+    I18n::reg("p2x_face_z", "Z面", "Z-plane");
+    I18n::reg("p2x_face_phi", "φ一定面", "φ const");
+    I18n::reg("p2x_face_theta", "θ一定面", "θ const");
+    I18n::reg("p2x_circle", "円プロット", "Polar");
+    I18n::reg("p2x_xy", "XYプロット", "Linear");
+    I18n::reg("p2x_normalize", "最大値で正規化", "Normalize to max");
+    // 遠方界全方向(3D) (mock: pp_far_3d) と θ/φ 分割数のまとめラベル
+    I18n::reg("p2x_far_3d", "遠方界全方向(3D)", "Far-field full (3D)");
+    I18n::reg("p2x_angle_div", "角度分割数", "Angle div");
     // 近傍界面上 (mock: pp_draw_body / pp_zoom / pp_animation + pp_frames)
     I18n::reg("p2x_draw_body", "物体を描く", "Draw objects");
     I18n::reg("p2x_zoom", "一部拡大", "Zoom");
@@ -105,11 +119,17 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     auto *r1b = new QHBoxLayout();
     r1b->addWidget(new QLabel(I18n::tr("p2_style"), s1));
     m_far1dStyle = new QComboBox(s1);
-    m_far1dStyle->addItems({ "0", "1", "2" });
+    // mock の「形式」列 = 円プロット / XYプロット (far1dstyle 0 / 1)。
+    // 既存ファイルが持ちうる 2 は値を落とさないため選択肢として残す
+    // (ラベルは .ofd の生値のまま)。
+    m_far1dStyle->addItems({ I18n::tr("p2x_circle"), I18n::tr("p2x_xy"),
+                             QStringLiteral("2") });
     r1b->addWidget(m_far1dStyle);
     m_far1dDb = new QCheckBox(I18n::tr("p2_db"), s1);
     r1b->addWidget(m_far1dDb);
-    m_far1dNorm = new QCheckBox(I18n::tr("p2_norm"), s1);
+    // mock: pp_normalize (最大値で正規化) = far1dnorm
+    m_far1dNorm = new QCheckBox(I18n::tr("p2x_normalize"), s1);
+    m_far1dNorm->setToolTip("far1dnorm");
     r1b->addWidget(m_far1dNorm);
     r1b->addStretch(1);
     s1->vbox()->addLayout(r1b);
@@ -126,8 +146,8 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     s1->vbox()->addLayout(r1c);
     v->addWidget(s1);
 
-    // far2d
-    auto *s2 = new SectionBox(I18n::tr("p2_far2d"), body);
+    // far2d (mock: <Section title={t("pp_far_3d")}> = 遠方界全方向(3D))
+    auto *s2 = new SectionBox(I18n::tr("p2x_far_3d"), body);
     m_far2d = new QCheckBox(I18n::tr("p2_far2d"), s2);
     m_far2dTheta = new QSpinBox(s2); m_far2dTheta->setRange(1, 3600);
     m_far2dPhi   = new QSpinBox(s2); m_far2dPhi->setRange(1, 3600);
@@ -135,9 +155,15 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     m_far2dObj = new QLineEdit(s2); m_far2dObj->setMaximumWidth(80);
     auto *r2 = new QHBoxLayout();
     r2->addWidget(m_far2d, 1);
-    r2->addWidget(new QLabel(I18n::tr("p2_theta_div"), s2));
+    // mock: <label>{t("pp_angle_div")}</label> + muted "θ:" / "φ:" の 2 入力
+    r2->addWidget(new QLabel(I18n::tr("p2x_angle_div"), s2));
+    auto *thLab = new QLabel("θ:", s2);
+    auto *phLab = new QLabel("φ:", s2);
+    for (auto *l : { thLab, phLab })
+        l->setStyleSheet("color:#888888;");          // mock: muted
+    r2->addWidget(thLab);
     r2->addWidget(m_far2dTheta);
-    r2->addWidget(new QLabel(I18n::tr("p2_phi_div"), s2));
+    r2->addWidget(phLab);
     r2->addWidget(m_far2dPhi);
     r2->addWidget(m_far2dDb);
     r2->addWidget(new QLabel(I18n::tr("p2_obj"), s2));
@@ -459,7 +485,12 @@ void Post2Tab::refresh()
     for (int r = 0; r < po.far1d.size(); ++r) {
         const Far1d &f = po.far1d[r];
         auto *dir = new QComboBox(m_far1d);
-        dir->addItems({ "X", "Y", "Z", "V", "H" });
+        // mock「面の向き」列: X面/Y面/Z面/φ一定面/θ一定面。
+        // 並びは .ofd の X/Y/Z/V/H と 1:1 (V=φ一定, H=θ一定) なので
+        // 保存値は下の "XYZVH" の添字経由で変わらない。
+        dir->addItems({ I18n::tr("p2x_face_x"), I18n::tr("p2x_face_y"),
+                        I18n::tr("p2x_face_z"), I18n::tr("p2x_face_phi"),
+                        I18n::tr("p2x_face_theta") });
         const int di = QString("XYZVH").indexOf(f.dir);
         dir->setCurrentIndex(qMax(0, di));
         connect(dir, &QComboBox::currentIndexChanged, this, [this] {
@@ -510,7 +541,10 @@ void Post2Tab::refresh()
         const Near2d &n = po.near2d[r];
         m_near2d->setItem(r, 0, new QTableWidgetItem(n.cmp));
         auto *dir = new QComboBox(m_near2d);
-        dir->addItems({ "X", "Y", "Z" });
+        // mock の「面」列は X面/Y面/Z面 (near1d の「線の向き」は X/Y/Z のまま)。
+        // 保存値は下の index → 'X'/'Y'/'Z' 変換なので表示名の変更で変わらない。
+        dir->addItems({ I18n::tr("p2x_face_x"), I18n::tr("p2x_face_y"),
+                        I18n::tr("p2x_face_z") });
         dir->setCurrentIndex(n.dir == 'X' ? 0 : n.dir == 'Y' ? 1 : 2);
         connect(dir, &QComboBox::currentIndexChanged, this, [this] {
             if (!m_updating) { applyNear2dTable(); m_p->touch(); }

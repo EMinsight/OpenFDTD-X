@@ -122,6 +122,9 @@ void Runner::launch(bool solverPhase)
 
     auto env = QProcessEnvironment::systemEnvironment();
     env.insert("OMP_NUM_THREADS", QString::number(m_cfg.threads));
+    // GPU カーネル (ofd_cuda 等) 用のデバイス指定
+    if (m_cfg.engine == Engine::GPU || m_cfg.engine == Engine::GPU_MPI)
+        env.insert("CUDA_VISIBLE_DEVICES", QString::number(m_cfg.device));
     m_proc->setProcessEnvironment(env);
 
     connect(m_proc, &QProcess::readyRead, this, &Runner::onReadyRead);

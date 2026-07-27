@@ -83,6 +83,9 @@ const bool s_i18n = [] {
     I18n::reg("ac2_band_full", "125Hz~16k", "125 Hz~16k");
     // 音響評価指標 / Metrics (既存セクションへの追加分)
     I18n::reg("ac2_lf", "LF (側方音エネルギー)", "LF (lateral energy fraction)");
+    // STI はモック (i18n.js ac_sti) が「STI (明瞭度)」。I18n.cpp の共通 ac_sti は
+    // 旧表記「STI (音声明瞭度)」のままなので、表示だけモックに合わせる。
+    I18n::reg("ac2_sti", "STI (明瞭度)", "STI");
     // 可聴化 / Auralization
     I18n::reg("ac2_aural_section", "可聴化", "Auralization");
     I18n::reg("ac2_play", "📻 再生", "📻 Play");
@@ -214,7 +217,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_rt60 = new QCheckBox(I18n::tr("ac_rt60"), sm);
     m_c80  = new QCheckBox(I18n::tr("ac_c80"), sm);
     m_d50  = new QCheckBox(I18n::tr("ac_d50"), sm);
-    m_sti  = new QCheckBox(I18n::tr("ac_sti"), sm);
+    m_sti  = new QCheckBox(I18n::tr("ac2_sti"), sm);
     m_edt  = new QCheckBox(I18n::tr("ac_edt"), sm);
     m_irf  = new QCheckBox(I18n::tr("ac_irf"), sm);
     m_aural = new QCheckBox(I18n::tr("ac_aurora"), sm);
@@ -345,7 +348,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     // 室内音響 / Room acoustics — 解析タイプ
     auto *ra = new SectionBox(I18n::tr("ac2_room_section"), body);
     m_analysisType = makeSeg(ra, { I18n::tr("ac_irf"), I18n::tr("ac_rt60"),
-                                   I18n::tr("ac_sti") }, 0);
+                                   I18n::tr("ac2_sti") }, 0);
     ra->form()->addRow(I18n::tr("ac2_analysis_type"), m_analysisType);
     v->addWidget(ra);
 

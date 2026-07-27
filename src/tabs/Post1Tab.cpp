@@ -17,6 +17,15 @@ using namespace ofd;
 namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
+    // 時間特性(2D) セクション (mock: pp_time_2d) と、その 3 つのチェック
+    // (pp_conv / pp_feed_wave / pp_obs_wave)。.ofd 側は
+    // plotiter / plotfeed / plotpoint で、キー名はツールチップに出す。
+    I18n::reg("p1x_time_2d", "時間特性(2D)", "Time domain (2D)");
+    I18n::reg("p1x_conv", "収束状況", "Convergence");
+    I18n::reg("p1x_feed_wave", "給電点波形・スペクトル",
+              "Feed waveform & spectrum");
+    I18n::reg("p1x_obs_wave", "観測点波形・スペクトル",
+              "Probe waveform & spectrum");
     // 周波数特性(2D) の自動スケール (mock: pp_auto_scale)
     I18n::reg("p1x_auto_scale", "自動スケール", "Auto-scale");
     I18n::reg("p1x_auto_hint", "→ OFF時に最小/最大/分割数を指定",
@@ -33,31 +42,36 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(8);
 
-    auto *sw = new SectionBox(I18n::tr("t_post1"), body);
-    m_iter  = new QCheckBox(I18n::tr("p1_iter"), sw);
-    m_feed  = new QCheckBox(I18n::tr("p1_feed"), sw);
-    m_point = new QCheckBox(I18n::tr("p1_point"), sw);
-    m_smith = new QCheckBox(I18n::tr("p1_smith"), sw);
-    m_matching = new QCheckBox(I18n::tr("p1_matching"), sw);
-    for (auto *c : { m_iter, m_feed, m_point, m_smith, m_matching })
+    // ── 時間特性(2D) (mock: <Section title={t("pp_time_2d")}>) ───────────────
+    // 収束状況 = plotiter (反復回数に対する残差)、給電点/観測点は波形+スペクトル。
+    // mock はこのセクションを時間領域の 3 つに限っているので、スミスチャート・
+    // 整合損・周波数目盛分割は下の周波数特性セクションへ置く。
+    auto *sw = new SectionBox(I18n::tr("p1x_time_2d"), body);
+    m_iter  = new QCheckBox(I18n::tr("p1x_conv"), sw);
+    m_feed  = new QCheckBox(I18n::tr("p1x_feed_wave"), sw);
+    m_point = new QCheckBox(I18n::tr("p1x_obs_wave"), sw);
+    m_iter->setToolTip("plotiter");
+    m_feed->setToolTip("plotfeed");
+    m_point->setToolTip("plotpoint");
+    for (auto *c : { m_iter, m_feed, m_point })
         sw->vbox()->addWidget(c);
-
-    auto *fr = new QHBoxLayout();
-    fr->addWidget(new QLabel(I18n::tr("p1_freqdiv"), sw));
-    m_freqdiv = new QSpinBox(sw);
-    m_freqdiv->setRange(1, 1000);
-    fr->addWidget(m_freqdiv);
-    fr->addStretch(1);
-    sw->vbox()->addLayout(fr);
     v->addWidget(sw);
 
+    // ── 周波数特性(2D) — mock の並び順:
+    //    スミスチャート → 入力インピーダンス…結合係数 → 自動スケール → 分割数
     auto *sf = new SectionBox(I18n::tr("p1_freq_section"), body);
+    m_smith = new QCheckBox(I18n::tr("p1_smith"), sf);
+    sf->vbox()->addWidget(m_smith);
+
     PostOpts &po = m_p->post();
     addFreqRow(body, sf, I18n::tr("p1_zin"),      &po.zin);
     addFreqRow(body, sf, I18n::tr("p1_yin"),      &po.yin);
     addFreqRow(body, sf, I18n::tr("p1_ref"),      &po.ref);
     addFreqRow(body, sf, I18n::tr("p1_spara"),    &po.spara);
     addFreqRow(body, sf, I18n::tr("p1_coupling"), &po.coupling);
+
+    m_matching = new QCheckBox(I18n::tr("p1_matching"), sf);
+    sf->vbox()->addWidget(m_matching);
 
     // 自動スケール (mock: <Check pp_auto_scale checked> + muted ヒント)
     auto *asrow = new QHBoxLayout();
@@ -68,6 +82,15 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     asrow->addWidget(m_autoScale);
     asrow->addWidget(ashint, 1);
     sf->vbox()->addLayout(asrow);
+
+    // 周波数目盛分割 (mock: <Row label={t("pp_freq_div")}>)
+    auto *fr = new QHBoxLayout();
+    fr->addWidget(new QLabel(I18n::tr("p1_freqdiv"), sf));
+    m_freqdiv = new QSpinBox(sf);
+    m_freqdiv->setRange(1, 1000);
+    fr->addWidget(m_freqdiv);
+    fr->addStretch(1);
+    sf->vbox()->addLayout(fr);
     v->addWidget(sf);
 
     v->addStretch(1);

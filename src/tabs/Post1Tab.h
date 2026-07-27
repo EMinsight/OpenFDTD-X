@@ -1,6 +1,12 @@
 // Post1Tab.h — ポスト処理制御(1): 周波数特性プロット類.
 // Maps 1:1 to plotiter/plotfeed/plotpoint/plotsmith/plotzin/plotyin/
 // plotref/plotspara/plotcoupling/matchingloss/freqdiv.
+//
+// mock (tabs.jsx Post1Tab) との対応:
+//   時間特性(2D)   — 収束状況 (plotiter) / 給電点波形・スペクトル (plotfeed) /
+//                    観測点波形・スペクトル (plotpoint)
+//   周波数特性(2D) — スミスチャート + 入力インピーダンス…結合係数 +
+//                    自動スケール + 周波数目盛分割
 #pragma once
 #include <QScrollArea>
 #include <QVector>

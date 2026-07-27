@@ -51,6 +51,11 @@ private:
 
     QComboBox *m_solver;
     QStackedWidget *m_solverStack;
+    // 解法 (波動FDTD / Raycast 幾何光学 / ハイブリッド FDTD+Ray)。
+    // OpticalSolver enum は Runner のカーネル選択に直結するので拡張できない →
+    // mock の Seg を UI 専用のローカル state として持つ (永続化しない)。
+    QComboBox *m_geoMethod;
+    QLabel    *m_geoHint;
     QComboBox *m_mode;
     QLineEdit *m_lambdaMin, *m_lambdaMax;
     QSpinBox  *m_lambdaDiv;
@@ -100,14 +105,15 @@ private:
     // 近傍界→遠方界変換
     QComboBox *m_nfffSurface;
     QLineEdit *m_nfffDistance;
-    // S パラメータ
-    QSpinBox    *m_spPorts;
+    // S パラメータ (入力/出力ポート番号は S21 抽出の対象ポート対)
+    QSpinBox    *m_spPorts, *m_spPortIn, *m_spPortOut;
     QCheckBox   *m_spS11, *m_spS21, *m_spPhase, *m_spGroupDelay;
     QPushButton *m_spExport;
 
     // ── Raycast 設定 / Geometric Optics (mock: 幾何光学レイトレース) ──
     // 対応する Project フィールドが無いためローカル state (モック既定値) のみ。
     QSpinBox  *m_rayCount, *m_rayBounces, *m_rayVizCount;
+    QSpinBox  *m_rayDiffOrder;            // 拡散次数 (拡散反射を追跡する段数)
     QLineEdit *m_rayMinEnergy;
     QComboBox *m_raySampling;
     QCheckBox *m_raySpecular, *m_rayDiffuse;
