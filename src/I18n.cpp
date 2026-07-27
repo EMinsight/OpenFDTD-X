@@ -321,6 +321,15 @@ void I18n::loadTables() {
     add("opt_ps_warn_range",
         "パワー範囲は 0 < P_min ≤ P_max を満たしてください。",
         "Power range must satisfy 0 < P_min ≤ P_max.");
+    add("opt_tpa_warn_disabled",
+        "不正な値のため TPA を無効にしました (この設定はカーネルに渡しません)。",
+        "TPA has been disabled because of the invalid value "
+        "(this setting is not passed to the kernel).");
+    add("opt_ps_warn_disabled",
+        "不正な範囲のためパワースイープを無効にしました "
+        "(この設定はカーネルに渡しません)。",
+        "The power sweep has been disabled because of the invalid range "
+        "(this setting is not passed to the kernel).");
     add("opt_onn_section", "ONN 活性化カーブ (結果)",
         "ONN activation curve (results)");
     add("opt_onn_no_data",
@@ -785,6 +794,12 @@ void I18n::loadTables() {
     add("aur_clipped_samples", "クリップ", "Clipping");
     add("aur_clipped_yes", "あり (%1 サンプル)", "Yes (%1 samples)");
     add("aur_clipped_no", "なし", "None");
+    add("aur_gain_applied", "(適用済み)", "(applied)");
+    add("aur_post_gain_note",
+        "出力ピークとクリップ数は、ゲイン適用後に書き出した WAV の"
+        "サンプルで測った値です。",
+        "Output peak and clipping count are measured on the written WAV "
+        "samples, after the gain was applied.");
     add("aur_ab_section", "A/B 比較 (波形)", "A/B comparison (waveforms)");
     add("aur_dry_wave", "ドライ (入力)", "Dry (input)");
     add("aur_wet_wave", "ウェット (出力)", "Wet (output)");

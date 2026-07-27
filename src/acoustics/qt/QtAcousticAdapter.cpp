@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 using namespace ofd;
 using namespace ofd::acoustics;
@@ -193,13 +194,53 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     ConvolutionInfo info = out.info;
 
     // gainMode 1: 推奨ゲイン (ピーク→フルスケール) を書き出し値に適用する。
-    // info の outputPeak / clippedSampleCount は畳み込み値そのままの報告。
     if (gainMode == 1) {
-        const double g = std::pow(10.0, info.suggestedGainDb / 20.0);
+        const double appliedGainDb = info.suggestedGainDb;
+        const double g = std::pow(10.0, appliedGainDb / 20.0);
         for (std::size_t ch = 0; ch < out.audio.channelCount(); ++ch)
             for (double &v : out.audio.channels[ch])
                 v *= g;
-        info.warnings.push_back("suggested gain applied to output file");
+
+        // ピーク / クリップ数は「実際に書き出したサンプル」から取り直す。
+        // (ラベルを「正規化前」表記に変える案もあるが、A/B 波形はゲイン
+        //  適用後の値を描くため、数値と波形の基準が食い違ったままになる。
+        //  実測し直す方が UI 全体で基準が 1 つに揃う。)
+        const bool wasClipped = info.clipped;
+        const double thr = engine.config().clipThreshold;
+        double peak = 0.0;
+        std::size_t clipped = 0;
+        for (std::size_t ch = 0; ch < out.audio.channelCount(); ++ch) {
+            const std::vector<double> &y = out.audio.channels[ch];
+            for (std::size_t i = 0; i < y.size(); ++i) {
+                const double a = std::fabs(y[i]);
+                if (a > peak) peak = a;
+                if (a > thr) ++clipped;
+            }
+        }
+        info.outputPeak = peak;
+        info.outputPeakDbfs = (peak > 0.0) ? 20.0 * std::log10(peak) : -300.0;
+        info.clippedSampleCount = clipped;
+        info.clipped = (clipped > 0);
+        // suggestedGainDb は「書き出しに適用したゲイン」として保持する
+        // (適用後の残り推奨量 ≒ 0 dB を報告しても情報にならない)。
+
+        // 適用前の値を引用するコアのクリップ警告 (最後に追加される) は捨て、
+        // 適用後も超過が残る場合だけ貼り直す。
+        if (wasClipped && !info.warnings.empty())
+            info.warnings.pop_back();
+        char msg[224];
+        std::snprintf(msg, sizeof(msg),
+                      "suggested gain %.2f dB applied to output file "
+                      "(peak / clipping are measured on the written samples)",
+                      appliedGainDb);
+        info.warnings.push_back(msg);
+        if (info.clipped) {
+            std::snprintf(msg, sizeof(msg),
+                          "%llu samples still exceed full scale after gain "
+                          "(peak %.3f)",
+                          static_cast<unsigned long long>(clipped), peak);
+            info.warnings.push_back(msg);
+        }
     }
 
     const AcousticResult<bool> wr = writeWavFile(

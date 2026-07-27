@@ -14,6 +14,7 @@
 #include "core/Project.h"
 #include "io/ActivationCurve.h"
 #include "io/OfdIO.h"
+#include "kernel/Runner.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
@@ -628,6 +629,128 @@ static void testOnnActivation()
                   "ONN: P_in=1 -> P_out=0.5 (T=0.5)") == 0.0,
               "onn non-aeff log line ignored");
     }
+
+    // 6) 入力バリデーション (OpticalTab と共用の判定):
+    //    不正値では有効フラグを落とし、カーネルへ渡さない
+    {
+        check(isValidTpaBeta(424.0), "onn beta 424 valid");
+        check(!isValidTpaBeta(QString().toDouble()),
+              "onn beta empty text invalid");
+        check(!isValidTpaBeta(0.0), "onn beta zero invalid");
+        check(!isValidTpaBeta(-1.0), "onn beta negative invalid");
+        check(isValidPowerSweepRange(0.001, 10.0), "onn sweep range valid");
+        check(isValidPowerSweepRange(2.0, 2.0), "onn sweep pmin==pmax valid");
+        check(!isValidPowerSweepRange(0.0, 10.0), "onn sweep pmin zero invalid");
+        check(!isValidPowerSweepRange(-1.0, 10.0),
+              "onn sweep pmin negative invalid");
+        check(!isValidPowerSweepRange(5.0, 1.0), "onn sweep pmax<pmin invalid");
+
+        // 不正入力に対する apply() 相当の結果: 有効フラグが落ちるので
+        // .ofd 出力は従来 (無効時) とバイト一致 = 424 では走らない
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        OpticalOpts &o = p.optical();
+        o.tpaEnabled = /* checkbox on */ true && isValidTpaBeta(0.0);
+        o.powerSweepEnabled = true && isValidPowerSweepRange(5.0, 1.0);
+        check(!o.tpaEnabled && !o.powerSweepEnabled,
+              "onn invalid input drops enable flags");
+        check(OfdIO::serialize(p) == base,
+              "onn invalid input leaves kernel input unchanged");
+    }
+
+    // 7) 解析解 T = 1/(1+β(P/A_eff)L) (β は [cm/GW] → ×1e-11 で [m/W])
+    {
+        const double beta = 424.0, aeff = 1e-13, L = 1e-4;
+        check(nearlyEq(ActivationCurve::analyticTransmission(0.0, beta,
+                                                             aeff, L), 1.0),
+              "onn analytic T(0 W) = 1");
+        // 424 cm/GW = 4.24e-9 m/W, P/A_eff = 1e13 W/m², L = 1e-4 m
+        check(nearlyEq(ActivationCurve::analyticTransmission(1.0, beta,
+                                                             aeff, L),
+                       1.0 / (1.0 + 4.24)),
+              "onn analytic T(1 W) matches hand calculation");
+        check(ActivationCurve::analyticTransmission(1.0, beta, aeff, L) >
+              ActivationCurve::analyticTransmission(2.0, beta, aeff, L),
+              "onn analytic decreases with input power");
+        check(ActivationCurve::analyticTransmission(1.0, 0.0, aeff, L) == 0.0,
+              "onn analytic without beta -> 0 (no overlay)");
+        check(ActivationCurve::analyticTransmission(1.0, beta, 0.0, L) == 0.0,
+              "onn analytic without A_eff -> 0 (no overlay)");
+        check(ActivationCurve::analyticTransmission(1.0, beta, aeff, 0.0) == 0.0,
+              "onn analytic without L -> 0 (no overlay)");
+        // β のスナップショット差が解析解に効く (実行中の UI 編集で
+        // 別カーブになることの裏返し — だから実行開始時に控える)
+        check(!nearlyEq(ActivationCurve::analyticTransmission(1.0, beta,
+                                                              aeff, L),
+                        ActivationCurve::analyticTransmission(1.0, beta * 2,
+                                                              aeff, L)),
+              "onn analytic depends on the beta snapshot");
+    }
+}
+
+// 実行結果の表示ゲート: ONN 活性化カーブは「その実行が生成したもの」だけ。
+static void testRunGating()
+{
+    g_file = "run-gating";
+
+    Project p;
+    p.setActiveDomain(Domain::Optical);
+    OpticalOpts &o = p.optical();
+    o.solver = OpticalSolver::BPM;
+    o.powerSweepEnabled = true;
+
+    RunConfig bpm;
+    bpm.kernel = Kernel::BPM;
+    bpm.mode   = RunMode::Both;
+    check(Runner::producesActivationCurve(p, bpm),
+          "gate: bpm + powersweep expects an ONN result");
+
+    RunConfig solverOnly = bpm; solverOnly.mode = RunMode::Solver;
+    check(Runner::producesActivationCurve(p, solverOnly),
+          "gate: solver-only bpm run expects an ONN result");
+
+    RunConfig postOnly = bpm; postOnly.mode = RunMode::Post;
+    check(!Runner::producesActivationCurve(p, postOnly),
+          "gate: post-only run generates no activation curve");
+
+    RunConfig fdtd = bpm; fdtd.kernel = Kernel::FDTD;
+    check(!Runner::producesActivationCurve(p, fdtd),
+          "gate: fdtd run must not show a stale activation curve");
+    RunConfig rcwa = bpm; rcwa.kernel = Kernel::RCWA;
+    check(!Runner::producesActivationCurve(p, rcwa),
+          "gate: rcwa run must not show a stale activation curve");
+
+    o.powerSweepEnabled = false;
+    check(!Runner::producesActivationCurve(p, bpm),
+          "gate: bpm without powersweep expects nothing");
+    o.powerSweepEnabled = true;
+
+    o.solver = OpticalSolver::FDTD;
+    check(!Runner::producesActivationCurve(p, bpm),
+          "gate: optical FDTD solver expects nothing");
+    o.solver = OpticalSolver::BPM;
+
+    p.setActiveDomain(Domain::Acoustic);
+    check(!Runner::producesActivationCurve(p, bpm),
+          "gate: non-optical domain expects nothing");
+    p.setActiveDomain(Domain::Optical);
+
+    // 実行前クリーンアップ用の作業ディレクトリ解決 (start() と同じ規則)
+    RunConfig explicitWd;
+    explicitWd.workingDir = QDir::tempPath() + "/ofdx_gate_explicit";
+    check(Runner::resolveWorkingDir(&p, explicitWd) == explicitWd.workingDir,
+          "wd: explicit workingDir wins");
+
+    RunConfig autoWd;
+    p.setFilePath(QDir::tempPath() + "/ofdx_gate/project.ofd");
+    check(Runner::resolveWorkingDir(&p, autoWd) ==
+              QDir::tempPath() + "/ofdx_gate",
+          "wd: derived from the project file location");
+    p.setFilePath(QString());
+    check(Runner::resolveWorkingDir(&p, autoWd).endsWith("/openfdtd-x"),
+          "wd: unsaved project falls back to the temp location");
+    check(Runner::resolveWorkingDir(nullptr, autoWd).isEmpty(),
+          "wd: no project and no explicit dir -> empty");
 }
 
 int main(int argc, char *argv[])
@@ -688,6 +811,7 @@ int main(int argc, char *argv[])
     testRoomAcoustics();
     testOperaAcousticSettings();
     testOnnActivation();
+    testRunGating();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

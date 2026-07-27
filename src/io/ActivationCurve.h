@@ -31,6 +31,14 @@ public:
     // カーネルログ行から実効断面積 A_eff [m^2] を抽出する。
     // 形式: "ONN: A_eff = <値> [m^2]"。該当しなければ 0 を返す。
     static double aeffFromLogLine(const QString &line);
+
+    // TPA 飽和の解析解 T = 1 / (1 + β·(P_in/A_eff)·L)。
+    // β は [cm/GW] (→ ×1e-11 で [m/W])、A_eff [m^2]、L [m]、P_in [W]。
+    // 引数が不正 (β/A_eff/L のいずれかが ≤0、または P_in < 0) なら 0 を
+    // 返す (重ね描きしない合図)。β と L は実行開始時のスナップショットを
+    // 渡すこと — 表示時点のライブ値を使うと実測 CSV と対応しなくなる。
+    static double analyticTransmission(double pin_W, double beta_cmGW,
+                                       double aeff_m2, double length_m);
 };
 
 } // namespace ofd

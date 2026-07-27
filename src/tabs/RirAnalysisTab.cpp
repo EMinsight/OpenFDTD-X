@@ -6,76 +6,27 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
-#include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
-#include <QTextStream>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
 
 using namespace ofd;
 using namespace ofd::acoustics;
-
-namespace {
-
-// 品質トークン → バッジ文字列 + 色
-QString qualityBadge(const QString &token)
-{
-    if (token == QLatin1String("valid"))   return I18n::tr("rir_q_valid");
-    if (token == QLatin1String("warning")) return I18n::tr("rir_q_warning");
-    return I18n::tr("rir_q_invalid");
-}
-
-QColor qualityColor(const QString &token)
-{
-    if (token == QLatin1String("valid"))   return QColor(0x2E, 0x8B, 0x57);
-    if (token == QLatin1String("warning")) return QColor(0xB8, 0x86, 0x0B);
-    return QColor(0xC0, 0x39, 0x2B);
-}
-
-QTableWidgetItem *roItem(const QString &text)
-{
-    auto *it = new QTableWidgetItem(text);
-    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    return it;
-}
-
-// 長い系列を maxBins 区間の min/max 包絡線 2 系列に間引く (波形表示用)
-void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
-                    QVector<QPointF> &top, QVector<QPointF> &bottom)
-{
-    top.clear(); bottom.clear();
-    if (x.empty() || fs <= 0) return;
-    const int n = int(x.size());
-    const int bins = std::min(maxBins, n);
-    const double perBin = double(n) / bins;
-    top.reserve(bins); bottom.reserve(bins);
-    for (int b = 0; b < bins; ++b) {
-        const int i0 = int(b * perBin);
-        const int i1 = std::min(n, std::max(i0 + 1, int((b + 1) * perBin)));
-        double lo = x[i0], hi = x[i0];
-        for (int i = i0 + 1; i < i1; ++i) {
-            lo = std::min(lo, x[i]);
-            hi = std::max(hi, x[i]);
-        }
-        const double tMs = (i0 + (i1 - 1 - i0) * 0.5) / fs * 1000.0;
-        top.push_back(QPointF(tMs, hi));
-        bottom.push_back(QPointF(tMs, lo));
-    }
-}
-
-} // namespace
+// 品質バッジ / 読み取り専用セル / 波形包絡線 / テキスト保存は
+// src/tabs/TabHelpers.{h,cpp} に集約 (3 タブで共有)。
+using namespace ofd::tabhelp;
 
 // ── construction ────────────────────────────────────────────────────────────
 RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
@@ -357,7 +308,8 @@ void RirAnalysisTab::showResult(const RirAnalysisResult &result,
     const OperaAcousticSettings &s = m_p->operaAcoustic();
     {
         QVector<QPointF> top, bottom;
-        envelopeSeries(samples, sampleRateHz, 1200, top, bottom);
+        envelopeSeries(samples, sampleRateHz, 1200, TimeUnit::Milliseconds,
+                       top, bottom);
         MiniSeries hi;  hi.pts = top;     hi.color = QColor("#2E8B57");
         MiniSeries lo;  lo.pts = bottom;  lo.color = QColor("#2E8B57");
         m_wavePlot->setSeries({ hi, lo });
@@ -415,23 +367,6 @@ void RirAnalysisTab::showResult(const RirAnalysisResult &result,
 }
 
 // ── export ──────────────────────────────────────────────────────────────────
-static void saveTextFile(QWidget *parent, const QString &caption,
-                         const QString &suggested, const QString &filter,
-                         const QString &content)
-{
-    const QString path = QFileDialog::getSaveFileName(parent, caption,
-                                                      suggested, filter);
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(parent, caption, f.errorString());
-        return;
-    }
-    QTextStream out(&f);
-    out.setEncoding(QStringConverter::Utf8);
-    out << content;
-}
-
 void RirAnalysisTab::exportCsv()
 {
     if (!m_hasResult) return;

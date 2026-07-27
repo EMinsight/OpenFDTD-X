@@ -32,10 +32,15 @@ class OpticalTab : public QScrollArea {
 public:
     explicit OpticalTab(Project *project, QWidget *parent = nullptr);
 
-    // obpm 実行完了後に MainWindow から呼ばれる。workdir の
+    // obpm + powersweep の実行完了後に MainWindow から呼ばれる。workdir の
     // activation_curve.csv があれば読み込んで ONN 活性化カーブを表示する。
     // aeff_m2 はカーネルログ "ONN: A_eff = ... [m^2]" から抽出した値 (0=不明)。
-    void showActivationResult(const QString &workdir, double aeff_m2);
+    // beta_cmGW / length_m は解析解の重ね描きに使う β [cm/GW] と伝搬長 L [m]。
+    // いずれも「その実行の開始時にスナップショットした値」を渡すこと
+    // (表示時点のライブ値を使うと、実行中の UI 編集で実測 CSV と対応しない
+    //  解析解が重なる)。
+    void showActivationResult(const QString &workdir, double aeff_m2,
+                              double beta_cmGW, double length_m);
 
 private slots:
     void refresh();

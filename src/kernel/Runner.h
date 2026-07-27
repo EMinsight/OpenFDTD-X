@@ -54,6 +54,17 @@ public:
     static QString postBinary(const RunConfig &cfg);
     static QString resolveBinary(const RunConfig &cfg, const QString &name);
 
+    // start() が使う作業ディレクトリを、起動前に同じ規則で求める
+    // (実行前に前回の出力を掃除したい呼び出し側のため)。start() 自身も使う。
+    static QString resolveWorkingDir(const Project *project,
+                                     const RunConfig &cfg);
+
+    // この実行が ONN 活性化カーブ (activation_curve.csv) を新たに生成し
+    // うるか。obpm をソルバー段で起動し、かつパワースイープが有効な実行
+    // だけが true。結果表示を「その実行が生成したもの」に限るために使う。
+    static bool producesActivationCurve(const Project &project,
+                                        const RunConfig &cfg);
+
 signals:
     void started();
     void logLine(const QString &line);     // forwarded stdout/stderr

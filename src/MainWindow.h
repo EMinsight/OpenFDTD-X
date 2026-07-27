@@ -107,6 +107,15 @@ private:
     // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。
     double   m_lastAeff_m2 = 0.0;
 
+    // この実行が activation_curve.csv を生成する (= obpm + powersweep) か。
+    // 実行開始時に決め、これが false の実行では ONN 結果表示を行わない
+    // (過去の実行が残した CSV を無関係な実行の結果として再表示しない)。
+    bool     m_expectActivation = false;
+    // 解析解の重ね描きに使う β [cm/GW] と伝搬長 L [m] の実行開始時
+    // スナップショット (実行中に UI を編集されても実測 CSV と対応させる)。
+    double   m_runTpaBeta_cmGW = 0.0;
+    double   m_runLength_m = 0.0;
+
     DomainBar      *m_domainBar = nullptr;
     TabNavigator   *m_nav = nullptr;
     CenterPane     *m_center = nullptr;

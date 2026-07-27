@@ -92,6 +92,13 @@ struct OpticalOpts {
     bool    psLog = true;            // true=log 間隔, false=lin 間隔
 };
 
+// TPA / パワースイープ入力の妥当性判定 (GUI の入力検証と selftest で共用)。
+// 不正な設定をカーネルへ渡さないため、GUI は false のとき対応する有効フラグ
+// (tpaEnabled / powerSweepEnabled) を落とす — 「警告が出ているのに既定値の
+// β で走る」状態を作らない。
+bool isValidTpaBeta(double beta_cmGW);                       // β > 0
+bool isValidPowerSweepRange(double pmin_W, double pmax_W);   // 0 < Pmin ≤ Pmax
+
 // ── 室内音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
 
 // 吸音バジェットの1行 (面・要素)。α は 125/250/500/1k/2k/4k Hz の6帯域。

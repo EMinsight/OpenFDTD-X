@@ -66,6 +66,10 @@ public:
     // ── 可聴化 (フェーズ4) ──────────────────────────────────────────────────
     // dry WAV × rir WAV を畳み込み、outputPath に float32 WAV で書き出す。
     // gainMode: 0=そのまま 1=推奨ゲイン (suggestedGainDb) を適用。
+    // gainMode=1 のとき、返す ConvolutionInfo の outputPeak /
+    // outputPeakDbfs / clippedSampleCount / clipped は「書き出した
+    // (ゲイン適用後の) サンプル」で測り直した値。suggestedGainDb は
+    // 適用したゲイン量を保持する。
     // 自動正規化はしない。サンプルレート不一致はリサンプリングせずエラー。
     // outDry / outWet / outSampleRate が非 null なら A/B 波形プロット用に
     // ドライ (選択後モノ) / ウェット先頭チャンネル (書き出し値) を返す。

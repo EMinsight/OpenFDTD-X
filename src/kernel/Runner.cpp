@@ -64,17 +64,34 @@ QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
     return base;   // let PATH resolve it
 }
 
+QString Runner::resolveWorkingDir(const Project *project, const RunConfig &cfg)
+{
+    if (!cfg.workingDir.isEmpty()) return cfg.workingDir;
+    if (!project) return QString();
+    return project->filePath().isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+          + "/openfdtd-x"
+        : QFileInfo(project->filePath()).path();
+}
+
+bool Runner::producesActivationCurve(const Project &project,
+                                     const RunConfig &cfg)
+{
+    // activation_curve.csv は obpm (BPM ソルバー) が powersweep 指定時に
+    // 書く。ポスト処理のみの実行 (obpm_post) は新しい CSV を作らない。
+    if (cfg.kernel != Kernel::BPM) return false;
+    if (cfg.mode == RunMode::Post) return false;
+    if (project.activeDomain() != Domain::Optical) return false;
+    if (project.optical().solver != OpticalSolver::BPM) return false;
+    return project.optical().powerSweepEnabled;
+}
+
 void Runner::start(Project *project, const RunConfig &cfg)
 {
     if (isRunning() || !project) return;
     m_cfg = cfg;
 
-    if (m_cfg.workingDir.isEmpty()) {
-        m_cfg.workingDir = project->filePath().isEmpty()
-            ? QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-              + "/openfdtd-x"
-            : QFileInfo(project->filePath()).path();
-    }
+    m_cfg.workingDir = resolveWorkingDir(project, m_cfg);
     QDir().mkpath(m_cfg.workingDir);
 
     const QString baseName = project->filePath().isEmpty()

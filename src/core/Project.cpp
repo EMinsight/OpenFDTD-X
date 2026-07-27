@@ -7,6 +7,18 @@
 
 using namespace ofd;
 
+// ── 光ドメイン: TPA / パワースイープ入力の妥当性 ─────────────────────────────
+bool ofd::isValidTpaBeta(double beta_cmGW)
+{
+    return beta_cmGW > 0.0 && std::isfinite(beta_cmGW);
+}
+
+bool ofd::isValidPowerSweepRange(double pmin_W, double pmax_W)
+{
+    return pmin_W > 0.0 && pmax_W >= pmin_W &&
+           std::isfinite(pmin_W) && std::isfinite(pmax_W);
+}
+
 Project::Project(QObject *parent) : QObject(parent)
 {
     clear();

@@ -51,8 +51,9 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **1560 checks,
-  0 failures** (不変であること)。
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **1712 checks,
+  0 failures** (減らないこと。実行種別ゲート / TPA 入力検証 /
+  解析解の検証を追加済み)。
 - 音響コア: 7 テスト **392 checks, 0 failures**
   (`docs/opera-acoustics-validation.md` §9)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、

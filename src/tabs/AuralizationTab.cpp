@@ -5,6 +5,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QComboBox>
 #include <QFileDialog>
@@ -19,38 +20,17 @@
 
 using namespace ofd;
 using namespace ofd::acoustics;
+// 波形包絡線などのタブ共有ヘルパーは src/tabs/TabHelpers.{h,cpp} に集約。
+using namespace ofd::tabhelp;
 
 namespace {
-
-// 長い系列を maxBins 区間の min/max 包絡線 2 系列に間引く (波形表示用)
-void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
-                    QVector<QPointF> &top, QVector<QPointF> &bottom)
-{
-    top.clear(); bottom.clear();
-    if (x.empty() || fs <= 0) return;
-    const int n = int(x.size());
-    const int bins = std::min(maxBins, n);
-    const double perBin = double(n) / bins;
-    top.reserve(bins); bottom.reserve(bins);
-    for (int b = 0; b < bins; ++b) {
-        const int i0 = int(b * perBin);
-        const int i1 = std::min(n, std::max(i0 + 1, int((b + 1) * perBin)));
-        double lo = x[i0], hi = x[i0];
-        for (int i = i0 + 1; i < i1; ++i) {
-            lo = std::min(lo, x[i]);
-            hi = std::max(hi, x[i]);
-        }
-        const double tS = (i0 + (i1 - 1 - i0) * 0.5) / fs;
-        top.push_back(QPointF(tS, hi));
-        bottom.push_back(QPointF(tS, lo));
-    }
-}
 
 QVector<MiniSeries> waveformSeries(const std::vector<double> &x, double fs,
                                    const QColor &color)
 {
     QVector<QPointF> top, bottom;
-    envelopeSeries(x, fs, 1200, top, bottom);
+    // A/B 波形の時間軸は秒 (RIR 分析タブは ms)
+    envelopeSeries(x, fs, 1200, TimeUnit::Seconds, top, bottom);
     MiniSeries hi;  hi.pts = top;     hi.color = color;
     MiniSeries lo;  lo.pts = bottom;  lo.color = color;
     return { hi, lo };
@@ -266,19 +246,25 @@ void AuralizationTab::runConvolution()
         return;
     }
 
-    // ③ 結果表示 (畳み込み値そのままの報告。自動正規化はしない)
+    // ③ 結果表示。ピーク / クリップ数は書き出した WAV のサンプルで測った値
+    // (ゲイン適用時はアダプター側で適用後に測り直している)。
+    const bool gainApplied = (s.auralizationGainMode == 1);
     const ConvolutionInfo &info = res.value();
     m_peakLabel->setText(QStringLiteral("%1 (%2 dBFS)")
         .arg(QString::number(info.outputPeak, 'f', 4),
              QString::number(info.outputPeakDbfs, 'f', 1)));
     m_gainLabel->setText(QStringLiteral("%1 dB")
-        .arg(QString::number(info.suggestedGainDb, 'f', 1)));
+            .arg(QString::number(info.suggestedGainDb, 'f', 1))
+        + (gainApplied ? QStringLiteral(" ") + I18n::tr("aur_gain_applied")
+                       : QString()));
     m_clipLabel->setText(info.clipped
         ? I18n::tr("aur_clipped_yes")
               .arg(QString::number(qulonglong(info.clippedSampleCount)))
         : I18n::tr("aur_clipped_no"));
 
     QStringList warn;
+    if (gainApplied)
+        warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
     for (const std::string &w : info.warnings)
         warn << QStringLiteral("• ") + QString::fromStdString(w);
     m_warnings->setText(warn.join(QStringLiteral("\n")));

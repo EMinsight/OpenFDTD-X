@@ -865,6 +865,25 @@ void MainWindow::runSimulation()
     // モックの計算コンソール冒頭 2 行
     m_rightDock->appendLog("=== " + I18n::tr("log_starting") + " ===");
     m_rightDock->appendLog(I18n::tr("log_validate"));
+
+    const RunConfig cfg = currentRunConfig();
+    // ONN 活性化カーブは「この実行が生成したもの」だけを表示する。
+    m_expectActivation = Runner::producesActivationCurve(*m_project, cfg);
+    // 解析解の β / L はここでスナップショットする (実行中の UI 編集で
+    // 実測 CSV と対応しない解析解が重ならないように)。
+    m_runTpaBeta_cmGW = m_project->optical().tpaBeta_cmGW;
+    const MeshAxis &mz = m_project->mesh(2);
+    m_runLength_m = mz.nodes.isEmpty()
+        ? 0.0 : (mz.nodes.last() - mz.nodes.first());
+    // 前回実行が残した activation_curve.csv を今回の結果と取り違えないよう、
+    // ソルバー段が走る実行では起動前に消しておく。
+    if (cfg.mode != RunMode::Post) {
+        const QString wd = Runner::resolveWorkingDir(m_project, cfg);
+        if (!wd.isEmpty())
+            QFile::remove(QDir(wd).filePath(QStringLiteral(
+                "activation_curve.csv")));
+    }
+
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
@@ -874,7 +893,9 @@ void MainWindow::runSimulation()
     m_runDialog->clearLog();
     m_runDialog->show();
 
-    m_runner->start(m_project, currentRunConfig());
+    // cfg は上でスナップショット済み — 再計算せずそのまま渡す
+    // (実行前クリーンアップ判定と同一の設定で走らせる)。
+    m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
 
@@ -883,6 +904,9 @@ void MainWindow::runPostProcess()
     if (m_runner->isRunning()) return;
     RunConfig cfg = currentRunConfig();
     cfg.mode = RunMode::Post;
+    // ポスト処理は activation_curve.csv を作らない (残存 CSV を結果として
+    // 表示しない)。
+    m_expectActivation = false;
     m_sbState->setText("● " + I18n::tr("sb_running"));
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
@@ -1003,9 +1027,10 @@ void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
-    // obpm 実行後: 作業ディレクトリに activation_curve.csv があれば
-    // 光タブに ONN 活性化カーブを表示する (無ければ何もしない)。
-    if (ok)
+    // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
+    // 表示する (他カーネルの実行で過去の CSV を再表示しない)。
+    if (ok && m_expectActivation)
         m_tabOptical->showActivationResult(m_runner->workingDir(),
-                                           m_lastAeff_m2);
+                                           m_lastAeff_m2, m_runTpaBeta_cmGW,
+                                           m_runLength_m);
 }

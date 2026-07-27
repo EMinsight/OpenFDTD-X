@@ -46,6 +46,15 @@ bool ActivationCurve::load(const QString &path, QVector<ActivationPoint> &pts,
     return parse(in.readAll(), pts, err);
 }
 
+double ActivationCurve::analyticTransmission(double pin_W, double beta_cmGW,
+                                             double aeff_m2, double length_m)
+{
+    if (beta_cmGW <= 0 || aeff_m2 <= 0 || length_m <= 0 || pin_W < 0)
+        return 0.0;
+    const double betaMW = beta_cmGW * 1e-11;   // [cm/GW] → [m/W]
+    return 1.0 / (1.0 + betaMW * (pin_W / aeff_m2) * length_m);
+}
+
 double ActivationCurve::aeffFromLogLine(const QString &line)
 {
     // "ONN: A_eff = 1.23e-13 [m^2]"

@@ -104,6 +104,10 @@ set(GUI_SOURCES
     src/widgets/EvViewer.cpp
     src/widgets/EvViewer.h
 
+    # タブ間で共有する GUI ヘルパー (品質バッジ / 波形包絡線 / テキスト保存)
+    src/tabs/TabHelpers.cpp
+    src/tabs/TabHelpers.h
+
     src/tabs/GeneralTab.cpp
     src/tabs/GeneralTab.h
     src/tabs/MeshTab.cpp

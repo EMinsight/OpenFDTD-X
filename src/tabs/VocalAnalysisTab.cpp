@@ -6,49 +6,25 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
-#include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
-#include <QTextStream>
 #include <QVBoxLayout>
 #include <algorithm>
 
 using namespace ofd;
 using namespace ofd::acoustics;
-
-namespace {
-
-QString qualityBadge(const QString &token)
-{
-    if (token == QLatin1String("valid"))   return I18n::tr("rir_q_valid");
-    if (token == QLatin1String("warning")) return I18n::tr("rir_q_warning");
-    return I18n::tr("rir_q_invalid");
-}
-
-QColor qualityColor(const QString &token)
-{
-    if (token == QLatin1String("valid"))   return QColor(0x2E, 0x8B, 0x57);
-    if (token == QLatin1String("warning")) return QColor(0xB8, 0x86, 0x0B);
-    return QColor(0xC0, 0x39, 0x2B);
-}
-
-QTableWidgetItem *roItem(const QString &text)
-{
-    auto *it = new QTableWidgetItem(text);
-    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    return it;
-}
-
-} // namespace
+// 品質バッジ / 読み取り専用セル / テキスト保存は
+// src/tabs/TabHelpers.{h,cpp} に集約 (3 タブで共有)。
+using namespace ofd::tabhelp;
 
 // ── construction ────────────────────────────────────────────────────────────
 VocalAnalysisTab::VocalAnalysisTab(Project *project, QWidget *parent)
@@ -357,23 +333,6 @@ void VocalAnalysisTab::showResult(const VocalAnalysisResult &result)
 }
 
 // ── export ──────────────────────────────────────────────────────────────────
-static void saveTextFile(QWidget *parent, const QString &caption,
-                         const QString &suggested, const QString &filter,
-                         const QString &content)
-{
-    const QString path = QFileDialog::getSaveFileName(parent, caption,
-                                                      suggested, filter);
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(parent, caption, f.errorString());
-        return;
-    }
-    QTextStream out(&f);
-    out.setEncoding(QStringConverter::Utf8);
-    out << content;
-}
-
 void VocalAnalysisTab::exportCsv()
 {
     if (!m_hasResult) return;

@@ -822,25 +822,32 @@ void OpticalTab::apply()
 
     // ── 非線形 (TPA) / ONN 活性化 — バリデーション付き ──
     // 不正値はモデルに書き込まず警告を表示する (β>0, 0<Pmin≤Pmax, 点数≥1)。
-    o.tpaEnabled = m_tpaEnable->isChecked();
+    // さらに、不正なまま有効フラグを立てておくと「警告が出ているのに前回値
+    // (既定 424) でカーネルが走る」状態になるため、有効フラグを落とす。
     o.tpaMaterialId = m_tpaMatId->value();
-    o.powerSweepEnabled = m_psEnable->isChecked();
     o.psPoints = m_psPoints->value();          // QSpinBox が ≥1 を保証
     o.psLog = (m_psScale->currentIndex() == 0);
     QStringList warns;
     const double beta = m_tpaBeta->text().toDouble();
-    if (beta > 0)
+    const bool betaOk = isValidTpaBeta(beta);
+    if (betaOk)
         o.tpaBeta_cmGW = beta;
     else if (m_tpaEnable->isChecked())
-        warns << I18n::tr("opt_tpa_warn_beta");
+        warns << I18n::tr("opt_tpa_warn_beta")
+              << I18n::tr("opt_tpa_warn_disabled");
+    o.tpaEnabled = m_tpaEnable->isChecked() && betaOk;
+
     const double pmin = m_psPmin->text().toDouble();
     const double pmax = m_psPmax->text().toDouble();
-    if (pmin > 0 && pmax >= pmin) {
+    const bool rangeOk = isValidPowerSweepRange(pmin, pmax);
+    if (rangeOk) {
         o.psPmin_W = pmin;
         o.psPmax_W = pmax;
     } else if (m_psEnable->isChecked()) {
-        warns << I18n::tr("opt_ps_warn_range");
+        warns << I18n::tr("opt_ps_warn_range")
+              << I18n::tr("opt_ps_warn_disabled");
     }
+    o.powerSweepEnabled = m_psEnable->isChecked() && rangeOk;
     m_tpaWarn->setText(warns.join('\n'));
     m_tpaWarn->setVisible(!warns.isEmpty());
     updateTpaWidgetState();
@@ -900,7 +907,8 @@ void OpticalTab::refresh()
 }
 
 // ── ONN 活性化カーブ結果表示 ────────────────────────────────────────────────
-void OpticalTab::showActivationResult(const QString &workdir, double aeff_m2)
+void OpticalTab::showActivationResult(const QString &workdir, double aeff_m2,
+                                      double beta_cmGW, double length_m)
 {
     if (workdir.isEmpty()) return;
     const QString csv = QDir(workdir).filePath("activation_curve.csv");
@@ -926,18 +934,17 @@ void OpticalTab::showActivationResult(const QString &workdir, double aeff_m2)
     QVector<MiniSeries> seriesP{ sp }, seriesT{ st };
 
     // 解析解 T = 1 / (1 + β·(P/A_eff)·L) の重ね描き。
-    // β [cm/GW] → [m/W] は ×1e-11。L は z メッシュの伝搬長 [m]。
-    const MeshAxis &mz = m_p->mesh(2);
-    const double L = mz.nodes.isEmpty()
-        ? 0.0 : (mz.nodes.last() - mz.nodes.first());
-    if (aeff_m2 > 0 && L > 0) {
-        const double betaMW = m_p->optical().tpaBeta_cmGW * 1e-11;
+    // β と L は実行開始時のスナップショット (引数) を使う — 表示時点の
+    // ライブ値を使うと、実行中に UI を編集した場合に実測 CSV と対応しない
+    // カーブが重なる。
+    if (aeff_m2 > 0 && length_m > 0 && beta_cmGW > 0) {
         MiniSeries at, ap;
         at.color = ap.color = QColor("#C42B1C");
         at.dashed = ap.dashed = true;
         at.label = ap.label = I18n::tr("opt_onn_analytic");
         for (const ActivationPoint &a : pts) {
-            const double T = 1.0 / (1.0 + betaMW * (a.pin / aeff_m2) * L);
+            const double T = ActivationCurve::analyticTransmission(
+                a.pin, beta_cmGW, aeff_m2, length_m);
             at.pts.push_back({ a.pin, T });
             ap.pts.push_back({ a.pin, a.pin * T });
         }
