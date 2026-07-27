@@ -19,6 +19,23 @@ bool ofd::isValidPowerSweepRange(double pmin_W, double pmax_W)
            std::isfinite(pmin_W) && std::isfinite(pmax_W);
 }
 
+// ── 光ドメイン: RCWA 層スタックの妥当性 ─────────────────────────────────────
+bool ofd::isValidRcwaLayer(const RcwaLayer &layer)
+{
+    return std::isfinite(layer.eps1) && layer.eps1 > 0.0 &&
+           std::isfinite(layer.eps2) && layer.eps2 > 0.0 &&
+           std::isfinite(layer.fill) && layer.fill >= 0.0 && layer.fill <= 1.0 &&
+           std::isfinite(layer.thickness_nm) && layer.thickness_nm >= 0.0;
+}
+
+bool ofd::isValidRcwaStack(const QVector<RcwaLayer> &layers)
+{
+    if (layers.isEmpty()) return false;
+    for (const RcwaLayer &l : layers)
+        if (!isValidRcwaLayer(l)) return false;
+    return true;
+}
+
 Project::Project(QObject *parent) : QObject(parent)
 {
     clear();

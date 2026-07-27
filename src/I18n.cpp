@@ -263,6 +263,38 @@ void I18n::loadTables() {
     add("opt_rcwa_orders", "Fourier次数 (Nx × Ny)", "Fourier orders (Nx × Ny)");
     add("opt_rcwa_period", "格子周期 Λ [nm]", "Grating period Λ [nm]");
     add("opt_rcwa_layers", "層分割数", "Layer slices");
+    add("opt_rcwa_stack", "層構成 (入射側 → 透過側)",
+        "Layer stack (incidence → exit)");
+    add("opt_rcwa_eps1", "ε1", "ε1");
+    add("opt_rcwa_eps2", "ε2", "ε2");
+    add("opt_rcwa_fill", "フィル率 f", "Fill factor f");
+    add("opt_rcwa_thick", "厚み [nm]", "Thickness [nm]");
+    add("opt_rcwa_add", "層を追加", "Add layer");
+    add("opt_rcwa_del", "選択層を削除", "Remove selected layer");
+    add("opt_rcwa_stack_hint",
+        "先頭と末尾は半無限層として扱われ、厚みは無視されます (0 で可)。"
+        "orcwa は 1D 格子ソルバーのため Nx と Λx のみを使い、Ny / Λy は "
+        "無視されます。周波数は全般タブの frequency1 [Hz] を使います "
+        "(λ [nm] → f = c/λ)。カーネルは 0 < f < 1 と中間層の厚み > 0 を"
+        "要求します。",
+        "The first and last layers are semi-infinite; their thickness is "
+        "ignored (0 is fine). orcwa is a 1-D grating solver, so only Nx and "
+        "Λx are used — Ny / Λy are ignored. Frequencies come from "
+        "frequency1 [Hz] on the General tab (λ [nm] → f = c/λ). The kernel "
+        "requires 0 < f < 1 and a positive thickness for interior layers.");
+    add("opt_rcwa_warn_layer",
+        "層 %1: ε1 > 0, ε2 > 0, 0 ≤ f ≤ 1, 厚み ≥ 0 を満たしていません。",
+        "Layer %1: needs ε1 > 0, ε2 > 0, 0 ≤ f ≤ 1, thickness ≥ 0.");
+    add("opt_rcwa_warn_skip",
+        "不正な層があるため、RCWA 設定 (rcwa / rcwalayer) は .ofd に"
+        "書き出されません。",
+        "The RCWA settings (rcwa / rcwalayer) will NOT be written to the "
+        ".ofd file while a layer is invalid.");
+    add("opt_rcwa_warn_empty",
+        "層が 1 つも定義されていないため、RCWA 設定は .ofd に書き出されません "
+        "(カーネルは 2 層以上を要求します)。",
+        "No layers defined, so no RCWA settings are written to the .ofd file "
+        "(the kernel requires at least two layers).");
     add("opt_bpm_section", "BPMパラメータ", "BPM parameters");
     add("opt_bpm_algo", "アルゴリズム", "Algorithm");
     add("opt_bpm_dz", "Δz ステップ [nm]", "Δz step [nm]");

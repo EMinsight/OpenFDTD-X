@@ -197,6 +197,19 @@ static void compareProjects(const Project &a, const Project &b)
           nearlyEq(oa.psPmax_W, ob.psPmax_W) &&
           oa.psPoints == ob.psPoints && oa.psLog == ob.psLog,
           "powersweep round-trip");
+
+    // RCWA コア設定 (rcwa / rcwalayer) — .ofd キーの往復
+    check(oa.solver == ob.solver, "optical solver round-trip");
+    check(oa.rcwaLayerList.size() == ob.rcwaLayerList.size(),
+          "rcwalayer count round-trip");
+    for (int i = 0; i < qMin(oa.rcwaLayerList.size(), ob.rcwaLayerList.size());
+         ++i) {
+        const RcwaLayer &x = oa.rcwaLayerList[i], &y = ob.rcwaLayerList[i];
+        check(nearlyEq(x.eps1, y.eps1) && nearlyEq(x.eps2, y.eps2) &&
+              nearlyEq(x.fill, y.fill) &&
+              nearlyEq(x.thickness_nm, y.thickness_nm),
+              "rcwalayer params round-trip");
+    }
 }
 
 
@@ -688,6 +701,200 @@ static void testOnnActivation()
     }
 }
 
+// RCWA コア設定 (OpenRCWA の rcwa / rcwalayer キー) — .ofd/.ofdx 永続化。
+// キー仕様は OpenRCWA/sol/input_data.c が正: 単位は m、GUI は nm で保持する。
+static void testRcwaCore()
+{
+    g_file = "rcwa";
+
+    // 層スタックの妥当性判定 (OpticalTab と共用)
+    {
+        check(isValidRcwaLayer(RcwaLayer{}), "rcwa default layer valid");
+        check(!isValidRcwaLayer(RcwaLayer{ 0.0, 1.0, 0.5, 0.0 }),
+              "rcwa eps1 zero invalid");
+        check(!isValidRcwaLayer(RcwaLayer{ -1.0, 1.0, 0.5, 0.0 }),
+              "rcwa eps1 negative invalid");
+        check(!isValidRcwaLayer(RcwaLayer{ 1.0, 0.0, 0.5, 0.0 }),
+              "rcwa eps2 zero invalid");
+        check(!isValidRcwaLayer(RcwaLayer{ 1.0, 1.0, 1.5, 0.0 }),
+              "rcwa fill > 1 invalid");
+        check(!isValidRcwaLayer(RcwaLayer{ 1.0, 1.0, -0.1, 0.0 }),
+              "rcwa fill < 0 invalid");
+        check(isValidRcwaLayer(RcwaLayer{ 1.0, 1.0, 0.0, 0.0 }),
+              "rcwa fill 0 valid");
+        check(isValidRcwaLayer(RcwaLayer{ 1.0, 1.0, 1.0, 0.0 }),
+              "rcwa fill 1 valid");
+        check(!isValidRcwaLayer(RcwaLayer{ 1.0, 1.0, 0.5, -1.0 }),
+              "rcwa negative thickness invalid");
+        check(!isValidRcwaStack({}), "rcwa empty stack invalid");
+        check(isValidRcwaStack({ RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                 RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } }),
+              "rcwa two-layer stack valid");
+        check(!isValidRcwaStack({ RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                  RcwaLayer{ 0.0, 2.25, 0.5, 0.0 } }),
+              "rcwa stack with one bad layer invalid");
+    }
+
+    // (b) solver が RCWA 以外 / 層リストが空 → 出力は従来とバイト一致
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        check(!base.contains("rcwa"), "rcwa: no rcwa line by default");
+        check(base.startsWith("OpenFDTD 4 2\n"), "rcwa: default header kept");
+
+        OpticalOpts &o = p.optical();
+        // 層だけ入れても solver が FDTD なら出力は変わらない
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        check(OfdIO::serialize(p) == base,
+              "rcwa: layers without RCWA solver keep output byte-identical");
+
+        // solver だけ RCWA にしても層が空なら出力は変わらない
+        o.rcwaLayerList.clear();
+        o.solver = OpticalSolver::RCWA;
+        check(OfdIO::serialize(p) == base,
+              "rcwa: RCWA solver with empty stack keeps output byte-identical");
+
+        // 不正な層が混ざっていても出力は変わらない (カーネルへ渡さない)
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ -1.0, 2.25, 0.5, 0.0 } };
+        check(OfdIO::serialize(p) == base,
+              "rcwa: invalid layer keeps output byte-identical");
+
+        // 元に戻せば完全にバイト一致 (後方互換)
+        o.rcwaLayerList.clear();
+        o.solver = OpticalSolver::FDTD;
+        check(OfdIO::serialize(p) == base,
+              "rcwa: disabled output byte-identical to legacy");
+    }
+
+    // (d) 出力書式と nm → m 換算 (600 nm → 6e-07)
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 5;
+        o.rcwaPeriodX = 300.0;          // nm → 3e-07 m
+        o.rcwaPeriodY = 600.0;          // 無視される (orcwa は 1D)
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                            RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        const QString out = OfdIO::serialize(p);
+        check(out.startsWith("OpenRCWA 4 2\n"),
+              "rcwa: header switched to OpenRCWA");
+        check(out.contains("\nrcwa = 5 3e-07\n"), "rcwa: rcwa line emitted");
+        check(out.contains("\nrcwalayer = 1 1 0.5 0\n"),
+              "rcwa: incident layer emitted");
+        check(out.contains("\nrcwalayer = 4 1 0.5 2e-07\n"),
+              "rcwa: grating layer thickness nm -> m");
+        check(out.contains("\nrcwalayer = 2.25 2.25 0.5 0\n"),
+              "rcwa: exit layer emitted");
+        // 600 nm → 6e-07 m
+        o.rcwaPeriodX = 600.0;
+        check(OfdIO::serialize(p).contains("\nrcwa = 5 6e-07\n"),
+              "rcwa: 600 nm period serializes as 6e-07 m");
+    }
+
+    // (a) 層あり .ofd のラウンドトリップ
+    {
+        const QString text =
+            "OpenRCWA 4 2\n"
+            "rcwa = 7 3.0e-7\n"
+            "rcwalayer = 1.0 1.0 0.5 0\n"
+            "rcwalayer = 4.0 1.0 0.4 2.0e-7\n"
+            "rcwalayer = 2.25 2.25 0.5 0\n"
+            "end\n";
+        Project p;
+        QString err;
+        check(OfdIO::parse(text, p, &err), "rcwa: parse OpenRCWA header file");
+        const OpticalOpts &o = p.optical();
+        check(o.solver == OpticalSolver::RCWA, "rcwa: solver switched to RCWA");
+        check(o.rcwaNx == 7, "rcwa: harmonics parsed");
+        check(nearlyEq(o.rcwaPeriodX, 300.0), "rcwa: period m -> nm");
+        check(o.rcwaLayerList.size() == 3, "rcwa: three layers parsed");
+        if (o.rcwaLayerList.size() == 3) {
+            check(nearlyEq(o.rcwaLayerList[1].eps1, 4.0) &&
+                  nearlyEq(o.rcwaLayerList[1].eps2, 1.0) &&
+                  nearlyEq(o.rcwaLayerList[1].fill, 0.4) &&
+                  nearlyEq(o.rcwaLayerList[1].thickness_nm, 200.0),
+                  "rcwa: grating layer parsed (thickness m -> nm)");
+            check(nearlyEq(o.rcwaLayerList[2].eps1, 2.25),
+                  "rcwa: exit layer parsed");
+        }
+        check(p.extraLines().isEmpty(),
+              "rcwa: rcwa keys not duplicated into extraLines");
+
+        // 再シリアライズ → 再パースで一致
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwa = 7 3e-07\n") &&
+              out.contains("\nrcwalayer = 4 1 0.4 2e-07\n"),
+              "rcwa: reserialize keeps rcwa/rcwalayer");
+        Project p2;
+        check(OfdIO::parse(out, p2, &err), "rcwa: reparse");
+        compareProjects(p, p2);
+    }
+
+    // (c) .ofdx ラウンドトリップ + 旧ファイル互換
+    {
+        Project p1;
+        OpticalOpts &o = p1.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ 12.25, 2.1, 0.35, 220.0 },
+                            RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "rcwa ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "rcwa ofdx load");
+            const OpticalOpts &q = p2.optical();
+            check(q.solver == OpticalSolver::RCWA, "rcwa ofdx solver");
+            check(q.rcwaLayerList.size() == 3, "rcwa ofdx layer count");
+            if (q.rcwaLayerList.size() == 3)
+                check(nearlyEq(q.rcwaLayerList[1].eps1, 12.25) &&
+                      nearlyEq(q.rcwaLayerList[1].eps2, 2.1) &&
+                      nearlyEq(q.rcwaLayerList[1].fill, 0.35) &&
+                      nearlyEq(q.rcwaLayerList[1].thickness_nm, 220.0),
+                      "rcwa ofdx layer round-trip");
+
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "rcwa ofdx reopen");
+            const QJsonObject rc = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("optical").toObject()
+                                       .value("rcwa").toObject();
+            check(rc.contains("nx") && rc.contains("ny") &&
+                  rc.contains("period_x_nm") && rc.contains("period_y_nm") &&
+                  rc.contains("layers"),
+                  "rcwa json keeps existing rcwa keys");
+            check(rc.value("layer_list").toArray().size() == 3,
+                  "rcwa json layer_list key");
+        }
+
+        // 旧 .ofdx (layer_list 無し): 空リストのまま (旧ファイル互換)
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 1,"
+                "     \"rcwa\": { \"nx\": 9, \"period_x_nm\": 450 } } }";
+            old.write(legacy);
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3), "rcwa legacy ofdx load");
+            const OpticalOpts &q = p3.optical();
+            check(q.rcwaNx == 9 && nearlyEq(q.rcwaPeriodX, 450.0),
+                  "rcwa legacy ofdx keys still load");
+            check(q.rcwaLayerList.isEmpty(),
+                  "rcwa legacy ofdx leaves layer list empty");
+            check(OfdIO::serialize(p3) == OfdIO::serialize(Project()),
+                  "rcwa legacy project serializes byte-identically");
+        }
+    }
+}
+
 // 実行結果の表示ゲート: ONN 活性化カーブは「その実行が生成したもの」だけ。
 static void testRunGating()
 {
@@ -811,6 +1018,7 @@ int main(int argc, char *argv[])
     testRoomAcoustics();
     testOperaAcousticSettings();
     testOnnActivation();
+    testRcwaCore();
     testRunGating();
 
     std::printf("%d files loaded, %d checks, %d failures\n",

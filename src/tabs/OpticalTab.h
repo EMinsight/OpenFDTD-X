@@ -50,6 +50,12 @@ private:
     void updateTpaWidgetState();
     // mock の {mode === "…" && <Section…>} 相当: 選択モードのセクションだけ表示
     void updateModeSections();
+    // RCWA 層テーブル ↔ モデル。applyRcwaTable() はテーブルの内容を
+    // そのままモデルへ書き、不正な行を赤字にして警告文字列を返す
+    // (UI とモデル/保存内容を乖離させない — 不正時は OfdIO 側が RCWA 行を
+    //  丸ごと出力しないので、カーネルには不正な設定が渡らない)。
+    QStringList applyRcwaTable();
+    void        refreshRcwaTable();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -68,6 +74,9 @@ private:
     // RCWA
     QSpinBox  *m_rcwaNx, *m_rcwaNy, *m_rcwaLayers;
     QLineEdit *m_rcwaPx, *m_rcwaPy;
+    QTableWidget *m_rcwaStack;      // eps1 / eps2 / fill / 厚み[nm]
+    QPushButton  *m_rcwaAdd, *m_rcwaDel;
+    QLabel       *m_rcwaWarn;
     // BPM
     QComboBox *m_bpmAlgo, *m_bpmInput;
     QLineEdit *m_bpmDz, *m_bpmN0;

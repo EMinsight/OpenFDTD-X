@@ -47,6 +47,17 @@ struct GeneralOpts {
 enum class OpticalSolver { FDTD, RCWA, BPM, FMM };
 enum class OpticalMode { BPF, Waveguide, Ring, MZI, Metasurface, PhC, NF2FF, SParam };
 
+// RCWA 層スタックの 1 層。OpenRCWA の `rcwalayer = <eps1> <eps2> <fill>
+// <thickness[m]>` に 1:1 対応する (sol/input_data.c)。GUI は nm で保持し、
+// .ofd 書き出し時に ×1e-9 で m へ換算する。
+// 先頭と末尾の層は半無限層として扱われ、厚みはカーネルで無視される。
+struct RcwaLayer {
+    double eps1 = 1.0;         // 格子の材質1の比誘電率 (> 0)
+    double eps2 = 1.0;         // 格子の材質2の比誘電率 (> 0)
+    double fill = 0.5;         // フィルファクタ [0,1]
+    double thickness_nm = 0;   // 厚み [nm] (≥ 0、半無限層は 0)
+};
+
 struct OpticalOpts {
     OpticalSolver solver = OpticalSolver::FDTD;
     OpticalMode   mode   = OpticalMode::BPF;
@@ -58,6 +69,10 @@ struct OpticalOpts {
     int     rcwaNx = 11, rcwaNy = 11;   // Fourier orders
     double  rcwaPeriodX = 600.0, rcwaPeriodY = 600.0;  // nm
     int     rcwaLayers = 8;
+    // orcwa へ渡す実際の層スタック。既定は空 = 従来どおり rcwalayer 行を
+    // 出力しない (rcwaLayers は GUI 上の「層分割数」で意味が異なるため、
+    // 後方互換のため残す — 改名も削除もしない)。
+    QVector<RcwaLayer> rcwaLayerList;
 
     // BPM
     int     bpmAlgorithm = 0;     // 0=FFT, 1=FDM, 2=Wide-Angle Padé
@@ -98,6 +113,14 @@ struct OpticalOpts {
 // β で走る」状態を作らない。
 bool isValidTpaBeta(double beta_cmGW);                       // β > 0
 bool isValidPowerSweepRange(double pmin_W, double pmax_W);   // 0 < Pmin ≤ Pmax
+
+// RCWA 層の妥当性 (GUI の入力検証と .ofd 書き出しゲートで共用)。
+// eps1 > 0, eps2 > 0, 0 ≤ fill ≤ 1, thickness_nm ≥ 0。
+bool isValidRcwaLayer(const RcwaLayer &layer);
+// 層スタック全体が orcwa へ渡せる状態か (空でなく、全層が有効)。
+// false のとき .ofd へ RCWA 設定を一切書き出さない — 不正な設定のまま
+// カーネルを走らせない (.claude/rules/gui.md)。
+bool isValidRcwaStack(const QVector<RcwaLayer> &layers);
 
 // ── 室内音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
 

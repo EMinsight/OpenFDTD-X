@@ -6,7 +6,9 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
+#include <QBrush>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QFileInfo>
@@ -319,6 +321,38 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
         page->form()->addRow(I18n::tr("opt_rcwa_period") + " Λx", m_rcwaPx);
         page->form()->addRow("Λy", m_rcwaPy);
         page->form()->addRow(I18n::tr("opt_rcwa_layers"), m_rcwaLayers);
+
+        // ── 層スタック (orcwa の rcwalayer キーに 1:1 対応) ──
+        auto *stack = new SectionBox(I18n::tr("opt_rcwa_stack"), page);
+        m_rcwaStack = new QTableWidget(0, 4, stack);
+        m_rcwaStack->setHorizontalHeaderLabels(
+            { I18n::tr("opt_rcwa_eps1"), I18n::tr("opt_rcwa_eps2"),
+              I18n::tr("opt_rcwa_fill"), I18n::tr("opt_rcwa_thick") });
+        m_rcwaStack->horizontalHeader()->setSectionResizeMode(
+            QHeaderView::Stretch);
+        m_rcwaStack->verticalHeader()->setVisible(true);
+        m_rcwaStack->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_rcwaStack->setMinimumHeight(140);
+        stack->vbox()->addWidget(m_rcwaStack);
+        auto *btns = new QWidget(stack);
+        auto *bh = new QHBoxLayout(btns);
+        bh->setContentsMargins(0, 0, 0, 0);
+        m_rcwaAdd = new QPushButton(I18n::tr("opt_rcwa_add"), btns);
+        m_rcwaDel = new QPushButton(I18n::tr("opt_rcwa_del"), btns);
+        bh->addWidget(m_rcwaAdd);
+        bh->addWidget(m_rcwaDel);
+        bh->addStretch(1);
+        stack->vbox()->addWidget(btns);
+        auto *stackHint = new QLabel(I18n::tr("opt_rcwa_stack_hint"), stack);
+        stackHint->setWordWrap(true);
+        stack->vbox()->addWidget(stackHint);
+        m_rcwaWarn = new QLabel(stack);
+        m_rcwaWarn->setWordWrap(true);
+        m_rcwaWarn->setStyleSheet("color: #C42B1C;");
+        m_rcwaWarn->setVisible(false);
+        stack->vbox()->addWidget(m_rcwaWarn);
+        page->vbox()->addWidget(stack);
+
         m_solverStack->addWidget(page);
     }
     // [2] BPM
@@ -771,6 +805,24 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
         m_spPortOut->setMaximum(std::max(1, n));
     });
 
+    // ── RCWA 層スタックの編集 ──
+    connect(m_rcwaStack, &QTableWidget::cellChanged, this, applyCb);
+    connect(m_rcwaAdd, &QPushButton::clicked, this, [this] {
+        // 直前の層をコピーして追加する (無ければ既定の空気層)。
+        QVector<RcwaLayer> &ls = m_p->optical().rcwaLayerList;
+        ls.push_back(ls.isEmpty() ? RcwaLayer{} : ls.last());
+        refreshRcwaTable();
+        apply();
+    });
+    connect(m_rcwaDel, &QPushButton::clicked, this, [this] {
+        const int row = m_rcwaStack->currentRow();
+        QVector<RcwaLayer> &ls = m_p->optical().rcwaLayerList;
+        if (row < 0 || row >= ls.size()) return;
+        ls.removeAt(row);
+        refreshRcwaTable();
+        apply();
+    });
+
     connect(project, &Project::loaded, this, &OpticalTab::refresh);
     refresh();
     // refresh() でモード index が変わらなかった場合も初期表示を確定させる
@@ -808,6 +860,9 @@ void OpticalTab::apply()
     o.rcwaPeriodX = m_rcwaPx->text().toDouble();
     o.rcwaPeriodY = m_rcwaPy->text().toDouble();
     o.rcwaLayers = m_rcwaLayers->value();
+    const QStringList rcwaWarns = applyRcwaTable();
+    m_rcwaWarn->setText(rcwaWarns.join('\n'));
+    m_rcwaWarn->setVisible(!rcwaWarns.isEmpty());
     o.bpmAlgorithm = m_bpmAlgo->currentIndex();
     o.bpmDz = m_bpmDz->text().toDouble();
     o.bpmRefIndex = m_bpmN0->text().toDouble();
@@ -855,6 +910,63 @@ void OpticalTab::apply()
     m_p->touch();
 }
 
+// ── RCWA 層スタック ─────────────────────────────────────────────────────────
+// テーブルの内容をモデルへ書き戻し、不正な行を赤字にする。戻り値は警告文。
+// 値はそのままモデルへ入れる (UI とモデルを乖離させない)。不正な層が 1 つ
+// でもあれば OfdIO 側の isValidRcwaStack() ゲートが RCWA 行の書き出しを丸ごと
+// 止めるので、不正な設定が orcwa へ渡ることはない。
+QStringList OpticalTab::applyRcwaTable()
+{
+    QVector<RcwaLayer> layers;
+    QStringList warns;
+    for (int r = 0; r < m_rcwaStack->rowCount(); ++r) {
+        auto cellVal = [this, r](int c) {
+            QTableWidgetItem *it = m_rcwaStack->item(r, c);
+            return it ? it->text().trimmed().toDouble() : 0.0;
+        };
+        RcwaLayer l;
+        l.eps1 = cellVal(0);
+        l.eps2 = cellVal(1);
+        l.fill = cellVal(2);
+        l.thickness_nm = cellVal(3);
+        const bool ok = isValidRcwaLayer(l);
+        if (!ok)
+            warns << I18n::tr("opt_rcwa_warn_layer").arg(r + 1);
+        for (int c = 0; c < 4; ++c) {
+            if (QTableWidgetItem *it = m_rcwaStack->item(r, c))
+                it->setForeground(ok ? QBrush() : QBrush(QColor("#C42B1C")));
+        }
+        layers.push_back(l);
+    }
+    if (!warns.isEmpty())
+        warns << I18n::tr("opt_rcwa_warn_skip");
+    else if (layers.isEmpty() &&
+             m_p->optical().solver == OpticalSolver::RCWA)
+        warns << I18n::tr("opt_rcwa_warn_empty");
+    m_p->optical().rcwaLayerList = layers;
+    return warns;
+}
+
+void OpticalTab::refreshRcwaTable()
+{
+    const bool wasUpdating = m_updating;
+    m_updating = true;                 // cellChanged → apply() の再入を防ぐ
+    const QVector<RcwaLayer> &ls = m_p->optical().rcwaLayerList;
+    m_rcwaStack->setRowCount(ls.size());
+    for (int r = 0; r < ls.size(); ++r) {
+        const double v[4] = { ls[r].eps1, ls[r].eps2, ls[r].fill,
+                              ls[r].thickness_nm };
+        const bool ok = isValidRcwaLayer(ls[r]);
+        for (int c = 0; c < 4; ++c) {
+            auto *it = new QTableWidgetItem(QString::number(v[c], 'g', 8));
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (!ok) it->setForeground(QBrush(QColor("#C42B1C")));
+            m_rcwaStack->setItem(r, c, it);
+        }
+    }
+    m_updating = wasUpdating;
+}
+
 void OpticalTab::updateTpaWidgetState()
 {
     const bool tpa = m_tpaEnable->isChecked();
@@ -882,6 +994,8 @@ void OpticalTab::refresh()
     m_rcwaPx->setText(QString::number(o.rcwaPeriodX, 'g', 8));
     m_rcwaPy->setText(QString::number(o.rcwaPeriodY, 'g', 8));
     m_rcwaLayers->setValue(o.rcwaLayers);
+    refreshRcwaTable();
+    m_rcwaWarn->setVisible(false);
     m_bpmAlgo->setCurrentIndex(o.bpmAlgorithm);
     m_bpmDz->setText(QString::number(o.bpmDz, 'g', 8));
     m_bpmN0->setText(QString::number(o.bpmRefIndex, 'g', 8));

@@ -35,7 +35,17 @@ QString OfdIO::serialize(const Project &p)
     QString text;
     QTextStream out(&text);
 
-    out << "OpenFDTD 4 2\n";
+    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer) を書き出すか ──────────
+    // 条件: 光ソルバーが RCWA、かつ層スタックが有効 (空でなく全層が有効)。
+    // どちらかが崩れていれば RCWA 関連は一切出力しない = 従来出力とバイト
+    // 一致 (後方互換)。不正な設定のままカーネルを走らせない意図も兼ねる。
+    const OpticalOpts &oo = p.optical();
+    const bool rcwaOut = (oo.solver == OpticalSolver::RCWA) &&
+                         isValidRcwaStack(oo.rcwaLayerList);
+
+    // ヘッダ: orcwa のパーサは "OpenRCWA" / "OpenTHFD" しか受け付けない
+    // (OpenRCWA/sol/input_data.c)。RCWA 設定を出力するときだけ切り替える。
+    out << (rcwaOut ? "OpenRCWA 4 2\n" : "OpenFDTD 4 2\n");
     const GeneralOpts &g = p.general();
     if (!g.title.isEmpty())
         out << "title = " << g.title << "\n";
@@ -207,9 +217,23 @@ QString OfdIO::serialize(const Project &p)
                 << " " << num(po.near2dVzoom[1]) << "\n";
     }
 
+    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer) ──────────────────────
+    // orcwa は「調和次数 1 個 + 周期 1 個」しか受け取らない 1D 格子ソルバー
+    // なので、GUI の Nx / Λx をそのまま写像する。Ny / Λy (y 方向) は
+    // カーネル側に対応するキーが無いため無視される (.ofdx には保存される)。
+    // 単位: GUI は nm、orcwa は m (物理長 — γ = k0·neff スケーリング前提)。
+    if (rcwaOut) {
+        out << "rcwa = " << oo.rcwaNx << " "
+            << num(oo.rcwaPeriodX * 1e-9) << "\n";
+        // 層は入射側 → 透過側の順にそのまま並べる (先頭/末尾は半無限層)。
+        for (const RcwaLayer &l : oo.rcwaLayerList)
+            out << "rcwalayer = " << num(l.eps1) << " " << num(l.eps2)
+                << " " << num(l.fill) << " "
+                << num(l.thickness_nm * 1e-9) << "\n";
+    }
+
     // ── 非線形 (TPA) / ONN 活性化キー (OpenBPM: tpa+powersweep, OpenFDTD:
     // tpa)。無効時は一切出力しない (従来ファイルとバイト一致 = 後方互換)。
-    const OpticalOpts &oo = p.optical();
     if (oo.tpaEnabled)
         out << "tpa = " << oo.tpaMaterialId << " "
             << num(oo.tpaBeta_cmGW) << "\n";
@@ -270,7 +294,10 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
 
         if (!header) {
             const QStringList t = line.split(ws, Qt::SkipEmptyParts);
-            if (t.size() < 3 || (t[0] != "OpenFDTD" && t[0] != "OpenTHFD")) {
+            // "OpenRCWA" は orcwa (RCWA コア) 入力のヘッダ — GUI が RCWA
+            // 設定を書き出したファイルを読み戻せるように受け付ける。
+            if (t.size() < 3 || (t[0] != "OpenFDTD" && t[0] != "OpenTHFD" &&
+                                 t[0] != "OpenRCWA")) {
                 if (err) *err = "not OpenFDTD/OpenTHFD data";
                 return false;
             }
@@ -485,6 +512,25 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             po.near2dVzoom[0] = qMin(d(2), d(3));
             po.near2dVzoom[1] = qMax(d(2), d(3));
         }
+        // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer) ──────────────────
+        // rcwa キーが在るファイルは RCWA カーネル用の入力なので、ソルバー
+        // も RCWA にする (planewave/tpa と同じ「キーの存在 = 機能有効」の
+        // 流儀)。.ofdx は .ofd の後に読まれるため、サイドカーに明示的な
+        // solver があればそちらが優先される。
+        else if (key == "rcwa" && t.size() >= 2) {
+            OpticalOpts &o = project.optical();
+            o.solver = OpticalSolver::RCWA;
+            o.rcwaNx = n(0);
+            o.rcwaPeriodX = d(1) * 1e9;    // m → nm
+        }
+        else if (key == "rcwalayer" && t.size() >= 4) {
+            RcwaLayer l;
+            l.eps1 = d(0);
+            l.eps2 = d(1);
+            l.fill = d(2);
+            l.thickness_nm = d(3) * 1e9;   // m → nm
+            project.optical().rcwaLayerList.push_back(l);
+        }
         // ── 非線形 (TPA) / ONN 活性化キー ───────────────────────────────
         else if (key == "tpa" && t.size() >= 2) {
             OpticalOpts &o = project.optical();
@@ -528,10 +574,18 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         opt["mode"]   = int(o.mode);
         opt["wavelength"] = QJsonObject{
             {"min_nm", o.lambdaMin}, {"max_nm", o.lambdaMax}, {"div", o.lambdaDiv} };
+        // RCWA 層スタック — "layer_list" は追加キー。既存の "layers"
+        // (GUI 上の層分割数) は意味が違うので残す (改名・削除は禁止)。
+        QJsonArray rcwaLayerList;
+        for (const RcwaLayer &l : o.rcwaLayerList)
+            rcwaLayerList.append(QJsonObject{
+                {"eps1", l.eps1}, {"eps2", l.eps2},
+                {"fill", l.fill}, {"thickness_nm", l.thickness_nm} });
         opt["rcwa"] = QJsonObject{
             {"nx", o.rcwaNx}, {"ny", o.rcwaNy},
             {"period_x_nm", o.rcwaPeriodX}, {"period_y_nm", o.rcwaPeriodY},
-            {"layers", o.rcwaLayers} };
+            {"layers", o.rcwaLayers},
+            {"layer_list", rcwaLayerList} };
         opt["bpm"] = QJsonObject{
             {"algorithm", o.bpmAlgorithm}, {"dz_nm", o.bpmDz},
             {"ref_index", o.bpmRefIndex}, {"input_mode", o.bpmInputMode} };
@@ -670,6 +724,21 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         o.rcwaPeriodX = rc.value("period_x_nm").toDouble(o.rcwaPeriodX);
         o.rcwaPeriodY = rc.value("period_y_nm").toDouble(o.rcwaPeriodY);
         o.rcwaLayers = rc.value("layers").toInt(o.rcwaLayers);
+        // 層スタック — 欠落していれば .ofd から読んだ値 (無ければ空リスト)
+        // をそのまま残す (旧ファイル互換)。
+        if (rc.contains("layer_list")) {
+            o.rcwaLayerList.clear();
+            for (const QJsonValue &v : rc["layer_list"].toArray()) {
+                const QJsonObject lo = v.toObject();
+                RcwaLayer l;
+                l.eps1 = lo.value("eps1").toDouble(l.eps1);
+                l.eps2 = lo.value("eps2").toDouble(l.eps2);
+                l.fill = lo.value("fill").toDouble(l.fill);
+                l.thickness_nm =
+                    lo.value("thickness_nm").toDouble(l.thickness_nm);
+                o.rcwaLayerList.push_back(l);
+            }
+        }
         const QJsonObject bp = opt["bpm"].toObject();
         o.bpmAlgorithm = bp.value("algorithm").toInt(o.bpmAlgorithm);
         o.bpmDz = bp.value("dz_nm").toDouble(o.bpmDz);
