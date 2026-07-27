@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 
 #include "Fft.h"
@@ -94,27 +95,81 @@ struct YinParams {
     double noiseGateDbfs;
 };
 
+// YIN のフレーム間で使い回す作業バッファ。フレーム毎の確保を避けるため
+// analyze() のループ外で 1 度だけ reset() する。
+struct YinWorkspace {
+    std::vector<double> cmndf;            // 添字 0..tauMax
+    std::vector<double> prefixSq;         // prefixSq[i] = Σ_{j<i} x[j]²
+    std::vector<std::complex<double>> fa; // 積分窓 (長さ W) のスペクトル
+    std::vector<std::complex<double>> fb; // 全区間 (長さ W+tauMax) のスペクトル
+    std::size_t fftLength;
+
+    YinWorkspace() : cmndf(), prefixSq(), fa(), fb(), fftLength(0) {}
+
+    void reset(const YinParams &p) {
+        const std::size_t span = p.frameLength + p.tauMax;
+        cmndf.assign(p.tauMax + 1, 1.0);
+        prefixSq.assign(span + 1, 0.0);
+        // 円状相関の巻き込みを避けるため N >= W + tauMax の 2 の冪を取る
+        fftLength = nextPowerOfTwo(span);
+        fa.assign(fftLength, std::complex<double>(0.0, 0.0));
+        fb.assign(fftLength, std::complex<double>(0.0, 0.0));
+    }
+};
+
 // 1 フレームの YIN。x は先頭が frame 開始、長さ >= W + tauMax。
-F0Frame yinFrame(const double *x, const YinParams &p, double fs) {
+//
+// 差分関数は定義どおりの二重ループ (O(W·tauMax)) ではなく、
+//   d(τ) = Σ_{j<W} (x[j] − x[j+τ])² = e(0) + e(τ) − 2·r(τ)
+//   e(τ) = Σ_{j<W} x[j+τ]²  (二乗和の累積和から O(1))
+//   r(τ) = Σ_{j<W} x[j]·x[j+τ]  (FFT による線形相関, O(N log N))
+// で求める (de Cheveigné & Kawahara 2002 §II-B の標準的な高速化)。
+F0Frame yinFrame(const double *x, const YinParams &p, double fs,
+                 YinWorkspace &ws) {
     F0Frame frame;
     const std::size_t w = p.frameLength;
+    const std::size_t span = w + p.tauMax;
+    const std::size_t n = ws.fftLength;
+
+    // 二乗和の累積和。逐次加算なので prefixSq[w] は素朴なループと同じ
+    // 加算順序 = 同じ値になる (フレーム RMS の後方互換)。
+    ws.prefixSq[0] = 0.0;
+    for (std::size_t j = 0; j < span; ++j)
+        ws.prefixSq[j + 1] = ws.prefixSq[j] + x[j] * x[j];
 
     // フレーム RMS (積分窓部分)
-    double e = 0.0;
-    for (std::size_t j = 0; j < w; ++j) e += x[j] * x[j];
-    frame.rmsDbfs = toDbAmp(std::sqrt(e / static_cast<double>(w)));
+    const double e0 = ws.prefixSq[w];
+    frame.rmsDbfs = toDbAmp(std::sqrt(e0 / static_cast<double>(w)));
 
-    // 差分関数 d(τ), τ = 1..tauMax (CMNDF の累積は τ=1 から必要)
-    std::vector<double> cmndf(p.tauMax + 1, 1.0);
+    // r(τ) = IFFT(conj(FFT(a))·FFT(b)) の実部。a = x[0..W-1] (以降 0 詰め)、
+    // b = x[0..W+tauMax-1] (以降 0 詰め)。j+τ <= W-1+tauMax < N なので
+    // τ = 0..tauMax の範囲では巻き込みが起きず線形相関に一致する。
+    for (std::size_t j = 0; j < n; ++j) {
+        ws.fa[j] = std::complex<double>((j < w) ? x[j] : 0.0, 0.0);
+        ws.fb[j] = std::complex<double>((j < span) ? x[j] : 0.0, 0.0);
+    }
+    fftForward(ws.fa);
+    fftForward(ws.fb);
+    // conj(A)·B (実部/虚部を明示。std::complex の operator* は __muldc3 経由)
+    for (std::size_t k = 0; k < n; ++k) {
+        const double ar = ws.fa[k].real();
+        const double ai = ws.fa[k].imag();
+        const double br = ws.fb[k].real();
+        const double bi = ws.fb[k].imag();
+        ws.fa[k] = std::complex<double>(ar * br + ai * bi, ar * bi - ai * br);
+    }
+    fftInverse(ws.fa);
+
+    // 差分関数 d(τ) → CMNDF, τ = 1..tauMax (累積は τ=1 から必要)
+    std::vector<double> &cmndf = ws.cmndf;
+    cmndf[0] = 1.0;
     double cumulative = 0.0;
     for (std::size_t tau = 1; tau <= p.tauMax; ++tau) {
-        double d = 0.0;
-        const double *a = x;
-        const double *b = x + tau;
-        for (std::size_t j = 0; j < w; ++j) {
-            const double diff = a[j] - b[j];
-            d += diff * diff;
-        }
+        const double eTau = ws.prefixSq[tau + w] - ws.prefixSq[tau];
+        // 完全周期の区間では d(τ) が 0 近傍になり桁落ちで負に振れうる。
+        // 定義上 d(τ) >= 0 なので 0 で下限を切る。
+        double d = e0 + eTau - 2.0 * ws.fa[tau].real();
+        if (d < 0.0) d = 0.0;
         cumulative += d;
         cmndf[tau] = (cumulative > 0.0)
                          ? d * static_cast<double>(tau) / cumulative
@@ -505,12 +560,16 @@ VocalAnalyzer::analyze(ArrayView<const double> x, double sampleRateHz) const {
     // ── YIN による F0 軌跡と HNR ──
     double hnrSumDb = 0.0;
     std::size_t hnrCount = 0;
+    YinWorkspace ws; // フレーム毎の確保を避けるためループ外で 1 度だけ確保
+    ws.reset(yp);
     for (std::size_t start = 0; start + frameSpan <= x.size();
          start += yp.hopLength) {
-        F0Frame f = yinFrame(x.data() + start, yp, fs);
-        f.timeSeconds =
-            (static_cast<double>(start) + 0.5 * static_cast<double>(frameSpan)) /
-            fs;
+        F0Frame f = yinFrame(x.data() + start, yp, fs, ws);
+        // 積分窓は W = frameLength (res.frameSeconds と同じ定義)。
+        // フレーム中心は start + W/2 であり、遅延分 tauMax は含めない。
+        f.timeSeconds = (static_cast<double>(start) +
+                         0.5 * static_cast<double>(yp.frameLength)) /
+                        fs;
         if (f.voiced) {
             double hnr = 0.0;
             if (hnrForFrame(x.data() + start, x.size() - start, yp.frameLength,

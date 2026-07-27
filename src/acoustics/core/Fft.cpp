@@ -14,6 +14,29 @@ namespace acoustics {
 namespace {
 const double kPi = 3.14159265358979323846;
 
+// 回転因子テーブル exp(sign·j2πk/N), k = 0..N/2-1。
+// 同じ (N, sign) なら値は常に同一なので直前の 1 組をスレッド毎に保持して
+// 使い回す (YIN のように同一長の変換を何千回も繰り返す経路で cos/sin の
+// 再計算が支配的になるため)。値は再計算した場合と完全に一致する。
+const std::vector<std::complex<double>> &twiddleTable(std::size_t n,
+                                                      bool inverse) {
+    static thread_local std::vector<std::complex<double>> cached[2];
+    static thread_local std::size_t cachedN[2] = {0, 0};
+    const int slot = inverse ? 1 : 0;
+    if (cachedN[slot] != n) {
+        const double sign = inverse ? 1.0 : -1.0;
+        std::vector<std::complex<double>> t(n / 2);
+        for (std::size_t k = 0; k < n / 2; ++k) {
+            const double ang = sign * 2.0 * kPi * static_cast<double>(k) /
+                               static_cast<double>(n);
+            t[k] = std::complex<double>(std::cos(ang), std::sin(ang));
+        }
+        cached[slot].swap(t);
+        cachedN[slot] = n;
+    }
+    return cached[slot];
+}
+
 // 共通変換本体 (inverse = true で符号反転 + 1/N 正規化)
 void transformPow2(std::vector<std::complex<double>> &a, bool inverse) {
     const std::size_t n = a.size();
@@ -28,26 +51,27 @@ void transformPow2(std::vector<std::complex<double>> &a, bool inverse) {
         if (i < j) std::swap(a[i], a[j]);
     }
 
-    // 回転因子テーブル exp(sign·j2πk/N), k = 0..N/2-1
-    const double sign = inverse ? 1.0 : -1.0;
-    std::vector<std::complex<double>> twiddle(n / 2);
-    for (std::size_t k = 0; k < n / 2; ++k) {
-        const double ang = sign * 2.0 * kPi * static_cast<double>(k) /
-                           static_cast<double>(n);
-        twiddle[k] = std::complex<double>(std::cos(ang), std::sin(ang));
-    }
+    // 回転因子テーブル exp(sign·j2πk/N), k = 0..N/2-1 (キャッシュ済み)
+    const std::vector<std::complex<double>> &twiddle = twiddleTable(n, inverse);
 
-    // バタフライ段
+    // バタフライ段。複素乗算は実部/虚部を明示して書く
+    // (std::complex の operator* は Inf/NaN 補正のため libgcc の __muldc3 を
+    //  呼び、有限値しか来ない本ループでは同じ値を数倍のコストで返すため)。
     for (std::size_t len = 2; len <= n; len <<= 1) {
         const std::size_t half = len >> 1;
         const std::size_t step = n / len; // テーブル間引き幅
         for (std::size_t base = 0; base < n; base += len) {
             for (std::size_t k = 0; k < half; ++k) {
-                const std::complex<double> u = a[base + k];
-                const std::complex<double> v = a[base + k + half] *
-                                               twiddle[k * step];
-                a[base + k] = u + v;
-                a[base + k + half] = u - v;
+                const std::complex<double> &w = twiddle[k * step];
+                const double wr = w.real();
+                const double wi = w.imag();
+                const std::complex<double> &z = a[base + k + half];
+                const double vr = z.real() * wr - z.imag() * wi;
+                const double vi = z.real() * wi + z.imag() * wr;
+                const double ur = a[base + k].real();
+                const double ui = a[base + k].imag();
+                a[base + k] = std::complex<double>(ur + vr, ui + vi);
+                a[base + k + half] = std::complex<double>(ur - vr, ui - vi);
             }
         }
     }

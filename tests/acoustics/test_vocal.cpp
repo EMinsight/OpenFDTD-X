@@ -10,6 +10,11 @@
 //       = (1000·1 + 3000·0.25) / 1.25 = 1400 Hz ±2%
 //   (f) VoiceType::Bass / Soprano で F0 探索範囲プリセットが変わる
 //   (g) SPL 系は CalibrationState::Absolute + オフセット指定時のみ valid
+//   (h) FFT 自己相関版 YIN が定義どおりの素朴な差分関数 (O(W·τmax) の
+//       二重ループ) と数値的に一致すること (全フレームで有声判定が一致、
+//       F0 の相対差 < 1e-9)
+//   (i) F0 フレーム中心時刻 = (start + W/2)/fs (W = frameSeconds·fs)。
+//       τmax 分の系統的な遅れが乗らないこと
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -63,6 +68,125 @@ std::vector<double> makeVibrato(double f0Hz, double rateHz, double depthCents,
         phi += 2.0 * kPi * f / kFs;
     }
     return x;
+}
+
+// 倍音 + 微小雑音を含む有声らしい合成信号 (決定論的)
+std::vector<double> makeVoiceLike(double f0Hz, double seconds, unsigned seed) {
+    const std::size_t n = static_cast<std::size_t>(seconds * kFs + 0.5);
+    std::vector<double> x(n);
+    unsigned st = seed;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double ph = 2.0 * kPi * f0Hz * static_cast<double>(i) / kFs;
+        x[i] = 0.5 * std::sin(ph) + 0.2 * std::sin(2.0 * ph) +
+               0.1 * std::sin(3.0 * ph) + 0.02 * testutil::lcgUniform(st);
+    }
+    return x;
+}
+
+// ── (h) 用: 定義どおりの素朴な YIN 参照実装 ──
+// d(τ) = Σ_{j<W} (x[j] − x[j+τ])² を二重ループで直接計算する
+// (VocalAnalyzer が FFT 自己相関で置き換えた部分の参照)。
+// パラメータは analyze() の結果から復元する。
+struct NaiveYinFrame {
+    double f0Hz;
+    bool voiced;
+};
+
+NaiveYinFrame naiveYinFrame(const double *x, std::size_t w, std::size_t tauMin,
+                            std::size_t tauMax, double threshold,
+                            double noiseGateDbfs) {
+    NaiveYinFrame out;
+    out.f0Hz = 0.0;
+    out.voiced = false;
+
+    double e = 0.0;
+    for (std::size_t j = 0; j < w; ++j) e += x[j] * x[j];
+    const double rms = std::sqrt(e / static_cast<double>(w));
+    const double rmsDbfs = (rms > 0.0) ? 20.0 * std::log10(rms) : -300.0;
+
+    std::vector<double> cmndf(tauMax + 1, 1.0);
+    double cumulative = 0.0;
+    for (std::size_t tau = 1; tau <= tauMax; ++tau) {
+        double d = 0.0;
+        for (std::size_t j = 0; j < w; ++j) {
+            const double diff = x[j] - x[j + tau];
+            d += diff * diff;
+        }
+        cumulative += d;
+        cmndf[tau] = (cumulative > 0.0)
+                         ? d * static_cast<double>(tau) / cumulative
+                         : 1.0;
+    }
+
+    std::size_t best = 0;
+    for (std::size_t tau = tauMin; tau <= tauMax; ++tau) {
+        if (cmndf[tau] < threshold) {
+            while (tau + 1 <= tauMax && cmndf[tau + 1] < cmndf[tau]) ++tau;
+            best = tau;
+            break;
+        }
+    }
+    if (best == 0) {
+        best = tauMin;
+        for (std::size_t tau = tauMin + 1; tau <= tauMax; ++tau) {
+            if (cmndf[tau] < cmndf[best]) best = tau;
+        }
+    }
+    if (cmndf[best] > threshold || rmsDbfs < noiseGateDbfs) return out;
+
+    double tauF = static_cast<double>(best);
+    if (best > 1 && best < tauMax) {
+        const double y1 = cmndf[best - 1], y2 = cmndf[best], y3 = cmndf[best + 1];
+        const double denom = y1 - 2.0 * y2 + y3;
+        if (std::fabs(denom) >= 1e-30) {
+            double off = 0.5 * (y1 - y3) / denom;
+            if (off > 1.0) off = 1.0;
+            if (off < -1.0) off = -1.0;
+            tauF += off;
+        }
+    }
+    out.voiced = true;
+    out.f0Hz = kFs / tauF;
+    return out;
+}
+
+// 素朴な参照実装と analyze() の F0 軌跡を突き合わせる
+void compareWithNaiveYin(const char *label, const std::vector<double> &x,
+                         const VocalAnalyzerConfig &cfg) {
+    VocalAnalyzer az(cfg);
+    AcousticResult<VocalAnalysisResult> r = az.analyze(view(x), kFs);
+    CHECK(r.success());
+    if (!r.success()) return;
+    const VocalAnalysisResult &res = r.value();
+
+    // analyze() が実際に使った YIN パラメータを復元する
+    const std::size_t w =
+        static_cast<std::size_t>(res.frameSeconds * kFs + 0.5);
+    const std::size_t hop = static_cast<std::size_t>(res.hopSeconds * kFs + 0.5);
+    const std::size_t tauMax =
+        static_cast<std::size_t>(kFs / res.f0SearchMinHz);
+    std::size_t tauMin = static_cast<std::size_t>(kFs / res.f0SearchMaxHz);
+    if (tauMin < 2) tauMin = 2;
+
+    CHECK(res.f0Track.size() > 0);
+    std::size_t voicedMismatch = 0;
+    double maxRelF0 = 0.0;
+    for (std::size_t i = 0; i < res.f0Track.size(); ++i) {
+        const std::size_t start = i * hop;
+        const NaiveYinFrame ref =
+            naiveYinFrame(x.data() + start, w, tauMin, tauMax,
+                          cfg.yinThreshold, cfg.noiseGateDbfs);
+        if (ref.voiced != res.f0Track[i].voiced) ++voicedMismatch;
+        if (ref.voiced && res.f0Track[i].voiced && ref.f0Hz > 0.0) {
+            const double rel =
+                std::fabs(res.f0Track[i].f0Hz - ref.f0Hz) / ref.f0Hz;
+            if (rel > maxRelF0) maxRelF0 = rel;
+        }
+    }
+    CHECK(voicedMismatch == 0);
+    CHECK(maxRelF0 < 1e-9);
+    std::printf("  (h) %s: frames=%zu voicedMismatch=%zu maxRelF0=%.3e\n",
+                label, res.f0Track.size(), voicedMismatch, maxRelF0);
 }
 
 } // namespace
@@ -206,6 +330,51 @@ int main() {
         CHECK(rs.success());
         CHECK_NEAR(rs.value().f0SearchMinHz, 220.0, 1e-12);
         CHECK_NEAR(rs.value().f0SearchMaxHz, 1400.0, 1e-12);
+    }
+
+    // ── (h) FFT 自己相関版 YIN ≡ 素朴な差分関数 (数値等価性) ──
+    {
+        // 倍音つき有声信号 (既定プリセット Unknown: 60–1500 Hz)
+        compareWithNaiveYin("voice-like 220 Hz",
+                            makeVoiceLike(220.0, 0.5, 20260716u),
+                            VocalAnalyzerConfig());
+
+        // 純音 (差分関数が周期点で 0 近傍まで落ち桁落ちが出やすい条件)
+        compareWithNaiveYin("pure sine 440 Hz", makeSine(440.0, 0.5, 0.5),
+                            VocalAnalyzerConfig());
+
+        // 無声 (白色雑音) — 有声判定の一致も確認する
+        compareWithNaiveYin("white noise", makeNoise(0.3, 0.5, 4242u),
+                            VocalAnalyzerConfig());
+
+        // 別プリセット (Bass: τmax が変わる → FFT 長も変わる)
+        VocalAnalyzerConfig cb;
+        cb.voiceType = VoiceType::Bass;
+        compareWithNaiveYin("bass 110 Hz", makeVoiceLike(110.0, 0.5, 7u), cb);
+    }
+
+    // ── (i) F0 フレーム中心時刻 = (start + W/2)/fs ──
+    {
+        const std::vector<double> x = makeSine(440.0, 0.5, 1.0);
+        VocalAnalyzer az;
+        AcousticResult<VocalAnalysisResult> r = az.analyze(view(x), kFs);
+        CHECK(r.success());
+        const VocalAnalysisResult &res = r.value();
+        CHECK(res.f0Track.size() >= 2);
+        if (res.f0Track.size() >= 2) {
+            // 先頭フレームの中心は積分窓 W の中心 (τmax の遅れを含まない)
+            CHECK_NEAR(res.f0Track[0].timeSeconds, 0.5 * res.frameSeconds,
+                       1e-12);
+            // フレーム間隔はホップに一致
+            CHECK_NEAR(res.f0Track[1].timeSeconds - res.f0Track[0].timeSeconds,
+                       res.hopSeconds, 1e-12);
+            // 最終フレーム中心も信号長の内側 (窓中心なので端に寄りすぎない)
+            const double last = res.f0Track.back().timeSeconds;
+            CHECK(last < static_cast<double>(x.size()) / kFs);
+            std::printf("  (i) t[0]=%.9f s (W/2=%.9f) hop=%.9f s\n",
+                        res.f0Track[0].timeSeconds, 0.5 * res.frameSeconds,
+                        res.hopSeconds);
+        }
     }
 
     return testutil::summary("test_vocal");
