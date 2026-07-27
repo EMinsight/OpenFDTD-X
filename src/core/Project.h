@@ -164,6 +164,9 @@ struct OperaAcousticSettings {
     QString voicePath;            // 歌唱音源 WAV (可聴化・将来拡張用)
     int     voiceType = 6;        // 0..5=Sop..Bass, 6=Unknown
     int     calibrationState = 2; // 0=Absolute 1=Relative 2=Uncalibrated
+    // dBFS → dB SPL の換算オフセット。calibrationState==Absolute のときのみ
+    // 分析に渡される (それ以外では 0 が渡る — QtAcousticAdapter)。
+    double  calibrationOffsetDb = 0.0;
     int     directSoundMethod = 1;// 0=Peak 1=Envelope 2=MovingRms
     int     bandMode = 0;         // 0=既存互換6帯域 1=1oct 2=1/3oct 3=フォルマント帯域
     bool    noiseCorrection = true;

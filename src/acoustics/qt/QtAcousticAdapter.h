@@ -30,7 +30,9 @@ public:
     static std::vector<double>
     selectChannel(const acoustics::AudioBuffer &buffer, int channelMode);
 
-    // OperaAcousticSettings → コアの RirAnalyzerConfig 変換
+    // OperaAcousticSettings → コアの RirAnalyzerConfig 変換。
+    // calibrationOffsetDb は calibrationState==Absolute のときだけ渡す
+    // (それ以外では 0 — 未校正のまま SPL がずれるのを防ぐ)。
     static acoustics::RirAnalyzerConfig
     toAnalyzerConfig(const OperaAcousticSettings &settings);
 
@@ -54,8 +56,9 @@ public:
 
     // ── 歌声分析 (フェーズ3) ────────────────────────────────────────────────
     // OperaAcousticSettings → コアの VocalAnalyzerConfig 変換
-    // (voiceType / calibrationState / vocalF0MinHz / vocalF0MaxHz)。
-    // 校正オフセット (dBFS→SPL) は未導入のため 0 のまま。
+    // (voiceType / calibrationState / calibrationOffsetDb /
+    //  vocalF0MinHz / vocalF0MaxHz)。
+    // 校正オフセットの扱いは toAnalyzerConfig と同じ (Absolute 時のみ)。
     static acoustics::VocalAnalyzerConfig
     toVocalConfig(const OperaAcousticSettings &settings);
 

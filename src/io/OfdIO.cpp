@@ -643,6 +643,9 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"voice_file", oa.voicePath},
             {"voice_type", oa.voiceType},
             {"calibration_state", oa.calibrationState},
+            // dBFS→dB SPL オフセット (docs 予約キー、負債 #1)。
+            // 既存キーの後ろへの追加のみ。欠落時は 0.0 (旧ファイル互換)。
+            {"calibration_offset_db", oa.calibrationOffsetDb},
             {"direct_sound_method", oa.directSoundMethod},
             {"band_mode", oa.bandMode},
             {"channel_mode", oa.channelMode},
@@ -822,6 +825,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             s.voiceType = oa.value("voice_type").toInt(s.voiceType);
             s.calibrationState =
                 oa.value("calibration_state").toInt(s.calibrationState);
+            s.calibrationOffsetDb =
+                oa.value("calibration_offset_db").toDouble(s.calibrationOffsetDb);
             s.directSoundMethod =
                 oa.value("direct_sound_method").toInt(s.directSoundMethod);
             s.bandMode = oa.value("band_mode").toInt(s.bandMode);

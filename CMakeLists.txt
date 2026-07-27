@@ -348,9 +348,14 @@ endif()
 
 # ── Self test: .ofd round-trip against ../data/sample ───────────────────────
 if(BUILD_TESTS)
-    qt_add_executable(ofdx_selftest ${CORE_SOURCES} tests/selftest.cpp)
+    # QtAcousticAdapter は GUI 層 (C++17 + Qt) だが Widget に依存しないため、
+    # 校正オフセットのゲート規則などを selftest から直接検証できる。
+    qt_add_executable(ofdx_selftest ${CORE_SOURCES}
+        src/acoustics/qt/QtAcousticAdapter.cpp
+        src/acoustics/qt/QtAcousticAdapter.h
+        tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
-    target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets)
+    target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)
     set_target_properties(ofdx_selftest PROPERTIES
         WIN32_EXECUTABLE OFF
         MACOSX_BUNDLE    OFF

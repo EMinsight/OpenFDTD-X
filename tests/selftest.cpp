@@ -19,6 +19,7 @@
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
 #include "core/RoomAcoustics.h"
+#include "acoustics/qt/QtAcousticAdapter.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -365,6 +366,7 @@ static void testOperaAcousticSettings()
               "opera default paths empty");
         check(s.voiceType == 6, "opera default voiceType=Unknown");
         check(s.calibrationState == 2, "opera default calibration=Uncalibrated");
+        check(s.calibrationOffsetDb == 0.0, "opera default calibOffset=0dB");
         check(s.directSoundMethod == 1, "opera default directSound=Envelope");
         check(s.bandMode == 0, "opera default bandMode=Compat6");
         check(s.noiseCorrection == true, "opera default noiseCorrection=true");
@@ -388,6 +390,7 @@ static void testOperaAcousticSettings()
         s.voicePath = "/tmp/aria.wav";
         s.voiceType = 0;
         s.calibrationState = 1;
+        s.calibrationOffsetDb = 93.5;
         s.directSoundMethod = 2;
         s.bandMode = 3;
         s.noiseCorrection = false;
@@ -411,6 +414,8 @@ static void testOperaAcousticSettings()
             check(q.voicePath == "/tmp/aria.wav", "opera rt voicePath");
             check(q.voiceType == 0, "opera rt voiceType");
             check(q.calibrationState == 1, "opera rt calibrationState");
+            check(nearlyEq(q.calibrationOffsetDb, 93.5),
+                  "opera rt calibrationOffsetDb");
             check(q.directSoundMethod == 2, "opera rt directSoundMethod");
             check(q.bandMode == 3, "opera rt bandMode");
             check(q.noiseCorrection == false, "opera rt noiseCorrection");
@@ -444,6 +449,10 @@ static void testOperaAcousticSettings()
             check(oa.value("analysis_settings").toObject()
                       .value("minimum_dynamic_range_db").toDouble() == 42.5,
                   "opera json nested analysis_settings");
+            // docs 予約キー名 (負債 #1) — この名前でなければならない
+            check(oa.contains("calibration_offset_db") &&
+                  oa.value("calibration_offset_db").toDouble() == 93.5,
+                  "opera json calibration_offset_db key");
             // docs §2.1 / 指示書: auralization と vocal のネスト
             const QJsonObject au = oa.value("auralization").toObject();
             check(au.value("dry_file").toString() == "/tmp/aria_dry.wav",
@@ -484,12 +493,107 @@ static void testOperaAcousticSettings()
                   "legacy ofdx leaves auralization defaults");
             check(q.vocalF0MinHz == 0.0 && q.vocalF0MaxHz == 0.0,
                   "legacy ofdx leaves vocal defaults");
+            check(q.calibrationOffsetDb == 0.0,
+                  "legacy ofdx leaves calibrationOffsetDb=0");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");
             check(nearlyEq(a.roomL, 25.5) && a.occupancy == 1,
                   "legacy ofdx hall keys still load");
         }
+    }
+
+    // 4) 旧 .ofdx (opera_analysis はあるが calibration_offset_db 無し):
+    //    オフセットだけ既定 0.0 に落ち、他のキーは通常どおり読める。
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_nooffset_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.1\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"opera_analysis\": {"
+                "      \"enabled\": true, \"calibration_state\": 0,"
+                "      \"band_mode\": 1 } } }";
+            old.write(legacy);
+            old.flush();
+            Project p4;
+            p4.operaAcoustic().calibrationOffsetDb = 77.0;  // 上書きされる想定
+            check(OfdxIO::load(old.fileName(), p4), "no-offset ofdx load");
+            const OperaAcousticSettings &q = p4.operaAcoustic();
+            check(q.enabled && q.calibrationState == 0 && q.bandMode == 1,
+                  "no-offset ofdx reads sibling opera keys");
+            check(q.calibrationOffsetDb == 77.0,
+                  "missing calibration_offset_db leaves current value");
+            Project p5;
+            check(OfdxIO::load(old.fileName(), p5), "no-offset ofdx load (fresh)");
+            check(p5.operaAcoustic().calibrationOffsetDb == 0.0,
+                  "missing calibration_offset_db defaults to 0.0");
+        }
+    }
+}
+
+// 校正オフセットのゲート規則 (負債 #1):
+// QtAcousticAdapter は calibrationState==Absolute のときだけオフセットを
+// 分析コアへ渡す。Relative / Uncalibrated では 0 (未校正なのに SPL が
+// ずれるのを防ぐ — CLAUDE.md 絶対規則 6)。RIR / 歌声の両経路で同じ規則。
+static void testCalibrationOffsetGate()
+{
+    g_file = "calib-offset";
+
+    OperaAcousticSettings s;
+    s.calibrationOffsetDb = 94.0;
+
+    s.calibrationState = 0;   // Absolute
+    {
+        const acoustics::RirAnalyzerConfig rc =
+            QtAcousticAdapter::toAnalyzerConfig(s);
+        const acoustics::VocalAnalyzerConfig vc =
+            QtAcousticAdapter::toVocalConfig(s);
+        check(rc.calibration == acoustics::CalibrationState::Absolute,
+              "gate: rir calibration=Absolute");
+        check(nearlyEq(rc.calibrationOffsetDb, 94.0),
+              "gate: rir offset passed when Absolute");
+        check(vc.calibration == acoustics::CalibrationState::Absolute,
+              "gate: vocal calibration=Absolute");
+        check(nearlyEq(vc.calibrationOffsetDb, 94.0),
+              "gate: vocal offset passed when Absolute");
+    }
+
+    s.calibrationState = 1;   // Relative
+    {
+        const acoustics::RirAnalyzerConfig rc =
+            QtAcousticAdapter::toAnalyzerConfig(s);
+        const acoustics::VocalAnalyzerConfig vc =
+            QtAcousticAdapter::toVocalConfig(s);
+        check(rc.calibration == acoustics::CalibrationState::Relative,
+              "gate: rir calibration=Relative");
+        check(rc.calibrationOffsetDb == 0.0,
+              "gate: rir offset forced to 0 when Relative");
+        check(vc.calibrationOffsetDb == 0.0,
+              "gate: vocal offset forced to 0 when Relative");
+    }
+
+    s.calibrationState = 2;   // Uncalibrated
+    {
+        const acoustics::RirAnalyzerConfig rc =
+            QtAcousticAdapter::toAnalyzerConfig(s);
+        const acoustics::VocalAnalyzerConfig vc =
+            QtAcousticAdapter::toVocalConfig(s);
+        check(rc.calibration == acoustics::CalibrationState::Uncalibrated,
+              "gate: rir calibration=Uncalibrated");
+        check(rc.calibrationOffsetDb == 0.0,
+              "gate: rir offset forced to 0 when Uncalibrated");
+        check(vc.calibration == acoustics::CalibrationState::Uncalibrated,
+              "gate: vocal calibration=Uncalibrated");
+        check(vc.calibrationOffsetDb == 0.0,
+              "gate: vocal offset forced to 0 when Uncalibrated");
+    }
+
+    // 既定 (オフセット未設定) は従来どおり 0
+    {
+        const OperaAcousticSettings d;
+        check(QtAcousticAdapter::toAnalyzerConfig(d).calibrationOffsetDb == 0.0,
+              "gate: default settings keep offset 0");
     }
 }
 
@@ -1017,6 +1121,7 @@ int main(int argc, char *argv[])
     testGlassCatalog();
     testRoomAcoustics();
     testOperaAcousticSettings();
+    testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();
     testRunGating();

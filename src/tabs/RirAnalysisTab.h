@@ -3,8 +3,9 @@
 // 実測した室内インパルス応答 (WAV) を C++14 音響コア (RirAnalyzer) で
 // ISO 3382-1 分析する。既存の RoomAcousticsTab (統計推定) や、将来の
 // FDTD シミュレーション RIR 分析とは別系統。
-//   ① 入力     — RIR WAV / チャンネル / 校正状態 / 直接音方式 / 帯域モード /
-//                 ノイズ補正 / 最小動的範囲 (OperaAcousticSettings と双方向)
+//   ① 入力     — RIR WAV / チャンネル / 校正状態 / 校正オフセット (Absolute
+//                 のときのみ有効) / 直接音方式 / 帯域モード / ノイズ補正 /
+//                 最小動的範囲 (OperaAcousticSettings と双方向)
 //   ② 実行     — QtAcousticAdapter 経由で同期分析
 //   ③ 結果     — 指標表 (EDT/T20/T30/C50/C80/D50/Ts × 帯域) + 警告リスト
 //   ④ プロット — 波形 + Schroeder 減衰カーブ + 初期反射一覧表
@@ -46,6 +47,7 @@ private:
     void showResult(const acoustics::RirAnalysisResult &result,
                     const std::vector<double> &samples, double sampleRateHz);
     void clearResult(const QString &statusText);
+    void updateCalibOffsetEnabled();   // Absolute 時のみオフセット欄を有効化
 
     Project *m_p;
     bool     m_updating = false;
@@ -54,6 +56,8 @@ private:
     QLineEdit      *m_rirPath = nullptr;
     QComboBox      *m_channel = nullptr;
     QComboBox      *m_calibration = nullptr;
+    QDoubleSpinBox *m_calibOffset = nullptr;
+    QLabel         *m_calibOffsetLabel = nullptr;
     QComboBox      *m_directMethod = nullptr;
     QComboBox      *m_bandMode = nullptr;
     QCheckBox      *m_noiseCorr = nullptr;

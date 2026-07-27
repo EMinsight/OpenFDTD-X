@@ -11,6 +11,31 @@
 using namespace ofd;
 using namespace ofd::acoustics;
 
+namespace {
+
+// 校正状態 (0=Absolute 1=Relative 2=Uncalibrated) の int → enum 変換。
+// RIR 分析と歌声分析で規則を分けないよう 1 か所に集約する。
+CalibrationState toCalibrationState(int calibrationState)
+{
+    switch (calibrationState) {
+    case 0:  return CalibrationState::Absolute;
+    case 1:  return CalibrationState::Relative;
+    default: return CalibrationState::Uncalibrated;
+    }
+}
+
+// 分析へ渡す校正オフセット。**Absolute のときだけ** モデル値を渡す。
+// Relative / Uncalibrated では 0 を返し、未校正なのにオフセットが
+// 効いてしまう事故を防ぐ (CLAUDE.md 絶対規則 6 / ADR)。
+double effectiveCalibrationOffsetDb(const OperaAcousticSettings &s)
+{
+    return (toCalibrationState(s.calibrationState) == CalibrationState::Absolute)
+               ? s.calibrationOffsetDb
+               : 0.0;
+}
+
+} // namespace
+
 AcousticResult<AudioBuffer> QtAcousticAdapter::readWav(const QString &path)
 {
     if (path.trimmed().isEmpty())
@@ -56,11 +81,8 @@ QtAcousticAdapter::toAnalyzerConfig(const OperaAcousticSettings &s)
 {
     RirAnalyzerConfig cfg;
 
-    switch (s.calibrationState) {
-    case 0:  cfg.calibration = CalibrationState::Absolute;     break;
-    case 1:  cfg.calibration = CalibrationState::Relative;     break;
-    default: cfg.calibration = CalibrationState::Uncalibrated; break;
-    }
+    cfg.calibration = toCalibrationState(s.calibrationState);
+    cfg.calibrationOffsetDb = effectiveCalibrationOffsetDb(s);
     switch (s.directSoundMethod) {
     case 0:  cfg.directSound.method = DirectSoundMethod::Peak;               break;
     case 2:  cfg.directSound.method = DirectSoundMethod::MovingRmsThreshold; break;
@@ -137,12 +159,8 @@ QtAcousticAdapter::toVocalConfig(const OperaAcousticSettings &s)
     cfg.f0MinHz = s.vocalF0MinHz;
     cfg.f0MaxHz = s.vocalF0MaxHz;
 
-    switch (s.calibrationState) {
-    case 0:  cfg.calibration = CalibrationState::Absolute;     break;
-    case 1:  cfg.calibration = CalibrationState::Relative;     break;
-    default: cfg.calibration = CalibrationState::Uncalibrated; break;
-    }
-    // calibrationOffsetDb (dBFS→SPL) は .ofdx 未導入 (docs 予約キー) のため 0
+    cfg.calibration = toCalibrationState(s.calibrationState);
+    cfg.calibrationOffsetDb = effectiveCalibrationOffsetDb(s);
     return cfg;
 }
 

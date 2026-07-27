@@ -29,6 +29,7 @@
 | `voice_file` | string | `""` | 歌唱音源 WAV (フェーズ3: VocalAnalyzer の入力) |
 | `voice_type` | int | `6` | 0=Sop 1=Mez 2=Alt 3=Ten 4=Bar 5=Bass 6=Unknown。F0 探索範囲の限定のみに使用 (ADR-0006) |
 | `calibration_state` | int | `2` | 0=Absolute 1=Relative 2=Uncalibrated (`CalibrationState` と同順) |
+| `calibration_offset_db` | double | `0.0` | dBFS → dB SPL の換算オフセット (dB SPL = dBFS + オフセット)。**`calibration_state` が 0 (Absolute) のときのみ分析へ渡される** (それ以外は `QtAcousticAdapter` が 0 に落とす)。UI 上も Absolute 時のみ編集可 |
 | `direct_sound_method` | int | `1` | 0=Peak 1=EnvelopeThreshold 2=MovingRmsThreshold |
 | `band_mode` | int | `0` | 0=既存互換6帯域 1=1oct(63–8k) 2=1/3oct(100–5k) 3=歌手フォルマント帯域 (ADR-0002) |
 | `channel_mode` | int | `2` | 0=L 1=R 2=全チャンネル平均モノ |
@@ -73,7 +74,6 @@ solver.log) は `.ofdx` の外 (作業ディレクトリ) にあり、`.ofdx` �
 
 | キー (案) | 型 | フェーズ | 意味 |
 |---|---|---|---|
-| `calibration_offset_db` | double | 2 (負債 #1) | Absolute 時の dBFS→dB SPL オフセット |
 | `st_conditions_declared` | bool | — | ST 系の 1 m 測定条件の自己申告 |
 | `rir_source` | string | — | `"measured"` / `"simulated"` (3 区分表示用。当面は backend から導出) |
 
@@ -144,6 +144,7 @@ solver.log) は `.ofdx` の外 (作業ディレクトリ) にあり、`.ofdx` �
       "voice_file": "",
       "voice_type": 6,
       "calibration_state": 2,
+      "calibration_offset_db": 0.0,
       "direct_sound_method": 1,
       "band_mode": 3,
       "channel_mode": 2,

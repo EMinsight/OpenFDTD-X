@@ -678,6 +678,14 @@ void I18n::loadTables() {
     add("rir_calib_absolute", "絶対校正済 (SPL 換算可)", "Absolute (SPL known)");
     add("rir_calib_relative", "相対校正", "Relative");
     add("rir_calib_uncalibrated", "未校正", "Uncalibrated");
+    add("rir_calib_offset", "校正オフセット", "Calibration offset");
+    add("rir_calib_offset_tip",
+        "基準音源のレベルが既知のときに、dBFS を dB SPL へ換算する"
+        "オフセット (dB SPL = dBFS + オフセット)。"
+        "校正状態が「絶対校正済」のときのみ有効です。",
+        "Offset that converts dBFS to dB SPL when the level of a reference "
+        "source is known (dB SPL = dBFS + offset). "
+        "Only applied when the calibration state is Absolute.");
     add("rir_direct_method", "直接音検出", "Direct-sound detection");
     add("rir_dm_peak", "ピーク", "Peak");
     add("rir_dm_envelope", "包絡線閾値", "Envelope threshold");

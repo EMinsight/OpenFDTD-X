@@ -28,13 +28,16 @@
    数値更新もセット)。
 5. **schemaVersion "1.1" 書き出し**: 現行 save は "1.0" のまま
    (`docs/opera-acoustics-file-format.md` §1)。
-6. **calibration_offset_db の追加** (負債 #1)。
+6. ~~**calibration_offset_db の追加** (負債 #1)~~ → **完了**
+   (`OperaAcousticSettings::calibrationOffsetDb` / `.ofdx`
+   `calibration_offset_db` / `RirAnalysisTab` の入力欄 /
+   `QtAcousticAdapter` の Absolute 限定ゲート)。
 
 ## 3. 既知の技術的負債
 
 | # | 内容 | 影響 | 対応方針 |
 |---|---|---|---|
-| 1 | `calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い | GUI 経由で Absolute を選んでもオフセット 0 dB (絶対 SPL が dBFS のまま) | フェーズ2 残作業でキー `calibration_offset_db` を追加 |
+| 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
 | 2 | save が `schemaVersion: "1.0"` を書く | 1.1 ファイルの識別ができない (実害は小: 読み込みはキー有無判定) | フェーズ2 残作業 |
 | 3 | selftest に `opera_analysis` ラウンドトリップ未追加 | 永続化の回帰をテストが検出しない | フェーズ2 残作業 |
 | 4 | `.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式) | 他ツールとの .ofdx 共有で相手のキーを失う | 次期対応 (ADR-0003: メモリ保持 + 保存時マージ。今回は非実装) |
@@ -51,9 +54,9 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **1712 checks,
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **1870 checks,
   0 failures** (減らないこと。実行種別ゲート / TPA 入力検証 /
-  解析解の検証を追加済み)。
+  解析解の検証 / 校正オフセットの往復・ゲート検証を追加済み)。
 - 音響コア: 7 テスト **392 checks, 0 failures**
   (`docs/opera-acoustics-validation.md` §9)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
@@ -61,9 +64,9 @@
 
 ## 5. 次の作業 (優先順)
 
-1. フェーズ2 残作業 §2 の 1→6 (RirAnalysisTab → 統合 → I18n →
-   selftest → schemaVersion → 校正オフセット)。selftest の
-   ラウンドトリップには `auralization` / `solver` ネストも含めること。
+1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。
+   6 (校正オフセット — 負債 #1) は完了。selftest のラウンドトリップには
+   `auralization` / `solver` ネストも含めること。
 2. 負債 #7 / #8 の追加テスト (96 kHz 帯域フィルタ、クリッピング陽性)。
 3. フェーズ2 完了時に baseline 文書のチェック総数を更新し、
    本書のフェーズ表を更新。

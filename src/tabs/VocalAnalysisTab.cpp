@@ -182,9 +182,15 @@ void VocalAnalysisTab::refresh()
         s.calibrationState == 0 ? I18n::tr("rir_calib_absolute")
         : s.calibrationState == 1 ? I18n::tr("rir_calib_relative")
                                   : I18n::tr("rir_calib_uncalibrated");
-    m_calibInfo->setText(QStringLiteral("%1 — %2").arg(
-        state, s.calibrationState == 0 ? I18n::tr("vocal_calib_spl_ok")
-                                       : I18n::tr("vocal_calib_spl_na")));
+    // Absolute のときだけ実際に適用される校正オフセットも併記する
+    // (歌声分析タブでは編集不可 — 実測RIR分析タブと共有の設定)。
+    QString detail = I18n::tr("vocal_calib_spl_na");
+    if (s.calibrationState == 0)
+        detail = QStringLiteral("%1 (%2 %3 dB)")
+                     .arg(I18n::tr("vocal_calib_spl_ok"),
+                          I18n::tr("rir_calib_offset"),
+                          QString::number(s.calibrationOffsetDb, 'f', 1));
+    m_calibInfo->setText(QStringLiteral("%1 — %2").arg(state, detail));
     m_updating = false;
 }
 

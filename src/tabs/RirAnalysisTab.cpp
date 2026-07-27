@@ -64,6 +64,17 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
                               I18n::tr("rir_calib_uncalibrated") });
     sIn->form()->addRow(I18n::tr("rir_calibration"), m_calibration);
 
+    // 校正オフセット (dBFS → dB SPL)。Absolute のときだけ有効
+    // (未校正なのにオフセットが効いていると誤解されないようグレーアウト)。
+    m_calibOffset = new QDoubleSpinBox(sIn);
+    m_calibOffset->setRange(-200.0, 200.0);
+    m_calibOffset->setDecimals(1);
+    m_calibOffset->setSuffix(QStringLiteral(" dB"));
+    m_calibOffset->setToolTip(I18n::tr("rir_calib_offset_tip"));
+    m_calibOffsetLabel = new QLabel(I18n::tr("rir_calib_offset"), sIn);
+    m_calibOffsetLabel->setToolTip(I18n::tr("rir_calib_offset_tip"));
+    sIn->form()->addRow(m_calibOffsetLabel, m_calibOffset);
+
     m_directMethod = new QComboBox(sIn);
     m_directMethod->addItems({ I18n::tr("rir_dm_peak"),
                                I18n::tr("rir_dm_envelope"),
@@ -168,6 +179,8 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
             this, &RirAnalysisTab::apply);
     connect(m_calibration, &QComboBox::currentIndexChanged,
             this, &RirAnalysisTab::apply);
+    connect(m_calibOffset, &QDoubleSpinBox::valueChanged,
+            this, &RirAnalysisTab::apply);
     connect(m_directMethod, &QComboBox::currentIndexChanged,
             this, &RirAnalysisTab::apply);
     connect(m_bandMode, &QComboBox::currentIndexChanged,
@@ -193,6 +206,8 @@ void RirAnalysisTab::refresh()
     m_rirPath->setText(s.rirPath);
     m_channel->setCurrentIndex(qBound(0, s.channelMode, 2));
     m_calibration->setCurrentIndex(qBound(0, s.calibrationState, 2));
+    m_calibOffset->setValue(s.calibrationOffsetDb);
+    updateCalibOffsetEnabled();
     m_directMethod->setCurrentIndex(qBound(0, s.directSoundMethod, 2));
     m_bandMode->setCurrentIndex(qBound(0, s.bandMode, 3));
     m_noiseCorr->setChecked(s.noiseCorrection);
@@ -207,11 +222,23 @@ void RirAnalysisTab::apply()
     s.rirPath = m_rirPath->text();
     s.channelMode = m_channel->currentIndex();
     s.calibrationState = m_calibration->currentIndex();
+    // モデルには常に入力値を保存する (校正状態を戻したときに値が消えない)。
+    // Absolute 以外で分析へ渡さないゲートは QtAcousticAdapter 側が持つ。
+    s.calibrationOffsetDb = m_calibOffset->value();
     s.directSoundMethod = m_directMethod->currentIndex();
     s.bandMode = m_bandMode->currentIndex();
     s.noiseCorrection = m_noiseCorr->isChecked();
     s.minimumDynamicRangeDb = m_minDr->value();
+    updateCalibOffsetEnabled();
     m_p->touch();
+}
+
+// 校正オフセットは Absolute のときだけ編集可能 (誤解防止)。
+void RirAnalysisTab::updateCalibOffsetEnabled()
+{
+    const bool absolute = (m_calibration->currentIndex() == 0);
+    m_calibOffset->setEnabled(absolute);
+    m_calibOffsetLabel->setEnabled(absolute);
 }
 
 void RirAnalysisTab::browseRir()
