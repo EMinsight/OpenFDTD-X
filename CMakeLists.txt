@@ -369,7 +369,9 @@ if(BUILD_TESTS)
 
     # C++ 単体テスト (各 tests/acoustics/test_*.cpp → 個別実行ファイル)
     set(OFDX_ACOUSTIC_TESTS
+        bandfilter
         clarity
+        clipping
         convolution
         direct_sound
         estimator

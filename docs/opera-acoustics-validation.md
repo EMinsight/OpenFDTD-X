@@ -144,6 +144,8 @@ INVALID_AUDIO・struct_size/api_version 不一致の拒否・
 | 高ノイズ (−35 dB) | 動的範囲不足 → invalid + 理由 | test_reverberation |
 | 反射 | 既知 4 反射 / 弱反射除外 / 上限数 / ノイズ埋没 | test_reflections, test_clarity |
 | クリッピング | クリーン信号で非検出 (偽陽性なし) を統合テストで確認 | test_reverberation |
+| クリッピング (陽性) | 連続区間の検出 / 区間数 / 境界値 (=閾値は非検出、1 ulp 上と 1.0 は検出) / 設定反映 / DC 除去前判定 / 畳み込み出力のサンプル数カウント | test_clipping (§10) |
+| 帯域フィルタ精度 | 48・96 kHz の 63/125/250 Hz oct と 100 Hz 1/3oct を解析解と直接比較 (通過帯域・エッジ・阻止帯域・インパルス減衰・DC 漏れ) | test_bandfilter (§9) |
 | 無音・空入力 | 直接音 found=false / analyze が EmptyInput 系エラー | test_direct_sound, test_schroeder |
 | 短尺入力 | 0.05 s 未満 → InputTooShort / 80 ms 未満 → C80 invalid / 回帰区間不足 → invalid | test_reverberation, test_clarity, test_schroeder |
 | 非有限値 | NaN 混入 → NonFiniteSample エラー | test_reverberation |
@@ -152,25 +154,106 @@ INVALID_AUDIO・struct_size/api_version 不一致の拒否・
 | ファイル I/O | PCM16/24/32/float32、odd チャンク、異常系 | test_wav |
 | C ABI | 純 C コンパイル、NULL、struct_size/api_version | test_c_api |
 
-## 9. 集計と結論
+## 9. 帯域フィルタの数値精度 (test_bandfilter — 563 checks PASS)
+
+追記日: 2026-07-27 (負債 #7 の解消)。フェーズ1 時点では帯域フィルタの
+検証が fs = 48 kHz のみだったため、fc/fs が小さい条件 (63 Hz @ 96 kHz →
+fc/fs = 6.6e-4) で双一次変換の係数が悪条件にならないかが未検証だった。
+
+検証方法は**厳密解との直接比較**。`BandFilter` はプリワーピング
+W = tan(π f / fs) → 2次バターワース低域原型 → 低域帯域通過変換 →
+双一次変換 → 中心で利得 1 に正規化、という手順で設計される。双一次変換は
+W 平面と z 平面を 1 対 1 に写すので、離散フィルタの振幅特性は
+
+  Ω(f) = (W² − W0²)/(B·W),  W0 = √(W1·W2),  B = W2 − W1
+  |H(f)| = 1 / √(1 + Ω⁴)
+
+と厳密に一致する。テストは正弦波応答の定常部を最小二乗フィット
+(y ≈ a·cos ωn + b·sin ωn) して振幅を測り、この解析解と比較する
+(ピーク値法と違いサンプリング位相誤差が入らない)。
+
+| 帯域 | fs | 通過帯域 (fc) | エッジ | ±1 oct | ±2 oct | 解析解との相対誤差 |
+|---|---|---|---|---|---|---|
+| 63 Hz oct | 48 kHz | 0.999999851 | −3.0103 dB | −13.274 dB | −28.99 dB | 3.2e-7 |
+| 63 Hz oct | **96 kHz** | 1.000003693 | −3.0103 dB | −13.274 dB | −28.99 dB | **3.7e-6** |
+| 125 Hz oct | 96 kHz | 1.000000171 | −3.0103 dB | −13.274 dB | −28.99 dB | 5.4e-7 |
+| 250 Hz oct | 96 kHz | 1.000000010 | −3.0103 dB | −13.274 dB | −28.99 dB | 6.4e-9 |
+| 100 Hz 1/3oct | 96 kHz | 1.000003617 | −3.0103 dB | −32.46 dB | −48.37 dB | 7.2e-7 |
+
+**96 kHz で精度低下は無い**。最悪ケース (63 Hz @ 96 kHz) でも解析解との
+相対誤差は 3.7e-6 で、許容値 1e-3 (≈0.0087 dB) に対し約 270 倍の余裕がある。
+係数の悪条件も否定できる: インパルス応答は末尾で ≤1e-21·peak まで減衰し
+(63 Hz @ 96 kHz では 4.4e-33·peak)、DC 入力の漏れは ≤1e-13、
+0.45·fs での減衰は −145 dB。NaN / 発散は全ケースで発生しない。
+
+統合パイプラインは**決定的な多重トーン RIR** (8 オクターブ中心周波数の
+正弦波を同一の指数包絡で減衰させた和 — 乱数を使わないので単一実現の統計
+ゆらぎが無い) で検証し、48 kHz / 96 kHz の両方で全 8 帯域の
+EDT / T20 / T30 が RT に対して **−0.037% 〜 +0.049%** で一致した
+(48 kHz と 96 kHz の T30 の相互差は 0.2% 以内)。
+
+なお人工白色雑音 RIR を帯域分割した場合の T30 は単一実現の統計ゆらぎが
+支配的で、63 Hz 帯では 8 シードの実測で 48 kHz が最大 ±11.8%、
+96 kHz が最大 ±11.2% ばらつく。**fs に依存しない**ため、これは
+フィルタ精度ではなく狭帯域推定の分散である (test_reverberation が
+Compat6 の ±5% 検証を 1 k/2 k 帯に限っているのと同じ理由)。
+
+## 10. クリッピング検出 (test_clipping — 60 checks PASS)
+
+追記日: 2026-07-27 (負債 #8 の解消)。従来は「クリーン信号で検出されない」
+陰性確認のみだったため、実際にクリップする入力での陽性系を追加した。
+**テストは実装の仕様に合わせてある** (以下はコードから確認した仕様)。
+
+`RirAnalyzer` (`preprocess.clippingDetected` / `clippedRunCount`):
+
+| ケース | 入力 | 期待 | 結果 |
+|---|---|---|---|
+| 陽性 | 1.2 が 3 サンプル連続 | detected, runs=1 | PASS |
+| 陽性 (負側) | −1.5 が 4 サンプル連続 | detected, runs=1 | PASS |
+| 区間数 | 3 箇所 (長さ 3/8/3) | runs=3 | PASS |
+| 陰性 | 1.5 が 2 連続 + 2.0 が 1 個 | 非検出 (連続数不足) | PASS |
+| 境界 | ちょうど 0.999 (= clipThreshold) | **非検出** (判定は厳密な `>`) | PASS |
+| 境界 | 0.999 の 1 ulp 上 (0.99900000000000011) | 検出 | PASS |
+| 境界 | フルスケール 1.0 | 検出 (1.0 > 0.999) | PASS |
+| 設定 | clipThreshold=0.5 / clipRunLength=2 | 0.6×2 連続を検出 | PASS |
+| 判定順序 | DC +0.4 で生値 1.05 / DC 除去後 0.65 | 検出 (DC 除去の**前**に判定) | PASS |
+
+`ConvolutionEngine` (`info.clippedSampleCount` / `info.clipped`):
+判定は |y| > clipThreshold (既定 1.0) の厳密な不等号で、**連続数の概念は
+無く全チャンネル合計のサンプル数**を数える。定数 0.9 (1000 サンプル) ×
+デルタ (ゲイン 2) → ピーク 1.8 で count=1000、同 RIR を 2 ch にすると
+count=2000、10 サンプルだけ超える入力で count=10、閾値を 2.0 に上げると
+count=0 かつ警告なし (出力は正規化されず 1.8 のまま)。
+
+## 11. 集計と結論
 
 | テスト | checks | failures |
 |---|---|---|
-| test_schroeder | 125 | 0 |
-| test_reverberation | 88 | 0 |
+| test_bandfilter | 563 | 0 |
 | test_clarity | 19 | 0 |
+| test_clipping | 60 | 0 |
+| test_convolution | 34 | 0 |
 | test_direct_sound | 25 | 0 |
+| test_estimator | 42 | 0 |
+| test_fft | 33 | 0 |
 | test_reflections | 44 | 0 |
+| test_reverberation | 88 | 0 |
+| test_schroeder | 125 | 0 |
+| test_vocal | 61 | 0 |
 | test_wav | 52 | 0 |
 | test_c_api | 39 | 0 |
-| **合計** | **392** | **0** |
+| test_acoustic_runner | 35 | 0 |
+| **合計 (ctest 14 テスト)** | **1220** | **0** |
 
-既存 baseline (`ofdx_selftest`: 24 files loaded, 1560 checks,
+(フェーズ1 記録時点の集計は 7 テスト 392 checks。以降のフェーズ 3/4/5 と
+負債 #7 / #8 の解消分を含めた現在値が上表。)
+
+既存 baseline (`ofdx_selftest`: 24 files loaded, 1870 checks,
 0 failures) は本コア追加の影響を受けない (コアは既存コードに
 リンクされるのみで既存経路を変更しない)。
 
 **未達成項目なし** — 定義した許容基準 (残響指標 ±5%、Schroeder 傾き
-±1%、明瞭度系の理論値一致、無効条件の invalid 動作) をすべて満たした。
-残る検証上の弱点 (クリッピング陽性系の単体テスト、48 kHz 以外での帯域
-フィルタ精度) は「未達成」ではなく追加テスト候補として
-`docs/opera-acoustics-development-status.md` §3 に記録する。
+±1%、明瞭度系の理論値一致、無効条件の invalid 動作、帯域フィルタの
+解析解との相対誤差 1e-3) をすべて満たした。フェーズ1 時点で残っていた
+検証上の弱点 (クリッピング陽性系の単体テスト、48 kHz 以外での帯域
+フィルタ精度) は §9 / §10 で解消済み。
