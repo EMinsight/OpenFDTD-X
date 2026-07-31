@@ -9,6 +9,7 @@
 
 #include "core/Project.h"
 #include "io/ActivationCurve.h"
+#include "io/BellhopIO.h"
 #include "io/H5Writer.h"
 #include "io/Tidy3dExporter.h"
 #include "io/Touchstone.h"
@@ -89,6 +90,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -1042,4 +1044,27 @@ void MainWindow::onRunnerFinished(bool ok)
         m_tabOptical->showActivationResult(m_runner->workingDir(),
                                            m_lastAeff_m2, m_runTpaBeta_cmGW,
                                            m_runLength_m);
+    // 水中音響 (bellhopcxx): 結果は .prt (ログ) と .shd (TL 音場) に出る。
+    // .prt の先頭行と .shd の生成有無・サイズを計算コンソールへ出す。
+    // .shd (SHDFIL) のバイナリ読解・TL 図化は未実装 (外部の可視化ツールを
+    // 案内する — 未実装機能を動作済みと表示しない)。
+    if (ok && m_runner->config().kernel == Kernel::Bellhop) {
+        const QDir wd(m_runner->workingDir());
+        const QString base = BellhopIO::caseName(*m_project);
+        const QFileInfo shd(wd.filePath(base + ".shd"));
+        m_rightDock->appendLog("=== bellhopcxx ===");
+        QFile prt(wd.filePath(base + ".prt"));
+        if (prt.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QStringList lines =
+                QString::fromUtf8(prt.readAll()).split(QLatin1Char('\n'));
+            for (const QString &l : lines)
+                if (!l.trimmed().isEmpty()) { m_rightDock->appendLog(l); break; }
+        }
+        m_rightDock->appendLog(shd.exists()
+            ? I18n::tr("uw_shd_ok").arg(shd.fileName())
+                                   .arg(QLocale().formattedDataSize(shd.size()))
+            : I18n::tr("uw_shd_missing"));
+        if (shd.exists())
+            m_rightDock->appendLog(I18n::tr("uw_shd_viewer_note"));
+    }
 }

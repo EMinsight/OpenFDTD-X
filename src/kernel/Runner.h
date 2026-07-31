@@ -22,7 +22,7 @@ namespace ofd {
 class Project;
 
 enum class Engine  { CPU, CPU_MPI, GPU, GPU_MPI };
-enum class Kernel  { FDTD, RCWA, BPM };          // solver family
+enum class Kernel  { FDTD, RCWA, BPM, Bellhop }; // solver family
 enum class RunMode { Solver, Post, Both };
 
 struct RunConfig {
@@ -45,6 +45,7 @@ public:
 
     bool isRunning() const;
     QString workingDir() const { return m_cfg.workingDir; }
+    const RunConfig &config() const { return m_cfg; }
 
     // Serialize project → .ofd/.ofdx in the working dir, then launch.
     void start(Project *project, const RunConfig &cfg = {});

@@ -48,8 +48,10 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure   # 音響�
 | GUI 層 | `src/` (tabs, io, kernel, widgets) | C++17 + Qt6 | Qt API は 6.4.2 まで (CI Linux の下限) |
 | 音響コア | `src/acoustics/core/`, `c_api/` | C++14 | Qt 禁止。詳細は `.claude/rules/acoustics-core.md` |
 
-- カーネル連携: `src/kernel/Runner` (ofd/orcwa/obpm)、`AcousticRunner`
+- カーネル連携: `src/kernel/Runner` (ofd/orcwa/obpm/bellhopcxx)、`AcousticRunner`
   (metadata.json + rir.wav → metrics.json + solver.log の QProcess 契約)。
+  水中音響は `io/BellhopIO` が BELLHOP の .env を生成して bellhopcxx を起動
+  (環境変数 `BELLHOPCUDA_HOME`)。光の FMM は RCWA と同一手法のため orcwa を共用。
 - 永続化: `.ofd` (カーネル入力、`src/io/OfdIO`) + `.ofdx` (JSON sidecar)。
 
 ## コーディングスタイル

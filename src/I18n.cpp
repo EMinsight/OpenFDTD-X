@@ -458,6 +458,16 @@ void I18n::loadTables() {
     add("run_post_only", "ポストのみ", "Post only");
     add("run_both", "一括 (計算+ポスト)", "Solver + post");
 
+    add("uw_shd_ok", "%1 を生成しました (%2) — TL 音場 (SHDFIL 形式)",
+        "Generated %1 (%2) — TL field (SHDFIL format)");
+    add("uw_shd_missing",
+        "警告: .shd が生成されませんでした (.prt のログを確認してください)",
+        "Warning: no .shd was generated (check the .prt log)");
+    add("uw_shd_viewer_note",
+        "※ .shd の可視化 (TL 図) はアプリ内では未実装です。"
+        "bellhopcuda 同梱の MATLAB/Python ツール等で表示してください。",
+        "Note: in-app visualization of .shd (TL plots) is not implemented. "
+        "Use the MATLAB/Python tools bundled with bellhopcuda.");
     add("run_rcwa_stack_err",
         "RCWA / FMM の層スタックが空または不正なため実行できません。\n"
         "光タブの「層構成 (入射側 → 透過側)」で 2 層以上の有効な層を"

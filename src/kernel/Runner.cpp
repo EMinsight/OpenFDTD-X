@@ -1,10 +1,12 @@
 // Runner.cpp
 #include "Runner.h"
+#include "../io/BellhopIO.h"
 #include "../core/Project.h"
 #include "../io/OfdIO.h"
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -20,15 +22,23 @@ bool Runner::isRunning() const {
 
 static QString kernelPrefix(Kernel k) {
     switch (k) {
-        case Kernel::FDTD: return "ofd";
-        case Kernel::RCWA: return "orcwa";
-        case Kernel::BPM:  return "obpm";
+        case Kernel::FDTD:    return "ofd";
+        case Kernel::RCWA:    return "orcwa";
+        case Kernel::BPM:     return "obpm";
+        case Kernel::Bellhop: return "bellhopcxx";
     }
     return "ofd";
 }
 
 QString Runner::solverBinary(const RunConfig &cfg) {
     QString base = kernelPrefix(cfg.kernel);
+    if (cfg.kernel == Kernel::Bellhop) {
+        // bellhopcuda のバイナリは bellhopcxx (CPU, 内部マルチスレッド) と
+        // bellhopcuda (GPU) の 2 系統。MPI 変種は存在しないため CPU に倒す。
+        if (cfg.engine == Engine::GPU || cfg.engine == Engine::GPU_MPI)
+            base = "bellhopcuda";
+        return resolveBinary(cfg, base);
+    }
     switch (cfg.engine) {
         case Engine::CPU:     break;
         case Engine::CPU_MPI: base += "_mpi";      break;
@@ -47,9 +57,10 @@ QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
 #ifdef Q_OS_WIN
     base += ".exe";
 #endif
-    const char *homeVar = (cfg.kernel == Kernel::RCWA) ? "OPENRCWA_HOME"
-                        : (cfg.kernel == Kernel::BPM)  ? "OPENBPM_HOME"
-                                                       : "OPENFDTD_HOME";
+    const char *homeVar = (cfg.kernel == Kernel::RCWA)    ? "OPENRCWA_HOME"
+                        : (cfg.kernel == Kernel::BPM)     ? "OPENBPM_HOME"
+                        : (cfg.kernel == Kernel::Bellhop) ? "BELLHOPCUDA_HOME"
+                                                          : "OPENFDTD_HOME";
     const QString dirs[] = {
         cfg.binaryDir,
         qEnvironmentVariable(homeVar),
@@ -76,6 +87,9 @@ Kernel Runner::kernelForProject(const Project &project)
             default:                  return Kernel::FDTD;
         }
     }
+    // 水中音響は bellhopcxx (bellhopcuda リポジトリ) を起動する
+    if (project.activeDomain() == Domain::Underwater)
+        return Kernel::Bellhop;
     return Kernel::FDTD;
 }
 
@@ -112,6 +126,32 @@ void Runner::start(Project *project, const RunConfig &cfg)
     const QString baseName = project->filePath().isEmpty()
         ? QStringLiteral("project")
         : QFileInfo(project->filePath()).completeBaseName();
+
+    // 水中音響 (bellhopcxx): 入力は .ofd ではなく BELLHOP の .env。
+    // ポスト段は存在しない (結果は .prt / .shd に直接出る)。
+    if (m_cfg.kernel == Kernel::Bellhop) {
+        if (m_cfg.mode == RunMode::Post) {
+            emit logLine(QStringLiteral(
+                "bellhopcxx: post-only mode is not applicable "
+                "(results are written directly to .prt / .shd)"));
+            emit finished(false);
+            return;
+        }
+        m_ofdPath = QDir(m_cfg.workingDir).filePath(baseName + ".env");
+        QFile env(m_ofdPath);
+        if (!env.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            emit logLine("error: cannot write .env: " + env.errorString());
+            emit finished(false);
+            return;
+        }
+        env.write(BellhopIO::envText(*project).toUtf8());
+        env.close();
+        m_totalSteps = 1;
+        m_postPending = false;
+        launch(true);
+        return;
+    }
+
     m_ofdPath = QDir(m_cfg.workingDir).filePath(baseName + ".ofd");
 
     QString err;
@@ -131,7 +171,12 @@ void Runner::launch(bool solverPhase)
     QString program;
     QStringList args;
 
-    if (solverPhase) {
+    if (solverPhase && m_cfg.kernel == Kernel::Bellhop) {
+        // bellhopcxx <FILEROOT> — 引数は拡張子を除いたケース名のみ。
+        // 作業ディレクトリで実行するので相対ベース名を渡す。
+        program = solverBinary(m_cfg);
+        args << QFileInfo(m_ofdPath).completeBaseName();
+    } else if (solverPhase) {
         const QString bin = solverBinary(m_cfg);
         if (m_cfg.engine == Engine::CPU_MPI || m_cfg.engine == Engine::GPU_MPI) {
             program = "mpiexec";

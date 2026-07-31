@@ -13,6 +13,7 @@
 
 #include "core/Project.h"
 #include "io/ActivationCurve.h"
+#include "io/BellhopIO.h"
 #include "io/OfdIO.h"
 #include "kernel/Runner.h"
 #include "io/StlImporter.h"
@@ -24,6 +25,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -1203,6 +1206,79 @@ static void testRunGating()
           "wd: no project and no explicit dir -> empty");
 }
 
+
+// 水中音響 (bellhopcxx) — .env 生成と Runner のカーネル解決。
+// 環境変数 OFDX_BELLHOP_BIN が指す実カーネルがあれば、生成した .env を
+// 実際に実行して .shd (TL 音場) が生成されることまで検証する。
+static void testBellhop()
+{
+    g_file = "bellhop";
+
+    Project p;
+    p.setActiveDomain(Domain::Underwater);
+    UnderwaterOpts &u = p.underwater();
+    u.sonarFreq_kHz = 0.23;                 // 230 Hz (DickinsB と同帯域)
+    u.rangeMax_km = 10.0;
+    u.bottomC_mps = 1550.0;
+    u.bottomRho_kgm3 = 1500.0;
+    u.ssp = { { 0.0, 1476.7 }, { 100.0, 1467.2 }, { 3000.0, 1506.5 } };
+
+    // (a) カーネル解決: 水中音響 → bellhopcxx
+    check(Runner::kernelForProject(p) == Kernel::Bellhop,
+          "bellhop: underwater resolves to Kernel::Bellhop");
+
+    // (b) .env 生成: 主要行が BELLHOP の ENVFIL 仕様どおり並ぶこと
+    const QString env = BellhopIO::envText(p);
+    const QStringList lines = env.split('\n');
+    check(lines[0].startsWith("'OpenFDTD-X underwater"),
+          "bellhop: TITLE line");
+    check(lines[1].startsWith("230\t"), "bellhop: FREQ 230 Hz");
+    check(lines[2].startsWith("1\t"), "bellhop: NMEDIA = 1");
+    check(lines[3].startsWith("'CVW'"), "bellhop: SSPOPT");
+    check(lines[4].startsWith("0 0.0 3000"), "bellhop: bottom depth line");
+    check(env.contains("\n0 1476.7 /\n"), "bellhop: first SSP point");
+    check(env.contains("\n3000 1506.5 /\n"), "bellhop: last SSP point");
+    check(env.contains("\n'A' 0.0\n3000 1550 0.0 1.5 0.5 /\n"),
+          "bellhop: acousto-elastic halfspace (rho kg/m3 -> g/cm3)");
+    check(env.contains("\n'C'"), "bellhop: coherent TL run type");
+    check(env.contains("0.0 3100 11"), "bellhop: STEP/ZBOX/RBOX line");
+
+    // (c) SSP 2 点未満でも実行可能な既定プロファイルで埋める
+    {
+        Project q;
+        q.setActiveDomain(Domain::Underwater);
+        q.underwater().ssp.clear();     // 既定プロファイルを外す
+        const QString e2 = BellhopIO::envText(q);
+        check(e2.contains("\n0 1500 /\n") && e2.contains("\n100 1500 /\n"),
+              "bellhop: default iso-velocity profile when SSP missing");
+    }
+
+    // (d) 統合: 実カーネルがあれば .env を実行して .shd 生成まで確認
+    const QString bin = qEnvironmentVariable("OFDX_BELLHOP_BIN");
+    if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+        std::printf("  (bellhop integration skipped: "
+                    "set OFDX_BELLHOP_BIN to run)\n");
+        return;
+    }
+    QTemporaryDir dir;
+    check(dir.isValid(), "bellhop: temp dir");
+    const QString base = QStringLiteral("uwcase");
+    {
+        QFile f(dir.filePath(base + ".env"));
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text),
+              "bellhop: write .env");
+        f.write(env.toUtf8());
+    }
+    QProcess proc;
+    proc.setWorkingDirectory(dir.path());
+    proc.start(bin, { base });
+    check(proc.waitForFinished(120000), "bellhop: kernel finished in time");
+    check(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+          "bellhop: kernel exit code 0");
+    const QFileInfo shd(dir.filePath(base + ".shd"));
+    check(shd.exists() && shd.size() > 0, "bellhop: .shd generated");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -1263,6 +1339,7 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();
+    testBellhop();
     testRunGating();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
