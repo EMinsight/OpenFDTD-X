@@ -11,7 +11,7 @@
 | 0 | 事前調査・基準記録・ライセンス調査 | **完了** | `docs/opera-acoustics-existing-analysis.md` / `opera-acoustics-baseline.md` (selftest 1560 checks 実測) / `licensing-review.md` |
 | 1 | C++14 音響分析コア (RIR パイプライン + WAV I/O + テスト) | **完了** | `src/acoustics/core/` (RirAnalyzer ほか 9 モジュール)、`src/acoustics/io/` (WavReader/Writer)、`tests/acoustics/` 6 テスト + 生成器。検証 392 checks / 0 failures (`docs/opera-acoustics-validation.md`) |
 | 2 | GUI 統合 (C API / Qt アダプター / RirAnalysisTab / .ofdx / CI) | **実装中** | 済: CMake ターゲット分離 (`ofdx_acoustic_core` C++14 固定 / `ofdx_acoustic_c_api`)、C API 実装 + 純 C テスト (`test_c_api.c`)、`QtAcousticAdapter`、`OperaAcousticSettings`、`.ofdx opera_analysis` save/load、CI への ctest 追加。未: 下記 §2 |
-| 3 | 歌声信号分析 (VocalAnalyzer: YIN F0 / ピッチ安定性 / ビブラート / LTAS / 重心 / HNR / H1–H8 / 帯域エネルギー / 歌手フォルマント比) | **実装済み** | `src/acoustics/core/` VocalAnalyzer (C++14)、`VocalAnalysisTab`。定義: `docs/opera-acoustic-metrics.md` §10、ADR-0006 |
+| 3 | 歌声信号分析 (VocalAnalyzer: YIN F0 / ピッチ安定性 / ビブラート / LTAS / 重心 / HNR / H1–H8 / 帯域エネルギー / 歌手フォルマント比 / フォルマント F1–F3 (LPC — 負債 #14)) | **実装済み** | `src/acoustics/core/` VocalAnalyzer + FormantEstimator (C++14)、`VocalAnalysisTab`。定義: `docs/opera-acoustic-metrics.md` §10、ADR-0006 |
 | 4 | 可聴化 (ConvolutionEngine: 自前 radix-2 FFT + Overlap-Add、A/B = ドライ/ウェット WAV 書き出し) | **実装済み** | `src/acoustics/core/` Fft / ConvolutionEngine、`AuralizationTab`、`.ofdx` `opera_analysis.auralization`。ADR-0005。旧フェーズ4 計画分 (ST 系 / G 絶対値 / 校正ワークフロー / レポート出力) は残課題へ移動 (§3 負債 #10) |
 | 5 | 外部音響ソルバー連携 (AcousticRunner QProcess 疎結合・AcousticBackend 5 値・出力契約・モックソルバー CI・AcousticFdtdEstimator) | **実装済み** | `src/acoustics/qt/AcousticRunner`、`AcousticSolverTab`、`.ofdx` `opera_analysis.solver`、CI モックソルバー統合テスト。ADR-0004 / ADR-0007 |
 
@@ -50,16 +50,17 @@
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
 | 12 | リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー) | fs の異なる素材は外部ツールで変換が必要 | 高品質リサンプラーの追加は需要が出た時点で検討 (仮定 §21) |
 | 13 | 実音響ソルバーが存在しない (CI はモックのみ) | ExternalFDTD / ExternalGeometric は契約準拠ソルバーを別途用意して初めて機能する | ソルバー本体は別リポジトリで開発 (ADR-0004 / ADR-0007) |
-| 14 | 声区 (レジスター) 分析・フォルマント周波数推定 (F1/F2) が無い (歌手フォルマントは帯域エネルギー比のみ) | 声楽的フィードバックの分解能が限定的 | LPC 等による高度化は将来課題 (診断的結論の禁止 — ADR-0006 — は維持) |
+| 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
 
 ## 4. 品質基準の現在値
 
 - 既存 baseline: `ofdx_selftest` = 24 files loaded, **1870 checks,
   0 failures** (減らないこと。実行種別ゲート / TPA 入力検証 /
   解析解の検証 / 校正オフセットの往復・ゲート検証を追加済み)。
-- 音響コア: `ctest` の `acoustics.*` **14 テスト / 合計 1220 checks,
+- 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
   0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
-  `test_bandfilter` 563 checks・`test_clipping` 60 checks を含む)。
+  `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
+  `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
 
@@ -74,5 +75,5 @@
 3. フェーズ2 完了時に baseline 文書のチェック総数を更新し、
    本書のフェーズ表を更新。
 4. 残課題の優先度整理: リアルタイム再生 (負債 #11)、リサンプリング
-   (負債 #12)、実音響ソルバー (負債 #13)、声区分析の高度化 (負債 #14)、
-   旧フェーズ4 計画分 (負債 #10)。
+   (負債 #12)、実音響ソルバー (負債 #13)、声区分析 (負債 #14 の残り —
+   フォルマント推定は解消済み)、旧フェーズ4 計画分 (負債 #10)。

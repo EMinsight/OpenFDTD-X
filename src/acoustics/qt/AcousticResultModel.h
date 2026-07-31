@@ -44,15 +44,15 @@ public:
 
     // ── 歌声分析 (VocalAnalysisResult) ──────────────────────────────────────
     // 指標の行リスト (F0 統計 / ビブラート / HNR / スペクトル重心 /
-    // 歌手フォルマント比 / 帯域エネルギー / レベル)。SPL 行は Absolute
-    // 校正時のみ valid (コアの判定をそのまま反映する)。
+    // 歌手フォルマント比 / フォルマント F1-F3 中央値 / 帯域エネルギー /
+    // レベル)。SPL 行は Absolute 校正時のみ valid (コアの判定を反映)。
     static QVector<AcousticResultRow>
     vocalRows(const acoustics::VocalAnalysisResult &result);
 
-    // CSV 文字列化 (指標表 + サマリー + F0 軌跡 + 警告)
+    // CSV 文字列化 (指標表 + サマリー + F0 軌跡 + フォルマント軌跡 + 警告)
     static QString toCsv(const acoustics::VocalAnalysisResult &result);
 
-    // JSON 文字列化 (指標 + F0 軌跡 + LTAS + 倍音レベル + 警告)
+    // JSON 文字列化 (指標 + F0/フォルマント軌跡 + LTAS + 倍音レベル + 警告)
     static QString toJson(const acoustics::VocalAnalysisResult &result);
 };
 

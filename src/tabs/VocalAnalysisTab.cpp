@@ -120,6 +120,13 @@ VocalAnalysisTab::VocalAnalysisTab(Project *project, QWidget *parent)
     m_f0Plot->setLabels(I18n::tr("vocal_time_s"), I18n::tr("vocal_f0_hz"));
     m_f0Plot->setMinimumHeight(150);
     sPlot->vbox()->addWidget(m_f0Plot);
+    auto *formantLabel = new QLabel(I18n::tr("vocal_formant_plot"), sPlot);
+    sPlot->vbox()->addWidget(formantLabel);
+    m_formantPlot = new MiniPlot(sPlot);
+    m_formantPlot->setLabels(I18n::tr("vocal_time_s"),
+                             I18n::tr("vocal_formant_hz"));
+    m_formantPlot->setMinimumHeight(150);
+    sPlot->vbox()->addWidget(m_formantPlot);
     auto *ltasLabel = new QLabel(I18n::tr("vocal_ltas_plot"), sPlot);
     sPlot->vbox()->addWidget(ltasLabel);
     m_ltasPlot = new MiniPlot(sPlot);
@@ -246,6 +253,7 @@ void VocalAnalysisTab::clearResult(const QString &statusText)
     m_warnings->clear();
     m_warnings->setVisible(false);
     m_f0Plot->setSeries({});
+    m_formantPlot->setSeries({});
     m_ltasPlot->setSeries({});
     m_csvBtn->setEnabled(false);
     m_jsonBtn->setEnabled(false);
@@ -305,6 +313,39 @@ void VocalAnalysisTab::showResult(const VocalAnalysisResult &result)
         }
         if (!seg.pts.isEmpty()) series.push_back(seg);
         m_f0Plot->setSeries(series);
+    }
+
+    // ④ フォルマント軌跡 F1/F2/F3 — 候補が得られた有声フレームのみ描く
+    //    (無声・候補なしの区間は線を切る)。診断的な注釈は付さない (ADR-0006)。
+    {
+        QVector<MiniSeries> series;
+        const QColor colors[3] = { QColor("#D2691E"), QColor("#6A5ACD"),
+                                   QColor("#2E8B57") };
+        const char *names[3] = { "F1", "F2", "F3" };
+        for (int fi = 0; fi < 3; ++fi) {
+            MiniSeries seg;
+            seg.color = colors[fi];
+            seg.label = QLatin1String(names[fi]);
+            bool labeled = false;
+            for (const acoustics::FormantFrame &f : result.formants.frames) {
+                const double v = (fi == 0) ? f.f1Hz
+                               : (fi == 1) ? f.f2Hz
+                                           : f.f3Hz;
+                if (f.voiced && v > 0.0) {
+                    seg.pts.push_back(QPointF(f.timeSeconds, v));
+                } else if (!seg.pts.isEmpty()) {
+                    if (!labeled) labeled = true;
+                    else seg.label.clear(); // 凡例は系列ごとに 1 回だけ
+                    series.push_back(seg);
+                    seg.pts.clear();
+                }
+            }
+            if (!seg.pts.isEmpty()) {
+                if (labeled) seg.label.clear();
+                series.push_back(seg);
+            }
+        }
+        m_formantPlot->setSeries(series);
     }
 
     // ④ LTAS (dB vs Hz)

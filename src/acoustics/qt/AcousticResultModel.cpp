@@ -300,6 +300,12 @@ AcousticResultModel::vocalRows(const VocalAnalysisResult &r)
     rows.push_back(vocalRow("Singer formant ratio (2-4k/0-2k)", full,
                             r.singerFormantRatioDb, "dB", 1));
 
+    // フォルマント F1/F2/F3 (LPC、有声フレームの時間中央値)。
+    // 共鳴周波数という物理量のみ — 母音・声区等の解釈は付さない (ADR-0006)
+    rows.push_back(vocalRow("F1 median", full, r.formants.f1MedianHz, "Hz", 1));
+    rows.push_back(vocalRow("F2 median", full, r.formants.f2MedianHz, "Hz", 1));
+    rows.push_back(vocalRow("F3 median", full, r.formants.f3MedianHz, "Hz", 1));
+
     // 帯域エネルギー (LTAS 積算)
     for (const BandEnergyValue &b : r.bandEnergies)
         rows.push_back(vocalRow("Band energy", bandLabel(b.band),
@@ -342,6 +348,10 @@ QString AcousticResultModel::toCsv(const VocalAnalysisResult &r)
                .arg(QString::number(r.f0SearchMinHz, 'f', 1));
     out += QStringLiteral("summary,f0_search_max,,%1,Hz,1,,\n")
                .arg(QString::number(r.f0SearchMaxHz, 'f', 1));
+    out += QStringLiteral("summary,formant_internal_rate,,%1,Hz,1,,\n")
+               .arg(QString::number(r.formants.internalRateHz, 'f', 1));
+    out += QStringLiteral("summary,formant_lpc_order,,%1,,1,,\n")
+               .arg(QString::number(r.formants.lpcOrder));
     out += QStringLiteral("summary,overall_quality,,%1,,1,%1,\n")
                .arg(qualityToken(r.overallQuality));
 
@@ -364,6 +374,20 @@ QString AcousticResultModel::toCsv(const VocalAnalysisResult &r)
                         f.voiced ? QString::number(f.f0Hz, 'f', 2) : QString(),
                         f.voiced ? QStringLiteral("1") : QStringLiteral("0"),
                         QString::number(f.rmsDbfs, 'f', 1));
+    }
+
+    // フォルマント軌跡 (有声フレームのみ。候補なしのフォルマントは空欄)
+    out += QStringLiteral("section,time_s,f1_hz,f2_hz,f3_hz,,,\n");
+    for (const FormantFrame &f : r.formants.frames) {
+        if (!f.voiced) continue;
+        out += QStringLiteral("formant_track,%1,%2,%3,%4,,,\n")
+                   .arg(QString::number(f.timeSeconds, 'f', 4),
+                        f.f1Hz > 0.0 ? QString::number(f.f1Hz, 'f', 1)
+                                     : QString(),
+                        f.f2Hz > 0.0 ? QString::number(f.f2Hz, 'f', 1)
+                                     : QString(),
+                        f.f3Hz > 0.0 ? QString::number(f.f3Hz, 'f', 1)
+                                     : QString());
     }
 
     for (const std::string &w : r.warnings)
@@ -402,6 +426,33 @@ QString AcousticResultModel::toJson(const VocalAnalysisResult &r)
     root["hnr_db"] = metricJson(r.hnrDb);
     root["spectral_centroid_hz"] = metricJson(r.spectralCentroidHz);
     root["singer_formant_ratio_db"] = metricJson(r.singerFormantRatioDb);
+
+    // フォルマント (LPC): 代表値 + 有声フレームの軌跡
+    {
+        QJsonObject fo;
+        fo["internal_rate_hz"] = r.formants.internalRateHz;
+        fo["decimation_factor"] = double(r.formants.decimationFactor);
+        fo["lpc_order"] = r.formants.lpcOrder;
+        fo["f1_median_hz"] = metricJson(r.formants.f1MedianHz);
+        fo["f2_median_hz"] = metricJson(r.formants.f2MedianHz);
+        fo["f3_median_hz"] = metricJson(r.formants.f3MedianHz);
+        if (!r.formants.warning.empty())
+            fo["warning"] = QString::fromStdString(r.formants.warning);
+        QJsonArray track;
+        for (const FormantFrame &f : r.formants.frames) {
+            if (!f.voiced) continue;
+            track.append(QJsonObject{
+                { "time_s", f.timeSeconds },
+                { "f1_hz", f.f1Hz > 0.0 ? f.f1Hz : QJsonValue() },
+                { "f2_hz", f.f2Hz > 0.0 ? f.f2Hz : QJsonValue() },
+                { "f3_hz", f.f3Hz > 0.0 ? f.f3Hz : QJsonValue() },
+                { "b1_hz", f.b1Hz > 0.0 ? f.b1Hz : QJsonValue() },
+                { "b2_hz", f.b2Hz > 0.0 ? f.b2Hz : QJsonValue() },
+                { "b3_hz", f.b3Hz > 0.0 ? f.b3Hz : QJsonValue() } });
+        }
+        fo["track"] = track;
+        root["formants"] = fo;
+    }
 
     QJsonArray harmonics;
     for (const MetricValue &h : r.harmonicLevelsDb)

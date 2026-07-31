@@ -814,10 +814,14 @@ void I18n::loadTables() {
     add("vocal_plot_section", "プロット", "Plots");
     add("vocal_f0_plot", "F0 軌跡 (無声区間は欠落)",
         "F0 contour (gaps = unvoiced)");
+    add("vocal_formant_plot",
+        "フォルマント軌跡 F1/F2/F3 (LPC、有声区間のみ)",
+        "Formant tracks F1/F2/F3 (LPC, voiced only)");
     add("vocal_ltas_plot", "LTAS (長時間平均スペクトル)",
         "LTAS (long-term average spectrum)");
     add("vocal_time_s", "時間 [s]", "time [s]");
     add("vocal_f0_hz", "F0 [Hz]", "F0 [Hz]");
+    add("vocal_formant_hz", "フォルマント [Hz]", "formant [Hz]");
     add("vocal_freq_hz", "周波数 [Hz]", "frequency [Hz]");
 
     // Auralization tab (dry voice × RIR convolution)

@@ -642,6 +642,18 @@ VocalAnalyzer::analyze(ArrayView<const double> x, double sampleRateHz) const {
         }
     }
 
+    // ── フォルマント F1/F2/F3 (LPC): YIN の有声判定フレームのみ推定 ──
+    // 代表値の valid/warning は FormantTrackResult 側の MetricValue が持つ
+    // (指標単位の品質表示。全体 warnings には積まない)。
+    {
+        std::vector<unsigned char> voicedFlags(res.f0Track.size(), 0);
+        for (std::size_t i = 0; i < res.f0Track.size(); ++i)
+            voicedFlags[i] = res.f0Track[i].voiced ? 1 : 0;
+        const FormantEstimator formantEstimator(m_config.formant);
+        res.formants = formantEstimator.estimate(x, fs, voicedFlags,
+                                                 yp.frameLength, yp.hopLength);
+    }
+
     // ── ビブラート ──
     res.vibrato = analyzeVibrato(res.f0Track, res.hopSeconds, m_config);
     if (!res.vibrato.valid && !res.vibrato.warning.empty())

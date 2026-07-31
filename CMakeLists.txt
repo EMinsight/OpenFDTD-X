@@ -305,6 +305,7 @@ add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/ConvolutionEngine.cpp
     src/acoustics/core/Fft.cpp
+    src/acoustics/core/FormantEstimator.cpp
     src/acoustics/core/VocalAnalyzer.cpp
     src/acoustics/core/DirectSoundDetector.cpp
     src/acoustics/core/NoiseFloorEstimator.cpp
@@ -378,6 +379,7 @@ if(BUILD_TESTS)
         direct_sound
         estimator
         fft
+        formant
         reflections
         reverberation
         vocal

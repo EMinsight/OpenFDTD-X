@@ -7,9 +7,11 @@
 //                 校正状態の表示 (編集は実測RIR分析タブ)
 //   ② 実行     — QtAcousticAdapter::analyzeVocalFile で同期分析
 //   ③ 結果     — 指標表 (F0 統計 / ビブラート / HNR / スペクトル重心 /
-//                 歌手フォルマント比 / 帯域エネルギー / Leq・ピーク)。
+//                 歌手フォルマント比 / フォルマント F1-F3 中央値 /
+//                 帯域エネルギー / Leq・ピーク)。
 //                 無効値は「算出不可 (理由)」、SPL は未校正時必ず算出不可
-//   ④ プロット — F0 軌跡 (無声区間は欠落) + LTAS
+//   ④ プロット — F0 軌跡 (無声区間は欠落) + フォルマント F1/F2/F3 軌跡
+//                 + LTAS
 //   ⑤ 出力     — CSV / JSON 保存 (AcousticResultModel 経由)
 // 設定は .ofdx の acoustic/opera_analysis (voice_file / voice_type / vocal)
 // に永続化される。
@@ -67,6 +69,7 @@ private:
 
     // ④ プロット
     MiniPlot *m_f0Plot = nullptr;
+    MiniPlot *m_formantPlot = nullptr;   // F1/F2/F3 軌跡 (有声区間のみ)
     MiniPlot *m_ltasPlot = nullptr;
 
     // ⑤ 出力

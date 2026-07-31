@@ -15,6 +15,9 @@
 //   帯域エネルギー : 全帯域 / 0-2k / 2.0-2.5k / 2.5-3.15k / 3.15-4.0k / 2.0-4.0k
 //   歌手フォルマント指標 : 2-4 kHz / 0-2 kHz のエネルギー比 [dB]
 //                    (Sundberg 1974 の singer's formant 概念に基づく LTAS 比率)
+//   フォルマント   : F1/F2/F3 [Hz]。LPC (反エイリアス間引き →
+//                    Levinson-Durbin → Durand-Kerner 根)。YIN の有声判定
+//                    フレームのみ推定 (FormantEstimator.h 参照)
 //   RMS / ピーク [dBFS]、Leq (全長)
 //
 // 注意: VoiceType (声種) は YIN の F0 探索範囲プリセットの選択にのみ使用する。
@@ -33,6 +36,7 @@
 #include "ArrayView.h"
 #include "AudioBuffer.h"
 #include "BandFilter.h"
+#include "FormantEstimator.h"
 #include "RirAnalyzer.h" // CalibrationState
 
 namespace ofd {
@@ -78,6 +82,8 @@ struct VocalAnalyzerConfig {
 
     std::size_t ltasFftLength;  // LTAS の FFT 長 (2 の冪、既定 4096)
 
+    FormantEstimatorConfig formant; // フォルマント推定 (LPC) の設定
+
     CalibrationState calibration; // 既定 Uncalibrated
     double calibrationOffsetDb;   // Absolute 時: dBFS → dB SPL のオフセット
 
@@ -87,7 +93,8 @@ struct VocalAnalyzerConfig {
           noiseGateDbfs(-70.0), vibratoMinHz(3.0), vibratoMaxHz(9.0),
           vibratoDetrendSeconds(0.25), vibratoMinSegmentSeconds(1.0),
           vibratoMinDepthCents(5.0), vibratoMinPeakRatio(4.0),
-          ltasFftLength(4096), calibration(CalibrationState::Uncalibrated),
+          ltasFftLength(4096), formant(),
+          calibration(CalibrationState::Uncalibrated),
           calibrationOffsetDb(0.0) {}
 };
 
@@ -166,6 +173,10 @@ struct VocalAnalysisResult {
     std::vector<BandEnergyValue> bandEnergies;
     MetricValue singerFormantRatioDb; // 10·log10(P(2-4k) / P(0-2k)) [dB]
 
+    // フォルマント F1/F2/F3 (LPC)。有声フレームのみ推定し、代表値は
+    // 有効フレームの時間中央値。共鳴周波数という物理量のみを報告する。
+    FormantTrackResult formants;
+
     // レベル (dBFS は常に valid、SPL は Absolute 校正時のみ valid)
     MetricValue peakDbfs;
     MetricValue rmsDbfs;
@@ -182,6 +193,7 @@ struct VocalAnalysisResult {
           voicedRatio(0.0), f0MedianHz(), f0MeanHz(), f0MinHz(), f0MaxHz(),
           pitchStabilityCents(), vibrato(), ltas(), spectralCentroidHz(),
           hnrDb(), harmonicLevelsDb(), bandEnergies(), singerFormantRatioDb(),
+          formants(),
           peakDbfs(), rmsDbfs(), leqDbfs(), leqSplDb(), peakSplDb(),
           overallQuality(AnalysisQuality::Invalid), warnings() {}
 };
