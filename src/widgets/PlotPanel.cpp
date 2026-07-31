@@ -4,12 +4,26 @@
 #include "../I18n.h"
 
 #include <QFile>
+#include <QFileDialog>
+#include <QHBoxLayout>
 #include <QPainter>
 #include <QPainterPath>
 #include <QTextStream>
+#include <QToolButton>
+#include <QVBoxLayout>
 #include <cmath>
 
 using namespace ofd;
+
+namespace {
+const bool s_i18n = [] {
+    ofd::I18n::reg("ppb_csv_tip", "収束履歴を CSV 保存",
+                   "Save the convergence history as CSV");
+    ofd::I18n::reg("ppb_png_tip", "プロットを PNG 保存",
+                   "Save the plot as PNG");
+    return true;
+}();
+} // namespace
 
 PlotPanel::PlotPanel(Project *project, QWidget *parent)
     : QWidget(parent), m_project(project)
@@ -17,6 +31,45 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     setObjectName("PlotPanel");
     setMinimumSize(320, 200);
     connect(project, &Project::changed, this, qOverload<>(&QWidget::update));
+
+    // 右上の CSV / PNG 保存ボタン (mock の PlotPanel ヘッダ操作)
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 2, 6, 0);
+    auto *btnRow = new QHBoxLayout();
+    btnRow->addStretch(1);
+    m_csvBtn = new QToolButton(this);
+    m_csvBtn->setText(QStringLiteral("CSV"));
+    m_csvBtn->setToolTip(I18n::tr("ppb_csv_tip"));
+    m_pngBtn = new QToolButton(this);
+    m_pngBtn->setText(QStringLiteral("PNG"));
+    m_pngBtn->setToolTip(I18n::tr("ppb_png_tip"));
+    btnRow->addWidget(m_csvBtn);
+    btnRow->addWidget(m_pngBtn);
+    outer->addLayout(btnRow);
+    outer->addStretch(1);
+
+    connect(m_csvBtn, &QToolButton::clicked, this, &PlotPanel::saveCsvDialog);
+    connect(m_pngBtn, &QToolButton::clicked, this, &PlotPanel::savePngDialog);
+}
+
+void PlotPanel::saveCsvDialog()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ppb_csv_tip"), "convergence.csv", "CSV (*.csv)");
+    if (!path.isEmpty()) exportCsv(path);
+}
+
+void PlotPanel::savePngDialog()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ppb_png_tip"), "plot.png", "PNG (*.png)");
+    if (path.isEmpty()) return;
+    // ボタンを写し込まないため一時的に隠して grab する
+    m_csvBtn->setVisible(false);
+    m_pngBtn->setVisible(false);
+    grab().save(path);
+    m_csvBtn->setVisible(true);
+    m_pngBtn->setVisible(true);
 }
 
 void PlotPanel::clearConvergence()

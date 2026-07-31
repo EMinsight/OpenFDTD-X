@@ -6,6 +6,7 @@
 #include "core/Domain.h"
 
 class QButtonGroup;
+class QLabel;
 class QToolButton;
 
 namespace ofd {
@@ -21,9 +22,12 @@ signals:
     void domainSelected(ofd::Domain d);
 
 private:
+    void refreshTidy3dPill(Domain d);   // 光ドメインのみ表示・接続状態更新
+
     struct Entry { Domain d; QToolButton *btn; };
     QVector<Entry> m_buttons;
     QButtonGroup  *m_group;
+    QLabel        *m_tidy3dPill;        // tidy3d 接続ピル (右端)
 };
 
 } // namespace ofd

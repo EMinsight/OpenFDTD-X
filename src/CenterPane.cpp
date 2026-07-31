@@ -38,6 +38,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_snap",    "Snap:",          "Snap:");
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
     ofd::I18n::reg("vp_boundary","境界 (PML)",     "Boundary (PML)");
+    ofd::I18n::reg("vp_vertex",  "頂点",           "Vertex");
+    ofd::I18n::reg("vp_vertex_tip",
+        "スナップ動作は未実装 (表示のみ)",
+        "Snap behavior not implemented (display only)");
     ofd::I18n::reg("vp_rotlabel","Rotate:",        "Rotate:");
     ofd::I18n::reg("vp_style",      "3D:",   "3D:");
     ofd::I18n::reg("vp_style_wire", "Wire",  "Wire");
@@ -100,8 +104,13 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     auto *grid = new QCheckBox(I18n::tr("vp_grid"), m_vpToolbar);
     grid->setChecked(true);
     auto *bnd = new QCheckBox(I18n::tr("vp_boundary"), m_vpToolbar);
+    // 頂点スナップ (mock の Snap チェック群)。スナップ動作そのものは
+    // 未実装なので tooltip で明示する (CLAUDE.md 絶対規則 5)。
+    auto *vtx = new QCheckBox(I18n::tr("vp_vertex"), m_vpToolbar);
+    vtx->setToolTip(I18n::tr("vp_vertex_tip"));
     h->addWidget(grid);
     h->addWidget(bnd);
+    h->addWidget(vtx);
 
     // 3D ビュースタイル (モックの TweaksPanel「3D ビュー / Viewport」相当)
     h->addWidget(new QLabel(I18n::tr("vp_style"), m_vpToolbar));

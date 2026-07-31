@@ -2,11 +2,26 @@
 #include "DomainBar.h"
 #include "I18n.h"
 
-#include <QHBoxLayout>
-#include <QToolButton>
 #include <QButtonGroup>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QSettings>
+#include <QToolButton>
 
 using namespace ofd;
+
+namespace {
+const bool s_i18n = [] {
+    ofd::I18n::reg("db_t3d_on",  "tidy3d: 接続中",  "tidy3d: connected");
+    ofd::I18n::reg("db_t3d_off", "tidy3d: 未接続",  "tidy3d: not connected");
+    ofd::I18n::reg("db_t3d_tip",
+        "QSettings の API キー設定有無のみを表示します — "
+        "実際の API 疎通確認は行いません",
+        "Shows only whether an API key is configured in QSettings — "
+        "no real API connectivity check is performed");
+    return true;
+}();
+} // namespace
 
 DomainBar::DomainBar(QWidget *parent)
     : QWidget(parent)
@@ -56,9 +71,34 @@ DomainBar::DomainBar(QWidget *parent)
     }
     h->addStretch(1);
 
+    // tidy3d 接続ピル (右端) — 光ドメイン専用のクラウドバックエンド表示。
+    // QSettings "tidy3d/apiKey" の有無だけを表示する (実 API 疎通なし —
+    // tooltip で明示。CLAUDE.md 絶対規則 5)。
+    m_tidy3dPill = new QLabel(this);
+    m_tidy3dPill->setToolTip(I18n::tr("db_t3d_tip"));
+    m_tidy3dPill->setVisible(false);
+    h->addWidget(m_tidy3dPill);
+
     if (!m_buttons.isEmpty()) m_buttons.first().btn->setChecked(true);
+    refreshTidy3dPill(m_buttons.isEmpty() ? Domain::EM : m_buttons.first().d);
 }
 
 void DomainBar::setActiveDomain(Domain d) {
     for (auto &e : m_buttons) e.btn->setChecked(e.d == d);
+    refreshTidy3dPill(d);
+}
+
+// 光ドメインのときだけ表示し、APIキー設定の有無で 接続中/未接続 を切替える
+void DomainBar::refreshTidy3dPill(Domain d)
+{
+    const bool optical = (d == Domain::Optical);
+    m_tidy3dPill->setVisible(optical);
+    if (!optical) return;
+    const bool hasKey =
+        !QSettings().value("tidy3d/apiKey").toString().trimmed().isEmpty();
+    m_tidy3dPill->setText(I18n::tr(hasKey ? "db_t3d_on" : "db_t3d_off"));
+    m_tidy3dPill->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; border: 1px solid %1; border-radius: 9px;"
+        "  padding: 1px 10px; font-weight: 600; }")
+        .arg(hasKey ? QStringLiteral("#2E8B57") : QStringLiteral("#888888")));
 }

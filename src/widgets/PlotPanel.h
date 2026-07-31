@@ -11,6 +11,8 @@
 #include <QPointF>
 #include "../core/Domain.h"
 
+class QToolButton;
+
 namespace ofd {
 
 class Project;
@@ -41,9 +43,15 @@ protected:
 private:
     enum Mode { Waveform, Convergence };
 
+    void saveCsvDialog();   // 右上 CSV ボタン → exportCsv
+    void savePngDialog();   // 右上 PNG ボタン → grab() (ボタンは一時非表示)
+
     Project *m_project;
     Domain   m_domain = Domain::EM;
     Mode     m_mode = Waveform;
+
+    QToolButton *m_csvBtn = nullptr;
+    QToolButton *m_pngBtn = nullptr;
 
     QVector<int>    m_steps;
     QVector<double> m_eAvg, m_hAvg;
