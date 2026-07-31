@@ -40,7 +40,11 @@ QString OfdIO::serialize(const Project &p)
     // どちらかが崩れていれば RCWA 関連は一切出力しない = 従来出力とバイト
     // 一致 (後方互換)。不正な設定のままカーネルを走らせない意図も兼ねる。
     const OpticalOpts &oo = p.optical();
-    const bool rcwaOut = (oo.solver == OpticalSolver::RCWA) &&
+    // FMM (Fourier Modal Method) は RCWA と同一手法の別名で、カーネルも
+    // 同じ OpenRCWA (orcwa) を使う — 調和次数だけ FMM 設定 (fmmHarmonics)
+    // を反映する。
+    const bool rcwaOut = (oo.solver == OpticalSolver::RCWA ||
+                          oo.solver == OpticalSolver::FMM) &&
                          isValidRcwaStack(oo.rcwaLayerList);
 
     // ヘッダ: orcwa のパーサは "OpenRCWA" / "OpenTHFD" しか受け付けない
@@ -223,7 +227,9 @@ QString OfdIO::serialize(const Project &p)
     // カーネル側に対応するキーが無いため無視される (.ofdx には保存される)。
     // 単位: GUI は nm、orcwa は m (物理長 — γ = k0·neff スケーリング前提)。
     if (rcwaOut) {
-        out << "rcwa = " << oo.rcwaNx << " "
+        const int harmonics = (oo.solver == OpticalSolver::FMM)
+                            ? oo.fmmHarmonics : oo.rcwaNx;
+        out << "rcwa = " << harmonics << " "
             << num(oo.rcwaPeriodX * 1e-9) << "\n";
         // 層は入射側 → 透過側の順にそのまま並べる (先頭/末尾は半無限層)。
         for (const RcwaLayer &l : oo.rcwaLayerList)

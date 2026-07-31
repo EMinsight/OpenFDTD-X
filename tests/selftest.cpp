@@ -1007,6 +1007,37 @@ static void testRcwaCore()
               "rcwa: 600 nm period serializes as 6e-07 m");
     }
 
+    // (e) FMM は RCWA と同一手法 (Fourier Modal Method) — orcwa を共用し、
+    //     調和次数だけ fmmHarmonics を使う。カーネル選択も RCWA と同じ。
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::FMM;
+        o.fmmHarmonics = 9;
+        o.rcwaNx = 5;                   // FMM 選択時は使われない
+        o.rcwaPeriodX = 300.0;
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                            RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        const QString out = OfdIO::serialize(p);
+        check(out.startsWith("OpenRCWA 4 2\n"),
+              "fmm: header switched to OpenRCWA");
+        check(out.contains("\nrcwa = 9 3e-07\n"),
+              "fmm: harmonics taken from fmmHarmonics");
+        p.setActiveDomain(Domain::Optical);
+        check(Runner::kernelForProject(p) == Kernel::RCWA,
+              "fmm: kernel resolves to orcwa (RCWA)");
+
+        // 層スタックが空なら従来出力とバイト一致 (実行前ゲートは
+        // MainWindow 側で警告するため、書き出しは何も加えない)
+        o.rcwaLayerList.clear();
+        Project legacy;
+        legacy.optical().solver = OpticalSolver::FMM;
+        legacy.optical().fmmHarmonics = 9;
+        check(OfdIO::serialize(p) == OfdIO::serialize(legacy),
+              "fmm: empty stack keeps output byte-identical");
+    }
+
     // (a) 層あり .ofd のラウンドトリップ
     {
         const QString text =

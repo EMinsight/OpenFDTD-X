@@ -64,6 +64,21 @@ QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
     return base;   // let PATH resolve it
 }
 
+Kernel Runner::kernelForProject(const Project &project)
+{
+    if (project.activeDomain() == Domain::Optical) {
+        switch (project.optical().solver) {
+            case OpticalSolver::RCWA: return Kernel::RCWA;
+            case OpticalSolver::BPM:  return Kernel::BPM;
+            // FMM は RCWA と同一手法 (Fourier Modal Method) の別名 —
+            // OpenRCWA (orcwa) をカーネルとして実行する。
+            case OpticalSolver::FMM:  return Kernel::RCWA;
+            default:                  return Kernel::FDTD;
+        }
+    }
+    return Kernel::FDTD;
+}
+
 QString Runner::resolveWorkingDir(const Project *project, const RunConfig &cfg)
 {
     if (!cfg.workingDir.isEmpty()) return cfg.workingDir;

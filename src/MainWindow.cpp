@@ -838,14 +838,9 @@ RunConfig MainWindow::currentRunConfig() const
     QSettings().setValue("run/device", cfg.device);
     QSettings().setValue("run/threads", cfg.threads);
 
-    // 光ドメイン: RCWA/BPM は姉妹カーネル (orcwa / obpm) を使う
-    if (m_project->activeDomain() == Domain::Optical) {
-        switch (m_project->optical().solver) {
-            case OpticalSolver::RCWA: cfg.kernel = Kernel::RCWA; break;
-            case OpticalSolver::BPM:  cfg.kernel = Kernel::BPM;  break;
-            default:                  cfg.kernel = Kernel::FDTD; break;
-        }
-    }
+    // カーネル選択はドメインとソルバー設定から決める (Runner と共用の規則)。
+    // 光: RCWA → orcwa / BPM → obpm / FMM → orcwa (RCWA と同一手法)。
+    cfg.kernel = Runner::kernelForProject(*m_project);
     return cfg;
 }
 
@@ -859,6 +854,20 @@ void MainWindow::runSimulation()
     if (m_engineBox->currentIndex() > 3) {
         showCloudDialog();
         return;
+    }
+    // RCWA / FMM (どちらも orcwa カーネル): 層スタックが空または不正なら
+    // 実行前にエラー表示して止める。OfdIO 側のゲートは不正な rcwa 設定を
+    // 書き出さないため、そのまま走らせると「rcwa キーの無い入力で orcwa が
+    // 必ず失敗する」— 確実に失敗する実行を開始しない (.claude/rules/gui.md)。
+    if (m_project->activeDomain() == Domain::Optical) {
+        const OpticalOpts &oo = m_project->optical();
+        if ((oo.solver == OpticalSolver::RCWA ||
+             oo.solver == OpticalSolver::FMM) &&
+            !isValidRcwaStack(oo.rcwaLayerList)) {
+            QMessageBox::warning(this, I18n::tr("tb_calc"),
+                                 I18n::tr("run_rcwa_stack_err"));
+            return;
+        }
     }
     m_plotPanel->clearConvergence();
     m_lastAeff_m2 = 0.0;

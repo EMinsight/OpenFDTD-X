@@ -54,6 +54,13 @@ public:
     static QString postBinary(const RunConfig &cfg);
     static QString resolveBinary(const RunConfig &cfg, const QString &name);
 
+    // アクティブドメインとソルバー設定から実行カーネルを決める
+    // (MainWindow の実行設定と selftest で共用)。
+    //   光: RCWA → orcwa / BPM → obpm / FMM → orcwa (RCWA と同一手法の
+    //       別名のため専用カーネルは作らない) / それ以外 → ofd
+    //   他ドメイン: ofd
+    static Kernel kernelForProject(const Project &project);
+
     // start() が使う作業ディレクトリを、起動前に同じ規則で求める
     // (実行前に前回の出力を掃除したい呼び出し側のため)。start() 自身も使う。
     static QString resolveWorkingDir(const Project *project,

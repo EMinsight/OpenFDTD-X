@@ -303,6 +303,19 @@ void I18n::loadTables() {
     add("opt_fmm_section", "FMMパラメータ", "FMM parameters");
     add("opt_fmm_harmonics", "ハーモニクス数", "Harmonics");
     add("opt_fmm_li", "Liの因数化規則", "Li's factorization rules");
+    add("opt_fmm_kernel_hint",
+        "FMM (フーリエモード法) は RCWA と同一手法の別名で、OpenRCWA "
+        "(orcwa) カーネルで実行されます。周期・層構成は RCWA の設定を"
+        "共用し、調和次数のみ本ページの値を使用します。",
+        "FMM (Fourier Modal Method) is another name for RCWA and runs on "
+        "the OpenRCWA (orcwa) kernel. Period and layer stack are shared "
+        "with the RCWA settings; only the harmonics count comes from this "
+        "page.");
+    add("opt_fmm_li_tip",
+        "orcwa カーネルに対応する入力キーが無いため、この切替は現在"
+        "効きません (カーネルの実装に従います)。",
+        "Currently has no effect: the orcwa kernel has no matching input "
+        "key (the kernel's own implementation applies).");
     add("opt_bpf_section", "BPF目標仕様", "BPF target spec");
     add("opt_band", "通過帯域 [nm]", "Passband [nm]");
     add("opt_q", "Q値", "Q factor");
@@ -445,6 +458,13 @@ void I18n::loadTables() {
     add("run_post_only", "ポストのみ", "Post only");
     add("run_both", "一括 (計算+ポスト)", "Solver + post");
 
+    add("run_rcwa_stack_err",
+        "RCWA / FMM の層スタックが空または不正なため実行できません。\n"
+        "光タブの「層構成 (入射側 → 透過側)」で 2 層以上の有効な層を"
+        "定義してください (orcwa カーネルへの入力が生成できません)。",
+        "Cannot run: the RCWA / FMM layer stack is empty or invalid.\n"
+        "Define at least two valid layers under \"Layer stack\" on the "
+        "Optical tab (no orcwa kernel input can be generated).");
     add("sb_ready", "準備完了", "Ready");
     add("sb_running", "実行中…", "Running…");
     add("sb_failed", "失敗", "Failed");

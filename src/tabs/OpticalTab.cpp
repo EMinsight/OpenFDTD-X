@@ -405,12 +405,22 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
 
         m_solverStack->addWidget(page);
     }
-    // [3] FMM
+    // [3] FMM — Fourier Modal Method は RCWA と同一手法の別名で、
+    // 実行カーネルも OpenRCWA (orcwa) を共用する (Runner::kernelForProject)。
+    // 周期・層スタックは RCWA ページの設定を共用し、調和次数だけ本ページの
+    // 値 (fmmHarmonics) を使う。
     {
         auto *page = new SectionBox(I18n::tr("opt_fmm_section"), m_solverStack);
+        auto *hint = new QLabel(I18n::tr("opt_fmm_kernel_hint"), page);
+        hint->setWordWrap(true);
+        page->vbox()->addWidget(hint);
         m_fmmHarmonics = new QSpinBox(page);
         m_fmmHarmonics->setRange(1, 201);
         m_fmmLi = new QCheckBox(page);
+        // Li 規則は orcwa 側に対応する入力キーが無い (カーネルの実装に従う)
+        // ため、切替が効かないことを明示する (絶対規則 5: 未実装を動作済みと
+        // 表示しない)。
+        m_fmmLi->setToolTip(I18n::tr("opt_fmm_li_tip"));
         page->form()->addRow(I18n::tr("opt_fmm_harmonics"), m_fmmHarmonics);
         page->form()->addRow(I18n::tr("opt_fmm_li"), m_fmmLi);
         m_solverStack->addWidget(page);
