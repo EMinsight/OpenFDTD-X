@@ -135,6 +135,18 @@ struct AbsorptionRow {
     double  airA = 0;                            // Air 行: 吸音力 A [Sabin] 直接指定
 };
 
+// 騒音源内訳の1行 (room-acoustics.jsx の騒音源テーブル)。
+// 寄与レベルは A 特性 [dB(A)]、対策は自由記述 ("—" = 対策なし)。
+struct NoiseSourceRow {
+    bool    enabled = true;
+    QString name;
+    double  level_dBA = 0;
+    QString measure;
+};
+
+// 新規プロジェクト / .ofdx 欠落時の既定 4 行 (mock room-acoustics.jsx:697-709)。
+QVector<NoiseSourceRow> defaultNoiseSources();
+
 struct AcousticOpts {
     bool    rt60 = true, c80 = true, d50 = false, sti = false, edt = false;
     bool    impulseResponse = true;
@@ -149,9 +161,11 @@ struct AcousticOpts {
     double  volume = 12000.0;       // 室容積 V [m³] (寸法と独立に編集可)
     double  surface = 3800.0;       // 総表面積 S [m²]
     int     occupancy = 2;          // 0=空席, 1=半分, 2=満席 (客席行のα係数)
-    int     rtFormula = 1;          // 0=Sabine, 1=Eyring
+    int     rtFormula = 1;          // 0=Sabine, 1=Eyring, 2=Fitzroy (非均一)
     QVector<AbsorptionRow> absorption;   // 吸音バジェット
     double  noiseLevels[7] = { 42, 38, 33, 28, 24, 21, 18 };  // 63..4kHz [dB]
+    // 騒音源内訳 (.ofdx "acoustic.noise_sources" — 追加キー。欠落時は既定4行)
+    QVector<NoiseSourceRow> noiseSources = defaultNoiseSources();
 };
 
 // ── 実測 RIR 分析 (RirAnalysisTab, .ofdx "acoustic/opera_analysis") ─────────

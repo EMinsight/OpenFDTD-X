@@ -621,6 +621,13 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         }
         QJsonArray noise;
         for (double v : a.noiseLevels) noise.append(v);
+        // 騒音源内訳 (mock room-acoustics.jsx 騒音源テーブル) — 追加キーのみ。
+        // 既存キーの改名・削除・型変更は後方互換のため禁止。
+        QJsonArray noiseSrc;
+        for (const NoiseSourceRow &r : a.noiseSources)
+            noiseSrc.append(QJsonObject{
+                {"enabled", r.enabled}, {"name", r.name},
+                {"level_dba", r.level_dBA}, {"measure", r.measure} });
         QJsonObject ac{
             {"rt60", a.rt60}, {"c80", a.c80}, {"d50", a.d50},
             {"sti", a.sti}, {"edt", a.edt},
@@ -633,7 +640,8 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"room_l", a.roomL}, {"room_w", a.roomW}, {"room_h", a.roomH},
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
-            {"absorption", budget}, {"noise_levels", noise} };
+            {"absorption", budget}, {"noise_levels", noise},
+            {"noise_sources", noiseSrc} };
         // 実測 RIR 分析 (RirAnalysisTab, 指示書 §15) — 追加キーのみ。
         // 既存キーの改名・削除・型変更は後方互換のため禁止。
         const OperaAcousticSettings &oa = p.operaAcoustic();
@@ -814,6 +822,19 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             const QJsonArray noise = ac["noise_levels"].toArray();
             for (int i = 0; i < 7 && i < noise.size(); ++i)
                 a.noiseLevels[i] = noise[i].toDouble();
+        }
+        // 騒音源内訳 — キー欠落時は既定 4 行のまま (旧ファイル互換)
+        if (ac.contains("noise_sources")) {
+            a.noiseSources.clear();
+            for (const QJsonValue &v : ac["noise_sources"].toArray()) {
+                const QJsonObject o = v.toObject();
+                NoiseSourceRow r;
+                r.enabled = o.value("enabled").toBool(true);
+                r.name = o.value("name").toString();
+                r.level_dBA = o.value("level_dba").toDouble();
+                r.measure = o.value("measure").toString();
+                a.noiseSources.push_back(r);
+            }
         }
         // 実測 RIR 分析設定 — 欠落キーは既定値のまま (旧ファイル互換)
         if (ac.contains("opera_analysis")) {

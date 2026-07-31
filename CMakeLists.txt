@@ -440,6 +440,17 @@ if(BUILD_TESTS)
     add_test(NAME acoustics.runner COMMAND ofdx_test_acoustic_runner
         $<TARGET_FILE:ofdx_mock_acoustic_solver>)
 
+    # Fitzroy 残響式 (core/RoomAcoustics, rtFormula=2) の数値検証。
+    # GUI コア (Qt 型を使う) のため ofdx_gui にリンクする (QApplication 不要)。
+    qt_add_executable(ofdx_test_fitzroy tests/test_fitzroy.cpp)
+    target_include_directories(ofdx_test_fitzroy PRIVATE src)
+    target_link_libraries(ofdx_test_fitzroy PRIVATE ofdx_gui)
+    set_target_properties(ofdx_test_fitzroy PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE    OFF
+    )
+    add_test(NAME roomac.fitzroy COMMAND ofdx_test_fitzroy)
+
     # 人工 RIR 生成 CLI (wav はコミットせず実行時に生成する)
     add_executable(ofdx_generate_synthetic_rir
         tests/generators/generate_synthetic_rir.cpp)

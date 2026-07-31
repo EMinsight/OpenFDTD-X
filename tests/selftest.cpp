@@ -351,6 +351,114 @@ static void testRoomAcoustics()
         check(!qa.absorption.isEmpty() && qa.absorption[0].area == 777,
               "ofdx absorption round-trip");
     }
+
+    // Fitzroy (rtFormula=2): 既知値 (10m 立方体) — 詳細は ctest roomac.fitzroy
+    {
+        AcousticOpts f;
+        f.volume = 1000;
+        f.surface = 600;
+        auto faceRow = [](int role, double area, double alpha) {
+            AbsorptionRow r;
+            r.role = role;
+            r.area = area;
+            for (double &al : r.alpha) al = alpha;
+            return r;
+        };
+        f.absorption = {
+            faceRow(AbsorptionRow::Floor,    100, 0.8),
+            faceRow(AbsorptionRow::Ceiling,  100, 0.8),
+            faceRow(AbsorptionRow::SideWall, 200, 0.1),
+            faceRow(AbsorptionRow::RearWall, 200, 0.1) };
+        check(std::fabs(rt60(f, 3, 2) - 1.7534) < 1e-3,
+              "Fitzroy cube expected 1.7534 s");
+        // 旧 0/1 の挙動は不変
+        check(std::fabs(rt60(f, 3, 0) - 0.161 * 1000 / 200) < 1e-9,
+              "Sabine unchanged with Fitzroy present");
+        check(rt60(f, 3, 2) > rt60(f, 3, 1),
+              "Fitzroy > Eyring for non-uniform absorption");
+    }
+
+    // 騒音源内訳: 既定 4 行 (mock room-acoustics.jsx:697-709)
+    {
+        const AcousticOpts d;
+        check(d.noiseSources.size() == 4, "noise sources: default 4 rows");
+        if (d.noiseSources.size() == 4) {
+            check(d.noiseSources[0].enabled &&
+                  d.noiseSources[0].name == QString::fromUtf8("空調吹出口") &&
+                  d.noiseSources[0].level_dBA == 28 &&
+                  d.noiseSources[0].measure == QString::fromUtf8("消音器追加"),
+                  "noise sources: row 1 defaults");
+            check(d.noiseSources[1].enabled &&
+                  d.noiseSources[1].name == QString::fromUtf8("ダクト気流音") &&
+                  d.noiseSources[1].level_dBA == 24,
+                  "noise sources: row 2 defaults");
+            check(!d.noiseSources[2].enabled &&
+                  d.noiseSources[2].level_dBA == 19 &&
+                  !d.noiseSources[3].enabled &&
+                  d.noiseSources[3].level_dBA == 15,
+                  "noise sources: rows 3/4 unchecked");
+        }
+    }
+
+    // 騒音源内訳: .ofdx ラウンドトリップ + 既存キー保全
+    {
+        Project ps;
+        auto &ns = ps.acoustic().noiseSources;
+        ns.clear();
+        NoiseSourceRow r;
+        r.enabled = false;
+        r.name = QString::fromUtf8("換気ファン");
+        r.level_dBA = 31.5;
+        r.measure = QString::fromUtf8("防振ゴム");
+        ns.push_back(r);
+        ps.acoustic().rtFormula = 2;   // Fitzroy も往復する
+
+        QTemporaryFile f2;
+        f2.setFileTemplate(QDir::tempPath() + "/ofdx_ns_XXXXXX.ofdx");
+        if (f2.open()) {
+            check(OfdxIO::save(f2.fileName(), ps), "noise sources ofdx save");
+            Project pl;
+            check(OfdxIO::load(f2.fileName(), pl), "noise sources ofdx load");
+            const auto &qs = pl.acoustic().noiseSources;
+            check(qs.size() == 1, "noise sources count round-trip");
+            if (qs.size() == 1)
+                check(!qs[0].enabled &&
+                      qs[0].name == QString::fromUtf8("換気ファン") &&
+                      nearlyEq(qs[0].level_dBA, 31.5) &&
+                      qs[0].measure == QString::fromUtf8("防振ゴム"),
+                      "noise sources row round-trip");
+            check(pl.acoustic().rtFormula == 2, "rt_formula=2 round-trip");
+
+            QFile jf(f2.fileName());
+            check(jf.open(QIODevice::ReadOnly), "noise sources ofdx reopen");
+            const QJsonObject ac = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("acoustic").toObject();
+            check(ac.contains("noise_levels") && ac.contains("absorption") &&
+                  ac.contains("rt_formula"),
+                  "noise sources json keeps existing acoustic keys");
+            check(ac.value("noise_sources").toArray().size() == 1,
+                  "noise sources json key");
+        }
+    }
+
+    // 旧 .ofdx (noise_sources 無し): 既定 4 行のまま (旧ファイル互換)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_ns_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"room_l\": 25.5, \"rt_formula\": 1 } }";
+            old.write(legacy);
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3), "legacy ns ofdx load");
+            const auto &qs = p3.acoustic().noiseSources;
+            check(qs.size() == 4 &&
+                  qs[0].name == QString::fromUtf8("空調吹出口"),
+                  "legacy ofdx keeps default noise sources");
+        }
+    }
 }
 
 // 実測 RIR 分析設定 (OperaAcousticSettings) の既定値と .ofdx 永続化。

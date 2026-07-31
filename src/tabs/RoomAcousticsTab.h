@@ -60,6 +60,7 @@ private slots:
     void refresh();          // model → widgets
     void recomputeAll();     // 派生値 (RT/エコーグラム/NC/障害) を再計算
     void exportReport();
+    void resimulateImproved();   // 改善後の試算 (モデルは不変)
 
 private:
     QWidget *buildHallPresetSection();
@@ -75,6 +76,8 @@ private:
     QWidget *buildDefectsPage();
     void applyBudgetTable();
     void refreshBudgetDerived();
+    void applyNoiseSources();     // 騒音源内訳: widgets → model
+    void refreshNoiseSources();   // 騒音源内訳: model → widgets
     void applyHallPreset();      // プリセットの V を AcousticOpts へ反映
     void refreshHallDerived();   // プリセット由来の派生表示を更新
     void receiverPos(int index, double out[3]) const;
@@ -128,10 +131,12 @@ private:
     QTableWidget *m_noise;
     MiniPlot  *m_ncPlot;
     QLabel    *m_ncBadge;
+    QTableWidget *m_noiseSrc;    // 騒音源内訳 (編集可)
 
     // defects
     QTableWidget *m_defects;
     QLabel    *m_recommend;
+    QLabel    *m_resimResult;    // 改善後試算の結果表示
 };
 
 } // namespace ofd

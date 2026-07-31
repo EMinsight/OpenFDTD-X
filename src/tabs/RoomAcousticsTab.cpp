@@ -345,6 +345,35 @@ const bool s_i18n = [] {
     I18n::reg("rah_spl_badge", "SPL 94±2.5 dB", "SPL 94±2.5 dB");
     I18n::reg("rah_gbf_badge", "GBF = 6.2 dB", "GBF = 6.2 dB");
     I18n::reg("rah_mic_default", "0, 1.2, 7.5 (演台)", "0, 1.2, 7.5 (lectern)");
+    // 残響式 (Fitzroy)
+    I18n::reg("rah_fitzroy", "Fitzroy (非均一)", "Fitzroy (non-uniform)");
+    // 騒音源内訳
+    I18n::reg("rah_ns_section", "騒音源内訳", "Noise source breakdown");
+    I18n::reg("rah_ns_hint",
+              "暗騒音を構成する騒音源ごとの寄与と対策。チェックを外した行は"
+              "対策済み・対象外として扱う。",
+              "Per-source contribution to the background noise and its "
+              "countermeasure. Unchecked rows are treated as resolved or out "
+              "of scope.");
+    I18n::reg("rah_ns_col_source", "音源名", "Source");
+    I18n::reg("rah_ns_col_level", "寄与 dB(A)", "Contribution dB(A)");
+    I18n::reg("rah_ns_col_measure", "対策", "Countermeasure");
+    I18n::reg("rah_ns_add", "＋ 行追加", "＋ Add row");
+    I18n::reg("rah_ns_del", "− 行削除", "− Delete row");
+    I18n::reg("rah_ns_new", "新規騒音源", "New noise source");
+    // 音響障害診断: 改善後の再シミュレーション (試算)
+    I18n::reg("rah_resim", "▶ 改善後を再シミュレーション",
+              "▶ Re-simulate after improvements");
+    I18n::reg("rah_resim_hint",
+              "提案をすべて適用した場合の試算 (フラッター対象面 α≥0.30 / "
+              "エコー対象面 α≥0.40 に引き上げ)。モデルは変更しません。",
+              "Estimate with all proposals applied (raises flutter faces to "
+              "α≥0.30 and echo faces to α≥0.40). The model is not modified.");
+    I18n::reg("rah_resim_result",
+              "提案をすべて適用した場合の試算: RT60(mid) %1 s → %2 s ・ "
+              "A@1k %3 Sabin → %4 Sabin ・ 検出障害 %5 件 → %6 件",
+              "Estimate with all proposals applied: RT60(mid) %1 s → %2 s · "
+              "A@1k %3 Sabin → %4 Sabin · defects %5 → %6");
     return true;
 }();
 
@@ -1079,7 +1108,8 @@ QWidget *RoomAcousticsTab::buildReverbPage()
     m_occupancy->addItems({ I18n::tr("ra_occ_empty"), I18n::tr("ra_occ_half"),
                             I18n::tr("ra_occ_full") });
     m_formula = new QComboBox(s);
-    m_formula->addItems({ "Sabine", I18n::tr("ra_eyring") });
+    m_formula->addItems({ "Sabine", I18n::tr("ra_eyring"),
+                          I18n::tr("rah_fitzroy") });
     s->form()->addRow(I18n::tr("ra_occupancy"), m_occupancy);
     s->form()->addRow(I18n::tr("ra_formula"), m_formula);
     v->addWidget(s);
@@ -1495,6 +1525,28 @@ QWidget *RoomAcousticsTab::buildNoisePage()
     guide->setWordWrap(true);
     sp->vbox()->addWidget(guide);
     v->addWidget(sp);
+
+    // ── 騒音源内訳 (mock room-acoustics.jsx:697-709) — 編集可テーブル ──
+    auto *sn = new SectionBox(I18n::tr("rah_ns_section"), page);
+    sn->vbox()->addWidget(makeHint(I18n::tr("rah_ns_hint"), sn));
+    m_noiseSrc = new QTableWidget(0, 4, sn);
+    m_noiseSrc->setHorizontalHeaderLabels({
+        "", I18n::tr("rah_ns_col_source"), I18n::tr("rah_ns_col_level"),
+        I18n::tr("rah_ns_col_measure") });
+    m_noiseSrc->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::ResizeToContents);
+    m_noiseSrc->horizontalHeader()->setStretchLastSection(true);
+    m_noiseSrc->verticalHeader()->setVisible(false);
+    m_noiseSrc->setMinimumHeight(150);
+    sn->vbox()->addWidget(m_noiseSrc);
+    auto *nsBtns = new QHBoxLayout();
+    auto *nsAdd = new QPushButton(I18n::tr("rah_ns_add"), sn);
+    auto *nsDel = new QPushButton(I18n::tr("rah_ns_del"), sn);
+    nsBtns->addWidget(nsAdd);
+    nsBtns->addWidget(nsDel);
+    nsBtns->addStretch(1);
+    sn->vbox()->addLayout(nsBtns);
+    v->addWidget(sn);
     v->addStretch(1);
 
     connect(m_noise, &QTableWidget::cellChanged, this, [this] {
@@ -1505,6 +1557,28 @@ QWidget *RoomAcousticsTab::buildNoisePage()
                 a.noiseLevels[b] = it->text().toDouble();
         recomputeAll();
         m_p->touch();
+    });
+    connect(m_noiseSrc, &QTableWidget::cellChanged, this, [this] {
+        if (m_updating) return;
+        applyNoiseSources();
+        m_p->touch();
+    });
+    connect(nsAdd, &QPushButton::clicked, this, [this] {
+        NoiseSourceRow r;
+        r.name = I18n::tr("rah_ns_new");
+        r.measure = QString::fromUtf8("—");
+        m_p->acoustic().noiseSources.push_back(r);
+        refreshNoiseSources();
+        m_p->touch();
+    });
+    connect(nsDel, &QPushButton::clicked, this, [this] {
+        const int r = m_noiseSrc->currentRow();
+        auto &rows = m_p->acoustic().noiseSources;
+        if (r >= 0 && r < rows.size()) {
+            rows.removeAt(r);
+            refreshNoiseSources();
+            m_p->touch();
+        }
     });
     return page;
 }
@@ -1535,9 +1609,118 @@ QWidget *RoomAcousticsTab::buildDefectsPage()
     m_recommend->setWordWrap(true);
     m_recommend->setTextFormat(Qt::RichText);
     sr->vbox()->addWidget(m_recommend);
+
+    // ── 改善後の再シミュレーション (mock room-acoustics.jsx:735) ──
+    // 検出障害の対象面 α をフラッター ≥0.30 / エコー ≥0.40 に引き上げた
+    // コピーで試算する。モデル (AcousticOpts) は書き換えない。
+    auto *resimRow = new QHBoxLayout();
+    auto *resimBtn = new QPushButton(I18n::tr("rah_resim"), sr);
+    resimBtn->setStyleSheet("font-weight:600;");
+    resimRow->addWidget(resimBtn);
+    resimRow->addWidget(makeHint(I18n::tr("rah_resim_hint"), sr), 1);
+    sr->vbox()->addLayout(resimRow);
+    m_resimResult = new QLabel(sr);
+    m_resimResult->setWordWrap(true);
+    m_resimResult->setStyleSheet("font-weight:600;");
+    m_resimResult->setVisible(false);
+    sr->vbox()->addWidget(m_resimResult);
     v->addWidget(sr);
     v->addStretch(1);
+
+    connect(resimBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::resimulateImproved);
     return page;
+}
+
+// 騒音源内訳: widgets → model (先頭列チェック / 名前 / dB(A) / 対策)
+void RoomAcousticsTab::applyNoiseSources()
+{
+    auto &rows = m_p->acoustic().noiseSources;
+    for (int r = 0; r < m_noiseSrc->rowCount() && r < rows.size(); ++r) {
+        NoiseSourceRow &row = rows[r];
+        if (auto *en = m_noiseSrc->item(r, 0))
+            row.enabled = en->checkState() == Qt::Checked;
+        if (auto *nm = m_noiseSrc->item(r, 1))
+            row.name = nm->text();
+        if (auto *lv = m_noiseSrc->item(r, 2))
+            row.level_dBA = lv->text().toDouble();
+        if (auto *ms = m_noiseSrc->item(r, 3))
+            row.measure = ms->text();
+    }
+}
+
+// 騒音源内訳: model → widgets (行追加/削除・refresh 共用)
+void RoomAcousticsTab::refreshNoiseSources()
+{
+    m_updating = true;
+    const auto &rows = m_p->acoustic().noiseSources;
+    m_noiseSrc->setRowCount(rows.size());
+    for (int r = 0; r < rows.size(); ++r) {
+        const NoiseSourceRow &row = rows[r];
+        m_noiseSrc->setItem(r, 0, checkItem(row.enabled));
+        m_noiseSrc->setItem(r, 1, new QTableWidgetItem(row.name));
+        m_noiseSrc->setItem(r, 2, numItem(
+            QString::number(row.level_dBA, 'f', 0)));
+        m_noiseSrc->setItem(r, 3, new QTableWidgetItem(row.measure));
+    }
+    m_updating = false;
+}
+
+// 改善後の再シミュレーション — 検出障害の対象面 α を引き上げた試算。
+// フラッターエコー: 対向面ペアの両面を α≥0.30 へ、
+// ロングディレイエコー: 反射面を α≥0.40 へ (全帯域)。モデルは不変。
+void RoomAcousticsTab::resimulateImproved()
+{
+    const AcousticOpts &a0 = m_p->acoustic();
+    double src[3], rcv[3];
+    sourcePos(src);
+    receiverPos(m_rcvBox->currentIndex(), rcv);
+    const QVector<Defect> before = detectDefects(a0, src, rcv);
+
+    AcousticOpts trial = a0;   // コピーで試算 (モデルは書き換えない)
+    auto raiseRole = [&trial](int role, double target) {
+        for (AbsorptionRow &r : trial.absorption)
+            if (r.enabled && r.role == role)
+                for (double &al : r.alpha)
+                    al = std::max(al, target);
+    };
+    const QString kFloor = QString::fromUtf8("床");
+    const QString kCeil  = QString::fromUtf8("天井");
+    const QString kSide  = QString::fromUtf8("側壁");
+    const QString kRear  = QString::fromUtf8("後壁");
+    for (const Defect &d : before) {
+        if (d.name.contains(QString::fromUtf8("フラッター"))) {
+            // place: 側壁L-R間 / 床-天井間 / 舞台-後壁間 (detectDefects)
+            if (d.place.contains(kSide)) {
+                raiseRole(AbsorptionRow::SideWall, 0.30);
+            } else if (d.place.contains(kFloor)) {
+                raiseRole(AbsorptionRow::Floor, 0.30);
+                raiseRole(AbsorptionRow::Ceiling, 0.30);
+            } else {
+                raiseRole(AbsorptionRow::SideWall, 0.30);
+                raiseRole(AbsorptionRow::RearWall, 0.30);
+            }
+        } else {
+            // place: 反射面名 (床/天井/側壁L/側壁R/舞台側/後壁)
+            if (d.place.contains(kFloor))     raiseRole(AbsorptionRow::Floor, 0.40);
+            else if (d.place.contains(kCeil)) raiseRole(AbsorptionRow::Ceiling, 0.40);
+            else if (d.place.contains(kRear)) raiseRole(AbsorptionRow::RearWall, 0.40);
+            else                              raiseRole(AbsorptionRow::SideWall, 0.40);
+        }
+    }
+    const QVector<Defect> after = detectDefects(trial, src, rcv);
+
+    auto rtMid = [](const AcousticOpts &x) {
+        return (rt60(x, 2) + rt60(x, 3)) / 2.0;
+    };
+    m_resimResult->setText(I18n::tr("rah_resim_result")
+        .arg(QString::number(rtMid(a0), 'f', 2),
+             QString::number(rtMid(trial), 'f', 2),
+             QString::number(totalAbsorption(a0, 3), 'f', 0),
+             QString::number(totalAbsorption(trial, 3), 'f', 0),
+             QString::number(before.size()),
+             QString::number(after.size())));
+    m_resimResult->setVisible(true);
 }
 
 // ── model → widgets ─────────────────────────────────────────────────────────
@@ -1552,7 +1735,7 @@ void RoomAcousticsTab::refresh()
     m_volume->setValue(a.volume);
     m_surface->setValue(a.surface);
     m_occupancy->setCurrentIndex(qBound(0, a.occupancy, 2));
-    m_formula->setCurrentIndex(qBound(0, a.rtFormula, 1));
+    m_formula->setCurrentIndex(qBound(0, a.rtFormula, 2));
 
     // 吸音バジェット表
     m_budget->setRowCount(a.absorption.size());
@@ -1595,6 +1778,7 @@ void RoomAcousticsTab::refresh()
             QString::number(a.noiseLevels[b], 'f', 0)));
 
     m_updating = false;
+    refreshNoiseSources();
     refreshHallDerived();
     recomputeAll();
 }

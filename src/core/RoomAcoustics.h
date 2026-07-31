@@ -30,7 +30,11 @@ double occupancyFactor(int occupancy);
 double totalAbsorption(const AcousticOpts &a, int band);
 
 // 残響時間 [s]。formula: 0=Sabine RT=0.161V/A,
-// 1=Eyring RT=0.161V/(−S·ln(1−ᾱ)+A_air) — A_air は Air 行の吸音力。
+// 1=Eyring RT=0.161V/(−S·ln(1−ᾱ)+A_air) — A_air は Air 行の吸音力,
+// 2=Fitzroy T=0.161·V/S²·Σ Sᵢ/(−ln(1−ᾱᵢ)) — 非均一吸音の直交3方向和
+//   (D. Fitzroy, JASA 31(7), 893-897, 1959)。方向割当は x=舞台/後壁,
+//   y=側壁, z=床/天井/客席。方向情報のある行が無ければ Eyring へ
+//   フォールバック。
 double rt60(const AcousticOpts &a, int band, int formula);
 double rt60(const AcousticOpts &a, int band);   // a.rtFormula を使用
 

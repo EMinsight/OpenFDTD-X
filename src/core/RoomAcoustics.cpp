@@ -52,11 +52,70 @@ double rt60(const AcousticOpts &a, int band, int formula)
     if (formula == 0)                      // Sabine
         return 0.161 * V / A;
 
-    // Eyring: 面吸音は −S·ln(1−ᾱ)、空気吸収 (Air 行) は加算のまま
+    // 空気吸収 (Air 行) — Eyring / Fitzroy とも分母へ加算する
     double airA = 0;
     for (const AbsorptionRow &r : a.absorption)
         if (r.enabled && r.role == AbsorptionRow::Air)
             airA += r.airA * kAirRatio[band];
+
+    if (formula == 2) {
+        // ── Fitzroy (非均一吸音) ────────────────────────────────────────────
+        // D. Fitzroy, "Reverberation Formula Which Seems to Be More Accurate
+        // with Nonuniform Distribution of Absorption," J. Acoust. Soc. Am.
+        // 31(7), 893-897 (1959).
+        //   T = 0.161·V/S² · Σᵢ Sᵢ/(−ln(1−ᾱᵢ))   (i = 直交3方向)
+        // 実装形 (空気吸収を各方向の分母へ加算):
+        //   T = Σᵢ (Sᵢ/S) · 0.161·V/(−S·ln(1−ᾱᵢ) + A_air)
+        // 方向割当: x = 舞台/後壁 (RearWall), y = 側壁 (SideWall),
+        //           z = 床/天井/客席 (Floor/Ceiling/Audience,
+        //               客席は occupancy 係数適用)。
+        // Other 行は方向面積比で3方向へ配分。方向情報のある行が無ければ
+        // Eyring へフォールバックする。
+        double Sdir[3] = { 0, 0, 0 };   // 方向別の面積
+        double Adir[3] = { 0, 0, 0 };   // 方向別の吸音力 Σα·S
+        double otherS = 0, otherA = 0;  // 方向情報なし (Other) の行
+        for (const AbsorptionRow &r : a.absorption) {
+            if (!r.enabled || r.role == AbsorptionRow::Air) continue;
+            double alpha = qBound(0.0, r.alpha[band], 1.0);
+            int dir = -1;
+            switch (r.role) {
+                case AbsorptionRow::RearWall: dir = 0; break;   // x
+                case AbsorptionRow::SideWall: dir = 1; break;   // y
+                case AbsorptionRow::Floor:
+                case AbsorptionRow::Ceiling:  dir = 2; break;   // z
+                case AbsorptionRow::Audience:                   // z (客席)
+                    dir = 2;
+                    alpha = qBound(0.0, alpha * occupancyFactor(a.occupancy),
+                                   1.0);
+                    break;
+                default: break;                                 // Other
+            }
+            if (dir >= 0) {
+                Sdir[dir] += r.area;
+                Adir[dir] += alpha * r.area;
+            } else {
+                otherS += r.area;
+                otherA += alpha * r.area;
+            }
+        }
+        const double dirTotal = Sdir[0] + Sdir[1] + Sdir[2];
+        if (dirTotal <= 0)
+            return rt60(a, band, 1);   // 方向情報なし → Eyring フォールバック
+        double T = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (Sdir[i] <= 0) continue;
+            const double w = Sdir[i] / dirTotal;   // Other 行の面積比配分
+            const double Si = Sdir[i] + otherS * w;
+            const double Ai = Adir[i] + otherA * w;
+            const double abarI = qBound(0.0, Ai / Si, 0.999);
+            const double denomI = -S * std::log(1.0 - abarI) + airA;
+            if (denomI > 0)
+                T += (Si / S) * 0.161 * V / denomI;
+        }
+        return T;
+    }
+
+    // Eyring: 面吸音は −S·ln(1−ᾱ)、空気吸収 (Air 行) は加算のまま
     const double surfA = std::max(0.0, A - airA);
     const double abar = qBound(0.0, surfA / S, 0.999);
     const double denom = -S * std::log(1.0 - abar) + airA;

@@ -36,6 +36,26 @@ bool ofd::isValidRcwaStack(const QVector<RcwaLayer> &layers)
     return true;
 }
 
+// ── 室内音響: 騒音源内訳の既定 4 行 (mock room-acoustics.jsx:697-709) ────────
+// 後ろ 2 行 (外部交通騒音 / 照明トランス) は既定でチェック外し。
+QVector<NoiseSourceRow> ofd::defaultNoiseSources()
+{
+    auto row = [](bool on, const char *name, double dBA, const char *measure) {
+        NoiseSourceRow r;
+        r.enabled = on;
+        r.name = QString::fromUtf8(name);
+        r.level_dBA = dBA;
+        r.measure = QString::fromUtf8(measure);
+        return r;
+    };
+    return {
+        row(true,  "空調吹出口",   28, "消音器追加"),
+        row(true,  "ダクト気流音", 24, "風速低減"),
+        row(false, "外部交通騒音", 19, "外皮遮音"),
+        row(false, "照明トランス", 15, "—"),
+    };
+}
+
 Project::Project(QObject *parent) : QObject(parent)
 {
     clear();
@@ -80,6 +100,9 @@ void Project::clear()
                { 0.20, 0.22, 0.24, 0.25, 0.26, 0.28 }),
         absRow(AbsorptionRow::Floor,    "床(板)", 420,
                { 0.15, 0.12, 0.10, 0.10, 0.08, 0.07 }),
+        // オルガン・反響板 (方向情報なしの Other 行 — Fitzroy では面積比配分)
+        absRow(AbsorptionRow::Other,    "オルガン・反響板", 150,
+               { 0.12, 0.12, 0.14, 0.15, 0.16, 0.18 }),
         absRow(AbsorptionRow::Air,      "空気吸収", 0,
                { 0, 0, 0, 0, 0, 0 }, 38),
     };
