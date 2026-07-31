@@ -10,6 +10,7 @@
 // (io/Voxelizer) の結果だけを表示に反映する。
 #pragma once
 #include <QScrollArea>
+#include "../core/Geometry.h"
 #include "../io/StlImporter.h"
 
 class QButtonGroup;
@@ -19,6 +20,7 @@ class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QTableWidget;
 class QTreeWidget;
@@ -41,6 +43,11 @@ private slots:
 
 private:
     void applyTable();
+
+    // ── ユニット編集 (mock tabs.jsx:409-494) ────────────────────────────────
+    QWidget *buildTransformSection();
+    int  currentUnit() const;             // 選択中ユニット (-1 = 無し)
+    void insertUnitAfterCurrent(const Geometry &g);   // 挿入/複製の共通処理
 
     // ── モックの CAD パイプライン節 (tabs.jsx GeometryTab) ──────────────────
     void     addCadImportRows(SectionBox *s);   // 3Dモデル取込 の形式・ファイル行
@@ -65,6 +72,16 @@ private:
     QTableWidget *m_table;
     UnitNav      *m_nav;
     QLabel       *m_importInfo;
+
+    // ユニット編集 (平行移動/回転スライダー + 挿入/複製/ミラー)
+    QSlider   *m_trSlider[3] = { nullptr, nullptr, nullptr };
+    QSlider   *m_rotSlider[3] = { nullptr, nullptr, nullptr };
+    QLabel    *m_trValue[3] = { nullptr, nullptr, nullptr };
+    QLabel    *m_rotValue[3] = { nullptr, nullptr, nullptr };
+    QComboBox *m_mirrorAxis = nullptr;
+    QLabel    *m_xformWarn = nullptr;
+    Geometry   m_dragBase;        // ドラッグ開始時のユニット (基準)
+    int        m_dragUnit = -1;   // ドラッグ対象 (-1 = ドラッグ中でない)
     QSpinBox     *m_voxMat = nullptr;     // material id assigned to voxels
     QPushButton  *m_voxBtn = nullptr;
     ImportedMesh  m_lastMesh;             // most recently imported STL

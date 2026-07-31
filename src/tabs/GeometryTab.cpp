@@ -21,10 +21,13 @@
 #include <QLineEdit>
 #include <QLocale>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 
 using namespace ofd;
@@ -314,6 +317,29 @@ const Tr kTr[] = {
     { "geoc_col_ratio", "比率", "Ratio" },
     { "geoc_col_dcells", "セル増", "ΔCells" },
     { "geoc_rr2_range", "球φ2mm @ origin", "sphere ⌀2 mm @ origin" },
+
+    // ── ユニット編集 / Unit transform (tabs.jsx:409-494) ────────────────────
+    { "geoc_xf_section", "ユニット編集 / Unit transform", "Unit transform" },
+    { "geoc_xf_hint",
+      "スライダーはドラッグ中の増分を選択ユニットへ適用し、離すと 0 に戻る "
+      "(変更は確定)。回転: 6パラメータ形状は AABB 近似 (90°倍数で厳密)、"
+      "三角柱は自軸厳密、角錐台/円錐台は自軸のみ。",
+      "Sliders apply a drag-relative delta to the selected unit and snap back "
+      "to 0 on release (the change is kept). Rotation: 6-parameter shapes use "
+      "an AABB approximation (exact at multiples of 90°); triangular prisms "
+      "are exact about their own axis; pyramid/cone frusta support their own "
+      "axis only." },
+    { "geoc_xf_translate", "平行移動 %1 (±30 mm)", "Translate %1 (±30 mm)" },
+    { "geoc_xf_rotate", "回転 %1 (±180°)", "Rotate %1 (±180°)" },
+    { "geoc_xf_insert", "挿入", "Insert" },
+    { "geoc_xf_dup", "複製", "Duplicate" },
+    { "geoc_xf_mirror", "ミラー", "Mirror" },
+    { "geoc_xf_mirror_axis", "軸", "Axis" },
+    { "geoc_xf_no_unit", "⚠ ユニットが選択されていません",
+      "⚠ No unit selected" },
+    { "geoc_xf_rot_unsupported",
+      "⚠ この形状は %1 軸回転に未対応 (三角柱/角錐台/円錐台は自軸のみ)",
+      "⚠ This shape cannot rotate about %1 (prisms/frusta: own axis only)" },
 };
 
 const bool s_i18n = [] {
@@ -484,6 +510,102 @@ double meshVolume(const ImportedMesh &m)
     return std::fabs(vol);
 }
 
+// ── ユニット編集の座標変換 (Geometry::coordIndices = sol/ingeometry.c 準拠) ──
+
+// 軸 axis 方向へ d [m] 平行移動 (全形状で厳密)
+void translateGeometry(ofd::Geometry &g, int axis, double d)
+{
+    int idx[3];
+    const int n = ofd::Geometry::coordIndices(g.shape, axis, idx);
+    for (int i = 0; i < n; ++i) g.g[idx[i]] += d;
+}
+
+// ユニットの AABB 中心 (回転の基準点)
+void bboxCenter(const ofd::Geometry &g, double c[3])
+{
+    for (int a = 0; a < 3; ++a) {
+        int idx[3];
+        const int n = ofd::Geometry::coordIndices(g.shape, a, idx);
+        if (n == 0) { c[a] = 0; continue; }
+        double lo = g.g[idx[0]], hi = g.g[idx[0]];
+        for (int i = 1; i < n; ++i) {
+            lo = std::min(lo, g.g[idx[i]]);
+            hi = std::max(hi, g.g[idx[i]]);
+        }
+        c[a] = (lo + hi) / 2.0;
+    }
+}
+
+// 軸 axis まわりに deg [°] 回転 (基準 = ユニットの AABB 中心)。
+//   6 パラメータ形状 : 8 頂点を回して AABB を取り直す近似 (90°倍数で厳密)
+//   三角柱 31..33    : 自軸のみ・断面 3 頂点の厳密回転
+//   角錐台/円錐台    : 自軸のみ・断面中心を回転、奇数×90° で断面寸法を入替
+// 対応できない軸/形状では false (呼び出し側が警告表示)。
+bool rotateGeometry(ofd::Geometry &g, int axis, double deg)
+{
+    double c[3];
+    bboxCenter(g, c);
+    const double th = deg * M_PI / 180.0;
+    const double cs = std::cos(th), sn = std::sin(th);
+    // 右手系: 軸 a まわりの回転は巡回面 (u,v) = ((a+1)%3, (a+2)%3) の
+    // 標準 2D 回転になる
+    const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+    auto rotUV = [&](double &pu, double &pv) {
+        const double du = pu - c[u], dv = pv - c[v];
+        pu = c[u] + du * cs - dv * sn;
+        pv = c[v] + du * sn + dv * cs;
+    };
+
+    switch (g.shape) {
+        case 1: case 2: case 11: case 12: case 13: {
+            // AABB 近似: 8 頂点を回して外接直方体を取り直す
+            double lo[3], hi[3];
+            for (int i = 0; i < 8; ++i) {
+                double p[3] = { g.g[i & 1], g.g[2 + ((i >> 1) & 1)],
+                                g.g[4 + ((i >> 2) & 1)] };
+                rotUV(p[u], p[v]);
+                for (int a = 0; a < 3; ++a) {
+                    if (i == 0) { lo[a] = hi[a] = p[a]; continue; }
+                    lo[a] = std::min(lo[a], p[a]);
+                    hi[a] = std::max(hi[a], p[a]);
+                }
+            }
+            for (int a = 0; a < 3; ++a) {
+                g.g[2 * a] = lo[a];
+                g.g[2 * a + 1] = hi[a];
+            }
+            return true;
+        }
+        case 31: case 32: case 33: {
+            if (axis != g.shape - 31) return false;   // 自軸のみ (厳密)
+            // g[2..4] = 断面第1軸 (=u), g[5..7] = 第2軸 (=v) — inout3 の順
+            for (int i = 0; i < 3; ++i) rotUV(g.g[2 + i], g.g[5 + i]);
+            return true;
+        }
+        case 41: case 42: case 43:
+        case 51: case 52: case 53: {
+            if (axis != g.shape % 10 - 1) return false;   // 自軸のみ
+            rotUV(g.g[2], g.g[3]);                        // 断面中心 (u,v)
+            // 断面寸法 (u,v の半幅/径ペア) は 90° の奇数倍で入替 (厳密)。
+            // それ以外の角度では軸整列のまま = 近似。
+            if (qRound(deg / 90.0) & 1) {
+                std::swap(g.g[4], g.g[5]);
+                std::swap(g.g[6], g.g[7]);
+            }
+            return true;
+        }
+    }
+    return false;   // 未対応形状
+}
+
+// 軸 axis に対して座標符号を反転 (ミラー)。寸法パラメータは触らない。
+void mirrorGeometry(ofd::Geometry &g, int axis)
+{
+    int idx[3];
+    const int n = ofd::Geometry::coordIndices(g.shape, axis, idx);
+    for (int i = 0; i < n; ++i) g.g[idx[i]] = -g.g[idx[i]];
+}
+
 } // namespace
 
 static const int kShapeCodes[] = { 1, 2, 11, 12, 13, 31, 32, 33,
@@ -533,6 +655,9 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
     row->addStretch(1);
     s->vbox()->addLayout(row);
     v->addWidget(s);
+
+    // ── ユニット編集 / Unit transform (mock tabs.jsx:409-494) ───────────────
+    v->addWidget(buildTransformSection());
 
     // ── マウス操作 / Mouse shortcuts ────────────────────────────────────────
     v->addWidget(buildMouseSection());
@@ -601,6 +726,175 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
 
     connect(project, &Project::loaded, this, &GeometryTab::refresh);
     refresh();
+}
+
+// ── ユニット編集 / Unit transform ───────────────────────────────────────────
+// 平行移動 X/Y/Z (±30mm 増分) と回転 X/Y/Z (±180°) の 6 スライダー +
+// 挿入/複製/ミラー。スライダーはドラッグ基準 (押下時のユニットを基準に
+// 現在値ぶんの変換を適用) で、離すと 0 に戻り変更が確定する。
+QWidget *GeometryTab::buildTransformSection()
+{
+    auto *s = new SectionBox(I18n::tr("geoc_xf_section"));
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_xf_hint"), s));
+
+    static const char *kAxis[3] = { "X", "Y", "Z" };
+    auto makeSliderRow = [this, s](QSlider **outSl, QLabel **outVal,
+                                   const QString &label, int lo, int hi,
+                                   const QString &unit) {
+        auto *rowW = new QWidget(s);
+        auto *h = new QHBoxLayout(rowW);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(6);
+        auto *sl = new QSlider(Qt::Horizontal, rowW);
+        sl->setRange(lo, hi);
+        sl->setValue(0);
+        sl->setMinimumWidth(160);
+        auto *val = new QLabel(QStringLiteral("0 ") + unit, rowW);
+        val->setMinimumWidth(60);
+        h->addWidget(sl, 1);
+        h->addWidget(val);
+        s->form()->addRow(label, rowW);
+        *outSl = sl;
+        *outVal = val;
+    };
+    for (int a = 0; a < 3; ++a)
+        makeSliderRow(&m_trSlider[a], &m_trValue[a],
+                      I18n::tr("geoc_xf_translate")
+                          .arg(QLatin1String(kAxis[a])),
+                      -30, 30, "mm");
+    for (int a = 0; a < 3; ++a)
+        makeSliderRow(&m_rotSlider[a], &m_rotValue[a],
+                      I18n::tr("geoc_xf_rotate").arg(QLatin1String(kAxis[a])),
+                      -180, 180, QString::fromUtf8("°"));
+
+    // 挿入 / 複製 / ミラー (軸コンボ付き)
+    auto *btnRow = new QHBoxLayout();
+    auto *insBtn = new QPushButton(I18n::tr("geoc_xf_insert"), s);
+    auto *dupBtn = new QPushButton(I18n::tr("geoc_xf_dup"), s);
+    auto *mirBtn = new QPushButton(I18n::tr("geoc_xf_mirror"), s);
+    m_mirrorAxis = new QComboBox(s);
+    for (const char *ax : kAxis)
+        m_mirrorAxis->addItem(QLatin1String(ax));
+    btnRow->addWidget(insBtn);
+    btnRow->addWidget(dupBtn);
+    btnRow->addWidget(mirBtn);
+    btnRow->addWidget(new QLabel(I18n::tr("geoc_xf_mirror_axis"), s));
+    btnRow->addWidget(m_mirrorAxis);
+    btnRow->addStretch(1);
+    s->vbox()->addLayout(btnRow);
+
+    m_xformWarn = makeBadge(QString(), kWarn, s);
+    m_xformWarn->setVisible(false);
+    s->vbox()->addWidget(m_xformWarn);
+
+    auto warn = [this](const QString &text) {
+        m_xformWarn->setText(text);
+        m_xformWarn->setVisible(true);
+    };
+    auto clearWarn = [this] { m_xformWarn->setVisible(false); };
+
+    // スライダー共通配線 (rotate=false: mm → m 平行移動)
+    auto hookSlider = [this, warn, clearWarn](QSlider *sl, QLabel *val,
+                                              int axis, bool rotate,
+                                              const QString &unit) {
+        connect(sl, &QSlider::sliderPressed, this,
+                [this, axis, rotate, warn, clearWarn] {
+            clearWarn();
+            m_dragUnit = currentUnit();
+            if (m_dragUnit < 0) {
+                warn(I18n::tr("geoc_xf_no_unit"));
+                return;
+            }
+            m_dragBase = m_p->geometries()[m_dragUnit];
+        });
+        connect(sl, &QSlider::sliderMoved, this,
+                [this, axis, rotate, val, unit, warn](int v) {
+            val->setText(QStringLiteral("%1 %2").arg(v).arg(unit));
+            if (m_dragUnit < 0 || m_dragUnit >= m_p->geometries().size())
+                return;
+            Geometry g = m_dragBase;   // 常にドラッグ開始時点が基準
+            if (rotate) {
+                if (!rotateGeometry(g, axis, v)) {
+                    warn(I18n::tr("geoc_xf_rot_unsupported")
+                             .arg(QLatin1String(kAxis[axis])));
+                    return;
+                }
+            } else {
+                translateGeometry(g, axis, v * 1e-3);   // mm → m
+            }
+            m_p->geometries()[m_dragUnit] = g;
+            const int keep = m_dragUnit;
+            refresh();
+            m_nav->setCurrent(keep);
+            m_p->touch();
+        });
+        connect(sl, &QSlider::sliderReleased, this, [this, sl, val, unit] {
+            m_dragUnit = -1;           // 確定 — 基準を捨てて 0 へ戻す
+            QSignalBlocker b(sl);
+            sl->setValue(0);
+            val->setText(QStringLiteral("0 %1").arg(unit));
+        });
+    };
+    for (int a = 0; a < 3; ++a) {
+        hookSlider(m_trSlider[a], m_trValue[a], a, false,
+                   QStringLiteral("mm"));
+        hookSlider(m_rotSlider[a], m_rotValue[a], a, true,
+                   QString::fromUtf8("°"));
+    }
+
+    connect(insBtn, &QPushButton::clicked, this, [this, clearWarn] {
+        clearWarn();
+        Geometry g;   // メッシュ領域いっぱいの直方体 (追加ボタンと同じ既定)
+        for (int a = 0; a < 3; ++a) {
+            g.g[2 * a]     = m_p->mesh(a).min();
+            g.g[2 * a + 1] = m_p->mesh(a).max();
+        }
+        insertUnitAfterCurrent(g);
+    });
+    connect(dupBtn, &QPushButton::clicked, this, [this, warn, clearWarn] {
+        clearWarn();
+        const int cur = currentUnit();
+        if (cur < 0) {
+            warn(I18n::tr("geoc_xf_no_unit"));
+            return;
+        }
+        insertUnitAfterCurrent(m_p->geometries()[cur]);
+    });
+    connect(mirBtn, &QPushButton::clicked, this, [this, warn, clearWarn] {
+        clearWarn();
+        const int cur = currentUnit();
+        if (cur < 0) {
+            warn(I18n::tr("geoc_xf_no_unit"));
+            return;
+        }
+        mirrorGeometry(m_p->geometries()[cur],
+                       m_mirrorAxis->currentIndex());
+        refresh();
+        m_nav->setCurrent(cur);
+        m_p->touch();
+    });
+    return s;
+}
+
+// 選択中ユニット (UnitNav 優先、無ければテーブル選択行)。-1 = 無し。
+int GeometryTab::currentUnit() const
+{
+    int cur = m_nav->current();
+    if (cur < 0) cur = m_table->currentRow();
+    if (cur < 0 || cur >= m_p->geometries().size()) return -1;
+    return cur;
+}
+
+// 挿入/複製: 現在ユニットの直後へ入れて選択を移す (無選択時は末尾)
+void GeometryTab::insertUnitAfterCurrent(const Geometry &g)
+{
+    const int cur = currentUnit();
+    const int at = cur < 0 ? m_p->geometries().size() : cur + 1;
+    m_p->geometries().insert(at, g);
+    refresh();
+    m_nav->setCurrent(at);
+    m_table->selectRow(at);
+    m_p->touch();
 }
 
 // ── マウス操作 / Mouse shortcuts ────────────────────────────────────────────
