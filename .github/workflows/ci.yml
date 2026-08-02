@@ -1,6 +1,9 @@
 # OpenFDTD-X (GUI) CI — Linux/Windows/macOS で Qt6 ビルド + 自己テスト。
 # 処理ロジック (ofd/orcwa/obpm) はビルドに不要 (実行時に QProcess で起動する
-# 疎結合) のため、この CI はカーネル無しで完結する。
+# 疎結合) のため、ビルド自体はカーネル無しで完結する。
+# ただし OpenFDTD (ofd) は基幹カーネルのため、Linux ジョブだけは実ビルドして
+# selftest の統合スモーク (OFDX_OFD_BIN — dipole.ofd 実行 → normal end) を回す。
+# 光 (orcwa/obpm)・水中 (bellhopcxx) はオプションカーネルで CI 対象外。
 name: CI
 
 on:
@@ -27,8 +30,19 @@ jobs:
       - name: Build
         run: cmake --build build -j"$(nproc)"
 
+      # 基幹カーネル OpenFDTD を実ビルドし、selftest の統合スモークに渡す
+      # (GUI → subprocess 連携の回帰検出。光/水中カーネルはオプションのため対象外)
+      - name: Build OpenFDTD kernel (integration smoke)
+        run: |
+          sudo apt-get install -y libhdf5-dev
+          git clone --depth 1 https://github.com/Sirokujira/OpenFDTD.git /tmp/OpenFDTD
+          cmake -S /tmp/OpenFDTD -B /tmp/OpenFDTD/build \
+            -DCMAKE_BUILD_TYPE=Release -DWITH_CUDA=OFF -DWITH_MPI=OFF
+          cmake --build /tmp/OpenFDTD/build -j"$(nproc)"
+          test -x /tmp/OpenFDTD/bin/ofd
+
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
-        run: ./build/ofdx_selftest
+        run: OFDX_OFD_BIN=/tmp/OpenFDTD/bin/ofd ./build/ofdx_selftest
 
       # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
       # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の

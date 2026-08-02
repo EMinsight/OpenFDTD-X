@@ -28,6 +28,7 @@ class QProgressBar;
 class QComboBox;
 class QSpinBox;
 class QAction;
+class QToolButton;
 
 namespace ofd {
 
@@ -188,6 +189,11 @@ private:
     QLabel       *m_sbCfl = nullptr;
     QLabel       *m_sbStep = nullptr;
     QProgressBar *m_sbProgress = nullptr;
+
+    // 現ドメインのカーネル未検出警告 (クリックでカーネルパス設定を開く)。
+    // OpenFDTD (EM) は基幹カーネルなので起動直後から表示され得る。
+    QToolButton  *m_sbKernelWarn = nullptr;
+    void updateKernelWarn();
 };
 
 } // namespace ofd

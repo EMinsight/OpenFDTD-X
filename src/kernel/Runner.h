@@ -67,6 +67,11 @@ public:
     static QString kernelDirSetting(Kernel k);
     static void    setKernelDirSetting(Kernel k, const QString &dir);
 
+    // 実際に起動できるソルバーバイナリの絶対パス (PATH 解決込み)。
+    // 見つからなければ空文字列。未検出の事前警告表示 (ステータスバー /
+    // カーネルパス設定ダイアログ) が使う。
+    static QString resolvedSolverPath(const RunConfig &cfg);
+
     // アクティブドメインとソルバー設定から実行カーネルを決める
     // (MainWindow の実行設定と selftest で共用)。
     //   光: RCWA → orcwa / BPM → obpm / FMM → orcwa (RCWA と同一手法の

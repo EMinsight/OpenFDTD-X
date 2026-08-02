@@ -274,6 +274,7 @@ void MainWindow::buildMenu()
     mTools->addAction(I18n::tr("m_kernel_paths"), this, [this] {
         KernelPathDialog dlg(this);
         dlg.exec();
+        updateKernelWarn();
     });
     mTools->addAction(I18n::tr("tb_gettingstarted"),
                       this, &MainWindow::showGettingStarted);
@@ -661,7 +662,21 @@ void MainWindow::buildStatusBar()
     m_sbProgress->setFixedWidth(140);
     m_sbProgress->setVisible(false);
 
+    // 現ドメインのカーネル未検出警告。OpenFDTD (EM) は基幹カーネルなので
+    // 未導入なら起動直後から見える。クリックでカーネルパス設定を開く。
+    m_sbKernelWarn = new QToolButton(this);
+    m_sbKernelWarn->setAutoRaise(true);
+    m_sbKernelWarn->setToolTip(I18n::tr("sb_kernel_missing_tip"));
+    m_sbKernelWarn->setStyleSheet("QToolButton { color: #B8860B; }");
+    m_sbKernelWarn->setVisible(false);
+    connect(m_sbKernelWarn, &QToolButton::clicked, this, [this] {
+        KernelPathDialog dlg(this);
+        dlg.exec();
+        updateKernelWarn();
+    });
+
     sb->addWidget(m_sbState);
+    sb->addWidget(m_sbKernelWarn);
     sb->addPermanentWidget(m_sbCells);
     sb->addPermanentWidget(m_sbMem);
     sb->addPermanentWidget(m_sbDt);
@@ -671,12 +686,27 @@ void MainWindow::buildStatusBar()
     sb->addPermanentWidget(new QLabel("Qt " QT_VERSION_STR));
 }
 
+// 現ドメインが起動するカーネルが実在するかを確認し、無ければ警告を出す。
+// 表示は「実際に解決できなかった」事実のみ (存在しない状態を隠さない)。
+void MainWindow::updateKernelWarn()
+{
+    if (!m_sbKernelWarn) return;
+    RunConfig cfg;
+    cfg.kernel = Runner::kernelForProject(*m_project);
+    const bool missing = Runner::resolvedSolverPath(cfg).isEmpty();
+    if (missing)
+        m_sbKernelWarn->setText(I18n::tr("sb_kernel_missing")
+                                    .arg(Runner::solverBinary(cfg)));
+    m_sbKernelWarn->setVisible(missing);
+}
+
 // ── Domain switching ────────────────────────────────────────────────────────
 void MainWindow::onDomainChanged(Domain d)
 {
     // ドメイン/表示レベルに応じてナビ項目を組み直す
     // (旧実装の removeTab/addTab は TabNavigator::rebuild が担う)
     m_nav->rebuild(d, m_expert);
+    updateKernelWarn();   // ドメインが変われば必要なカーネルも変わる
 
     // cloud submission is optical-only
     m_cloudAction->setEnabled(d == Domain::Optical);
@@ -712,6 +742,7 @@ void MainWindow::setUiLevel(bool expert)
 
 void MainWindow::onProjectChanged()
 {
+    updateKernelWarn();   // 光ドメインはソルバー設定でカーネルが変わる
     m_sbCells->setText(QStringLiteral("cells: %L1").arg(m_project->totalCells()));
     m_sbMem->setText(QStringLiteral("mem: %1 MB")
         .arg(m_project->estimatedMemoryMB(), 0, 'f', 1));

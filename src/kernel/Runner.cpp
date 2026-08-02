@@ -107,6 +107,18 @@ QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
     return base;   // let PATH resolve it
 }
 
+QString Runner::resolvedSolverPath(const RunConfig &cfg)
+{
+    const QString bin = solverBinary(cfg);
+    if (QFileInfo::exists(bin)) return bin;
+    // ディレクトリ探索で見つからず素の名前が返った場合は PATH を確認
+    if (!bin.contains(QLatin1Char('/'))) {
+        const QString onPath = QStandardPaths::findExecutable(bin);
+        if (!onPath.isEmpty()) return onPath;
+    }
+    return QString();
+}
+
 Kernel Runner::kernelForProject(const Project &project)
 {
     if (project.activeDomain() == Domain::Optical) {
