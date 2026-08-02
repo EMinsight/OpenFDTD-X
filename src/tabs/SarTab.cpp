@@ -1,5 +1,6 @@
 // SarTab.cpp
 #include "SarTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -35,10 +36,13 @@ const bool s_i18n = [] {
               "SAR / bio-electromagnetics (IEC 62704 / IEEE 1528)");
     I18n::reg("sar_hint",
               "人体内の比吸収率 (SAR) を算出し、電波防護指針への適合を評価。"
-              "OpenFDTD本家の代表的用途。",
+              "OpenFDTD本家の代表的用途。\n"
+              "(SAR 計算は未実装 — 画面は設計モック)",
               "Computes the specific absorption rate (SAR) inside the human body "
               "and checks it against the RF exposure guidelines — a flagship use "
-              "of the original OpenFDTD.");
+              "of the original OpenFDTD.\n"
+              "(SAR computation is not implemented — this screen is a design "
+              "mock.)");
     I18n::reg("sar_model", "人体モデル", "Human model");
     I18n::reg("sar_model_head", "SAM頭部ファントム", "SAM head phantom");
     I18n::reg("sar_model_flat", "平板ファントム", "Flat phantom");
@@ -125,6 +129,14 @@ const bool s_i18n = [] {
               "🎬 Visualize as an H5 animation");
     I18n::reg("sar_btn_report", "📄 適合宣言用レポート (IEC 62704)",
               "📄 Declaration-of-conformity report (IEC 62704)");
+
+    // 安全規制に関わる表のため強い注記を付ける (絶対規則 5)
+    I18n::reg("sar_sample_warn",
+              "⚠ サンプル値 — 実際の SAR 計算・適合評価は未実装 "
+              "(適合宣言に使用不可)",
+              "⚠ Sample values — actual SAR computation and compliance "
+              "assessment are not implemented (must not be used for a "
+              "declaration of conformity)");
     return true;
 }();
 
@@ -302,28 +314,46 @@ SarTab::SarTab(Project *project, QWidget *parent)
     m_txPower = numEdit("24", ss);
     ss->form()->addRow(I18n::tr("sar_tx_power"),
                        unitRow(m_txPower, I18n::tr("sar_tx_power_unit"), ss));
+    // 曝露源の入力 (機器/周波数/送信電力) はどこにも読まれない
+    // (未実装の明示 — 絶対規則 5)
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 評価指標 / Metrics ──────────────────────────────────────────────────
     auto *sme = new SectionBox(I18n::tr("sar_metrics_section"), body);
+    // 表は完全な固定値で ICNIRP/FCC の「適合」を無条件表示するモック。
+    // 安全規制に関わるため、表ヘッダ付近に強い注記を置く (絶対規則 5)
+    auto *sampleWarn = new QLabel(I18n::tr("sar_sample_warn"), sme);
+    sampleWarn->setWordWrap(true);
+    sampleWarn->setStyleSheet("font-weight:600; color:#B91C1C;");
+    sme->vbox()->addWidget(sampleWarn);
     m_metrics = makeTable({ I18n::tr("sar_col_metric"), I18n::tr("sar_col_value"),
                             I18n::tr("sar_col_limit"), I18n::tr("sar_col_std"),
                             I18n::tr("sar_col_verdict") }, 5, sme, 165);
     sme->vbox()->addWidget(m_metrics);
+    sme->vbox()->addWidget(tabhelp::sampleNote(sme));
     fillMetricsTable();
     m_bioHeat     = makeCheck(I18n::tr("sar_bioheat"), true, sme);
     m_uncertainty = makeCheck(I18n::tr("sar_uncertainty"), false, sme);
     m_zoning      = makeCheck(I18n::tr("sar_zoning"), true, sme);
     sme->vbox()->addLayout(checkRow({ m_bioHeat }));
     sme->vbox()->addLayout(checkRow({ m_uncertainty, m_zoning }));
+    // BioHeat/不確かさ/ゾーニングのチェックはどこにも読まれない (絶対規則 5)
+    sme->vbox()->addWidget(tabhelp::unwiredNote(sme));
     v->addWidget(sme);
 
     // ── 出力 / Output ───────────────────────────────────────────────────────
     auto *so = new SectionBox(I18n::tr("sar_out_section"), body);
     auto *ob = new QHBoxLayout();
-    ob->addWidget(new QPushButton(I18n::tr("sar_btn_dist"), so));
-    ob->addWidget(new QPushButton(I18n::tr("sar_btn_anim"), so));
-    ob->addWidget(new QPushButton(I18n::tr("sar_btn_report"), so));
+    // 出力 3 ボタンは未配線 — 押せる形で放置しない (絶対規則 5)
+    auto *distBtn   = new QPushButton(I18n::tr("sar_btn_dist"), so);
+    auto *animBtn   = new QPushButton(I18n::tr("sar_btn_anim"), so);
+    auto *reportBtn = new QPushButton(I18n::tr("sar_btn_report"), so);
+    for (auto *b : { distBtn, animBtn, reportBtn })
+        tabhelp::markNotImplemented(b);
+    ob->addWidget(distBtn);
+    ob->addWidget(animBtn);
+    ob->addWidget(reportBtn);
     ob->addStretch(1);
     so->vbox()->addLayout(ob);
     v->addWidget(so);

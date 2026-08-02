@@ -1,5 +1,6 @@
 // ComponentsTab.cpp
 #include "ComponentsTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -10,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -32,8 +34,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_monitor",   "モニター",                    "Monitors");
     ofd::I18n::reg("cl_imported",  "取込モデル",                  "Imported models");
     ofd::I18n::reg("cl_components","コンポーネント",              "Components");
-    ofd::I18n::reg("cl_drag_hint", "ドラッグでビューポートへ配置",
-                   "Drag into the viewport to place");
+    ofd::I18n::reg("cl_drag_hint", "ビューポートへのドラッグ配置は未実装",
+                   "Drag-into-viewport placement is not implemented yet");
     ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
     ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
@@ -157,6 +159,9 @@ QStringList priorityCats(const QString &d)
     return { "basic" };
 }
 
+// お気に入りの QSettings 永続化キー (アプリ再起動をまたいで保持する)
+const char kFavSettingsKey[] = "components/favorites";
+
 void clearGrid(QGridLayout *g)
 {
     while (QLayoutItem *it = g->takeAt(0)) {
@@ -202,14 +207,15 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     m_favSection->vbox()->addLayout(m_favRow);
     v->addWidget(m_favSection);
 
-    // 最近使用
+    // 最近使用 — 履歴機能は未実装で、チップはモック由来の固定サンプル
     auto *sRecent = new SectionBox(I18n::tr("cl_recent"), body);
+    sRecent->vbox()->addWidget(tabhelp::sampleNote(sRecent));
     auto *recentRow = new QHBoxLayout();
     static const char *kRecent[] = {
         "パッチアンテナ", "リング共振器 R=5μm", "DBRミラー 25層" };
     for (const char *r : kRecent) {
+        // クリックしても何も起きないため「押せる見た目」(手カーソル) にしない
         auto *b = new QLabel(QString::fromUtf8(r), sRecent);
-        b->setCursor(Qt::PointingHandCursor);
         b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                          "padding:1px 6px; font-size:11px;");
         recentRow->addWidget(b);
@@ -230,6 +236,10 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     connect(project, &Project::loaded,
             this, &ComponentsTab::rebuildCats);
 
+    // お気に入りは QSettings に永続化する (以前は再起動で消える揮発状態だった)
+    m_favorites = QSettings().value(QString::fromLatin1(kFavSettingsKey))
+                      .toStringList();
+
     rebuildFavorites();
     rebuildCats();
 }
@@ -247,8 +257,8 @@ void ComponentsTab::rebuildFavorites()
         m_favRow->addWidget(hint);
     } else {
         for (const QString &name : m_favorites) {
+            // クリック動作は無いため「押せる見た目」(手カーソル) にしない
             auto *chip = new QLabel(QStringLiteral("★ ") + name, m_favSection);
-            chip->setCursor(Qt::PointingHandCursor);
             chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                                 "padding:1px 6px; font-size:11px;");
             m_favRow->addWidget(chip);
@@ -327,9 +337,10 @@ void ComponentsTab::rebuildGrid()
     const int cols = 4;
     for (int i = 0; i < filtered.size(); ++i) {
         const Component &c = *filtered[i];
+        // ドラッグ配置は未実装のため OpenHandCursor (掴める見た目) にしない
         auto *card = new QFrame(m_gridSection);
         card->setFrameShape(QFrame::StyledPanel);
-        card->setCursor(Qt::OpenHandCursor);
+        card->setCursor(Qt::ArrowCursor);
         auto *cv = new QVBoxLayout(card);
         cv->setContentsMargins(8, 6, 8, 6);
         cv->setSpacing(2);
@@ -354,6 +365,9 @@ void ComponentsTab::rebuildGrid()
         connect(fav, &QPushButton::clicked, this, [this, name, fav] {
             if (m_favorites.contains(name)) m_favorites.removeAll(name);
             else                            m_favorites.append(name);
+            // QSettings に保存 (再起動しても保持される)
+            QSettings().setValue(QString::fromLatin1(kFavSettingsKey),
+                                 m_favorites);
             fav->setText(m_favorites.contains(name) ? QStringLiteral("★")
                                                     : QStringLiteral("☆"));
             rebuildFavorites();

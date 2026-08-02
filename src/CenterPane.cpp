@@ -35,10 +35,14 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_move",    "平行移動 (G)",   "Move (G)");
     ofd::I18n::reg("vp_rotate",  "回転 (R)",       "Rotate (R)");
     ofd::I18n::reg("vp_scale",   "スケール (S)",   "Scale (S)");
-    ofd::I18n::reg("vp_snap",    "Snap:",          "Snap:");
+    ofd::I18n::reg("vp_show",    "表示:",          "Show:");
+    ofd::I18n::reg("vp_gizmo_notimpl",
+                   "モード切替は未実装 (操作は Viewport のマウスドラッグ)",
+                   "Mode switching not implemented (use mouse drag in the "
+                   "viewport)");
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
     ofd::I18n::reg("vp_boundary","境界 (PML)",     "Boundary (PML)");
-    ofd::I18n::reg("vp_vertex",  "頂点",           "Vertex");
+    ofd::I18n::reg("vp_vertex",  "頂点スナップ",   "Vertex snap");
     ofd::I18n::reg("vp_vertex_tip",
         "スナップ動作は未実装 (表示のみ)",
         "Snap behavior not implemented (display only)");
@@ -83,7 +87,9 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     reset->setText(I18n::tr("vp_reset"));
     h->addWidget(reset);
 
-    // 操作ギズモ (モックでは操作モードの示唆。実操作は Viewport3D のマウス)
+    // 操作ギズモ (モック由来のモード表示)。モード切替の実装が無いため
+    // 無効表示にする — 押すとチェックが入って「切り替わった」ように見える
+    // 状態にしない (実操作は Viewport3D のマウスドラッグ)。
     auto *gizmoGroup = new QButtonGroup(this);
     gizmoGroup->setExclusive(true);
     struct G { const char *glyph, *tipKey; };
@@ -93,21 +99,24 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     for (const G &g : gizmos) {
         auto *b = new QToolButton(m_vpToolbar);
         b->setText(QString::fromUtf8(g.glyph));
-        b->setToolTip(I18n::tr(g.tipKey));
+        b->setToolTip(I18n::tr(g.tipKey) + QStringLiteral(" — ")
+                      + I18n::tr("vp_gizmo_notimpl"));
         b->setCheckable(true);
+        b->setEnabled(false);
         if (gi++ == 0) b->setChecked(true);
         gizmoGroup->addButton(b);
         h->addWidget(b);
     }
 
-    h->addWidget(new QLabel(I18n::tr("vp_snap"), m_vpToolbar));
+    // グリッド/境界は「表示」の切替 (実動作)。スナップではないので
+    // ラベルを「表示:」にする。頂点スナップは未実装のため無効表示。
+    h->addWidget(new QLabel(I18n::tr("vp_show"), m_vpToolbar));
     auto *grid = new QCheckBox(I18n::tr("vp_grid"), m_vpToolbar);
     grid->setChecked(true);
     auto *bnd = new QCheckBox(I18n::tr("vp_boundary"), m_vpToolbar);
-    // 頂点スナップ (mock の Snap チェック群)。スナップ動作そのものは
-    // 未実装なので tooltip で明示する (CLAUDE.md 絶対規則 5)。
     auto *vtx = new QCheckBox(I18n::tr("vp_vertex"), m_vpToolbar);
     vtx->setToolTip(I18n::tr("vp_vertex_tip"));
+    vtx->setEnabled(false);
     h->addWidget(grid);
     h->addWidget(bnd);
     h->addWidget(vtx);

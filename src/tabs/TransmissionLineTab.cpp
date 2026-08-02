@@ -1,5 +1,6 @@
 // TransmissionLineTab.cpp
 #include "TransmissionLineTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -84,6 +85,8 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
     auto *hint = new QLabel(I18n::tr("tln_hint"), sTop);
     hint->setWordWrap(true);
     sTop->vbox()->addWidget(hint);
+    // このタブは全体が設計モック — どの設定も計算へ配線されていない
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
     v->addWidget(sTop);
 
     // ── 特性インピーダンス Z₀ ──────────────────────────────────────────────
@@ -99,6 +102,7 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
     sZ->form()->addRow(m_z0FreqDep);
     m_z0ReIm = new QCheckBox(I18n::tr("tln_z0_reim"), sZ);
     sZ->form()->addRow(m_z0ReIm);
+    sZ->form()->addRow(tabhelp::unwiredNote(sZ));   // 全設定が未読
     v->addWidget(sZ);
 
     // ── 伝搬定数 γ = α + jβ ────────────────────────────────────────────────
@@ -116,6 +120,7 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
         sS->form()->addRow(ck);
         m_spara.push_back(ck);
     }
+    sS->form()->addRow(tabhelp::unwiredNote(sS));   // 全設定が未読
     v->addWidget(sS);
 
     // ── 不連続部・整合 ────────────────────────────────────────────────────
@@ -139,5 +144,7 @@ SectionBox *TransmissionLineTab::checkSection(QWidget *parent, const char *title
         s->vbox()->addWidget(ck);
         out->push_back(ck);
     }
+    // チェック状態はどこにも読まれない (タブ全体が設計モック)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
 }

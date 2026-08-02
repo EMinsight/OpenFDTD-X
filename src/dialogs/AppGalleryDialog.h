@@ -42,6 +42,9 @@ public:
 signals:
     // domainKey は "em" / "optical" / "acoustic" / "underwater" / "tidy3d"
     void templatePicked(const QString &domainKey, const QString &name);
+    // フッタのボタン (以前は閉じるだけだったので実動作を通知する)
+    void openFileRequested();   // 📂 ファイルから開く
+    void blankRequested();      // 空のプロジェクトで開始
 };
 
 } // namespace ofd

@@ -1,11 +1,23 @@
 // FieldHeatmap.cpp
 #include "FieldHeatmap.h"
+#include "../I18n.h"
 
 #include <QFontInfo>
 #include <QPainter>
 #include <QtMath>
 
 using namespace ofd;
+
+namespace {
+const bool s_i18n = [] {
+    // プレースホルダ表示の明示 (実行結果と誤読させない — 絶対規則 5)
+    ofd::I18n::reg("fh_demo",
+        "デモ表示 — 実行結果ではありません (実データの 2D 断面表示は未実装)",
+        "Demo pattern — not a simulation result (real 2D slice display is "
+        "not implemented)");
+    return true;
+}();
+} // namespace
 
 FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
 {
@@ -27,6 +39,7 @@ void FieldHeatmap::setData(const QVector<double> &cells, int n)
     if (n > 0 && cells.size() >= n * n) {
         m_cells = cells;
         m_n = n;
+        m_demo = false;
         update();
     }
 }
@@ -101,5 +114,19 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
         mono.setPointSizeF(8);
         p.setFont(mono);
         p.drawText(QRect(bx - 6, by + bh + 32, 40, 14), Qt::AlignLeft, "V/m");
+    }
+
+    // ── プレースホルダの明示バナー (setData 前は実行結果ではない) ──
+    if (m_demo) {
+        const QRect band(area.left(), area.bottom() - 24,
+                         area.width(), 24);
+        p.fillRect(band, QColor(0, 0, 0, 170));
+        p.setPen(QColor("#FFD54F"));
+        QFont f = p.font();
+        f.setPointSizeF(9);
+        p.setFont(f);
+        p.drawText(band.adjusted(6, 0, -6, 0),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   I18n::tr("fh_demo"));
     }
 }

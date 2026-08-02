@@ -1,5 +1,6 @@
 // PhotonicsSolversTab.cpp
 #include "PhotonicsSolversTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -129,8 +130,9 @@ const bool s_i18n = [] {
                                "Higher orders (±1, ±2, …)");
     I18n::reg("psol_out_abs", "吸収率 A(λ)", "Absorptance A(λ)");
     I18n::reg("psol_out_field_l", "場分布 E(x,y,z,λ)", "Field distribution E(x,y,z,λ)");
-    I18n::reg("psol_eta_rcwa", "推定実行時間: ~3秒/波長",
-                               "Estimated runtime: ~3 s per wavelength");
+    I18n::reg("psol_eta_rcwa", "推定実行時間: ~3秒/波長 (目安の例)",
+                               "Estimated runtime: ~3 s per wavelength "
+                               "(illustrative example)");
 
     // ── BPM 設定 ──
     I18n::reg("psol_bpm_sec", "BPM 設定", "Beam Propagation Method");
@@ -155,8 +157,9 @@ const bool s_i18n = [] {
     I18n::reg("psol_out_field", "場分布 |E(x,y,z)|", "Field distribution |E(x,y,z)|");
     I18n::reg("psol_out_poi", "モード重なり積分 (POI)", "Mode overlap integral (POI)");
     I18n::reg("psol_out_loss", "伝搬損失 [dB/cm]", "Propagation loss [dB/cm]");
-    I18n::reg("psol_eta_bpm", "推定実行時間: ~5秒 (FDTDの ~1/100)",
-                              "Estimated runtime: ~5 s (~1/100 of FDTD)");
+    I18n::reg("psol_eta_bpm", "推定実行時間: ~5秒 (FDTDの ~1/100) (目安の例)",
+                              "Estimated runtime: ~5 s (~1/100 of FDTD) "
+                              "(illustrative example)");
 
     // ── FMM 設定 ──
     I18n::reg("psol_fmm_sec", "FMM (S-Matrix) 設定", "Fourier Modal Method");
@@ -403,9 +406,12 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
     auto *runRow = new QHBoxLayout();
     auto *runAll = new QPushButton(I18n::tr("psol_run_all"), sCross);
     runAll->setProperty("primary", true);
+    tabhelp::markNotImplemented(runAll);   // 一括実行は未配線
     runRow->addWidget(runAll);
     runRow->addStretch(1);
     sCross->vbox()->addLayout(runRow);
+    // 再実行チェック群はどこにも読まれない (未実装の明示 — 絶対規則 5)
+    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross));
     v->addWidget(sCross);
 
     // ── ハイブリッド解析 ───────────────────────────────────────────────────
@@ -438,6 +444,8 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
         hy->setItem(r, 2, new QTableWidgetItem(kHybrid[r].role));
     }
     sHy->vbox()->addWidget(hy);
+    // ハイブリッド表は固定のサンプル (領域分割の連携は未実装 — 絶対規則 5)
+    sHy->vbox()->addWidget(tabhelp::sampleNote(sHy));
     v->addWidget(sHy);
 
     v->addStretch(1);
@@ -526,6 +534,9 @@ QWidget *PhotonicsSolversTab::buildFdtdPage()
     bcRow->addStretch(1);
     s->form()->addRow(I18n::tr("psol_bc"), bcRow);
 
+    // FDTD ページの入力 (シミュ時間/シャットオフ/サブピクセル/共形メッシュ等)
+    // は apply() が読まない (未実装の明示 — 絶対規則 5)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
 }
 
@@ -609,6 +620,9 @@ QWidget *PhotonicsSolversTab::buildRcwaPage()
     etaRow->addWidget(makeBadge(I18n::tr("psol_eta_rcwa"), "ok", s));
     etaRow->addStretch(1);
     s->form()->addRow(etaRow);
+    // Truncation 法・入射角 (θ, φ, ψ)・TE/TM/出力チェックは apply() が読まない
+    // (周期/次数/層分割/波長範囲のみ .ofdx へ反映 — 絶対規則 5)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
 }
 
@@ -663,6 +677,9 @@ QWidget *PhotonicsSolversTab::buildBpmPage()
     etaRow->addWidget(makeBadge(I18n::tr("psol_eta_bpm"), "ok", s));
     etaRow->addStretch(1);
     s->form()->addRow(etaRow);
+    // 伝搬方向・伝搬距離・境界条件・双方向/ベクトル/出力チェックは
+    // apply() が読まない (アルゴリズム/Δz/n_ref/入射モードのみ反映 — 絶対規則 5)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
 }
 
@@ -733,6 +750,8 @@ QWidget *PhotonicsSolversTab::buildFmmPage()
         tbl->setItem(r, 3, new QTableWidgetItem(pat));
     }
     s->form()->addRow(I18n::tr("psol_layers"), tbl);
+    // 層構造テーブルは固定のサンプル (プロジェクト形状とは未連動 — 絶対規則 5)
+    s->form()->addRow(tabhelp::sampleNote(s));
 
     s->form()->addRow(I18n::tr("psol_sweep"),
                       checkRow({ I18n::tr("psol_sweep_lam"),

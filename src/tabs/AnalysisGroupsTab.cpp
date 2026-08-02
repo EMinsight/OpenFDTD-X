@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QColor>
 #include <QComboBox>
@@ -36,8 +37,9 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ag_add_row", "＋ グループを追加…", "＋ Add group…");
     ofd::I18n::reg("ag_library", "ライブラリから読込", "Library");
     ofd::I18n::reg("ag_library_hint",
-        "公式・コミュニティ製の解析グループを読み込み",
-        "Load official or community-made analysis groups");
+        "公式・コミュニティ製の解析グループを読み込み (読込は未実装)",
+        "Load official or community-made analysis groups "
+        "(loading not implemented)");
     ofd::I18n::reg("ag_lib_std", "📚 標準ライブラリ", "📚 Standard library");
     ofd::I18n::reg("ag_lib_community", "🌐 コミュニティ (GitHub)", "🌐 Community (GitHub)");
     ofd::I18n::reg("ag_lib_file", "📁 ファイルから (.lsf/.py)", "📁 From file (.lsf/.py)");
@@ -105,6 +107,8 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     m_groups->verticalHeader()->setVisible(false);
     m_groups->setEditTriggers(QAbstractItemView::NoEditTriggers);
     sg->vbox()->addWidget(m_groups);
+    // 登録済みグループはドメイン別の固定サンプル (絶対規則 5)
+    sg->vbox()->addWidget(tabhelp::sampleNote(sg));
     v->addWidget(sg);
 
     // ライブラリから読込 / Library
@@ -113,9 +117,15 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     lh->setWordWrap(true);
     sl->vbox()->addWidget(lh);
     auto *lrow = new QHBoxLayout();
-    lrow->addWidget(new QPushButton(I18n::tr("ag_lib_std"), sl));
-    lrow->addWidget(new QPushButton(I18n::tr("ag_lib_community"), sl));
-    lrow->addWidget(new QPushButton(I18n::tr("ag_lib_file"), sl));
+    auto *libStd  = new QPushButton(I18n::tr("ag_lib_std"), sl);
+    auto *libComm = new QPushButton(I18n::tr("ag_lib_community"), sl);
+    auto *libFile = new QPushButton(I18n::tr("ag_lib_file"), sl);
+    tabhelp::markNotImplemented(libStd);
+    tabhelp::markNotImplemented(libComm);
+    tabhelp::markNotImplemented(libFile);
+    lrow->addWidget(libStd);
+    lrow->addWidget(libComm);
+    lrow->addWidget(libFile);
     lrow->addStretch(1);
     sl->vbox()->addLayout(lrow);
     v->addWidget(sl);
@@ -134,9 +144,13 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     m_script->addItems({ "LSF", "Python" });
     sc->form()->addRow(I18n::tr("ag_script"), m_script);
     auto *crow = new QHBoxLayout();
-    crow->addWidget(new QPushButton(I18n::tr("ag_create_btn"), sc));
+    auto *createBtn = new QPushButton(I18n::tr("ag_create_btn"), sc);
+    tabhelp::markNotImplemented(createBtn);
+    crow->addWidget(createBtn);
     crow->addStretch(1);
     sc->vbox()->addLayout(crow);
+    // フォーム (モニター候補は固定サンプル) はどこにも読まれない
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
     v->addWidget(sc);
 
     v->addStretch(1);
@@ -177,8 +191,9 @@ void AnalysisGroupsTab::refresh()
             new QTableWidgetItem(QString::fromUtf8(rows[i].monitors)));
         m_groups->setItem(i, 3,
             new QTableWidgetItem(QString::fromUtf8(rows[i].output)));
-        m_groups->setCellWidget(i, 4,
-            new QPushButton(I18n::tr("ag_edit"), m_groups));
+        auto *editBtn = new QPushButton(I18n::tr("ag_edit"), m_groups);
+        tabhelp::markNotImplemented(editBtn);   // グループ編集は未実装
+        m_groups->setCellWidget(i, 4, editBtn);
     }
     // ＋ グループを追加… 行
     auto *ck = new QTableWidgetItem;

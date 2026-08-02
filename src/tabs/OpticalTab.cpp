@@ -6,6 +6,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
+#include "TabHelpers.h"
 
 #include <QBrush>
 #include <QCheckBox>
@@ -60,8 +61,9 @@ const bool s_i18nOptRay = [] {
     I18n::reg("optray_fresnel", "フレネル係数", "Fresnel coefficients");
     I18n::reg("optray_raydiag", "光線図出力", "Ray diagram output");
     I18n::reg("optray_viz_rays", "可視化レイ数", "Visualized rays");
-    I18n::reg("optray_gpu", "GPU加速", "GPU accelerated");
-    I18n::reg("optray_gpu_hint", "OptiX / Embree 経由", "via OptiX / Embree");
+    I18n::reg("optray_gpu", "GPU加速 (未実装)", "GPU accelerated (not implemented)");
+    I18n::reg("optray_gpu_hint", "OptiX / Embree 経由 (レイトレーサ未実装)",
+              "via OptiX / Embree (ray tracer not implemented)");
     // 光学系定義 / Optical system
     I18n::reg("optray_sys_section", "光学系定義 / Optical system",
               "Optical system definition");
@@ -181,6 +183,8 @@ const bool s_i18nOptModes = [] {
               "Export Touchstone (.s2p)");
     // 分散モデル
     I18n::reg("optm_disp_section", "分散モデル", "Dispersion model");
+    // 固定表示の算出値が「設計例」であることの明記 (絶対規則 5)
+    I18n::reg("optm_design_example", "(設計例)", "(design example)");
     return true;
 }();
 
@@ -300,6 +304,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     ss->form()->addRow(I18n::tr("optm_geo_method"), m_geoMethod);
     m_geoHint = mutedLabel(I18n::tr("optm_geo_hint_fdtd"), ss);
     ss->vbox()->addWidget(m_geoHint);
+    // 解法 (波動/幾何) の選択はローカル state のみで計算へは渡らない
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
 
     // per-method parameter pages
     m_solverStack = new QStackedWidget(ss);
@@ -475,6 +481,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_bpfStop = numEdit("40", sb);
     sb->form()->addRow(I18n::tr("optm_bpf_stop"),
                        hrow({ m_bpfStop, mutedLabel("dB", sb) }));
+    // 挿入損失 / 阻止域減衰はローカル state のみ (目標帯域・Q は保存される)
+    sb->form()->addRow(tabhelp::unwiredNote(sb));
     // 設計目標の透過スペクトル (mock の MiniPlot):
     //   T(λ) = 10·log10( 1 / (1 + ((λ-1550)/8)^8) )   — 8次 Butterworth 型
     //   λ = 1500 + i [nm] (i = 0…99), 下限クランプ 1e-5, Y 範囲 [-50, 2] dB
@@ -505,16 +513,22 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     sr->form()->addRow(I18n::tr("opt_radius"), m_ringR);
     sr->form()->addRow(I18n::tr("opt_gap"), m_ringGap);
     // 算出値表示 (mock の <span className="mono">, R=5μm / gap=200nm の設計例)
+    // — 計算結果ではなく固定の設計例であることを明記する (絶対規則 5)
     sr->form()->addRow(I18n::tr("optm_fsr"),
                        hrow({ monoLabel("~16.5 nm", sr),
-                              mutedLabel("@λ=1550nm", sr) }));
+                              mutedLabel("@λ=1550nm", sr),
+                              mutedLabel(I18n::tr("optm_design_example"), sr) }));
     sr->form()->addRow(I18n::tr("optm_finesse"),
-                       hrow({ monoLabel("~85", sr) }));
+                       hrow({ monoLabel("~85", sr),
+                              mutedLabel(I18n::tr("optm_design_example"), sr) }));
     sr->form()->addRow(I18n::tr("optm_q_factor"),
-                       hrow({ monoLabel("~80,000", sr) }));
+                       hrow({ monoLabel("~80,000", sr),
+                              mutedLabel(I18n::tr("optm_design_example"), sr) }));
     m_ringThru = makeCheck(I18n::tr("optm_thru_port"), true, sr);
     m_ringDrop = makeCheck(I18n::tr("optm_drop_port"), true, sr);
     sr->vbox()->addLayout(hrow({ m_ringThru, m_ringDrop }));
+    // スルー/ドロップポートのチェックはローカル state のみ (半径・ギャップは保存される)
+    sr->vbox()->addWidget(tabhelp::unwiredNote(sr));
     v->addWidget(sr);
 
     // ── 導波路モード解析 / Waveguide mode (mode = Waveguide) ────────────────
@@ -528,9 +542,12 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     swg->form()->addRow(I18n::tr("optm_mode_tm"), hrow({ m_wgTm0, m_wgTm1 }));
     swg->form()->addRow(
         I18n::tr("optm_neff"),
-        hrow({ monoLabel("2.412 (TE0) / 1.873 (TM0)", swg) }));
+        hrow({ monoLabel("2.412 (TE0) / 1.873 (TM0)", swg),
+               mutedLabel(I18n::tr("optm_design_example"), swg) }));
     m_wgLoss = numEdit("0.3", swg);
     swg->form()->addRow(I18n::tr("optm_loss"), m_wgLoss);
+    // この節のモード選択・損失はローカル state のみ
+    swg->form()->addRow(tabhelp::unwiredNote(swg));
     v->addWidget(swg);
 
     // ── MZI 干渉計 (mode = MZI) ────────────────────────────────────────────
@@ -540,11 +557,14 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     smz->form()->addRow(I18n::tr("optm_mzi_dl"),
                         hrow({ m_mziDeltaL, mutedLabel("μm", smz) }));
     smz->form()->addRow(I18n::tr("optm_fsr"),
-                        hrow({ monoLabel("~9.6 nm", smz) }));
+                        hrow({ monoLabel("~9.6 nm", smz),
+                               mutedLabel(I18n::tr("optm_design_example"), smz) }));
     m_mziThermo  = makeCheck(I18n::tr("optm_mzi_thermo"), true, smz);
     m_mziElectro = makeCheck(I18n::tr("optm_mzi_eo"), false, smz);
     smz->form()->addRow(I18n::tr("optm_mzi_shifter"),
                         hrow({ m_mziThermo, m_mziElectro }));
+    // この節はローカル state のみ
+    smz->form()->addRow(tabhelp::unwiredNote(smz));
     v->addWidget(smz);
 
     // ── メタサーフェス (mode = Metasurface) ────────────────────────────────
@@ -563,6 +583,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_metaPhase->addItem(I18n::tr("optm_meta_steer"));
     m_metaPhase->addItem(I18n::tr("optm_meta_oam"));
     sms->form()->addRow(I18n::tr("optm_meta_phase"), m_metaPhase);
+    // この節はローカル state のみ
+    sms->form()->addRow(tabhelp::unwiredNote(sms));
     v->addWidget(sms);
 
     // ── フォトニック結晶 (mode = PhC) ──────────────────────────────────────
@@ -581,6 +603,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_phcBand   = makeCheck(I18n::tr("optm_phc_band"), true, sph);
     m_phcDefect = makeCheck(I18n::tr("optm_phc_defect"), false, sph);
     sph->vbox()->addLayout(hrow({ m_phcBand, m_phcDefect }));
+    // この節はローカル state のみ
+    sph->vbox()->addWidget(tabhelp::unwiredNote(sph));
     v->addWidget(sph);
 
     // ── 近接場/遠方場変換 (mode = NF2FF) ──────────────────────────────────
@@ -594,6 +618,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_nfffDistance = numEdit("1.0e3", snf, 120);
     snf->form()->addRow(I18n::tr("optm_nf_dist"),
                         hrow({ m_nfffDistance, mutedLabel("λ", snf) }));
+    // この節はローカル state のみ
+    snf->form()->addRow(tabhelp::unwiredNote(snf));
     v->addWidget(snf);
 
     // ── S パラメータ抽出 (mode = SParam) ──────────────────────────────────
@@ -625,7 +651,10 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_spGroupDelay  = makeCheck(I18n::tr("optm_sp_gd"), false, ssp);
     ssp->vbox()->addLayout(hrow({ m_spPhase, m_spGroupDelay }));
     m_spExport = new QPushButton(I18n::tr("optm_sp_export"), ssp);
+    tabhelp::markNotImplemented(m_spExport);   // Touchstone 出力は未配線
     ssp->vbox()->addLayout(hrow({ m_spExport }));
+    // この節はローカル state のみ
+    ssp->vbox()->addWidget(tabhelp::unwiredNote(ssp));
     v->addWidget(ssp);
 
     // ── Raycast 設定 / Geometric Optics ────────────────────────────────────
@@ -687,6 +716,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     gpuRow->addWidget(mutedLabel(I18n::tr("optray_gpu_hint"), sray));
     gpuRow->addStretch(1);
     sray->vbox()->addLayout(gpuRow);
+    // レイトレーサ本体が未実装のため、この節はローカル state のみ
+    sray->vbox()->addWidget(tabhelp::unwiredNote(sray));
     v->addWidget(sray);
 
     // ── 光学系定義 / Optical system ────────────────────────────────────────
@@ -722,6 +753,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_optRayAberr = makeCheck(I18n::tr("optray_ray_aberr"), false, ssys);
     ssys->vbox()->addLayout(
         hrow({ m_optSeidel, m_optSpot, m_optMtf, m_optRayAberr }));
+    // 面データは固定の設計例で、収差解析チェックもローカル state のみ
+    ssys->vbox()->addWidget(tabhelp::unwiredNote(ssys));
     v->addWidget(ssys);
 
     // ── ハイブリッド連携 / FDTD↔Ray bridge ─────────────────────────────────
@@ -738,6 +771,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_hybPropModel->setCurrentIndex(0);          // mock 既定 = Geometric
     shyb->form()->addRow(I18n::tr("optray_hyb_prop"), m_hybPropModel);
     shyb->vbox()->addWidget(mutedLabel(I18n::tr("optray_hyb_hint"), shyb));
+    // ハイブリッド連携は未実装 — この節はローカル state のみ
+    shyb->vbox()->addWidget(tabhelp::unwiredNote(shyb));
     v->addWidget(shyb);
 
     // ── 分散モデル / Dispersion model (mock 末尾の <Section>) ───────────────
@@ -748,6 +783,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_dispModel->addItems({ "Drude", "Lorentz", "Sellmeier" });
     m_dispModel->setCurrentIndex(1);             // mock 既定 = Lorentz
     sdisp->vbox()->addWidget(m_dispModel);
+    // この節はローカル state のみ
+    sdisp->vbox()->addWidget(tabhelp::unwiredNote(sdisp));
     v->addWidget(sdisp);
 
     // ── ONN 活性化カーブ結果 (obpm 実行後に activation_curve.csv を表示) ──

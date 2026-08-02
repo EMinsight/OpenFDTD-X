@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -22,10 +23,10 @@ const bool s_i18n = [] {
     using ofd::I18n;
     I18n::reg("mph_title", "連成解析", "Coupled simulations");
     I18n::reg("mph_hint",
-              "FDTDと他物理を連成。Ansys CHARGE/HEAT, COMSOL Multiphysics 相当。\n"
+              "FDTDと他物理の連成設定画面。(連成解析は未実装 — 画面は設計モック)\n"
               "※ 表示モジュールは現在のドメイン (%1) で意味のあるもののみ。",
-              "Couples FDTD with other physics. Equivalent to Ansys CHARGE/HEAT and "
-              "COMSOL Multiphysics.\n"
+              "Settings page for coupling FDTD with other physics. "
+              "(Coupled simulation is not implemented — this page is a design mock)\n"
               "Note: only modules meaningful in the current domain (%1) are listed.");
     I18n::reg("mph_c_module", "モジュール", "Module");
     I18n::reg("mph_c_dir", "方向", "Direction");
@@ -192,6 +193,8 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
     auto *sTop = new SectionBox(I18n::tr("mph_title"), body);
     m_hint = hintLabel(QString(), sTop);
     sTop->vbox()->addWidget(m_hint);
+    // タブ全体が設計モック — どの設定も計算へ反映されない
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
 
     m_modules = new QTableWidget(0, 4, sTop);
     m_modules->setHorizontalHeaderLabels({ QString(), I18n::tr("mph_c_module"),
@@ -217,6 +220,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
     sScheme->form()->addRow(I18n::tr("mph_tol"), m_tol);
     m_maxIter = numEdit("20", 70, sScheme);
     sScheme->form()->addRow(I18n::tr("mph_maxiter"), m_maxIter);
+    sScheme->form()->addRow(tabhelp::unwiredNote(sScheme));
     v->addWidget(sScheme);
 
     // ── 光: 熱光学連成設定 ─────────────────────────────────────────────────
@@ -241,6 +245,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         bcRow->addWidget(check(I18n::tr("mph_ambient"), true, m_secThermo));
         bcRow->addStretch(1);
         m_secThermo->form()->addRow(I18n::tr("mph_heat_bc"), bcRow);
+        m_secThermo->form()->addRow(tabhelp::unwiredNote(m_secThermo));
     }
     v->addWidget(m_secThermo);
 
@@ -254,6 +259,9 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         row->addWidget(check(I18n::tr("mph_hole"), true, m_secPlasma));
         row->addStretch(1);
         m_secPlasma->form()->addRow(row);
+        // Δn の式は固定表示のサンプル (計算結果ではない)
+        m_secPlasma->form()->addRow(tabhelp::sampleNote(m_secPlasma));
+        m_secPlasma->form()->addRow(tabhelp::unwiredNote(m_secPlasma));
     }
     v->addWidget(m_secPlasma);
 
@@ -275,6 +283,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         metRow->addWidget(check(I18n::tr("mph_dtemp"), true, m_secSar));
         metRow->addStretch(1);
         m_secSar->form()->addRow(I18n::tr("mph_metric"), metRow);
+        m_secSar->form()->addRow(tabhelp::unwiredNote(m_secSar));
     }
     v->addWidget(m_secSar);
 
@@ -291,6 +300,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         row->addWidget(check(I18n::tr("mph_frf"), true, m_secVibro));
         row->addStretch(1);
         m_secVibro->form()->addRow(row);
+        m_secVibro->form()->addRow(tabhelp::unwiredNote(m_secVibro));
     }
     v->addWidget(m_secVibro);
 
@@ -313,6 +323,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         wave->addItem("JONSWAP");
         wave->setCurrentIndex(1);            // 既定 "pier"
         m_secOcean->form()->addRow(I18n::tr("mph_wave"), wave);
+        m_secOcean->form()->addRow(tabhelp::unwiredNote(m_secOcean));
     }
     v->addWidget(m_secOcean);
 

@@ -1,5 +1,6 @@
 // Post2Tab.cpp
 #include "Post2Tab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -62,8 +63,11 @@ const bool s_i18n = [] {
               "vector rendering is a local setting.");
     // エクスポート (mock: エクスポート / Export)
     I18n::reg("p2x_export", "エクスポート", "Export");
-    I18n::reg("p2x_export_hint", "時系列データ・場分布を .h5 で保存",
-              "Saves time-series data and field distributions as .h5");
+    I18n::reg("p2x_export_hint",
+              "時系列データ・場分布を .h5 で保存 "
+              "(書出しは未実装 — 設定の記録のみ)",
+              "Saves time-series data and field distributions as .h5 "
+              "(export is not implemented — settings are recorded only)");
     return true;
 }();
 
@@ -297,10 +301,15 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     // ので、ここは要求の入口だけを持つ。
     auto *s5 = new SectionBox(I18n::tr("p2x_export"), body);
     auto *r5 = new QHBoxLayout();
-    r5->addWidget(new QPushButton(QString::fromUtf8("📄 ")
-                                  + I18n::tr("pp_export_csv"), s5));
-    r5->addWidget(new QPushButton(QString::fromUtf8("💾 ")
-                                  + I18n::tr("pp_export_h5"), s5));
+    auto *csvBtn = new QPushButton(QString::fromUtf8("📄 ")
+                                   + I18n::tr("pp_export_csv"), s5);
+    auto *h5Btn  = new QPushButton(QString::fromUtf8("💾 ")
+                                   + I18n::tr("pp_export_h5"), s5);
+    // 書出しは未配線 (Runner 側の実行時出力のみ) — 押せる形で放置しない
+    tabhelp::markNotImplemented(csvBtn);
+    tabhelp::markNotImplemented(h5Btn);
+    r5->addWidget(csvBtn);
+    r5->addWidget(h5Btn);
     r5->addWidget(makeBadge("HDF5", s5));
     auto *exportHint = new QLabel(I18n::tr("p2x_export_hint"), s5);
     exportHint->setWordWrap(true);

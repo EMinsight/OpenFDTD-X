@@ -12,8 +12,12 @@ using namespace ofd;
 
 namespace {
 const bool s_i18n = [] {
-    ofd::I18n::reg("db_t3d_on",  "tidy3d: 接続中",  "tidy3d: connected");
-    ofd::I18n::reg("db_t3d_off", "tidy3d: 未接続",  "tidy3d: not connected");
+    // 判定は QSettings の API キー有無のみ。「接続中」は疎通確認を連想させる
+    // ためラベル自体を実態に合わせる (tooltip 任せにしない)。
+    ofd::I18n::reg("db_t3d_on",  "tidy3d: APIキー設定済み",
+                                 "tidy3d: API key set");
+    ofd::I18n::reg("db_t3d_off", "tidy3d: APIキー未設定",
+                                 "tidy3d: API key not set");
     ofd::I18n::reg("db_t3d_tip",
         "QSettings の API キー設定有無のみを表示します — "
         "実際の API 疎通確認は行いません",

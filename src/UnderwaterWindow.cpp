@@ -27,8 +27,12 @@ namespace {
 const bool s_i18n = [] {
     I18n::reg("uwa_app_title", "OpenUWA — 水中音響解析 (OpenFDTD-X 派生)",
                                "OpenUWA — Underwater Acoustics (OpenFDTD-X derivative)");
-    I18n::reg("uwa_engines", "共有エンジン: FDTD / Bellhop / PE / 法線モード",
-                             "Shared engines: FDTD / Bellhop / PE / Normal modes");
+    // 実際に起動されるカーネルは bellhopcxx のみ (Runner::kernelForProject が
+    // 水中ドメインで常に Kernel::Bellhop を返す)。PE / 法線モードは未実装。
+    I18n::reg("uwa_engines",
+              "計算カーネル: Bellhop (bellhopcxx) — PE / 法線モードは未実装",
+              "Solver kernel: Bellhop (bellhopcxx) — PE / normal modes are "
+              "not implemented");
     I18n::reg("uwa_t_oceanenv",   "🌏 海洋環境",              "🌏 Ocean environment");
     I18n::reg("uwa_t_underwater", "〜 伝搬解析 (SSP/Bellhop/PE)",
                                   "〜 Propagation (SSP/Bellhop/PE)");

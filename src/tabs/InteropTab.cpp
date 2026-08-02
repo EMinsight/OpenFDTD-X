@@ -1,5 +1,6 @@
 // InteropTab.cpp
 #include "InteropTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -84,10 +85,13 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_do_import", "📁 取込…", "📁 Import…");
     ofd::I18n::reg("iop_do_export", "💾 書出…", "💾 Export…");
     ofd::I18n::reg("iop_bridge_note",
-        "▸ 取込/書出はすべて本体内蔵のパーサ・ライタで処理 — "
-        "対象ツールのインストールは不要です。",
-        "▸ Import and export are handled entirely by built-in parsers and writers "
-        "— no installation of the target tool is required.");
+        "▸ 対応列は目標仕様 — 実装済みは Touchstone (.s*p) / tidy3d .json / "
+        "Bellhop .env / STL のみ (他は未実装)。取込/書出は本体内蔵のパーサ・"
+        "ライタで処理し、対象ツールのインストールは不要です。",
+        "▸ The Support column shows the target spec — only Touchstone (.s*p), "
+        "tidy3d .json, Bellhop .env and STL are implemented so far (the rest is "
+        "not implemented). Import/export uses built-in parsers and writers; no "
+        "installation of the target tool is required.");
 
     ofd::I18n::reg("iop_batch_title", "一括変換", "Batch conversion");
     ofd::I18n::reg("iop_watch", "監視フォルダ", "Watch folder");
@@ -613,7 +617,10 @@ void InteropTab::rebuildBridges()
         m_bridges->setCellWidget(r, 3,
             rows[r].ok ? badgeCell(I18n::tr("iop_sup_ok"), "ok")
                        : badgeCell(I18n::tr("iop_sup_partial"), "warn"));
-        m_bridges->setCellWidget(r, 4, new QPushButton(btn, m_bridges));
+        // 取込/書出の実処理は未実装 — 無効化して明示する (絶対規則 5)
+        auto *doBtn = new QPushButton(btn, m_bridges);
+        ofd::tabhelp::markNotImplemented(doBtn);
+        m_bridges->setCellWidget(r, 4, doBtn);
     }
     m_bridges->resizeRowsToContents();
     m_bridges->setMinimumHeight(30 * n + 38);

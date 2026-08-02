@@ -4,6 +4,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
+#include "TabHelpers.h"
 
 #include <QFrame>
 #include <QGridLayout>
@@ -25,7 +26,13 @@ const bool s_i18n = [] {
               "CST Studio-style solver picker. Choose the method best suited to the problem.\n"
               "Only solvers meaningful in the current domain are shown.");
     I18n::reg("ssel_recommended", "推奨", "Recommended");
-    I18n::reg("ssel_suggest_title", "自動選定ヒント", "Auto-suggest");
+    I18n::reg("ssel_suggest_title", "選定の目安 (例)", "Selection guide (example)");
+    I18n::reg("ssel_unwired",
+              "ソルバ選択の実行連携は未実装です (実行は常に ofd 系カーネル)。"
+              "カードは一覧表示のみで、クリックしても選択は反映されません。",
+              "Solver selection is not wired to execution yet (runs always use "
+              "the ofd-family kernels). Cards are display-only; clicking does "
+              "not select anything.");
     // mock i18n の sv_bem (ソルバ共通語彙)。カード名だけ日英を切り替える。
     I18n::reg("ssel_bem", "BEM (境界要素)", "BEM");
 
@@ -134,6 +141,11 @@ SolverSelectorTab::SolverSelectorTab(Project *project, QWidget *parent)
     auto *hint = new QLabel(I18n::tr("ssel_hint"), m_cardSection);
     hint->setWordWrap(true);
     m_cardSection->vbox()->addWidget(hint);
+    // カードは表示のみ — クリックしても実行ソルバは変わらない (絶対規則 5)
+    auto *unwired = new QLabel(I18n::tr("ssel_unwired"), m_cardSection);
+    unwired->setWordWrap(true);
+    unwired->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_cardSection->vbox()->addWidget(unwired);
     m_cardGrid = new QGridLayout();
     m_cardGrid->setSpacing(6);
     m_cardSection->vbox()->addLayout(m_cardGrid);
@@ -143,6 +155,8 @@ SolverSelectorTab::SolverSelectorTab(Project *project, QWidget *parent)
     m_hintBox = new QVBoxLayout();
     m_hintBox->setSpacing(4);
     m_hintSection->vbox()->addLayout(m_hintBox);
+    // 数値 (L/λ, Q 等) は全てモックのリテラル — プロジェクトからの算出ではない
+    m_hintSection->vbox()->addWidget(tabhelp::sampleNote(m_hintSection));
     v->addWidget(m_hintSection);
 
     v->addStretch(1);
@@ -176,7 +190,8 @@ void SolverSelectorTab::rebuild()
 
         auto *card = new QFrame(widget());
         card->setObjectName("solverCard");
-        card->setCursor(Qt::PointingHandCursor);
+        // クリックしても何も起きない (選択未実装) のでリンク風カーソルにしない
+        card->setCursor(Qt::ArrowCursor);
         card->setStyleSheet(QString("#solverCard { border:1px solid %1; border-radius:4px; }")
                                 .arg(recommended ? QStringLiteral("#0078D4")
                                                  : QStringLiteral("palette(mid)")));

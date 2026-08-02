@@ -5,6 +5,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QComboBox>
 #include <QCheckBox>
@@ -28,10 +29,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_section", "マテリアルエクスプローラ (Ansys Lumerical 相当)",
                    "Material Explorer (Ansys Lumerical equivalent)");
     ofd::I18n::reg("mex_hint",
-        "実測 n,k データを読込み、FDTD用の分散モデルに自動フィッティング。\n"
-        "金属・半導体・誘電体・2D材料のデータベースを内蔵。",
-        "Import measured n,k data and auto-fit FDTD dispersion models.\n"
-        "Built-in database of metals, semiconductors, dielectrics and 2D materials.");
+        "金属・半導体・誘電体・2D材料のデータベースを内蔵。\n"
+        "(n,k 取込・分散モデルフィットは未実装 — 画面は設計モック)",
+        "Built-in database of metals, semiconductors, dielectrics and 2D materials.\n"
+        "(n,k import and dispersion-model fitting are not implemented — this page is a design mock)");
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
@@ -57,8 +58,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_n_real",      "屈折率 n (実部)", "Refractive index n (real part)");
     ofd::I18n::reg("mex_k_imag",      "消衰係数 k (虚部)", "Extinction coefficient k (imag part)");
     ofd::I18n::reg("mex_fit_note",
-        "○ 実測データ点 ── フィット曲線。フィット範囲外は外挿のため要注意。",
-        "○ measured points ── fitted curve. Values outside the fit range are extrapolated.");
+        "── 表示は合成 1 系列のみ (光学ガラスは Sellmeier 実曲線、"
+        "カタログ材以外は例示曲線)。実測点・フィット曲線の重ね描きは未実装。",
+        "── single synthetic curve only (optical glass uses real Sellmeier curves; "
+        "other entries are illustrative). Measured points / fitted-curve overlay not implemented.");
     ofd::I18n::reg("mex_diag_section","モデル診断", "Diagnostics");
     ofd::I18n::reg("mex_diag_item",   "項目", "Item");
     ofd::I18n::reg("mex_diag_value",  "値", "Value");
@@ -167,6 +170,8 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *dbBtns = new QHBoxLayout();
     auto *impNk = new QPushButton(I18n::tr("mex_import_nk"), sDb);
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
+    tabhelp::markNotImplemented(impNk);   // n,k 取込は未配線
+    tabhelp::markNotImplemented(riBtn);   // refractiveindex.info 連携は未配線
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
@@ -270,11 +275,16 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *fitRow = new QHBoxLayout();
     auto *fitBtn = new QPushButton(I18n::tr("mex_run_fit"), m_selSection);
     fitBtn->setProperty("primary", true);
+    tabhelp::markNotImplemented(fitBtn);   // フィット計算は未実装
     fitRow->addWidget(fitBtn);
     fitRow->addStretch(1);
     fitRow->addWidget(makeBadge(I18n::tr("mex_badge_rms"), "#2E8B57", m_selSection));
     fitRow->addWidget(makeBadge(I18n::tr("mex_badge_causal"), "#2E8B57", m_selSection));
     m_selSection->form()->addRow(fitRow);
+    // バッジ (RMS誤差 / 因果律) は固定のサンプル値
+    m_selSection->form()->addRow(tabhelp::sampleNote(m_selSection));
+    // フィット設定フォーム (モデル/範囲/係数) はどこにも反映されない
+    m_selSection->form()->addRow(tabhelp::unwiredNote(m_selSection));
     right->addWidget(m_selSection);
 
     // n, k フィット結果プロット
@@ -321,6 +331,8 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
         diag->setItem(r, 2, ver);
     }
     sDiag->vbox()->addWidget(diag);
+    // 診断表は固定のサンプル値 (実行結果ではない)
+    sDiag->vbox()->addWidget(tabhelp::sampleNote(sDiag));
     auto *diagHint = new QLabel(I18n::tr("mex_diag_hint"), sDiag);
     diagHint->setWordWrap(true);
     sDiag->vbox()->addWidget(diagHint);
@@ -332,8 +344,12 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *addBtn = new QPushButton(I18n::tr("mex_add_material"), sApply);
     addBtn->setProperty("primary", true);
     applyRow->addWidget(addBtn);
-    applyRow->addWidget(new QPushButton(I18n::tr("mex_temp_table"), sApply));
-    applyRow->addWidget(new QPushButton(I18n::tr("mex_aniso"), sApply));
+    auto *tempBtn  = new QPushButton(I18n::tr("mex_temp_table"), sApply);
+    auto *anisoBtn = new QPushButton(I18n::tr("mex_aniso"), sApply);
+    tabhelp::markNotImplemented(tempBtn);    // 温度依存テーブルは未配線
+    tabhelp::markNotImplemented(anisoBtn);   // 異方性テンソルは未配線
+    applyRow->addWidget(tempBtn);
+    applyRow->addWidget(anisoBtn);
     applyRow->addStretch(1);
     sApply->vbox()->addLayout(applyRow);
     auto *checkRow = new QHBoxLayout();
@@ -342,6 +358,8 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     checkRow->addWidget(new QCheckBox(I18n::tr("mex_magnetic"), sApply));
     checkRow->addStretch(1);
     sApply->vbox()->addLayout(checkRow);
+    // 非線形/利得/磁性チェックはどこにも読まれない
+    sApply->vbox()->addWidget(tabhelp::unwiredNote(sApply));
     v->addWidget(sApply);
 
     v->addStretch(1);

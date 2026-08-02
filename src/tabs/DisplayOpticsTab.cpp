@@ -1,5 +1,6 @@
 // DisplayOpticsTab.cpp
 #include "DisplayOpticsTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -341,10 +342,14 @@ QWidget *DisplayOpticsTab::buildArwgPage()
     auto *ckRow = new QHBoxLayout();
     m_threeGratings = makeCheck(I18n::tr("dpo_three_grat"), true, sWg);
     m_rcwaOptimize  = makeCheck(I18n::tr("dpo_rcwa_opt"),   true, sWg);
+    // RCWA (orcwa) との最適化連携は未実装 — 押せる見た目にしない (絶対規則 5)
+    tabhelp::markNotImplemented(m_rcwaOptimize);
     ckRow->addWidget(m_threeGratings);
     ckRow->addWidget(m_rcwaOptimize);
     ckRow->addStretch(1);
     sWg->form()->addRow(ckRow);
+    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    sWg->vbox()->addWidget(tabhelp::unwiredNote(sWg));
     v->addWidget(sWg);
 
     // 評価 / Metrics
@@ -368,10 +373,17 @@ QWidget *DisplayOpticsTab::buildArwgPage()
                                      badgeCell(I18n::tr(m.judgeKey), m.kind));
     }
     sMe->vbox()->addWidget(m_metricTable);
+    // 評価表・判定バッジはモック由来の固定値 (絶対規則 5)
+    sMe->vbox()->addWidget(tabhelp::sampleNote(sMe));
 
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("dpo_btn_eyebox"), sMe));
-    btnRow->addWidget(new QPushButton(I18n::tr("dpo_btn_tradeoff"), sMe));
+    // プロット生成は未実装 — 無効化して明示する (絶対規則 5)
+    auto *btnEyebox   = new QPushButton(I18n::tr("dpo_btn_eyebox"), sMe);
+    auto *btnTradeoff = new QPushButton(I18n::tr("dpo_btn_tradeoff"), sMe);
+    tabhelp::markNotImplemented(btnEyebox);
+    tabhelp::markNotImplemented(btnTradeoff);
+    btnRow->addWidget(btnEyebox);
+    btnRow->addWidget(btnTradeoff);
     btnRow->addStretch(1);
     sMe->vbox()->addLayout(btnRow);
     v->addWidget(sMe);
@@ -426,6 +438,10 @@ QWidget *DisplayOpticsTab::buildOledPage()
     eqeRow->addWidget(m_oledDetail);
     eqeRow->addStretch(1);
     s->form()->addRow(eqeRow);
+    // EQE / 取り出し効率バッジはモック由来の固定値 (絶対規則 5)
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
+    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     return page;
@@ -460,6 +476,9 @@ QWidget *DisplayOpticsTab::buildMicroLedPage()
     bRow->addWidget(m_microLedBadge);
     bRow->addStretch(1);
     form->addRow(bRow);
+    // 効率バッジはモック由来の固定値 / フォームは未配線 (絶対規則 5)
+    form->addRow(tabhelp::sampleNote(page));
+    form->addRow(tabhelp::unwiredNote(page));
     return page;
 }
 
@@ -488,5 +507,8 @@ QWidget *DisplayOpticsTab::buildLcdPage()
     bRow->addWidget(m_lcdBadge);
     bRow->addStretch(1);
     form->addRow(bRow);
+    // コントラスト比バッジはモック由来の固定値 / フォームは未配線 (絶対規則 5)
+    form->addRow(tabhelp::sampleNote(page));
+    form->addRow(tabhelp::unwiredNote(page));
     return page;
 }

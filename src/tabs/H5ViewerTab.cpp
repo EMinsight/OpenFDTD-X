@@ -3,10 +3,12 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFrame>
@@ -33,16 +35,24 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_file", "ファイル", "File");
     ofd::I18n::reg("h5_browse", "📁 参照…", "📁 Browse…");
     ofd::I18n::reg("h5_reload", "↻ 再読込", "↻ Reload");
+    ofd::I18n::reg("h5_file_ph", "例: patch.h5 (読取は未実装)",
+                   "e.g. patch.h5 (reading not implemented)");
+    ofd::I18n::reg("h5_demo_banner",
+                   "デモ表示 — 実データ未読込 (HDF5 読取は未実装)",
+                   "Demo display — no real data loaded (HDF5 reading not "
+                   "implemented)");
     ofd::I18n::reg("h5_formats", "対応形式", "Supported formats");
     ofd::I18n::reg("h5_fmt_ofdout", ".ofd.out → 変換", ".ofd.out → convert");
     ofd::I18n::reg("h5_file_hint",
-        "▸ ローカル解析結果 / クラウド結果 / 過去ログ / 他ソフト出力 (Meep, Lumerical) すべて読込可",
-        "▸ Reads local results, cloud results, past logs, and other tools' output "
-        "(Meep, Lumerical)");
+        "▸ HDF5 の実ファイル読取は未実装 — このタブは表示設計のプレビューです "
+        "(ツリー・可視化はサンプルデータ)",
+        "▸ Reading actual HDF5 files is not implemented yet — this tab is a "
+        "preview of the viewer design (tree and plots show sample data)");
     ofd::I18n::reg("h5_tree_section", "データセット", "Dataset tree");
     ofd::I18n::reg("h5_tree_hint",
-        "HDFView 風のツリー表示。データセットをクリックで可視化。",
-        "HDFView-style tree. Click a dataset to visualize it.");
+        "HDFView 風のツリー表示 (固定サンプル)。実ファイルの解析は未実装。",
+        "HDFView-style tree (fixed sample). Parsing a real file is not "
+        "implemented yet.");
     ofd::I18n::reg("h5_selected", "選択中:", "Selected:");
     ofd::I18n::reg("h5_vis_section", "可視化", "Visualization");
     ofd::I18n::reg("h5_view_mode", "表示方式", "View mode");
@@ -268,6 +278,20 @@ void FieldCanvas::paintEvent(QPaintEvent *)
     p.drawText(QPointF(14, 8 + fm.ascent() + 2), l1);
     p.drawText(QPointF(14, 8 + fm.height() + fm.ascent() + 3), l2);
 
+    // ── デモ表示の明示バナー (描画は解析式 — 実データではない) ──
+    // FieldHeatmap の m_demo バナーと同じ方式。HDF5 読取実装まで常時表示。
+    {
+        const QRect band(0, height() - 24, width(), 24);
+        p.fillRect(band, QColor(0, 0, 0, 170));
+        p.setPen(QColor("#FFD54F"));
+        QFont bf = p.font();
+        bf.setPixelSize(11);
+        p.setFont(bf);
+        p.drawText(band.adjusted(6, 0, -6, 0),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   I18n::tr("h5_demo_banner"));
+    }
+
     // 枠線
     p.setPen(QPen(palette().mid().color(), 1));
     p.setBrush(Qt::NoBrush);
@@ -317,10 +341,22 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     // HDF5 ファイル / File
     auto *sf = new SectionBox(I18n::tr("h5_file_section"), body);
     auto *frow = new QHBoxLayout();
-    m_file = new QLineEdit("patch.h5", sf);
+    // 既定値 "patch.h5" は読める見た目になるので空 + placeholder にする
+    m_file = new QLineEdit(sf);
+    m_file->setPlaceholderText(I18n::tr("h5_file_ph"));
     frow->addWidget(m_file, 1);
-    frow->addWidget(new QPushButton(I18n::tr("h5_browse"), sf));
-    frow->addWidget(new QPushButton(I18n::tr("h5_reload"), sf));
+    // 参照… はファイル選択のみ実配線 (読取は未実装)。再読込は未実装で無効化。
+    auto *browseBtn = new QPushButton(I18n::tr("h5_browse"), sf);
+    connect(browseBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("h5_file_section"), {},
+            "HDF5 (*.h5 *.hdf5);;All files (*)");
+        if (!path.isEmpty()) m_file->setText(path);
+    });
+    frow->addWidget(browseBtn);
+    auto *reloadBtn = new QPushButton(I18n::tr("h5_reload"), sf);
+    ofd::tabhelp::markNotImplemented(reloadBtn);
+    frow->addWidget(reloadBtn);
     sf->form()->addRow(I18n::tr("h5_file"), frow);
     auto *fmts = new QHBoxLayout();
     fmts->addWidget(makeBadge(".h5", sf));
@@ -391,6 +427,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_tree->setCurrentItem(esurf);
     m_tree->resizeColumnToContents(0);
     st->vbox()->addWidget(m_tree);
+    // ツリー内容は固定サンプル (実ファイルの読取・解析は未実装)
+    st->vbox()->addWidget(ofd::tabhelp::sampleNote(st));
     m_selected = new QLabel(I18n::tr("h5_selected") + " " + m_dataset, st);
     st->vbox()->addWidget(m_selected);
     v->addWidget(st);
@@ -442,8 +480,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     ckAxes->setChecked(true);
     checks->addWidget(ckGrid);
     checks->addWidget(ckAxes);
-    checks->addWidget(new QCheckBox(I18n::tr("h5_overlay_geom"), sv));
-    checks->addWidget(new QCheckBox(I18n::tr("h5_overlay_mon"), sv));
+    // オーバーレイ 2 種はどこにも配線されていない → 未実装として無効化
+    auto *ckOvGeom = new QCheckBox(I18n::tr("h5_overlay_geom"), sv);
+    auto *ckOvMon  = new QCheckBox(I18n::tr("h5_overlay_mon"), sv);
+    ofd::tabhelp::markNotImplemented(ckOvGeom);
+    ofd::tabhelp::markNotImplemented(ckOvMon);
+    checks->addWidget(ckOvGeom);
+    checks->addWidget(ckOvMon);
     checks->addStretch(1);
     sv->form()->addRow(checks);
     v->addWidget(sv);
@@ -482,7 +525,9 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     prow->addWidget(prevBtn);
     prow->addWidget(nextBtn);
     prow->addWidget(lastBtn);
-    prow->addWidget(new QPushButton(I18n::tr("h5_loop"), sp));
+    auto *loopBtn = new QPushButton(I18n::tr("h5_loop"), sp);
+    ofd::tabhelp::markNotImplemented(loopBtn);   // 再生は常にループ (切替未実装)
+    prow->addWidget(loopBtn);
     prow->addStretch(1);
     sp->vbox()->addLayout(prow);
     auto *fr = new QHBoxLayout();
@@ -507,9 +552,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     tr0->addWidget(new QLabel(QString::fromUtf8("〜"), sp));
     tr0->addWidget(rangeHi);
     tr0->addWidget(new QLabel("ps", sp));
-    tr0->addWidget(new QCheckBox(I18n::tr("h5_range_only"), sp));
+    auto *ckRangeOnly = new QCheckBox(I18n::tr("h5_range_only"), sp);
+    ofd::tabhelp::markNotImplemented(ckRangeOnly);
+    tr0->addWidget(ckRangeOnly);
     tr0->addStretch(1);
     sp->form()->addRow(I18n::tr("h5_time_range"), tr0);
+    // 時間範囲の入力は再生に反映されない (未実装)
+    sp->form()->addRow(ofd::tabhelp::unwiredNote(sp));
     v->addWidget(sp);
 
     // 時間断面 / Cross-sections (XY/XZ/YZ)
@@ -528,17 +577,23 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_secValue = new QLabel("15 (Z=1.5mm)", sx);
     xrow->addWidget(m_secValue);
     sx->vbox()->addLayout(xrow);
-    sx->vbox()->addWidget(new QCheckBox(I18n::tr("h5_sec_multi"), sx));
+    auto *ckMulti = new QCheckBox(I18n::tr("h5_sec_multi"), sx);
+    ofd::tabhelp::markNotImplemented(ckMulti);
+    sx->vbox()->addWidget(ckMulti);
+    // 断面の選択・位置はプレビュー描画に反映されない (ラベル更新のみ)
+    sx->vbox()->addWidget(ofd::tabhelp::unwiredNote(sx));
     v->addWidget(sx);
 
     // エクスポート / Export
     auto *se = new SectionBox(I18n::tr("h5_export"), body);
     auto *erow = new QHBoxLayout();
-    erow->addWidget(new QPushButton(I18n::tr("h5_exp_mp4"), se));
-    erow->addWidget(new QPushButton(I18n::tr("h5_exp_gif"), se));
-    erow->addWidget(new QPushButton(I18n::tr("h5_exp_png"), se));
-    erow->addWidget(new QPushButton(I18n::tr("h5_exp_pngseq"), se));
-    erow->addWidget(new QPushButton(I18n::tr("h5_exp_csv"), se));
+    // エクスポートは全て未実装 → 無効化
+    for (const char *key : { "h5_exp_mp4", "h5_exp_gif", "h5_exp_png",
+                             "h5_exp_pngseq", "h5_exp_csv" }) {
+        auto *b = new QPushButton(I18n::tr(QLatin1String(key)), se);
+        ofd::tabhelp::markNotImplemented(b);
+        erow->addWidget(b);
+    }
     erow->addStretch(1);
     se->vbox()->addLayout(erow);
     auto *mrow = new QHBoxLayout();
@@ -565,6 +620,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     echecks->addWidget(new QCheckBox(I18n::tr("h5_embed_geom"), se));
     echecks->addStretch(1);
     se->form()->addRow(echecks);
+    // 動画設定・埋込オプションはエクスポート未実装のため反映先が無い
+    se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
     v->addWidget(se);
 
     // 統計・派生量 / Statistics & derived
@@ -575,11 +632,15 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     brow->addWidget(makeBadge(I18n::tr("h5_stat_energy"), ss));
     brow->addStretch(1);
     ss->vbox()->addLayout(brow);
+    // 統計値は固定サンプル (実データが無いので算出できない)
+    ss->vbox()->addWidget(ofd::tabhelp::sampleNote(ss));
     auto *srow = new QHBoxLayout();
-    srow->addWidget(new QPushButton(I18n::tr("h5_stat_series"), ss));
-    srow->addWidget(new QPushButton(I18n::tr("h5_stat_schroeder"), ss));
-    srow->addWidget(new QPushButton(I18n::tr("h5_stat_fft"), ss));
-    srow->addWidget(new QPushButton(I18n::tr("h5_stat_lineint"), ss));
+    for (const char *key : { "h5_stat_series", "h5_stat_schroeder",
+                             "h5_stat_fft", "h5_stat_lineint" }) {
+        auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
+        ofd::tabhelp::markNotImplemented(b);
+        srow->addWidget(b);
+    }
     srow->addStretch(1);
     ss->vbox()->addLayout(srow);
     v->addWidget(ss);
@@ -587,10 +648,17 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     // 連携 / Integration
     auto *sg = new SectionBox(I18n::tr("h5_integration"), body);
     auto *grow = new QHBoxLayout();
-    grow->addWidget(new QPushButton(I18n::tr("h5_int_python"), sg));
-    grow->addWidget(new QPushButton("📊 Jupyter Notebook", sg));
-    grow->addWidget(new QPushButton(I18n::tr("h5_int_paraview"), sg));
-    grow->addWidget(new QPushButton(I18n::tr("h5_int_matlab"), sg));
+    // 外部連携は全て未実装 → 無効化
+    auto *pyBtn  = new QPushButton(I18n::tr("h5_int_python"), sg);
+    auto *jupBtn = new QPushButton("📊 Jupyter Notebook", sg);
+    auto *pvBtn  = new QPushButton(I18n::tr("h5_int_paraview"), sg);
+    auto *mlBtn  = new QPushButton(I18n::tr("h5_int_matlab"), sg);
+    for (QPushButton *b : { pyBtn, jupBtn, pvBtn, mlBtn })
+        ofd::tabhelp::markNotImplemented(b);
+    grow->addWidget(pyBtn);
+    grow->addWidget(jupBtn);
+    grow->addWidget(pvBtn);
+    grow->addWidget(mlBtn);
     grow->addStretch(1);
     sg->vbox()->addLayout(grow);
     v->addWidget(sg);

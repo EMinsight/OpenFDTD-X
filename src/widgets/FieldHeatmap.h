@@ -29,6 +29,7 @@ private:
     QVector<double> m_cells;
     int      m_n = 50;
     QString  m_title;
+    bool     m_demo = true;   // まだ setData されていない = プレースホルダ表示中
 };
 
 } // namespace ofd

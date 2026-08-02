@@ -179,6 +179,7 @@ private:
     QAction   *m_deviceAction = nullptr;     // ラベル/スピンの表示制御用
     QAction   *m_deviceBoxAction = nullptr;
     QAction   *m_cloudAction = nullptr;
+    QAction   *m_cloudMenuAction = nullptr;   // ツールメニュー側 (同じ制約)
     QAction   *m_levelStandard = nullptr;
     QAction   *m_levelExpert = nullptr;
 

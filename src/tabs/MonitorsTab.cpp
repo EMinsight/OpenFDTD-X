@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -32,8 +33,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mon_add_suffix", "(%1種 · %2ドメイン)",
                    "(%1 types · %2 domain)");
     ofd::I18n::reg("mon_settings", "モニター設定", "Settings");
-    ofd::I18n::reg("mon_sync", "座標範囲を波源領域に同期",
-                   "Sync extents to source region");
+    ofd::I18n::reg("mon_sync", "座標範囲を波源領域に同期 (同期は未実装)",
+                   "Sync extents to source region (sync not implemented)");
     ofd::I18n::reg("mon_auto", "自動", "Auto");
     ofd::I18n::reg("mon_recorders", "記録レコーダ", "Recorders");
     ofd::I18n::reg("mon_phase", "位相", "Phase");
@@ -182,6 +183,8 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
     m_list->verticalHeader()->setVisible(false);
     m_list->setMinimumHeight(180);
     sl->vbox()->addWidget(m_list);
+    // 一覧はドメイン別の固定サンプル行 (Project には保存されない)
+    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
     v->addWidget(sl);
 
     // ── モニタータイプ追加 / Add monitor ────────────────────────────────────
@@ -221,6 +224,10 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
     ah->addWidget(new QLabel(I18n::tr("mon_apod_hint"), m_apodRow));
     ah->addStretch(1);
     m_settings->form()->addRow("apodization", m_apodRow);
+
+    // 同期/レコーダ/apodization はどこにも読まれない
+    // (サンプリング周波数のみ AcousticOpts へ反映される)
+    m_settings->form()->addRow(tabhelp::unwiredNote(m_settings));
 
     // サンプリング周波数 行 (音響 / 水中のみ) — AcousticOpts::sampleRate
     m_srateRow = new QWidget(m_settings);
@@ -337,6 +344,7 @@ void MonitorsTab::rebuildDomain()
             + "\n" + I18n::tr(QString::fromUtf8(t.desc)), m_addHost);
         b->setStyleSheet("text-align:left; padding:4px 8px;");
         b->setMinimumHeight(36);
+        tabhelp::markNotImplemented(b);   // モニター追加は未配線
         grid->addWidget(b, idx / 2, idx % 2);
         ++idx;
     }

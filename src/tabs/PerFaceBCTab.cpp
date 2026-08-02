@@ -1,5 +1,6 @@
 // PerFaceBCTab.cpp
 #include "PerFaceBCTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -45,6 +46,11 @@ const bool s_i18n = [] {
                    "Dissipative layer (low-Q structures)");
     ofd::I18n::reg("pfb_evanescent", "エバネッセント波吸収",
                    "Evanescent wave absorption");
+    ofd::I18n::reg("pfb_applied_note",
+                   "※ 層数・多項式次数のみ .ofd の PML 設定 (pmlL / pmlM) へ"
+                   "反映されます。",
+                   "* Only the layer count and polynomial order are applied to "
+                   "the .ofd PML settings (pmlL / pmlM).");
 
     // 面名・境界条件名 (i18n.js の bc_* — 既存キーがあればそちらが優先される)
     ofd::I18n::reg("bc_xmin", "X最小面", "X min face");
@@ -112,6 +118,9 @@ PerFaceBCTab::PerFaceBCTab(Project *project, QWidget *parent)
     checks->addWidget(m_usePeriodic);
     checks->addStretch(1);
     s->vbox()->addLayout(checks);
+    // 面別 BC コンボ・対称/周期チェックはどこにも反映されない
+    // (未実装の明示 — 絶対規則 5)
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     // ── PML設定 / PML parameters ────────────────────────────────────────────
@@ -151,6 +160,13 @@ PerFaceBCTab::PerFaceBCTab(Project *project, QWidget *parent)
     pmlChecks->addWidget(m_evanescent);
     pmlChecks->addStretch(1);
     sp->form()->addRow(pmlChecks);
+    // apply() が反映するのは pmlL / pmlM のみ。プロファイル・α/κ/σ・
+    // 散逸/エバネッセントは未接続 (未実装の明示 — 絶対規則 5)
+    auto *appliedNote = new QLabel(I18n::tr("pfb_applied_note"), sp);
+    appliedNote->setWordWrap(true);
+    appliedNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sp->vbox()->addWidget(appliedNote);
+    sp->vbox()->addWidget(ofd::tabhelp::unwiredNote(sp));
     v->addWidget(sp);
 
     v->addStretch(1);

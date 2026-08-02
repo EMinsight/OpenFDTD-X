@@ -10,6 +10,8 @@
 #include <QVector>
 #include <vector>
 
+class QAbstractButton;
+class QLabel;
 class QTableWidgetItem;
 class QWidget;
 
@@ -40,6 +42,19 @@ void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
 void saveTextFile(QWidget *parent, const QString &caption,
                   const QString &suggested, const QString &filter,
                   const QString &content);
+
+// ── 仮対応 (モック) の明示 (CLAUDE.md 絶対規則 5) ───────────────────────────
+// 未実装機能のボタン/チェックを「押せるのに何も起きない」状態にしない。
+// 無効化して「未実装」ツールチップを付ける。
+void markNotImplemented(QAbstractButton *b);
+
+// モック由来のサンプル値 (固定の表・グラフ・バッジ) の直下に置く注記ラベル:
+// 「⚠ サンプル表示 — 実行結果ではありません (機能未実装)」
+QLabel *sampleNote(QWidget *parent);
+
+// どこにも反映されない設定フォームの節に置く注記ラベル:
+// 「この設定は現在計算へ反映されません (未実装)」
+QLabel *unwiredNote(QWidget *parent);
 
 } // namespace tabhelp
 } // namespace ofd

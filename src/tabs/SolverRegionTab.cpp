@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -41,23 +42,34 @@ const bool s_i18n = [] {
     ofd::I18n::reg("sreg_mesh_acc", "メッシュ精度 (Lumerical風)",
                    "Mesh accuracy (Lumerical-style)");
     ofd::I18n::reg("sreg_acc_coarse",
-        "▸ 粗 (1〜2): 高速・初期検討用、誤差 5〜10%",
-        "▸ Coarse (1-2): fast, for initial studies, 5-10% error");
+        "▸ 粗 (1〜2): 高速・初期検討用、誤差 5〜10% (目安)",
+        "▸ Coarse (1-2): fast, for initial studies, 5-10% error (rough guide)");
     ofd::I18n::reg("sreg_acc_std",
-        "▸ 標準 (3): 一般的精度、誤差 ~2%",
-        "▸ Standard (3): typical accuracy, ~2% error");
+        "▸ 標準 (3): 一般的精度、誤差 ~2% (目安)",
+        "▸ Standard (3): typical accuracy, ~2% error (rough guide)");
     ofd::I18n::reg("sreg_acc_mid",
-        "▸ 中 (4): 推奨デフォルト、誤差 ~1%",
-        "▸ Medium (4): recommended default, ~1% error");
+        "▸ 中 (4): 推奨デフォルト、誤差 ~1% (目安)",
+        "▸ Medium (4): recommended default, ~1% error (rough guide)");
     ofd::I18n::reg("sreg_acc_high",
-        "▸ 高精度 (5〜6): 製品設計用、誤差 ~0.5%",
-        "▸ High (5-6): for product design, ~0.5% error");
+        "▸ 高精度 (5〜6): 製品設計用、誤差 ~0.5% (目安)",
+        "▸ High (5-6): for product design, ~0.5% error (rough guide)");
     ofd::I18n::reg("sreg_acc_max",
-        "▸ 最高 (7〜8): 検証用、計算時間×16, 誤差 <0.2%",
-        "▸ Highest (7-8): for verification, 16x compute time, <0.2% error");
-    ofd::I18n::reg("sreg_cells", "セル数 (推定)", "Cell count (est.)");
-    ofd::I18n::reg("sreg_memory", "メモリ (推定)", "Memory (est.)");
-    ofd::I18n::reg("sreg_est_time", "計算時間 (推定)", "Compute time (est.)");
+        "▸ 最高 (7〜8): 検証用、計算時間×16, 誤差 <0.2% (目安)",
+        "▸ Highest (7-8): for verification, 16x compute time, <0.2% error "
+        "(rough guide)");
+    ofd::I18n::reg("sreg_cells", "セル数 (目安 — プリセット例)",
+                   "Cell count (guide — preset example)");
+    ofd::I18n::reg("sreg_memory", "メモリ (目安 — プリセット例)",
+                   "Memory (guide — preset example)");
+    ofd::I18n::reg("sreg_est_time", "計算時間 (目安 — プリセット例)",
+                   "Compute time (guide — preset example)");
+    ofd::I18n::reg("sreg_preset_note",
+        "上の値はメッシュ精度プリセットごとの固定の目安表で、"
+        "このプロジェクトからの実推定ではありません。"
+        "実際のセル数・メモリ推定はメッシュタブを参照。",
+        "The values above come from a fixed per-preset lookup table, not an "
+        "estimate for this project. See the Mesh tab for the real cell-count "
+        "and memory estimate.");
     ofd::I18n::reg("sreg_eta1", "<5秒", "<5 s");
     ofd::I18n::reg("sreg_eta2", "~20秒", "~20 s");
     ofd::I18n::reg("sreg_eta3", "~1分", "~1 min");
@@ -76,8 +88,9 @@ const bool s_i18n = [] {
     ofd::I18n::reg("sreg_ref_curve", "湾曲面 (Conformal)", "Conformal");
     ofd::I18n::reg("sreg_subpixel", "サブピクセル平均 (推奨)",
                    "Subpixel averaging (recommended)");
-    ofd::I18n::reg("sreg_auto_override", "メッシュオーバーライド領域を自動配置",
-                   "Auto-place mesh override regions");
+    ofd::I18n::reg("sreg_auto_override",
+                   "メッシュオーバーライド領域を自動配置 (未実装)",
+                   "Auto-place mesh override regions (not implemented)");
     ofd::I18n::reg("sreg_simtime", "シミュレーション時間", "Simulation time");
     ofd::I18n::reg("sreg_time", "時間 (FDTD)", "Time (FDTD)");
     ofd::I18n::reg("sreg_shutoff", "自動シャットオフ", "Auto shutoff");
@@ -93,8 +106,12 @@ const bool s_i18n = [] {
     ofd::I18n::reg("sreg_col_face", "面", "Face");
     ofd::I18n::reg("sreg_pml_profile", "PML プロファイル", "PML profile");
     ofd::I18n::reg("sreg_pml_layers", "PML 層数", "PML layers");
-    ofd::I18n::reg("sreg_auto_sym", "対称性を自動検出して計算量削減",
-                   "Auto-detect symmetry to reduce computation");
+    ofd::I18n::reg("sreg_auto_sym", "対称性を自動検出して計算量削減 (未実装)",
+                   "Auto-detect symmetry to reduce computation (not implemented)");
+    ofd::I18n::reg("sreg_bc_unwired",
+        "PML 層数以外の設定は現在計算へ反映されません (未実装)",
+        "Settings other than PML layers are not applied to the solver yet "
+        "(not implemented)");
     return true;
 }();
 
@@ -150,6 +167,8 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
                        rangeRow(m_yMin, m_yMax, "-0.030", "0.030", false));
     sr->form()->addRow(I18n::tr("sreg_zrange"),
                        rangeRow(m_zMin, m_zMax, "0.000", "0.030", false));
+    // 領域指定はまだ Project / .ofd へ配線されていない (絶対規則 5)
+    sr->form()->addRow(tabhelp::unwiredNote(sr));
     v->addWidget(sr);
 
     // ── メッシュ設定 / Mesh ─────────────────────────────────────────────────
@@ -185,6 +204,13 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_estTime = new QLabel(sm);
     sm->form()->addRow(I18n::tr("sreg_est_time"), m_estTime);
 
+    // セル数/メモリ/計算時間は精度プリセットの固定表 (実推定ではない)
+    sm->form()->addRow(tabhelp::sampleNote(sm));
+    auto *presetNote = new QLabel(I18n::tr("sreg_preset_note"), sm);
+    presetNote->setWordWrap(true);
+    presetNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sm->form()->addRow(presetNote);
+
     auto *sep = new QFrame(sm);          // sep-h
     sep->setFrameShape(QFrame::HLine);
     sep->setFrameShadow(QFrame::Sunken);
@@ -211,6 +237,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_autoOverride = new QCheckBox(I18n::tr("sreg_auto_override"), sm);
     m_autoOverride->setChecked(true);
     sm->form()->addRow(m_autoOverride);
+    sm->form()->addRow(tabhelp::unwiredNote(sm));
     v->addWidget(sm);
 
     // ── シミュレーション時間 / Simulation time ──────────────────────────────
@@ -243,6 +270,8 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     dtRow->addWidget(stable);
     dtRow->addStretch(1);
     ss->form()->addRow(QString::fromUtf8("Δt (CFL)"), dtRow);
+    // Δt / ステップ数 / 「安定」バッジはモックの固定値 (CFL 計算は未実装)
+    ss->form()->addRow(tabhelp::sampleNote(ss));
 
     auto *cflRow = new QHBoxLayout();
     m_cfl = new QLineEdit("0.99", ss);
@@ -251,6 +280,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
     cflRow->addStretch(1);
     ss->form()->addRow(I18n::tr("sreg_cfl"), cflRow);
+    ss->form()->addRow(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 境界条件 / Boundary conditions ──────────────────────────────────────
@@ -278,6 +308,8 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
         m_bcTable->setItem(0, c + 1, it);
     }
     sb->form()->addRow(m_bcTable);
+    // 面別 BC 表はモックの固定値 (境界面タブの実設定とは連動していない)
+    sb->form()->addRow(tabhelp::sampleNote(sb));
 
     m_pmlProfile = new QComboBox(sb);
     m_pmlProfile->addItems({ "Standard", "Stabilized", "CPML" });
@@ -290,6 +322,11 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     m_autoSym = new QCheckBox(I18n::tr("sreg_auto_sym"), sb);
     sb->form()->addRow(m_autoSym);
+    // PML 層数だけは Project (GeneralOpts) に永続化される — 他は未配線
+    auto *bcUnwired = new QLabel(I18n::tr("sreg_bc_unwired"), sb);
+    bcUnwired->setWordWrap(true);
+    bcUnwired->setStyleSheet("font-size:11px; color:palette(mid);");
+    sb->form()->addRow(bcUnwired);
     v->addWidget(sb);
 
     v->addStretch(1);

@@ -1,5 +1,6 @@
 // ToleranceTab.cpp
 #include "ToleranceTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -23,12 +24,13 @@ const bool s_i18n = [] {
     using ofd::I18n;
     I18n::reg("tol_title_fmt", "製造ばらつき・歩留まり解析 (%1)",
               "Tolerance & Yield (%1)");
+    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 未実装であることを明記する
     I18n::reg("tol_hint",
-              "Zemax Tolerance + Lumerical yield analysis 相当。\n"
-              "製造誤差/環境変動をモンテカルロでサンプリングし、性能分布と歩留まりを評価。",
-              "Equivalent to Zemax Tolerance + Lumerical yield analysis.\n"
+              "製造誤差/環境変動をモンテカルロでサンプリングし、性能分布と歩留まりを評価。\n"
+              "(モンテカルロは未実装 — 画面は設計モック)",
               "Samples manufacturing and environmental variations by Monte Carlo, then "
-              "evaluates the performance distribution and yield.");
+              "evaluates the performance distribution and yield.\n"
+              "(Monte Carlo not implemented — this screen is a design mock.)");
 
     I18n::reg("tol_sources", "ばらつき要因", "Variation sources");
     I18n::reg("tol_c_item", "項目", "Item");
@@ -45,8 +47,8 @@ const bool s_i18n = [] {
 
     I18n::reg("tol_criteria", "合格条件", "Pass criteria");
     I18n::reg("tol_results", "結果", "Results");
-    I18n::reg("tol_lastrun", "最終ラン: 1000 サンプル · 完了",
-              "Last run: 1000 samples · done");
+    // モンテカルロは未実装なので「完了」を偽装しない
+    I18n::reg("tol_lastrun", "最終ラン: 未実行", "Last run: not run yet");
     I18n::reg("tol_yield", "歩留まり 87.4%", "Yield 87.4%");
     I18n::reg("tol_3sigma", "3σ range = %1", "3σ range = %1");
     I18n::reg("tol_density", "density", "density");
@@ -146,6 +148,8 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     m_sources->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_sources->setMinimumHeight(200);
     sSrc->vbox()->addWidget(m_sources);
+    // ばらつき要因の編集はどこにも読まれない (Project 書込ゼロ)
+    sSrc->vbox()->addWidget(tabhelp::unwiredNote(sSrc));
     v->addWidget(sSrc);
 
     // ── モンテカルロ設定 ───────────────────────────────────────────────────
@@ -159,6 +163,8 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     m_sampling->addItem(I18n::tr("tol_sobol"));
     m_sampling->setCurrentIndex(1);          // 既定 "lhs"
     sMc->form()->addRow(I18n::tr("tol_method"), m_sampling);
+    // サンプル数・サンプリング法はどこにも読まれない
+    sMc->form()->addRow(tabhelp::unwiredNote(sMc));
     v->addWidget(sMc);
 
     // ── 合格条件 / Pass criteria ───────────────────────────────────────────
@@ -175,6 +181,8 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     critRow->addWidget(m_goalAt);
     critRow->addStretch(1);
     sCrit->vbox()->addLayout(critRow);
+    // 合格条件はどこにも読まれない
+    sCrit->vbox()->addWidget(tabhelp::unwiredNote(sCrit));
     v->addWidget(sCrit);
 
     // ── 結果 / Results ─────────────────────────────────────────────────────
@@ -201,11 +209,18 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     }
     m_hist->setMinimumHeight(120);
     sRes->vbox()->addWidget(m_hist);
+    // 歩留まりバッジ・3σ範囲・ヒストグラムはモック合成値 (MC 未実行)
+    sRes->vbox()->addWidget(tabhelp::sampleNote(sRes));
 
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("tol_report"), sRes));
-    btnRow->addWidget(new QPushButton(I18n::tr("tol_sensitivity"), sRes));
-    btnRow->addWidget(new QPushButton(I18n::tr("tol_robust"), sRes));
+    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ
+    auto *reportBtn = new QPushButton(I18n::tr("tol_report"), sRes);
+    auto *sensBtn   = new QPushButton(I18n::tr("tol_sensitivity"), sRes);
+    auto *robustBtn = new QPushButton(I18n::tr("tol_robust"), sRes);
+    for (QPushButton *b : { reportBtn, sensBtn, robustBtn }) {
+        tabhelp::markNotImplemented(b);
+        btnRow->addWidget(b);
+    }
     btnRow->addStretch(1);
     sRes->vbox()->addLayout(btnRow);
     v->addWidget(sRes);
