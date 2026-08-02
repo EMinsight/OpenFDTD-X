@@ -20,6 +20,8 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure   # 音響�
 - GUI 実行不要のヘッドレス環境では常に `QT_QPA_PLATFORM=offscreen`。
 - GUI スモーク (ヘッドレス):
   `QT_QPA_PLATFORM=offscreen ./build/openfdtd_x tests/data/dipole.ofd --screenshot /tmp/x.png`
+  (macOS は `.app` バンドルになるため実体
+  `./build/openfdtd_x.app/Contents/MacOS/openfdtd_x` を実行する — README「macOS での実行」参照)
 - 新規ソースは **CMakeLists.txt の GUI_SOURCES / CORE_SOURCES に手で追加** (glob していない)。
 
 ## アーキテクチャの掟
