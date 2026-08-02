@@ -61,6 +61,22 @@ export OPENRCWA_HOME=/path/to/OpenRCWA   # orcwa, orcwa_post ...
 export OPENBPM_HOME=/path/to/OpenBPM     # obpm, obpm_post ...
 ```
 
+#### カーネルの位置づけ (必須 / オプション)
+
+このリポジトリは GUI のみで、計算本体は別リポジトリのカーネルを
+サブプロセスとして起動する。
+
+| カーネル | 位置づけ | 対応ドメイン |
+|---|---|---|
+| [OpenFDTD](https://github.com/Sirokujira/OpenFDTD) (`ofd`) | **必須** — 基幹カーネル。これが無いと計算できない (CI でも統合検証) | 電磁 (既定) |
+| [OpenRCWA](https://github.com/Sirokujira/OpenRCWA) (`orcwa`) | オプション | 光 (RCWA / FMM) |
+| [OpenBPM](https://github.com/Sirokujira/OpenBPM) (`obpm`) | オプション | 光 (BPM) |
+| [bellhopcuda](https://github.com/Sirokujira/bellhopcuda) (`bellhopcxx`) | オプション | 水中音響 |
+
+オプションのカーネルは対応ドメインを使うときだけ必要。現在のドメインの
+カーネルが見つからない場合はステータスバーに「⚠ カーネル未検出」が表示され、
+クリックでカーネルパス設定を開ける。
+
 #### カーネルが見つからないとき
 
 計算実行時にコンソールへ
@@ -70,13 +86,9 @@ error: Child process set up failed: execve: No such file or directory (ofd)
 === failed (kernel not found) ===
 ```
 
-と出る場合、ソルバーカーネル (別リポジトリ) が未導入か、場所が
-GUI に伝わっていない。このリポジトリは GUI のみで、計算本体は
-[OpenFDTD](https://github.com/Sirokujira/OpenFDTD) /
-[OpenRCWA](https://github.com/Sirokujira/OpenRCWA) /
-[OpenBPM](https://github.com/Sirokujira/OpenBPM) /
-[bellhopcuda](https://github.com/Sirokujira/bellhopcuda) を
-サブプロセスとして起動する。カーネルを別途ビルドして場所を指定する:
+と出る場合、カーネルが未導入か、場所が GUI に伝わっていない
+(ヒント行に各探索元の実際の設定値が表示される)。
+カーネルを別途ビルドして場所を指定する:
 
 ```bash
 # 例: 電磁 (FDTD) カーネル。macOS は brew install hdf5 libomp が先に必要

@@ -1261,6 +1261,15 @@ static void testRunGating()
         check(Runner::kernelDirSetting(Kernel::FDTD).isEmpty(),
               "bin: QSettings kernel dir cleared");
         Runner::setKernelDirSetting(Kernel::FDTD, prev);
+
+        // (e) resolvedSolverPath: 見つかれば実在する絶対パス、それが
+        //     solverBinary の解決結果と一致する (PATH 環境に依存しない
+        //     肯定側のみ検証 — CI はカーネル入りでも走る)
+        const QString resolved = Runner::resolvedSolverPath(bc);
+        check(!resolved.isEmpty() && QFileInfo::exists(resolved),
+              "bin: resolvedSolverPath returns an existing path");
+        check(resolved.startsWith(kdir.path()),
+              "bin: resolvedSolverPath honours binaryDir");
     }
 }
 
@@ -1335,6 +1344,37 @@ static void testBellhop()
           "bellhop: kernel exit code 0");
     const QFileInfo shd(dir.filePath(base + ".shd"));
     check(shd.exists() && shd.size() > 0, "bellhop: .shd generated");
+}
+
+// ── OpenFDTD (基幹カーネル) 統合 ────────────────────────────────────────────
+// 環境変数 OFDX_OFD_BIN が指す実カーネルがあれば、同梱サンプル dipole.ofd を
+// 実行して正常終了 (ofd.log の "normal end") まで検証する。GUI → subprocess
+// 連携の回帰検出 (bellhop 統合と同じゲート方式。CI Linux が実ビルドを渡す)。
+static void testOfdIntegration(const QString &sampleDir)
+{
+    g_file = "ofd_integration";
+    const QString bin = qEnvironmentVariable("OFDX_OFD_BIN");
+    if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+        std::printf("  (ofd integration skipped: "
+                    "set OFDX_OFD_BIN to run)\n");
+        return;
+    }
+    QTemporaryDir dir;
+    check(dir.isValid(), "ofd: temp dir");
+    check(QFile::copy(QDir(sampleDir).filePath("dipole.ofd"),
+                      dir.filePath("dipole.ofd")),
+          "ofd: copy dipole.ofd");
+    QProcess proc;
+    proc.setWorkingDirectory(dir.path());
+    proc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                      QStringLiteral("dipole.ofd") });
+    check(proc.waitForFinished(300000), "ofd: kernel finished in time");
+    check(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+          "ofd: kernel exit code 0");
+    QFile log(dir.filePath("ofd.log"));
+    check(log.open(QIODevice::ReadOnly | QIODevice::Text)
+              && QString::fromUtf8(log.readAll()).contains("normal end"),
+          "ofd: log reports normal end");
 }
 
 // ── オペラ音響の一括レポート (AcousticReportBuilder) ────────────────────────
@@ -1513,6 +1553,7 @@ int main(int argc, char *argv[])
     testOnnActivation();
     testRcwaCore();
     testBellhop();
+    testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();
 

@@ -121,13 +121,8 @@ void KernelPathDialog::updateStatus(int i)
     RunConfig cfg;
     cfg.kernel = row.kernel;
     cfg.binaryDir = row.dir->text().trimmed();
-    QString bin = Runner::solverBinary(cfg);
-    bool found = QFileInfo::exists(bin);
-    if (!found && !bin.contains(QLatin1Char('/'))) {
-        // ディレクトリ探索で見つからず素の名前が返った場合は PATH を確認
-        const QString onPath = QStandardPaths::findExecutable(bin);
-        if (!onPath.isEmpty()) { bin = onPath; found = true; }
-    }
+    const QString bin = Runner::resolvedSolverPath(cfg);
+    const bool found = !bin.isEmpty();
     if (found) {
         row.status->setText(I18n::tr("kp_found").arg(bin));
         row.status->setStyleSheet("font-size:11px; color:#0F7B0F;");
