@@ -52,25 +52,37 @@ QString Runner::postBinary(const RunConfig &cfg) {
     return resolveBinary(cfg, kernelPrefix(cfg.kernel) + "_post");
 }
 
+// カーネルの場所を指す環境変数名 (探索とエラーメッセージで共用)
+const char *Runner::homeVarFor(Kernel k) {
+    switch (k) {
+        case Kernel::RCWA:    return "OPENRCWA_HOME";
+        case Kernel::BPM:     return "OPENBPM_HOME";
+        case Kernel::Bellhop: return "BELLHOPCUDA_HOME";
+        case Kernel::FDTD:    break;
+    }
+    return "OPENFDTD_HOME";
+}
+
 QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
     QString base = name;
 #ifdef Q_OS_WIN
     base += ".exe";
 #endif
-    const char *homeVar = (cfg.kernel == Kernel::RCWA)    ? "OPENRCWA_HOME"
-                        : (cfg.kernel == Kernel::BPM)     ? "OPENBPM_HOME"
-                        : (cfg.kernel == Kernel::Bellhop) ? "BELLHOPCUDA_HOME"
-                                                          : "OPENFDTD_HOME";
     const QString dirs[] = {
         cfg.binaryDir,
-        qEnvironmentVariable(homeVar),
+        qEnvironmentVariable(homeVarFor(cfg.kernel)),
         QCoreApplication::applicationDirPath() + "/kernel",
         QCoreApplication::applicationDirPath(),
     };
     for (const QString &d : dirs) {
         if (d.isEmpty()) continue;
+        // ディレクトリ直下と bin/ の両方を探す — README は
+        // OPENFDTD_HOME=/path/to/OpenFDTD (リポジトリルート) を案内しており、
+        // 各カーネルのビルドはバイナリを bin/ に置くため。
         const QString full = QDir(d).absoluteFilePath(base);
         if (QFileInfo::exists(full)) return full;
+        const QString inBin = QDir(d).absoluteFilePath("bin/" + base);
+        if (QFileInfo::exists(inBin)) return inBin;
     }
     return base;   // let PATH resolve it
 }
@@ -120,7 +132,12 @@ void Runner::start(Project *project, const RunConfig &cfg)
     if (isRunning() || !project) return;
     m_cfg = cfg;
 
-    m_cfg.workingDir = resolveWorkingDir(project, m_cfg);
+    // 相対パスで開いたプロジェクト (例: CLI 引数 tests/data/dipole.ofd) では
+    // resolveWorkingDir が相対 "tests/data" を返す。そのまま使うと子プロセスの
+    // 作業ディレクトリと入力パスの両方が相対になり、カーネル側から見た入力が
+    // "tests/data/tests/data/dipole.ofd" に二重解決されて見つからない。
+    // ここで絶対化して m_ofdPath 以降を全て絶対パスにする。
+    m_cfg.workingDir = QDir(resolveWorkingDir(project, m_cfg)).absolutePath();
     QDir().mkpath(m_cfg.workingDir);
 
     const QString baseName = project->filePath().isEmpty()
@@ -219,6 +236,19 @@ void Runner::launch(bool solverPhase)
             m_proc->deleteLater();
             m_proc = nullptr;
             m_postPending = false;
+            // どこを探して見つからなかったのかを示す (カーネル未導入の
+            // 環境で最初に踏むエラーなので、次の一手が分かる文言にする)。
+            const char *homeVar = homeVarFor(m_cfg.kernel);
+            emit logLine(QStringLiteral(
+                "hint: searched %1, $%2 (and its bin/), <app dir>/kernel, "
+                "<app dir>, PATH")
+                .arg(m_cfg.binaryDir.isEmpty() ? QStringLiteral("(binaryDir unset)")
+                                               : m_cfg.binaryDir,
+                     QLatin1String(homeVar)));
+            emit logLine(QStringLiteral(
+                "hint: build the solver kernel and set %1 to its repository "
+                "root (bin/ is searched too) — see README 'カーネル'")
+                .arg(QLatin1String(homeVar)));
             emit logLine(QStringLiteral("=== failed (kernel not found) ==="));
             emit finished(false);
         }

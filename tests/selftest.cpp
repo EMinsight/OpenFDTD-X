@@ -1205,6 +1205,48 @@ static void testRunGating()
           "wd: unsaved project falls back to the temp location");
     check(Runner::resolveWorkingDir(nullptr, autoWd).isEmpty(),
           "wd: no project and no explicit dir -> empty");
+
+    // ── カーネルバイナリの探索 (resolveBinary) ──────────────────────────────
+    // README は OPENFDTD_HOME にリポジトリルートを指定する案内なので、
+    // ディレクトリ直下だけでなく bin/ も探索されること。
+    check(qstrcmp(Runner::homeVarFor(Kernel::FDTD), "OPENFDTD_HOME") == 0,
+          "bin: FDTD home var");
+    check(qstrcmp(Runner::homeVarFor(Kernel::RCWA), "OPENRCWA_HOME") == 0,
+          "bin: RCWA home var");
+    check(qstrcmp(Runner::homeVarFor(Kernel::BPM), "OPENBPM_HOME") == 0,
+          "bin: BPM home var");
+    check(qstrcmp(Runner::homeVarFor(Kernel::Bellhop), "BELLHOPCUDA_HOME") == 0,
+          "bin: Bellhop home var");
+
+    QTemporaryDir kdir;
+    if (kdir.isValid()) {
+        // Windows は resolveBinary が .exe を付けるので両方の名前を置く
+        const auto touch = [](const QString &path) {
+            QDir().mkpath(QFileInfo(path).path());
+            QFile f(path);
+            f.open(QIODevice::WriteOnly);
+        };
+        RunConfig bc;
+        bc.binaryDir = kdir.path();
+
+        // (a) 何も無ければ素の名前 (PATH 解決に委ねる)
+        const QString bare = Runner::resolveBinary(bc, "ofd");
+        check(!bare.contains('/') || bare == "ofd",
+              "bin: nothing found -> bare name for PATH");
+
+        // (b) bin/ 配下だけにあるとき: リポジトリルート指定で見つかる
+        touch(kdir.path() + "/bin/ofd");
+        touch(kdir.path() + "/bin/ofd.exe");
+        check(Runner::resolveBinary(bc, "ofd").contains("/bin/"),
+              "bin: found under <dir>/bin");
+
+        // (c) 直下にもあるときは直下が優先 (探索順の保証)
+        touch(kdir.path() + "/ofd");
+        touch(kdir.path() + "/ofd.exe");
+        const QString direct = Runner::resolveBinary(bc, "ofd");
+        check(direct.startsWith(kdir.path()) && !direct.contains("/bin/"),
+              "bin: direct entry wins over bin/");
+    }
 }
 
 

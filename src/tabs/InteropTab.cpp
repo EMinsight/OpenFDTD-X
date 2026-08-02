@@ -8,13 +8,18 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColor>
+#include <QDir>
+#include <QFileInfo>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProcess>
 #include <QPushButton>
+#include <QSet>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -36,6 +41,13 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_h_alt", "未検出時の代替", "Fallback when not detected");
     ofd::I18n::reg("iop_found", "✓ 検出", "✓ Detected");
     ofd::I18n::reg("iop_notfound", "未検出", "Not found");
+    ofd::I18n::reg("iop_notimpl", "未実装", "Not implemented");
+    ofd::I18n::reg("iop_probe_tip",
+        "PATH 上の実行ファイルと Python モジュール (importlib) で検出します。"
+        "GUI 専用の商用ツールは自動検出できないため常に「未検出」表示です",
+        "Detected via executables on PATH and Python modules (importlib). "
+        "GUI-only commercial tools cannot be auto-detected and always show "
+        "\"Not found\"");
     ofd::I18n::reg("iop_kind_oss", "OSS", "OSS");
     ofd::I18n::reg("iop_kind_free", "無償", "Freeware");
     ofd::I18n::reg("iop_kind_comm", "商用", "Commercial");
@@ -136,9 +148,14 @@ QLabel *hintLabel(const QString &text, QWidget *parent)
     return l;
 }
 
-// ── mock の DATA / 検出表 / OSS表をそのまま転記 ─────────────────────────────
+// ── mock の DATA / 検出表 / OSS表を転記 (検出列のみ実機スキャンに変更) ──────
 struct BridgeRow { const char *fmt, *tool, *what; bool ok; };   // ok=false → 一部対応
-struct ToolRow   { const char *name; const char *kindKey; bool found; const char *alt; };
+// exe: PATH から探す実行ファイル名の候補 (';' 区切り)。pymod: python の
+// import で探すモジュール名。どちらも nullptr のツール (GUI 専用の商用製品
+// 等) は自動検出できず常に「未検出」表示になる — モックの固定 true/false は
+// 使わない (実機と異なる「✓検出」を見せない)。
+struct ToolRow   { const char *name; const char *kindKey;
+                   const char *exe;  const char *pymod; const char *alt; };
 struct OssRow    { const char *commercial, *oss, *role; };
 
 // EM
@@ -159,12 +176,12 @@ const BridgeRow kEmOut[] = {
     { "EMC report",        "CISPR32/FCC測定所",  "放射エミッション比較表",    true  },
 };
 const ToolRow kEmTools[] = {
-    { "ngspice",   "iop_kind_oss",  true,  "— (内蔵)" },
-    { "KiCad",     "iop_kind_oss",  true,  ".kicad_pcb 直接パース" },
-    { "Ansys HFSS","iop_kind_comm", false, "内蔵FEM波動ソルバで代替 / .aedtは形状のみ取込" },
-    { "CST Studio","iop_kind_comm", false, "本体FDTDで同等解析 / .cst形状取込" },
-    { "openEMS",   "iop_kind_oss",  false, "インストール推奨 (相互検証用の無償FDTD)" },
-    { "scikit-rf", "iop_kind_oss",  true,  "— (Touchstone処理)" },
+    { "ngspice",   "iop_kind_oss",  "ngspice",          nullptr, "— (内蔵)" },
+    { "KiCad",     "iop_kind_oss",  "kicad;kicad-cli",  nullptr, ".kicad_pcb 直接パース" },
+    { "Ansys HFSS","iop_kind_comm", nullptr,            nullptr, "内蔵FEM波動ソルバで代替 / .aedtは形状のみ取込" },
+    { "CST Studio","iop_kind_comm", nullptr,            nullptr, "本体FDTDで同等解析 / .cst形状取込" },
+    { "openEMS",   "iop_kind_oss",  "openEMS",          nullptr, "インストール推奨 (相互検証用の無償FDTD)" },
+    { "scikit-rf", "iop_kind_oss",  nullptr,            "skrf",  "— (Touchstone処理)" },
 };
 const OssRow kEmOss[] = {
     { "HFSS / CST", "openEMS, gprMax, scikit-rf", "相互検証 (本体FDTDが主)" },
@@ -190,15 +207,17 @@ const BridgeRow kOptOut[] = {
     { ".mat / .npz",           "MATLAB / Python",     "場データ・スペクトル",          true  },
 };
 const ToolRow kOptTools[] = {
-    { "tidy3d client",       "iop_kind_cloud", false,
+    { "tidy3d client",       "iop_kind_cloud", nullptr, "tidy3d",
       "ローカルFDTDで縮小モデル検証→後日送信用 .json を保存" },
-    { "Lumerical",           "iop_kind_comm",  false,
+    { "Lumerical",           "iop_kind_comm",  nullptr, nullptr,
       "本体FDTD/RCWAで同等解析 / .fspは形状のみ取込" },
-    { "Zemax OpticStudio",   "iop_kind_comm",  false,
+    { "Zemax OpticStudio",   "iop_kind_comm",  nullptr, nullptr,
       "内蔵 Lens Editor (順次光線追跡) で代替" },
-    { "MEEP",                "iop_kind_oss",   false, "インストール推奨 (相互検証用)" },
-    { "KLayout",             "iop_kind_oss",   true,  "— (GDS確認に使用可)" },
-    { "RayOptics (Python)",  "iop_kind_oss",   true,  "—" },
+    { "MEEP",                "iop_kind_oss",   nullptr, "meep",
+      "インストール推奨 (相互検証用)" },
+    { "KLayout",             "iop_kind_oss",   "klayout", nullptr,
+      "— (GDS確認に使用可)" },
+    { "RayOptics (Python)",  "iop_kind_oss",   nullptr, "rayoptics", "—" },
 };
 const OssRow kOptOss[] = {
     { "Lumerical",       "MEEP, Tidy3D無償枠, EMpy",
@@ -226,14 +245,18 @@ const BridgeRow kAcOut[] = {
     { "ISO 3382 report",  "報告書 (PDF/HTML)",    "全指標の準拠レポート",                  true  },
 };
 const ToolRow kAcTools[] = {
-    { "AFMG EASE",     "iop_kind_comm", false,
+    { "AFMG EASE",     "iop_kind_comm", nullptr, nullptr,
       "内蔵幾何音響+電気音響タブで代替 / .xhn取込は可" },
-    { "Odeon",         "iop_kind_comm", false, "内蔵レイトレース/ISMで同等解析" },
-    { "REW",           "iop_kind_free", true,  "— (IR検証に推奨)" },
-    { "SPARTA (VST)",  "iop_kind_oss",  false, "内蔵バイノーラルレンダラで可聴化" },
-    { "SketchUp",      "iop_kind_comm", false,
+    { "Odeon",         "iop_kind_comm", nullptr, nullptr,
+      "内蔵レイトレース/ISMで同等解析" },
+    { "REW",           "iop_kind_free", "roomeqwizard;rew", nullptr,
+      "— (IR検証に推奨)" },
+    { "SPARTA (VST)",  "iop_kind_oss",  nullptr, nullptr,
+      "内蔵バイノーラルレンダラで可聴化" },
+    { "SketchUp",      "iop_kind_comm", nullptr, nullptr,
       ".skpは直接パース (起動不要) / IFC・STL経由も可" },
-    { "Blender",       "iop_kind_oss",  true,  "— (形状編集に推奨)" },
+    { "Blender",       "iop_kind_oss",  "blender", nullptr,
+      "— (形状編集に推奨)" },
 };
 const OssRow kAcOss[] = {
     { "EASE / Odeon / CATT", "内蔵ソルバ + pyroomacoustics, RAVEN(学術)",
@@ -258,11 +281,17 @@ const BridgeRow kUwOut[] = {
     { ".h5",          "本体H5アニメ/外部",   "時系列場データ",                  true },
 };
 const ToolRow kUwTools[] = {
-    { "Bellhop (AT)",     "iop_kind_oss",  true,  "— (内蔵ポートもあり)" },
-    { "RAM PE",           "iop_kind_oss",  false, "内蔵PEソルバで代替 / .in書出は可" },
-    { "Kraken",           "iop_kind_oss",  false, "内蔵法線モードソルバで代替" },
-    { "MATLAB",           "iop_kind_comm", false, "Python/NumPy ブリッジ (.npz/.h5) で代替" },
-    { "Python+netCDF4",   "iop_kind_oss",  true,  "—" },
+    // bellhopcxx は PATH に加えて $BELLHOPCUDA_HOME (と bin/) も探索する
+    // (exeFound の特例 — GUI が実際に起動するカーネルと同じ解決規則)
+    { "Bellhop (AT)",     "iop_kind_oss",  "bellhopcxx;bellhop", nullptr,
+      "— (内蔵ポートもあり)" },
+    { "RAM PE",           "iop_kind_oss",  "ram;rampe", nullptr,
+      "内蔵PEソルバで代替 / .in書出は可" },
+    { "Kraken",           "iop_kind_oss",  "krakenc;kraken", nullptr,
+      "内蔵法線モードソルバで代替" },
+    { "MATLAB",           "iop_kind_comm", "matlab", nullptr,
+      "Python/NumPy ブリッジ (.npz/.h5) で代替" },
+    { "Python+netCDF4",   "iop_kind_oss",  nullptr, "netCDF4", "—" },
 };
 const OssRow kUwOss[] = {
     { "—(商用少数)",
@@ -270,6 +299,77 @@ const OssRow kUwOss[] = {
       "標準ツール群がOSS — 本体ポート内蔵" },
     { "MATLAB", "Python + NumPy/SciPy/netCDF4", ".npz/.h5/.nc ブリッジ" },
 };
+
+// ── 実機のツール検出 ────────────────────────────────────────────────────────
+// 実行ファイルは PATH (QStandardPaths::findExecutable)、Python モジュールは
+// python3 の importlib.util.find_spec で探す。Python の確認はプロセス起動を
+// 伴うので、結果をキャッシュして再スキャン時のみ取り直す。
+struct ToolScanCache {
+    bool scanned = false;
+    QSet<QString> pymods;   // import 可能だったモジュール名
+};
+ToolScanCache g_toolScan;
+
+// 検出対象の Python モジュール (全ドメインの ToolRow.pymod の合併)
+const char *kPyMods = "skrf meep rayoptics netCDF4 tidy3d";
+
+void scanPythonModules()
+{
+    g_toolScan.pymods.clear();
+    const QString py = QStandardPaths::findExecutable("python3").isEmpty()
+        ? QStandardPaths::findExecutable("python")
+        : QStandardPaths::findExecutable("python3");
+    if (py.isEmpty()) return;   // Python 自体が無い → 全モジュール未検出
+    // 1 回の起動で全モジュールをまとめて確認する (起動コスト削減)
+    QStringList args{ QStringLiteral("-c"),
+                      QStringLiteral(
+                          "import importlib.util,sys\n"
+                          "print(' '.join(m for m in sys.argv[1:]\n"
+                          "      if importlib.util.find_spec(m)))") };
+    for (const QString &m : QString::fromLatin1(kPyMods).split(' '))
+        args << m;
+    QProcess p;
+    p.start(py, args);
+    if (!p.waitForFinished(3000) || p.exitCode() != 0) return;
+    const QStringList found = QString::fromUtf8(p.readAllStandardOutput())
+                                  .trimmed().split(' ', Qt::SkipEmptyParts);
+    for (const QString &m : found) g_toolScan.pymods.insert(m);
+}
+
+bool exeFound(const char *candidates)
+{
+    for (const QString &name :
+         QString::fromLatin1(candidates).split(';', Qt::SkipEmptyParts)) {
+        if (!QStandardPaths::findExecutable(name).isEmpty()) return true;
+        // bellhopcxx はカーネルと同じく $BELLHOPCUDA_HOME (直下と bin/) も見る
+        if (name == QLatin1String("bellhopcxx")) {
+            const QString home = qEnvironmentVariable("BELLHOPCUDA_HOME");
+            if (!home.isEmpty()) {
+                for (const QString &sub :
+                     { QString(), QStringLiteral("bin/") }) {
+                    QString full = QDir(home).absoluteFilePath(sub + name);
+#ifdef Q_OS_WIN
+                    full += QLatin1String(".exe");
+#endif
+                    if (QFileInfo::exists(full)) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool toolFound(const ToolRow &t)
+{
+    if (!g_toolScan.scanned) {
+        scanPythonModules();
+        g_toolScan.scanned = true;
+    }
+    if (t.exe && exeFound(t.exe)) return true;
+    if (t.pymod && g_toolScan.pymods.contains(QString::fromLatin1(t.pymod)))
+        return true;
+    return false;
+}
 
 // ドメイン → データ束 (mock の DATA[domain] || DATA.em 相当)
 struct DomainData {
@@ -334,6 +434,7 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     auto *sd = new SectionBox(I18n::tr("iop_detect_title"), body);
     sd->vbox()->addWidget(hintLabel(I18n::tr("iop_detect_hint"), sd));
     m_detected = new QTableWidget(0, 4, sd);
+    m_detected->setToolTip(I18n::tr("iop_probe_tip"));
     m_detected->setHorizontalHeaderLabels({ I18n::tr("iop_h_tool"),
                                             I18n::tr("iop_h_kind"),
                                             I18n::tr("iop_h_found"),
@@ -345,8 +446,17 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     m_detected->setWordWrap(false);
     sd->vbox()->addWidget(m_detected);
     auto *drow = new QHBoxLayout();
-    drow->addWidget(new QPushButton(I18n::tr("iop_rescan"), sd));
-    drow->addWidget(new QPushButton(I18n::tr("iop_setpath"), sd));
+    auto *rescan = new QPushButton(I18n::tr("iop_rescan"), sd);
+    connect(rescan, &QPushButton::clicked, this, [this] {
+        g_toolScan.scanned = false;   // Python モジュールを取り直す
+        rebuildDetected();
+    });
+    drow->addWidget(rescan);
+    // パス手動指定は未実装 — 押せる見た目にしない (絶対規則 5)
+    auto *setpath = new QPushButton(I18n::tr("iop_setpath"), sd);
+    setpath->setEnabled(false);
+    setpath->setToolTip(I18n::tr("iop_notimpl"));
+    drow->addWidget(setpath);
     drow->addStretch(1);
     sd->vbox()->addLayout(drow);
     sd->vbox()->addWidget(hintLabel(I18n::tr("iop_policy"), sd));
@@ -468,8 +578,8 @@ void InteropTab::rebuildDetected()
         m_detected->setCellWidget(r, 1,
             badgeCell(I18n::tr(t.kindKey), kindIsFree(t.kindKey) ? "ok" : ""));
         m_detected->setCellWidget(r, 2,
-            t.found ? badgeCell(I18n::tr("iop_found"), "ok")
-                    : badgeCell(I18n::tr("iop_notfound"), "warn"));
+            toolFound(t) ? badgeCell(I18n::tr("iop_found"), "ok")
+                         : badgeCell(I18n::tr("iop_notfound"), "warn"));
         m_detected->setItem(r, 3, mutedItem(QString::fromUtf8(t.alt)));
     }
     m_detected->resizeRowsToContents();
