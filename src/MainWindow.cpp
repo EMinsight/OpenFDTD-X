@@ -36,6 +36,7 @@
 #include "tabs/RirAnalysisTab.h"
 #include "tabs/VocalAnalysisTab.h"
 #include "tabs/AuralizationTab.h"
+#include "acoustics/qt/AcousticReportBuilder.h"
 // Workbench 拡張タブ (design mock 全カテゴリ)
 #include "tabs/SolverRegionTab.h"
 #include "tabs/MonitorsTab.h"
@@ -102,6 +103,7 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTextStream>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -167,6 +169,11 @@ void MainWindow::buildMenu()
                      this, &MainWindow::saveProject);
     mFile->addAction(I18n::tr("tb_saveas"), QKeySequence::SaveAs,
                      this, &MainWindow::saveProjectAs);
+    mFile->addSeparator();
+    // オペラ音響の一括レポート。ドメインに関係なく置くが、分析が未実行の
+    // ときは書き出さずに理由を伝える。
+    mFile->addAction(I18n::tr("m_acoustic_report"), this,
+                     &MainWindow::exportAcousticReport);
     mFile->addSeparator();
     mFile->addAction(I18n::tr("m_exit"), this, [] { qApp->quit(); });
 
@@ -1007,6 +1014,59 @@ void MainWindow::exportTidy3d()
     QString err;
     if (!Tidy3dExporter::exportTo(p, *m_project, &err))
         QMessageBox::warning(this, I18n::tr("t3_export"), err);
+}
+
+// ── オペラ音響の一括レポート ────────────────────────────────────────────────
+// 実行済みの RIR 分析 / 歌声分析の結果を 1 ファイルにまとめる。分析の
+// 再実行はしない (未実行の系統はレポート上に「未実行」と明示される)。
+void MainWindow::exportAcousticReport()
+{
+    const OperaAcousticSettings &op = m_project->operaAcoustic();
+
+    AcousticReportInput in;
+    in.projectTitle        = m_project->general().title;
+    in.rirFile             = QFileInfo(op.rirPath).fileName();
+    in.voiceFile           = QFileInfo(op.voicePath).fileName();
+    in.calibrationState    = op.calibrationState;
+    in.calibrationOffsetDb = op.calibrationOffsetDb;
+    in.auralizationDryFile = QFileInfo(op.auralizationDryFile).fileName();
+    in.auralizationOutputFile =
+        QFileInfo(op.auralizationOutputFile).fileName();
+
+    if (auto *rirTab = qobject_cast<RirAnalysisTab *>(m_tabRirAnalysis)) {
+        in.hasRir = rirTab->hasResult();
+        if (in.hasRir) in.rir = rirTab->result();
+    }
+    if (auto *vocalTab = qobject_cast<VocalAnalysisTab *>(m_tabVocal)) {
+        in.hasVocal = vocalTab->hasResult();
+        if (in.hasVocal) in.vocal = vocalTab->result();
+    }
+
+    const QString caption = I18n::tr("m_acoustic_report");
+    // 両方とも未実行なら空のレポートを作らず、理由を伝えて終わる。
+    if (!AcousticReportBuilder::hasAnyResult(in)) {
+        QMessageBox::information(this, caption, I18n::tr("rep_none_msg"));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, caption, QStringLiteral("opera_acoustics_report.html"),
+        "HTML (*.html);;CSV (*.csv)");
+    if (path.isEmpty()) return;
+
+    // 拡張子で書式を決める (既定は HTML)
+    const bool asCsv = path.endsWith(QStringLiteral(".csv"), Qt::CaseInsensitive);
+    const QString content = asCsv ? AcousticReportBuilder::buildCsv(in)
+                                  : AcousticReportBuilder::buildHtml(in);
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, caption, f.errorString());
+        return;
+    }
+    QTextStream out(&f);
+    out.setEncoding(QStringConverter::Utf8);
+    out << content;
 }
 
 // ── Runner feedback ─────────────────────────────────────────────────────────

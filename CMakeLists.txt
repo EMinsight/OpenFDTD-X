@@ -231,6 +231,8 @@ set(GUI_SOURCES
     src/acoustics/qt/QtAcousticAdapter.h
     src/acoustics/qt/AcousticResultModel.cpp
     src/acoustics/qt/AcousticResultModel.h
+    src/acoustics/qt/AcousticReportBuilder.cpp
+    src/acoustics/qt/AcousticReportBuilder.h
     src/tabs/RirAnalysisTab.cpp
     src/tabs/RirAnalysisTab.h
 
@@ -360,6 +362,15 @@ if(BUILD_TESTS)
     qt_add_executable(ofdx_selftest ${CORE_SOURCES}
         src/acoustics/qt/QtAcousticAdapter.cpp
         src/acoustics/qt/QtAcousticAdapter.h
+        # 一括レポート (AcousticReportBuilder) は Widget 非依存なので、
+        # 未実行の明示・決定性 (同一入力 → 同一バイト列) を selftest で検証する
+        # (I18n はレポートの見出し文言に使う — GUI_SOURCES 側なのでここで足す)
+        src/I18n.cpp
+        src/I18n.h
+        src/acoustics/qt/AcousticResultModel.cpp
+        src/acoustics/qt/AcousticResultModel.h
+        src/acoustics/qt/AcousticReportBuilder.cpp
+        src/acoustics/qt/AcousticReportBuilder.h
         tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
     target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)

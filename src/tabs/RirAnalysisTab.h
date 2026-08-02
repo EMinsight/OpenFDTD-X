@@ -35,6 +35,11 @@ class RirAnalysisTab : public QScrollArea {
 public:
     explicit RirAnalysisTab(Project *project, QWidget *parent = nullptr);
 
+    // 直近の分析結果への読み取り専用アクセス (一括レポート出力が使う)。
+    // 未実行なら hasResult() == false — result() の中身は意味を持たない。
+    bool hasResult() const { return m_hasResult; }
+    const acoustics::RirAnalysisResult &result() const { return m_result; }
+
 private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
