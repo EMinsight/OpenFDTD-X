@@ -16,14 +16,18 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QDesktopServices>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
-#include <QProgressBar>
 #include <QPushButton>
-#include <QRandomGenerator>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QTableWidget>
-#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -55,10 +59,12 @@ const bool s_i18n = [] {
     // local datasets
     I18n::reg("oe_ds_section", "ローカルデータセット", "Local datasets");
     I18n::reg("oe_ds_hint",
-              "国内 (JODC) + 海外の公開データセットを同一パイプラインで照会。"
-              "全球データがあれば世界中の海域に適用可。",
-              "Domestic (JODC) and overseas public datasets are queried through "
-              "the same pipeline. With global data any sea area can be used.");
+              "データセットフォルダを走査し、実在するファイルだけを"
+              "「配置済 (実サイズ)」として表示します。取得は"
+              "「データセット取得」から (公式配布ページ + フォルダへの取込)。",
+              "The dataset folder is scanned and only files that actually "
+              "exist are shown as staged (with their real size). Fetch via "
+              "the dataset-fetch dialog (official pages + folder import).");
     I18n::reg("oe_col_dataset", "データセット", "Dataset");
     I18n::reg("oe_col_provider", "提供元", "Provider");
     I18n::reg("oe_col_content", "内容", "Content");
@@ -91,13 +97,11 @@ const bool s_i18n = [] {
               "Sediment (grain size / acoustic parameters)");
     I18n::reg("oe_staged", "配置済 %1", "Staged %1");
     I18n::reg("oe_notstaged", "未配置", "Not staged");
-    I18n::reg("oe_notstaged_argo", "未配置 (選択海域のみ推奨)",
-              "Not staged (recommended for the selected area only)");
     I18n::reg("oe_restricted", "公開制限あり", "Distribution restricted");
     I18n::reg("oe_ds_folder", "📁 データセットフォルダ設定…",
               "📁 Dataset folder…");
-    I18n::reg("oe_ds_fetch", "📦 データセット取得 (媒体取込/DL)",
-              "📦 Fetch datasets (media import / download)");
+    I18n::reg("oe_ds_fetch", "📦 データセット取得 (取込/配布ページ)",
+              "📦 Fetch datasets (import / official pages)");
     I18n::reg("oe_ds_prio",
               "▸ 優先順位: 実測 (JODC/Argo) > 再解析 (CMEMS/HYCOM) > 気候値 "
               "(WOA23)。同一地点に複数ソースがある場合は上位を採用し出典を記録。",
@@ -162,70 +166,55 @@ const bool s_i18n = [] {
     I18n::reg("oe_dl_standalone",
               "スタンドアロン運用 (外部ネットワーク非接続前提)",
               "Standalone operation (external network assumed disconnected)");
-    I18n::reg("oe_dl_dest", "保存先: D:/ocean_data/",
-              "Destination: D:/ocean_data/");
-    I18n::reg("oe_dl_s1", "① オフライン媒体から取込 (推奨・既定)",
-              "① Import from offline media (recommended, default)");
+    I18n::reg("oe_dl_dest", "保存先: %1", "Destination: %1");
+    I18n::reg("oe_dl_s1", "① 取得済みファイルをフォルダへ取込",
+              "① Import fetched files into the folder");
     I18n::reg("oe_dl_s1_hint",
-              "別環境 (インターネット接続端末) で取得・検証済みのデータセット"
-              "パッケージを USB/光学媒体・共有フォルダ経由で取込みます。"
-              "チェックサム (SHA-256) で改竄・破損を検証。",
-              "Imports a dataset package that was fetched and verified on a "
-              "separate, internet-connected machine, via USB / optical media or "
-              "a shared folder. A SHA-256 checksum verifies integrity.");
-    I18n::reg("oe_dl_pkg", "パッケージ", "Package");
-    I18n::reg("oe_dl_browse", "📁 参照…", "📁 Browse…");
-    I18n::reg("oe_dl_import", "📦 検証して取込", "📦 Verify and import");
-    I18n::reg("oe_dl_sha", "SHA-256 検証", "SHA-256 verification");
-    I18n::reg("oe_dl_reindex", "取込後に索引再構築",
-              "Rebuild the index after import");
-    I18n::reg("oe_dl_cli",
-              "▸ パッケージ作成用CLI: ofdx-dataset pack --region "
-              "30,-70,45,-40 --sets woa23,gebco (接続端末側で実行)",
-              "▸ Packaging CLI: ofdx-dataset pack --region 30,-70,45,-40 "
-              "--sets woa23,gebco (run on the connected machine)");
-    I18n::reg("oe_dl_s2", "② 直接ダウンロード (接続環境のみ・要明示許可)",
-              "② Direct download (connected environments only, explicit "
-              "permission required)");
-    I18n::reg("oe_dl_allow", "この端末での外部ネットワークアクセスを許可する",
-              "Allow external network access from this machine");
-    I18n::reg("oe_dl_online", "● オンライン — ダウンロード可能",
-              "● Online — download available");
-    I18n::reg("oe_dl_linkdown", "● 回線未接続", "● Link down");
-    I18n::reg("oe_dl_offline", "● ネットワーク不使用 (既定)",
-              "● Network unused (default)");
-    I18n::reg("oe_dl_clip", "海域切出し", "Area subset");
-    I18n::reg("oe_dl_center", "中心 (%1°, %2°) ± ", "Centre (%1°, %2°) ± ");
-    I18n::reg("oe_dl_range", "° 範囲", "° range");
-    I18n::reg("oe_dl_global", "全球 (切出しなし)", "Global (no subset)");
+              "別環境や下の配布ページで取得したデータファイル (.nc / .grd / "
+              ".csv / .zip 等) をデータセットフォルダへコピーします。"
+              "コピー後に一覧の配置状態が更新されます。",
+              "Copies dataset files (.nc / .grd / .csv / .zip etc.) fetched "
+              "elsewhere or from the pages below into the dataset folder. "
+              "The staging list refreshes after the copy.");
+    I18n::reg("oe_dl_browse", "📁 ファイルを選んで取込…",
+              "📁 Choose files and import…");
+    I18n::reg("oe_dl_imported", "%1 件をコピーしました (失敗 %2 件)",
+              "Copied %1 file(s) (%2 failed)");
+    I18n::reg("oe_dl_s2", "② 公式配布ページ (ブラウザで開く)",
+              "② Official distribution pages (opens in a browser)");
+    I18n::reg("oe_dl_s2_hint",
+              "アプリ内での直接ダウンロードは未実装です。ボタンを押したとき"
+              "だけ既定ブラウザで公式配布ページを開きます (それ以外の通信は"
+              "行いません)。取得したファイルは ① で取込んでください。",
+              "In-app direct download is not implemented. Pressing a button "
+              "opens the official page in your default browser (no other "
+              "network traffic). Import the fetched files via ①.");
+    I18n::reg("oe_dl_open_page", "🌐 配布ページを開く", "🌐 Open page");
     I18n::reg("oe_col_src", "取得元", "Source");
     I18n::reg("oe_col_size", "サイズ", "Size");
-    I18n::reg("oe_col_prog", "進捗", "Progress");
+    I18n::reg("oe_col_size_nominal", "公称サイズ", "Nominal size");
     I18n::reg("oe_job_argo", "Argo フロート GDAC", "Argo floats GDAC");
     I18n::reg("oe_job_argo_sz", "~180MB (選択海域)", "~180 MB (selected area)");
     I18n::reg("oe_job_cmems_sz", "~2.4GB (海域×12ヶ月)",
               "~2.4 GB (area × 12 months)");
     I18n::reg("oe_job_hycom_sz", "~1.8GB (海域切出し)", "~1.8 GB (area subset)");
     I18n::reg("oe_job_seabed", "usSEABED 底質", "usSEABED sediment");
-    I18n::reg("oe_job_woa", "WOA23 差分更新", "WOA23 incremental update");
-    I18n::reg("oe_job_gebco", "GEBCO 2024 差分更新",
-              "GEBCO 2024 incremental update");
-    I18n::reg("oe_job_noupd", "更新なし", "No update");
-    I18n::reg("oe_dl_fetch", "⬇ 取得", "⬇ Fetch");
-    I18n::reg("oe_dl_abort", "■ 中止", "■ Abort");
-    I18n::reg("oe_dl_refetch", "↻ 再取得", "↻ Re-fetch");
-    I18n::reg("oe_dl_done", "✓ 完了", "✓ Done");
-    I18n::reg("oe_dl_needperm", "ネットワークアクセス許可が必要",
-              "Network access permission is required");
-    I18n::reg("oe_dl_autoindex", "取得後に自動でローカル索引を再構築",
-              "Rebuild the local index automatically after fetching");
     I18n::reg("oe_dl_note",
-              "▸ 自動更確認・定期通信は行いません (オフライン前提のため)。"
+              "▸ 自動更新確認・定期通信は行いません (オフライン前提のため)。"
               "GDEM-V は公開制限のため対象外。",
               "▸ No automatic update checks or periodic traffic (offline by "
               "design). GDEM-V is excluded because its distribution is "
               "restricted.");
     I18n::reg("oe_close", "閉じる", "Close");
+    // 照会結果の出典 (実データ照会は未実装であることの明示)
+    I18n::reg("oe_src_note",
+              "▸ 出典: 同梱の代表海域プロファイル (WOA 気候値を基にした近似) "
+              "と Mackenzie 音速式。ローカルデータセット (実ファイル) の照会は"
+              "未実装です。",
+              "▸ Source: built-in representative sea-area profiles "
+              "(approximation based on WOA climatology) and the Mackenzie "
+              "sound-speed formula. Querying the local dataset files is not "
+              "implemented yet.");
     return true;
 }();
 
@@ -235,6 +224,113 @@ const char *kOk   = "#2E8B57";
 const char *kWarn = "#B8860B";
 const char *kErr  = "#C62828";
 const char *kRed  = "#E53935";
+
+// ── データセットフォルダ (実在ファイルの走査) ───────────────────────────────
+// モックの固定「配置済 2.1GB」「D:/ocean_data/ (25.9GB)」は実機と乖離する
+// ため使わない。実際のフォルダを走査し、見つかったファイルだけを配置済と
+// して実サイズ付きで表示する。フォルダは QSettings に永続化 (openuwa と共有)。
+
+QString oeDataDir()
+{
+    QSettings s(QSettings::UserScope, QStringLiteral("OpenFDTD"),
+                QStringLiteral("OceanData"));
+    const QString def = QStandardPaths::writableLocation(
+                            QStandardPaths::GenericDataLocation)
+                        + QStringLiteral("/OpenFDTD-X/ocean_data");
+    return s.value(QStringLiteral("dir"), def).toString();
+}
+
+void setOeDataDir(const QString &dir)
+{
+    QSettings s(QSettings::UserScope, QStringLiteral("OpenFDTD"),
+                QStringLiteral("OceanData"));
+    s.setValue(QStringLiteral("dir"), dir);
+}
+
+// データセット定義 (表示・走査キーワード・公式配布ページを 1 箇所に集約)
+struct OeDatasetDef {
+    const char *nameKey, *nameRaw;   // 表示名 (I18n キー or 生文字列)
+    const char *provider;
+    const char *contentKey;
+    const char *resKey, *resRaw;     // 解像度 (I18n キー or 生文字列)
+    const char *keywords;   // ';' 区切り — ファイル名の小文字部分一致で走査
+    const char *url;        // 公式配布ページ (nullptr = 公開制限で対象外)
+    const char *nominal;    // 公称サイズ (配布ページの目安。実サイズではない)
+};
+const OeDatasetDef kOeDatasets[] = {
+    { "oe_ds1", nullptr, "🇯🇵 JODC", "oe_ds1c", "oe_ds1r", nullptr,
+      "jodc", "https://www.jodc.go.jp/", "~2.1GB" },
+    { nullptr, "J-EGG500", "🇯🇵 JODC", "oe_ds2c", nullptr, "500m",
+      "egg500;jegg", "https://www.jodc.go.jp/vpage/depth500_file_j.html",
+      "~1.2GB" },
+    { nullptr, "WOA23 (World Ocean Atlas)", "🇺🇸 NOAA/NCEI", "oe_ds3c",
+      nullptr, "0.25°", "woa",
+      "https://www.ncei.noaa.gov/products/world-ocean-atlas", "~8.4GB" },
+    { nullptr, "ETOPO 2022", "🇺🇸 NOAA", "oe_ds4c", nullptr, "15秒",
+      "etopo", "https://www.ncei.noaa.gov/products/etopo-global-relief-model",
+      "~6.7GB" },
+    { nullptr, "GEBCO 2024", "🇬🇧 IHO/IOC", "oe_ds5c", nullptr, "15秒",
+      "gebco",
+      "https://www.gebco.net/data_and_products/gridded_bathymetry_data/",
+      "~7.5GB" },
+    { "oe_ds6", nullptr, "🌐 Argo/Ifremer", "oe_ds6c", "oe_ds6r", nullptr,
+      "argo", "https://argo.ucsd.edu/data/", "~180MB" },
+    { "oe_ds7", nullptr, "🇪🇺 EU", "oe_ds7c", nullptr, "1/12°",
+      "cmems;glorys;copernicus", "https://data.marine.copernicus.eu/",
+      "~2.4GB" },
+    { "oe_ds8", nullptr, "🇺🇸 US Navy/NOPP", "oe_ds8c", nullptr, "1/12°",
+      "hycom", "https://www.hycom.org/dataserver", "~1.8GB" },
+    { "oe_ds9", nullptr, "🇺🇸 US Navy", "oe_ds9c", nullptr, "0.25°",
+      "gdem", nullptr, nullptr },   // 公開制限 — 配布ページなし
+    { nullptr, "usSEABED / dbSEABED", "🇺🇸 USGS", "oe_ds10c", "oe_ds1r",
+      nullptr, "seabed", "https://www.usgs.gov/programs/cmhrp", "~45MB" },
+};
+const int kOeDatasetCount = int(sizeof(kOeDatasets) / sizeof(kOeDatasets[0]));
+
+QString oeDatasetName(const OeDatasetDef &d)
+{
+    return d.nameKey ? I18n::tr(d.nameKey) : QString::fromUtf8(d.nameRaw);
+}
+
+// フォルダを 1 回走査して各データセットの一致サイズと総サイズを求める
+struct OeScanResult {
+    qint64 bytes[sizeof(kOeDatasets) / sizeof(kOeDatasets[0])] = {};
+    qint64 total = 0;
+    bool   dirExists = false;
+};
+
+OeScanResult oeScanAll(const QString &dir)
+{
+    OeScanResult res;
+    res.dirExists = QDir(dir).exists();
+    if (!res.dirExists) return res;
+    QDirIterator it(dir, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        const QString name = it.fileName().toLower();
+        const qint64 sz = it.fileInfo().size();
+        res.total += sz;
+        for (int d = 0; d < kOeDatasetCount; ++d) {
+            for (const QString &k :
+                 QString::fromLatin1(kOeDatasets[d].keywords)
+                     .split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+                if (name.contains(k)) { res.bytes[d] += sz; break; }
+            }
+        }
+    }
+    return res;
+}
+
+QString oeHumanSize(qint64 bytes)
+{
+    const double gb = 1024.0 * 1024.0 * 1024.0;
+    if (bytes >= qint64(gb))
+        return QStringLiteral("%1GB").arg(double(bytes) / gb, 0, 'f', 1);
+    if (bytes >= 1024 * 1024)
+        return QStringLiteral("%1MB").arg(double(bytes) / (1024.0 * 1024.0),
+                                          0, 'f', 1);
+    return QStringLiteral("%1KB").arg(double(bytes) / 1024.0, 0, 'f', 1);
+}
 
 // バッジ風 QLabel (badge / badge ok / badge acc / badge warn / badge err 相当)
 QLabel *oeBadge(const QString &text, QWidget *parent, const char *color = nullptr)
@@ -438,26 +534,16 @@ void OeBathyView::paintEvent(QPaintEvent *)
 }
 
 // ── OeDownloadManager — データセット取得マネージャ (オフラインファースト) ───
-OeDownloadManager::OeDownloadManager(double lat, double lon, QWidget *parent)
+// 実際に起きることだけを表示する:
+//   ① 取得済みファイルのフォルダ取込 = 実コピー
+//   ② 公式配布ページをブラウザで開く (アプリ内直接 DL は未実装)
+// 旧実装の進捗シミュレーション (乱数で完了表示) は実環境と乖離するため廃止。
+OeDownloadManager::OeDownloadManager(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(I18n::tr("oe_dl_title"));
     setModal(true);
-    resize(660, 720);
-
-    m_jobs = {
-        { I18n::tr("oe_job_argo"),  "ftp.ifremer.fr",
-          I18n::tr("oe_job_argo_sz"),  0,   0 },
-        { I18n::tr("oe_ds7"),       "data.marine.copernicus.eu",
-          I18n::tr("oe_job_cmems_sz"), 0,   0 },
-        { I18n::tr("oe_ds8"),       "ncss.hycom.org",
-          I18n::tr("oe_job_hycom_sz"), 0,   0 },
-        { I18n::tr("oe_job_seabed"), "usgs.gov", "~45MB",          0,   0 },
-        { I18n::tr("oe_job_woa"),   "ncei.noaa.gov",
-          I18n::tr("oe_job_noupd"),    2, 100 },
-        { I18n::tr("oe_job_gebco"), "gebco.net",
-          I18n::tr("oe_job_noupd"),    2, 100 },
-    };
+    resize(660, 560);
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -471,73 +557,66 @@ OeDownloadManager::OeDownloadManager(double lat, double lon, QWidget *parent)
     v->setContentsMargins(10, 10, 10, 10);
     v->setSpacing(8);
 
-    auto *head = new QHBoxLayout();
-    head->addWidget(oeBadge(I18n::tr("oe_dl_standalone"), body, kAcc));
-    head->addWidget(new QLabel(I18n::tr("oe_dl_dest"), body));
-    head->addStretch(1);
-    v->addLayout(head);
+    auto *standalone = new QLabel(I18n::tr("oe_dl_standalone"), body);
+    standalone->setWordWrap(true);
+    v->addWidget(standalone);
+    auto *dest = new QLabel(
+        I18n::tr("oe_dl_dest").arg(QDir::toNativeSeparators(oeDataDir())),
+        body);
+    dest->setWordWrap(true);
+    v->addWidget(dest);
 
-    // ── ① オフライン媒体から取込 ────────────────────────────────────────
+    // ── ① 取得済みファイルをフォルダへ取込 (実コピー) ────────────────────
     auto *s1 = new SectionBox(I18n::tr("oe_dl_s1"), body);
     auto *h1 = new QLabel(I18n::tr("oe_dl_s1_hint"), s1);
     h1->setWordWrap(true);
     s1->vbox()->addWidget(h1);
-    auto *pkgRow = new QHBoxLayout();
-    auto *pkg = new QLineEdit("E:/packages/woa23_nwpac_2026-06.ofdpkg", s1);
-    auto *pkgBrowse = new QPushButton(I18n::tr("oe_dl_browse"), s1);
-    pkgRow->addWidget(pkg, 1);
-    pkgRow->addWidget(pkgBrowse);
-    s1->form()->addRow(I18n::tr("oe_dl_pkg"), pkgRow);
     auto *impRow = new QHBoxLayout();
-    impRow->addWidget(new QPushButton(I18n::tr("oe_dl_import"), s1));
-    auto *sha = new QCheckBox(I18n::tr("oe_dl_sha"), s1);
-    sha->setChecked(true);
-    auto *reidx = new QCheckBox(I18n::tr("oe_dl_reindex"), s1);
-    reidx->setChecked(true);
-    impRow->addWidget(sha);
-    impRow->addWidget(reidx);
+    auto *impBtn = new QPushButton(I18n::tr("oe_dl_browse"), s1);
+    connect(impBtn, &QPushButton::clicked,
+            this, &OeDownloadManager::importFiles);
+    impRow->addWidget(impBtn);
+    m_importResult = new QLabel(s1);
+    impRow->addWidget(m_importResult);
     impRow->addStretch(1);
     s1->vbox()->addLayout(impRow);
-    auto *cli = new QLabel(I18n::tr("oe_dl_cli"), s1);
-    cli->setWordWrap(true);
-    s1->vbox()->addWidget(cli);
     v->addWidget(s1);
 
-    // ── ② 直接ダウンロード ──────────────────────────────────────────────
+    // ── ② 公式配布ページ (ブラウザで開く) ────────────────────────────────
     auto *s2 = new SectionBox(I18n::tr("oe_dl_s2"), body);
-    auto *netRow = new QHBoxLayout();
-    m_netAllow = new QCheckBox(I18n::tr("oe_dl_allow"), s2);
-    m_netBadge = oeBadge(I18n::tr("oe_dl_offline"), s2);
-    netRow->addWidget(m_netAllow);
-    netRow->addWidget(m_netBadge);
-    netRow->addStretch(1);
-    s2->vbox()->addLayout(netRow);
+    auto *h2 = new QLabel(I18n::tr("oe_dl_s2_hint"), s2);
+    h2->setWordWrap(true);
+    s2->vbox()->addWidget(h2);
 
-    auto *clipRow = new QHBoxLayout();
-    clipRow->addWidget(new QLabel(
-        I18n::tr("oe_dl_center").arg(lat, 0, 'g', 6).arg(lon, 0, 'g', 6), s2));
-    auto *clipDeg = new QLineEdit("5", s2);
-    clipDeg->setMaximumWidth(60);
-    clipRow->addWidget(clipDeg);
-    clipRow->addWidget(new QLabel(I18n::tr("oe_dl_range"), s2));
-    clipRow->addWidget(new QCheckBox(I18n::tr("oe_dl_global"), s2));
-    clipRow->addStretch(1);
-    s2->form()->addRow(I18n::tr("oe_dl_clip"), clipRow);
-
-    m_jobsTable = new QTableWidget(0, 5, s2);
-    oeSetupTable(m_jobsTable, { I18n::tr("oe_col_dataset"),
-                                I18n::tr("oe_col_src"),
-                                I18n::tr("oe_col_size"),
-                                I18n::tr("oe_col_prog"), "" }, 190);
-    s2->vbox()->addWidget(m_jobsTable);
-
-    auto *autoIdx = new QCheckBox(I18n::tr("oe_dl_autoindex"), s2);
-    autoIdx->setChecked(true);
-    s2->vbox()->addWidget(autoIdx);
-    auto *note = new QLabel(I18n::tr("oe_dl_note"), s2);
-    note->setWordWrap(true);
-    s2->vbox()->addWidget(note);
+    int nPages = 0;
+    for (int d = 0; d < kOeDatasetCount; ++d)
+        if (kOeDatasets[d].url) ++nPages;
+    auto *pages = new QTableWidget(nPages, 4, s2);
+    oeSetupTable(pages, { I18n::tr("oe_col_dataset"), I18n::tr("oe_col_src"),
+                          I18n::tr("oe_col_size_nominal"), "" }, 220);
+    int r = 0;
+    for (int d = 0; d < kOeDatasetCount; ++d) {
+        const OeDatasetDef &def = kOeDatasets[d];
+        if (!def.url) continue;
+        pages->setItem(r, 0, new QTableWidgetItem(oeDatasetName(def)));
+        pages->setItem(r, 1,
+                       new QTableWidgetItem(QUrl(QString::fromLatin1(def.url))
+                                                .host()));
+        pages->setItem(r, 2, new QTableWidgetItem(
+            QString::fromLatin1(def.nominal ? def.nominal : "-")));
+        auto *open = new QPushButton(I18n::tr("oe_dl_open_page"), pages);
+        connect(open, &QPushButton::clicked, this, [def] {
+            QDesktopServices::openUrl(QUrl(QString::fromLatin1(def.url)));
+        });
+        pages->setCellWidget(r, 3, open);
+        ++r;
+    }
+    s2->vbox()->addWidget(pages);
     v->addWidget(s2);
+
+    auto *note = new QLabel(I18n::tr("oe_dl_note"), body);
+    note->setWordWrap(true);
+    v->addWidget(note);
     v->addStretch(1);
 
     scroll->setWidget(body);
@@ -549,105 +628,32 @@ OeDownloadManager::OeDownloadManager(double lat, double lon, QWidget *parent)
     fh->setContentsMargins(10, 8, 10, 8);
     fh->addStretch(1);
     auto *closeBtn = new QPushButton(I18n::tr("oe_close"), foot);
+    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     fh->addWidget(closeBtn);
     outer->addWidget(foot);
-
-    m_timer = new QTimer(this);
-    m_timer->setInterval(300);          // mock の setInterval(…, 300)
-
-    connect(m_timer, &QTimer::timeout, this, &OeDownloadManager::tick);
-    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
-    connect(pkgBrowse, &QPushButton::clicked, this, [this, pkg] {
-        const QString path = QFileDialog::getOpenFileName(
-            this, I18n::tr("oe_dl_pkg"), QString(),
-            "OpenFDTD-X dataset package (*.ofdpkg);;All files (*)");
-        if (!path.isEmpty()) pkg->setText(path);
-    });
-    connect(m_netAllow, &QCheckBox::toggled, this, [this](bool on) {
-        // 回線の実接続確認は QtNetwork 依存になるため、ここでは
-        // 「許可 = 接続あり」として扱う (mock の navigator.onLine 相当)。
-        m_netBadge->setText(I18n::tr(on ? "oe_dl_online" : "oe_dl_offline"));
-        m_netBadge->setStyleSheet(QStringLiteral(
-            "QLabel { border: 1px solid palette(mid); border-radius: 3px;"
-            " padding: 1px 6px; color: %1; }")
-            .arg(QString::fromLatin1(on ? kOk : kWarn)));
-        rebuildJobsTable();
-    });
-    rebuildJobsTable();
 }
 
-void OeDownloadManager::rebuildJobsTable()
+// ファイル選択 → データセットフォルダへコピー。実際のコピー結果だけを表示する。
+void OeDownloadManager::importFiles()
 {
-    const bool online = m_netAllow->isChecked();
-    const int n = int(m_jobs.size());
-    m_jobsTable->setRowCount(n);
-    for (int i = 0; i < n; ++i) {
-        const Job &j = m_jobs.at(i);
-        m_jobsTable->setItem(i, 0, new QTableWidgetItem(j.name));
-        m_jobsTable->setItem(i, 1, new QTableWidgetItem(j.src));
-        m_jobsTable->setItem(i, 2, new QTableWidgetItem(j.size));
-
-        if (j.state == 1) {                       // 実行中 → プログレスバー
-            auto *bar = new QProgressBar;
-            bar->setRange(0, 100);
-            bar->setValue(int(j.pct));
-            bar->setTextVisible(false);
-            bar->setFixedHeight(12);
-            m_jobsTable->setCellWidget(i, 3, bar);
-        } else {
-            m_jobsTable->removeCellWidget(i, 3);
-            auto *it = new QTableWidgetItem(
-                j.state == 2 ? I18n::tr("oe_dl_done") : QStringLiteral("—"));
-            if (j.state == 2) it->setForeground(QBrush(QColor(kOk)));
-            m_jobsTable->setItem(i, 3, it);
-        }
-
-        auto *btn = new QPushButton;
-        if (j.state == 0) {
-            btn->setText(I18n::tr("oe_dl_fetch"));
-            btn->setEnabled(online);
-            if (!online) btn->setToolTip(I18n::tr("oe_dl_needperm"));
-            connect(btn, &QPushButton::clicked, this, [this, i] { startJob(i); });
-        } else if (j.state == 1) {
-            btn->setText(I18n::tr("oe_dl_abort"));
-            connect(btn, &QPushButton::clicked, this, [this, i] {
-                m_jobs[i].state = 0;
-                m_jobs[i].pct = 0;
-                // 送信元ボタンを自身のシグナル中に破棄しないよう遅延再構築
-                QTimer::singleShot(0, this, [this] { rebuildJobsTable(); });
-            });
-        } else {
-            btn->setText(I18n::tr("oe_dl_refetch"));
-            btn->setEnabled(online);
-            connect(btn, &QPushButton::clicked, this, [this, i] { startJob(i); });
-        }
-        m_jobsTable->setCellWidget(i, 4, btn);
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, I18n::tr("oe_dl_browse"), QString(),
+        "Dataset files (*.nc *.grd *.xyz *.zip *.csv *.tif *.asc);;"
+        "All files (*)");
+    if (files.isEmpty()) return;
+    const QString dir = oeDataDir();
+    QDir().mkpath(dir);
+    int ok = 0, fail = 0;
+    for (const QString &src : files) {
+        const QString dst = QDir(dir).filePath(QFileInfo(src).fileName());
+        if (QFileInfo::exists(dst)) QFile::remove(dst);   // 上書き取込
+        if (QFile::copy(src, dst)) ++ok; else ++fail;
     }
+    m_importResult->setText(I18n::tr("oe_dl_imported").arg(ok).arg(fail));
+    m_importResult->setStyleSheet(QStringLiteral("color: %1;")
+        .arg(QString::fromLatin1(fail == 0 ? kOk : kErr)));
 }
 
-void OeDownloadManager::startJob(int i)
-{
-    if (i < 0 || i >= m_jobs.size()) return;
-    m_jobs[i].state = 1;
-    m_jobs[i].pct = 0;
-    if (!m_timer->isActive()) m_timer->start();
-    QTimer::singleShot(0, this, [this] { rebuildJobsTable(); });
-}
-
-// 進捗シミュレーション: pct += 4 + rand·9 (mock と同じ増分)
-void OeDownloadManager::tick()
-{
-    bool running = false;
-    for (Job &j : m_jobs) {
-        if (j.state != 1) continue;
-        j.pct = std::min(100.0,
-                         j.pct + 4.0 + QRandomGenerator::global()->generateDouble() * 9.0);
-        if (j.pct >= 100.0) j.state = 2;
-        else running = true;
-    }
-    if (!running) m_timer->stop();
-    rebuildJobsTable();
-}
 
 // ── OceanEnvironmentTab ─────────────────────────────────────────────────────
 OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
@@ -703,70 +709,31 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     dsHint->setWordWrap(true);
     sd->vbox()->addWidget(dsHint);
 
-    auto *dsTable = new QTableWidget(10, 6, sd);
-    oeSetupTable(dsTable, { "", I18n::tr("oe_col_dataset"),
-                            I18n::tr("oe_col_provider"),
-                            I18n::tr("oe_col_content"),
-                            I18n::tr("oe_col_res"),
-                            I18n::tr("oe_col_state") }, 250);
-    struct Ds {
-        bool ck;
-        const char *nameKey, *nameRaw, *provider, *contentKey, *resKey,
-                   *resRaw, *stateKey, *stateArg;
-        const char *color;
-    };
-    static const Ds kDs[10] = {
-        { true,  "oe_ds1", nullptr, "🇯🇵 JODC", "oe_ds1c", "oe_ds1r", nullptr,
-          "oe_staged", "2.1GB", kOk },
-        { true,  nullptr, "J-EGG500", "🇯🇵 JODC", "oe_ds2c", nullptr, "500m",
-          "oe_staged", "1.2GB", kOk },
-        { true,  nullptr, "WOA23 (World Ocean Atlas)", "🇺🇸 NOAA/NCEI",
-          "oe_ds3c", nullptr, "0.25°", "oe_staged", "8.4GB", kOk },
-        { true,  nullptr, "ETOPO 2022", "🇺🇸 NOAA", "oe_ds4c", nullptr, "15秒",
-          "oe_staged", "6.7GB", kOk },
-        { true,  nullptr, "GEBCO 2024", "🇬🇧 IHO/IOC", "oe_ds5c", nullptr,
-          "15秒", "oe_staged", "7.5GB", kOk },
-        { false, "oe_ds6", nullptr, "🌐 Argo/Ifremer", "oe_ds6c", "oe_ds6r",
-          nullptr, "oe_notstaged_argo", nullptr, kWarn },
-        { false, "oe_ds7", nullptr, "🇪🇺 EU", "oe_ds7c", nullptr, "1/12°",
-          "oe_notstaged", nullptr, kWarn },
-        { false, "oe_ds8", nullptr, "🇺🇸 US Navy/NOPP", "oe_ds8c", nullptr,
-          "1/12°", "oe_notstaged", nullptr, kWarn },
-        { false, "oe_ds9", nullptr, "🇺🇸 US Navy", "oe_ds9c", nullptr, "0.25°",
-          "oe_restricted", nullptr, kErr },
-        { false, nullptr, "usSEABED / dbSEABED", "🇺🇸 USGS", "oe_ds10c",
-          "oe_ds1r", nullptr, "oe_notstaged", nullptr, kWarn },
-    };
-    for (int r = 0; r < 10; ++r) {
-        const Ds &d = kDs[r];
-        auto *ck = new QTableWidgetItem;
-        ck->setCheckState(d.ck ? Qt::Checked : Qt::Unchecked);
-        ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-        dsTable->setItem(r, 0, ck);
-        dsTable->setItem(r, 1, new QTableWidgetItem(
-            d.nameKey ? I18n::tr(d.nameKey) : QString::fromUtf8(d.nameRaw)));
-        dsTable->setItem(r, 2, new QTableWidgetItem(
-            QString::fromUtf8(d.provider)));
-        dsTable->setItem(r, 3, new QTableWidgetItem(I18n::tr(d.contentKey)));
-        dsTable->setItem(r, 4, new QTableWidgetItem(
-            d.resKey ? I18n::tr(d.resKey) : QString::fromUtf8(d.resRaw)));
-        QString state = I18n::tr(d.stateKey);
-        if (d.stateArg) state = state.arg(QString::fromUtf8(d.stateArg));
-        auto *st = new QTableWidgetItem(state);
-        st->setForeground(QBrush(QColor(d.color)));
-        dsTable->setItem(r, 5, st);
-    }
-    sd->vbox()->addWidget(dsTable);
+    m_dsTable = new QTableWidget(kOeDatasetCount, 6, sd);
+    oeSetupTable(m_dsTable, { "", I18n::tr("oe_col_dataset"),
+                              I18n::tr("oe_col_provider"),
+                              I18n::tr("oe_col_content"),
+                              I18n::tr("oe_col_res"),
+                              I18n::tr("oe_col_state") }, 250);
+    sd->vbox()->addWidget(m_dsTable);
 
     auto *dsRow = new QHBoxLayout();
     auto *folderBtn = new QPushButton(I18n::tr("oe_ds_folder"), sd);
+    connect(folderBtn, &QPushButton::clicked, this, [this] {
+        const QString d = QFileDialog::getExistingDirectory(
+            this, I18n::tr("oe_ds_folder"), oeDataDir());
+        if (d.isEmpty()) return;
+        setOeDataDir(d);
+        rebuildDatasetTable();
+    });
     auto *fetchBtn = new QPushButton(I18n::tr("oe_ds_fetch"), sd);
-    auto *folderLbl = new QLabel(QStringLiteral("D:/ocean_data/ (25.9GB)"), sd);
+    m_dsFolderLabel = new QLabel(sd);
     dsRow->addWidget(folderBtn);
     dsRow->addWidget(fetchBtn);
-    dsRow->addWidget(folderLbl);
+    dsRow->addWidget(m_dsFolderLabel);
     dsRow->addStretch(1);
     sd->vbox()->addLayout(dsRow);
+    rebuildDatasetTable();
     auto *prio = new QLabel(I18n::tr("oe_ds_prio"), sd);
     prio->setWordWrap(true);
     sd->vbox()->addWidget(prio);
@@ -794,6 +761,12 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     m_layerNote = new QLabel(m_resultSection);
     m_layerNote->setWordWrap(true);
     m_resultSection->vbox()->addWidget(m_layerNote);
+    // 出典の明示: 同梱の代表プロファイルであり、ローカルデータセットの
+    // 実照会ではない (実装されたら差し替える)
+    auto *srcNote = new QLabel(I18n::tr("oe_src_note"), m_resultSection);
+    srcNote->setWordWrap(true);
+    srcNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_resultSection->vbox()->addWidget(srcNote);
     v->addWidget(m_resultSection);
 
     // ── 音速プロファイル / SSP preview ──────────────────────────────────────
@@ -865,11 +838,6 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
             [this] { requery(); });
     connect(fetchBtn, &QPushButton::clicked, this,
             &OceanEnvironmentTab::openDownloadManager);
-    connect(folderBtn, &QPushButton::clicked, this, [this, folderLbl] {
-        const QString dir = QFileDialog::getExistingDirectory(
-            this, I18n::tr("oe_ds_folder"));
-        if (!dir.isEmpty()) folderLbl->setText(dir);
-    });
     connect(applyBtn, &QPushButton::clicked, this,
             &OceanEnvironmentTab::applyToSolver);
     connect(project, &Project::loaded, this, &OceanEnvironmentTab::requery);
@@ -1039,7 +1007,51 @@ void OceanEnvironmentTab::applyToSolver()
 
 void OceanEnvironmentTab::openDownloadManager()
 {
-    OeDownloadManager dlg(m_lat->text().toDouble(), m_lon->text().toDouble(),
-                          this);
+    OeDownloadManager dlg(this);
     dlg.exec();
+    rebuildDatasetTable();   // 取込があれば配置状態に即反映
+}
+
+// データセットフォルダを走査し、実在するファイルの配置状態だけを表示する
+void OceanEnvironmentTab::rebuildDatasetTable()
+{
+    const QString dir = oeDataDir();
+    const OeScanResult scan = oeScanAll(dir);
+
+    for (int r = 0; r < kOeDatasetCount; ++r) {
+        const OeDatasetDef &d = kOeDatasets[r];
+        const bool found = scan.bytes[r] > 0;
+
+        auto *ck = new QTableWidgetItem;
+        ck->setCheckState(found ? Qt::Checked : Qt::Unchecked);
+        ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        m_dsTable->setItem(r, 0, ck);
+        m_dsTable->setItem(r, 1, new QTableWidgetItem(oeDatasetName(d)));
+        m_dsTable->setItem(r, 2, new QTableWidgetItem(
+            QString::fromUtf8(d.provider)));
+        m_dsTable->setItem(r, 3, new QTableWidgetItem(I18n::tr(d.contentKey)));
+        m_dsTable->setItem(r, 4, new QTableWidgetItem(
+            d.resKey ? I18n::tr(d.resKey) : QString::fromUtf8(d.resRaw)));
+
+        QString state;
+        const char *color;
+        if (found) {
+            state = I18n::tr("oe_staged").arg(oeHumanSize(scan.bytes[r]));
+            color = kOk;
+        } else if (!d.url) {
+            state = I18n::tr("oe_restricted");
+            color = kErr;
+        } else {
+            state = I18n::tr("oe_notstaged");
+            color = kWarn;
+        }
+        auto *st = new QTableWidgetItem(state);
+        st->setForeground(QBrush(QColor(color)));
+        m_dsTable->setItem(r, 5, st);
+    }
+
+    m_dsFolderLabel->setText(QStringLiteral("%1 (%2)")
+        .arg(QDir::toNativeSeparators(dir),
+             scan.dirExists ? oeHumanSize(scan.total)
+                            : I18n::tr("oe_notstaged")));
 }

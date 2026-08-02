@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QDir>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFrame>
@@ -42,6 +43,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_found", "✓ 検出", "✓ Detected");
     ofd::I18n::reg("iop_notfound", "未検出", "Not found");
     ofd::I18n::reg("iop_notimpl", "未実装", "Not implemented");
+    ofd::I18n::reg("iop_watch_ph", "監視フォルダを選択…",
+                   "Choose a folder to watch…");
     ofd::I18n::reg("iop_probe_tip",
         "PATH 上の実行ファイルと Python モジュール (importlib) で検出します。"
         "GUI 専用の商用ツールは自動検出できないため常に「未検出」表示です",
@@ -493,12 +496,20 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     sb->vbox()->addWidget(hintLabel(I18n::tr("iop_bridge_note"), sb));
     v->addWidget(sb);
 
-    // 一括変換 / Batch conversion
+    // 一括変換 / Batch conversion — 変換エンジン未実装のため実行は無効表示
+    // (固定の "D:/exchange/inbox/" や存在しない ofdx-convert CLI は出さない)
     auto *sc = new SectionBox(I18n::tr("iop_batch_title"), body);
     auto *wrow = new QHBoxLayout();
-    m_watchDir = new QLineEdit("D:/exchange/inbox/", sc);
+    m_watchDir = new QLineEdit(sc);
+    m_watchDir->setPlaceholderText(I18n::tr("iop_watch_ph"));
     wrow->addWidget(m_watchDir, 1);
-    wrow->addWidget(new QPushButton(I18n::tr("iop_browse"), sc));
+    auto *watchBrowse = new QPushButton(I18n::tr("iop_browse"), sc);
+    connect(watchBrowse, &QPushButton::clicked, this, [this] {
+        const QString d = QFileDialog::getExistingDirectory(
+            this, I18n::tr("iop_watch"), m_watchDir->text());
+        if (!d.isEmpty()) m_watchDir->setText(d);
+    });
+    wrow->addWidget(watchBrowse);
     sc->form()->addRow(I18n::tr("iop_watch"), wrow);
     auto *ckAuto = new QCheckBox(I18n::tr("iop_auto_detect"), sc);
     ckAuto->setChecked(true);
@@ -507,11 +518,10 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     sc->form()->addRow(ckAuto);
     sc->form()->addRow(ckLog);
     auto *brow = new QHBoxLayout();
-    brow->addWidget(new QPushButton(I18n::tr("iop_run_batch"), sc));
-    auto *cli = new QLabel("CLI: ofdx-convert --in model.zmx --out project.ofd", sc);
-    cli->setStyleSheet(Theme::monoQss() + "color:#888888;");
-    cli->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    brow->addWidget(cli);
+    auto *runBatch = new QPushButton(I18n::tr("iop_run_batch"), sc);
+    runBatch->setEnabled(false);
+    runBatch->setToolTip(I18n::tr("iop_notimpl"));
+    brow->addWidget(runBatch);
     brow->addStretch(1);
     sc->vbox()->addLayout(brow);
     v->addWidget(sc);

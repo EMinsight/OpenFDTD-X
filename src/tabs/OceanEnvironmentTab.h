@@ -16,7 +16,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
-class QTimer;
+
 
 namespace ofd {
 
@@ -63,27 +63,17 @@ private:
 };
 
 // データセット取得マネージャ (モーダル) — オフラインファースト設計。
-// ① オフライン媒体取込 (推奨・既定) / ② 直接DL (明示許可時のみ, 進捗シミュレーション)
+// ① 取得済みファイルのフォルダ取込 (実コピー) / ② 公式配布ページを
+// ブラウザで開く。アプリ内直接ダウンロードは未実装 (進捗を装う表示は
+// 置かない — 実際に起きたことだけを表示する)。
 class OeDownloadManager : public QDialog {
     Q_OBJECT
 public:
-    explicit OeDownloadManager(double lat, double lon,
-                               QWidget *parent = nullptr);
+    explicit OeDownloadManager(QWidget *parent = nullptr);
 private:
-    struct Job {
-        QString name, src, size;
-        int    state = 0;    // 0=idle, 1=run, 2=done
-        double pct = 0;
-    };
-    void rebuildJobsTable();
-    void startJob(int i);
-    void tick();
+    void importFiles();      // ファイル選択 → データセットフォルダへコピー
 
-    QCheckBox    *m_netAllow;
-    QLabel       *m_netBadge;
-    QTableWidget *m_jobsTable;
-    QVector<Job>  m_jobs;
-    QTimer       *m_timer;
+    QLabel *m_importResult = nullptr;
 };
 
 class OceanEnvironmentTab : public QScrollArea {
@@ -95,6 +85,7 @@ private slots:
     void requery();          // 緯度経度 → 海域照会 + SSP 再計算 + 表示更新
     void applyToSolver();    // SSP/底質を UnderwaterOpts へ反映
     void openDownloadManager();
+    void rebuildDatasetTable();   // データセットフォルダを走査して配置状態を更新
 
 private:
     static const OeRegion &findRegion(double lat, double lon);
@@ -109,6 +100,10 @@ private:
     QLineEdit *m_lat, *m_lon;
     QComboBox *m_month;
     QLabel    *m_queryBadge;
+
+    // local datasets (実フォルダ走査)
+    QTableWidget *m_dsTable = nullptr;
+    QLabel       *m_dsFolderLabel = nullptr;
 
     // query result
     SectionBox   *m_resultSection;
