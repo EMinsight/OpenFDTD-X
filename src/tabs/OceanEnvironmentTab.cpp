@@ -1,6 +1,7 @@
 // OceanEnvironmentTab.cpp
 #include "OceanEnvironmentTab.h"
 #include "../core/Project.h"
+#include "../io/BellhopIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -41,21 +42,25 @@ const bool s_i18n = [] {
     // location query
     I18n::reg("oe_loc_section", "位置指定", "Location query");
     I18n::reg("oe_loc_hint",
-              "緯度・経度から、ローカル配置済みデータセットの地形・水温・塩分を"
-              "照会し SSP を自動生成。\n"
-              "データはあらかじめローカルに変換配置 (ネットワーク接続不要)。",
-              "Queries bathymetry, temperature and salinity from the locally "
-              "staged datasets for a latitude/longitude and generates the SSP "
-              "automatically.\n"
-              "The data is converted and staged locally beforehand (no network "
-              "connection required).");
+              "緯度・経度から代表海域プロファイル (同梱の WOA 気候値近似) を"
+              "選択し、Mackenzie 式で SSP を自動生成します。\n"
+              "配置済みローカルデータセット (実ファイル) の照会は未実装です "
+              "(下の一覧は配置状態の表示のみ)。",
+              "Selects a representative sea-area profile (built-in WOA "
+              "climatology approximation) for the latitude/longitude and "
+              "generates the SSP with the Mackenzie formula.\n"
+              "Querying the staged local dataset files is not implemented "
+              "(the list below only shows staging state).");
     I18n::reg("oe_lat", "緯度", "Latitude");
     I18n::reg("oe_lon", "経度", "Longitude");
     I18n::reg("oe_month", "月 (季節)", "Month (season)");
     I18n::reg("oe_month_fmt", "%1月", "%1");
     I18n::reg("oe_annual", "年平均も併記", "Also show annual mean");
     I18n::reg("oe_query_btn", "🔍 データ照会", "🔍 Query data");
-    I18n::reg("oe_query_ok", "照会成功: %1", "Query succeeded: %1");
+    // 「照会成功」は実データ照会を連想させるため、実態 (代表プロファイルの
+    // 選択) に合わせた文言にする
+    I18n::reg("oe_query_ok", "代表海域プロファイル: %1",
+              "Representative profile: %1");
     // local datasets
     I18n::reg("oe_ds_section", "ローカルデータセット", "Local datasets");
     I18n::reg("oe_ds_hint",
@@ -103,11 +108,13 @@ const bool s_i18n = [] {
     I18n::reg("oe_ds_fetch", "📦 データセット取得 (取込/配布ページ)",
               "📦 Fetch datasets (import / official pages)");
     I18n::reg("oe_ds_prio",
-              "▸ 優先順位: 実測 (JODC/Argo) > 再解析 (CMEMS/HYCOM) > 気候値 "
-              "(WOA23)。同一地点に複数ソースがある場合は上位を採用し出典を記録。",
-              "▸ Priority: measured (JODC/Argo) > reanalysis (CMEMS/HYCOM) > "
-              "climatology (WOA23). Where several sources cover one point the "
-              "highest is used and its provenance recorded.");
+              "▸ 実データ照会の実装方針 (将来): 実測 (JODC/Argo) > 再解析 "
+              "(CMEMS/HYCOM) > 気候値 (WOA23) の順に採用し出典を記録する。"
+              "現状は同梱の代表プロファイルのみを使用。",
+              "▸ Planned policy for real-data queries: measured (JODC/Argo) > "
+              "reanalysis (CMEMS/HYCOM) > climatology (WOA23), recording "
+              "provenance. Currently only the built-in representative "
+              "profiles are used.");
     // query result
     I18n::reg("oe_result", "照会結果", "Query result");
     I18n::reg("oe_b_depth", "水深 %1 m", "Depth %1 m");
@@ -121,11 +128,10 @@ const bool s_i18n = [] {
     I18n::reg("oe_col_t", "水温 [°C]", "Temperature [°C]");
     I18n::reg("oe_col_s", "塩分 [psu]", "Salinity [psu]");
     I18n::reg("oe_col_c", "音速 [m/s]", "Sound speed [m/s]");
+    // UNESCO (Chen-Millero) のセレクタは存在しないため「選択可」とは書かない
     I18n::reg("oe_layer_note",
-              "▸ 音速式: Mackenzie (1981)。UNESCO (Chen-Millero) も選択可。"
-              "全%1層。",
-              "▸ Sound-speed formula: Mackenzie (1981); UNESCO (Chen-Millero) "
-              "also available. %1 layers total.");
+              "▸ 音速式: Mackenzie (1981)。全%1層。",
+              "▸ Sound-speed formula: Mackenzie (1981). %1 layers total.");
     // SSP preview
     I18n::reg("oe_ssp_section", "音速プロファイル", "SSP preview");
     I18n::reg("oe_ssp_okhotsk",
@@ -152,14 +158,22 @@ const bool s_i18n = [] {
               "Also set the sediment parameters");
     I18n::reg("oe_apply_btn", "✓ 環境を適用 (SSP + 地形 + 底質)",
               "✓ Apply environment (SSP + bathymetry + sediment)");
-    I18n::reg("oe_export_btn", "📄 .env / .bty / .ssp 書出し",
-              "📄 Export .env / .bty / .ssp");
+    I18n::reg("oe_export_btn", "📄 .env 書出し", "📄 Export .env");
     I18n::reg("oe_apply_note",
-              "▸ Bellhop環境ファイル (.env)、地形 (.bty)、SSP (.ssp) を出力し"
-              "水中音響タブのソルバ設定に自動接続",
-              "▸ Writes the Bellhop environment (.env), bathymetry (.bty) and "
-              "SSP (.ssp) and wires them into the underwater acoustics solver "
-              "settings");
+              "▸ 適用: SSP・底質・伝搬距離を水中音響タブへ反映。Bellhop "
+              "環境ファイル (.env) は計算実行時にも自動生成される。"
+              "地形 (.bty) / SSP ファイル (.ssp) の書出しは未実装。",
+              "▸ Apply transfers the SSP, sediment and range to the "
+              "underwater acoustics tab. The Bellhop environment file (.env) "
+              "is also generated automatically when a run starts. Writing "
+              "bathymetry (.bty) / SSP (.ssp) files is not implemented.");
+    I18n::reg("oe_bty_note",
+              "▸ 海域水深から合成した参考断面です (実地形データ未使用 — "
+              "実データ照会の実装後に置き換え予定)。",
+              "▸ Synthetic reference section derived from the area depth "
+              "(no real bathymetry data — to be replaced once real-data "
+              "queries are implemented).");
+    I18n::reg("oe_notimpl", "未実装", "Not implemented");
     // download manager
     I18n::reg("oe_dl_title", "📦 データセット取得マネージャ",
               "📦 Dataset fetch manager");
@@ -795,6 +809,11 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     sb->form()->addRow(I18n::tr("oe_bearing"), brRow);
     m_bathy = new OeBathyView(sb);
     sb->vbox()->addWidget(m_bathy);
+    // 実地形データからの断面ではないことを明示 (海域水深からの合成表示)
+    auto *btyNote = new QLabel(I18n::tr("oe_bty_note"), sb);
+    btyNote->setWordWrap(true);
+    btyNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sb->vbox()->addWidget(btyNote);
     v->addWidget(sb);
 
     // ── ソルバへ反映 / Apply to solver ──────────────────────────────────────
@@ -804,7 +823,11 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     m_chkBty    = new QCheckBox(I18n::tr("oe_chk_bty"), sa);
     m_chkBottom = new QCheckBox(I18n::tr("oe_chk_bottom"), sa);
     m_chkSsp->setChecked(true);
-    m_chkBty->setChecked(true);
+    // .bty 書出しは未実装 (BellhopIO に地形出力が無い)。実装されるまで
+    // 選択不能にする — 有効に見えるのに何も起きない状態にしない
+    m_chkBty->setChecked(false);
+    m_chkBty->setEnabled(false);
+    m_chkBty->setToolTip(I18n::tr("oe_notimpl"));
     m_chkBottom->setChecked(true);
     chkRow->addWidget(m_chkSsp);
     chkRow->addWidget(m_chkBty);
@@ -813,7 +836,18 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     sa->vbox()->addLayout(chkRow);
     auto *btnRow = new QHBoxLayout();
     auto *applyBtn = new QPushButton(I18n::tr("oe_apply_btn"), sa);
+    // .env は実際に書出せる (計算実行時と同じ BellhopIO::envText)。
+    // .bty / .ssp は未実装のためボタン名から外す
     auto *exportBtn = new QPushButton(I18n::tr("oe_export_btn"), sa);
+    connect(exportBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getSaveFileName(
+            this, I18n::tr("oe_export_btn"),
+            QStringLiteral("underwater.env"), "BELLHOP env (*.env)");
+        if (path.isEmpty()) return;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+        f.write(BellhopIO::envText(*m_p).toUtf8());
+    });
     btnRow->addWidget(applyBtn);
     btnRow->addWidget(exportBtn);
     btnRow->addStretch(1);
