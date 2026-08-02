@@ -60,6 +60,27 @@ export OPENRCWA_HOME=/path/to/OpenRCWA   # orcwa, orcwa_post ...
 export OPENBPM_HOME=/path/to/OpenBPM     # obpm, obpm_post ...
 ```
 
+#### macOS での実行
+
+macOS ではアプリが `.app` バンドル (`openfdtd_x.app` / `openuwa.app`) として
+生成されるため、上記の `./build/openfdtd_x` というパスは存在しない。
+バンドルはディレクトリなので `./build/openfdtd_x.app` を直接実行しても
+`permission denied` になる (chmod では解決しない)。実体のバイナリは
+バンドル内の `Contents/MacOS/` にある:
+
+```bash
+# コマンドライン引数付きで実行する場合はバンドル内の実体を指定する (CI と同じ)
+./build/openfdtd_x.app/Contents/MacOS/openfdtd_x tests/data/dipole.ofd
+./build/openuwa.app/Contents/MacOS/openuwa tests/data/dipole.ofd
+
+# 引数なしで GUI を開くだけなら open でもよい
+# (open 経由では作業ディレクトリが変わるため、相対パス引数は使えない)
+open ./build/openfdtd_x.app
+```
+
+`ofdx_selftest` はバンドルではない通常の実行ファイルなので、macOS でも
+`./build/ofdx_selftest` のまま実行できる。
+
 ### 自己テスト
 `tests/data` に同梱した OpenFDTD サンプル `.ofd` をロード → シリアライズ → 再パースし、
 構造が完全一致することを確認する (本家フォーマット互換性の保証)。
