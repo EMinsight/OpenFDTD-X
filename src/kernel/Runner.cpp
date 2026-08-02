@@ -258,13 +258,19 @@ void Runner::launch(bool solverPhase)
             m_postPending = false;
             // どこを探して見つからなかったのかを示す (カーネル未導入の
             // 環境で最初に踏むエラーなので、次の一手が分かる文言にする)。
+            // 各探索元は「実際の設定値」を出す — 「設定したのに効かない」と
+            // 「未設定」をユーザーがコンソールだけで切り分けられるように。
             const char *homeVar = homeVarFor(m_cfg.kernel);
+            const auto orUnset = [](const QString &v) {
+                return v.isEmpty() ? QStringLiteral("(unset)") : v;
+            };
             emit logLine(QStringLiteral(
-                "hint: searched %1, kernel-path setting, $%2 (and their "
-                "bin/), <app dir>/kernel, <app dir>, PATH")
-                .arg(m_cfg.binaryDir.isEmpty() ? QStringLiteral("(binaryDir unset)")
-                                               : m_cfg.binaryDir,
-                     QLatin1String(homeVar)));
+                "hint: searched binaryDir=%1, kernel-path setting=%2, "
+                "$%3=%4 (and their bin/), <app dir>/kernel, <app dir>, PATH")
+                .arg(orUnset(m_cfg.binaryDir),
+                     orUnset(kernelDirSetting(m_cfg.kernel)),
+                     QLatin1String(homeVar),
+                     orUnset(qEnvironmentVariable(homeVar))));
             emit logLine(QStringLiteral(
                 "hint: build the solver kernel, then set its folder in "
                 "ツール > カーネルパスの設定… (or set $%1 to the repository "
