@@ -16,6 +16,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 option(USE_HDF5   "Enable HDF5 time-series export"            OFF)
 option(USE_LIBIGL "Use libigl for STL import + voxelization"  OFF)
 option(BUILD_TESTS "Build the .ofd round-trip self test"      ON)
+option(BUILD_OPENUWA "Build the OpenUWA standalone underwater app" ON)
 
 if(USE_HDF5)
     find_package(HDF5 REQUIRED COMPONENTS C)
@@ -230,6 +231,8 @@ set(GUI_SOURCES
     src/acoustics/qt/QtAcousticAdapter.h
     src/acoustics/qt/AcousticResultModel.cpp
     src/acoustics/qt/AcousticResultModel.h
+    src/acoustics/qt/AcousticReportBuilder.cpp
+    src/acoustics/qt/AcousticReportBuilder.h
     src/tabs/RirAnalysisTab.cpp
     src/tabs/RirAnalysisTab.h
 
@@ -275,21 +278,24 @@ target_link_libraries(openfdtd_x PRIVATE ofdx_gui)
 # ── OpenUWA: 水中音響 分離アプリ (OpenUWA-Underwater.html) ──────────────────
 # ドメインタブを持たず水中固定。共有タブ (海洋環境/伝搬解析/音源/H5/連携) を
 # そのまま再利用する派生シェル。
-qt_add_executable(openuwa
-    src/main_uwa.cpp
-    src/UnderwaterWindow.cpp
-    src/UnderwaterWindow.h
-)
-target_link_libraries(openuwa PRIVATE ofdx_gui)
-if(MSVC)
-    target_compile_options(openuwa PRIVATE /utf-8 /W3)
-else()
-    target_compile_options(openuwa PRIVATE -Wall -Wextra)
+# BUILD_OPENUWA=OFF でこのターゲットだけを外せる (共有コード側には分岐を入れない)。
+if(BUILD_OPENUWA)
+    qt_add_executable(openuwa
+        src/main_uwa.cpp
+        src/UnderwaterWindow.cpp
+        src/UnderwaterWindow.h
+    )
+    target_link_libraries(openuwa PRIVATE ofdx_gui)
+    if(MSVC)
+        target_compile_options(openuwa PRIVATE /utf-8 /W3)
+    else()
+        target_compile_options(openuwa PRIVATE -Wall -Wextra)
+    endif()
+    set_target_properties(openuwa PROPERTIES
+        WIN32_EXECUTABLE ON
+        MACOSX_BUNDLE    ON
+    )
 endif()
-set_target_properties(openuwa PROPERTIES
-    WIN32_EXECUTABLE ON
-    MACOSX_BUNDLE    ON
-)
 
 set_target_properties(openfdtd_x PROPERTIES
     WIN32_EXECUTABLE ON
@@ -356,6 +362,15 @@ if(BUILD_TESTS)
     qt_add_executable(ofdx_selftest ${CORE_SOURCES}
         src/acoustics/qt/QtAcousticAdapter.cpp
         src/acoustics/qt/QtAcousticAdapter.h
+        # 一括レポート (AcousticReportBuilder) は Widget 非依存なので、
+        # 未実行の明示・決定性 (同一入力 → 同一バイト列) を selftest で検証する
+        # (I18n はレポートの見出し文言に使う — GUI_SOURCES 側なのでここで足す)
+        src/I18n.cpp
+        src/I18n.h
+        src/acoustics/qt/AcousticResultModel.cpp
+        src/acoustics/qt/AcousticResultModel.h
+        src/acoustics/qt/AcousticReportBuilder.cpp
+        src/acoustics/qt/AcousticReportBuilder.h
         tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
     target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)

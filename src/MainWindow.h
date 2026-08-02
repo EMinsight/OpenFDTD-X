@@ -67,6 +67,9 @@ public slots:
     void exportHdf5();
     void exportTouchstone();
     void exportTidy3d();
+    // オペラ音響の一括レポート (RIR 分析 + 歌声分析 → HTML / CSV)。
+    // 実行済みの結果を集めるだけで分析は再実行しない。
+    void exportAcousticReport();
     void setDomain(ofd::Domain d);
     void setUiLevel(bool expert);
     void setViewStyle(int index);        // CLI --view-style / 表示メニュー用

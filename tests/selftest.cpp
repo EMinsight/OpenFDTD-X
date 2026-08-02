@@ -21,6 +21,7 @@
 #include "core/GlassCatalog.h"
 #include "core/RoomAcoustics.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
+#include "acoustics/qt/AcousticReportBuilder.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -1279,6 +1280,121 @@ static void testBellhop()
     check(shd.exists() && shd.size() > 0, "bellhop: .shd generated");
 }
 
+// ── オペラ音響の一括レポート (AcousticReportBuilder) ────────────────────────
+// GUI を介さず、手作りの分析結果からレポート文字列を生成して検証する。
+//   (a) 未実行の明示 — 空欄でなく「未実行」トークンが出ること (絶対規則 5)
+//   (b) 決定性 — 同一入力から同一バイト列 (時刻・乱数を含まない)
+//   (c) HTML エスケープ — 警告文の '<' がタグとして混入しないこと
+//   (d) 校正ゲート — 校正オフセットは Absolute のときだけ載ること
+static void testAcousticReport()
+{
+    g_file = "acoustic_report";
+    using acoustics::AnalysisQuality;
+    using acoustics::MetricValue;
+
+    // 最小の RIR 分析結果 (Full band 1 帯域 + 反射 1 件 + 警告 1 件)
+    acoustics::RirAnalysisResult rir;
+    rir.overallQuality = AnalysisQuality::Warning;
+    rir.preprocess.noiseFloorDb = -65.0;
+    rir.preprocess.peakDb = -1.0;
+    rir.preprocess.dynamicRangeDb = 64.0;
+    rir.directSound.found = true;
+    rir.directSound.timeSeconds = 0.0125;
+    rir.directSound.quality = AnalysisQuality::Valid;
+    acoustics::BandMetricsResult bm;
+    bm.band = acoustics::Band("Full band", 0.0, 0.0, 0.0, true);
+    bm.filterOk = true;
+    bm.metrics.t30 = acoustics::makeValidMetric(1.82);
+    bm.metrics.c80 = acoustics::makeValidMetric(2.4);
+    // T20 は無効 (動的レンジ不足を模擬) — 「算出不可」経路の検証
+    bm.metrics.t20.valid = false;
+    bm.metrics.t20.quality = AnalysisQuality::Invalid;
+    bm.metrics.t20.warning = "dynamic range < 30 dB";
+    rir.bands.push_back(bm);
+    acoustics::ReflectionEvent ev;
+    ev.arrivalTime = 0.030;
+    ev.delayFromDirect = 0.0175;
+    ev.relativeLevelDb = -6.5;
+    ev.confidence = 0.9;
+    rir.reflections.push_back(ev);
+    rir.warnings.push_back("noise floor high & tail short <check>");
+
+    AcousticReportInput in;
+    in.projectTitle = "Report <Test> & Co.";
+    in.rirFile = "hall.wav";
+    in.calibrationState = 2;   // Uncalibrated
+    in.hasRir = true;
+    in.rir = rir;
+
+    // (a) 歌声分析は未実行 → CSV に not_run が明示される
+    const QString csv = AcousticReportBuilder::buildCsv(in);
+    check(csv.startsWith("source,section,metric,band,value,unit,"
+                         "valid,quality,warning\n"),
+          "report: csv header");
+    check(csv.contains("meta,status,rir_analysis,,done"),
+          "report: csv rir status done");
+    check(csv.contains("meta,status,vocal_analysis,,not_run"),
+          "report: csv vocal status not_run");
+    check(csv.contains("rir,metrics,T30,Full band,1.82,s,1,valid,"),
+          "report: csv T30 row");
+    check(!csv.contains("vocal,metrics,"), "report: csv has no vocal rows");
+
+    // (d) Uncalibrated ではオフセット行を出さない
+    check(!csv.contains("calibration_offset_db"),
+          "report: csv no offset when uncalibrated");
+
+    // (b) 決定性: 同一入力 → 同一バイト列
+    check(AcousticReportBuilder::buildCsv(in) == csv,
+          "report: csv deterministic");
+    const QString html = AcousticReportBuilder::buildHtml(in);
+    check(AcousticReportBuilder::buildHtml(in) == html,
+          "report: html deterministic");
+
+    // (c) HTML: タイトル・警告のメタ文字がエスケープされる
+    check(html.contains("Report &lt;Test&gt; &amp; Co."),
+          "report: html escapes project title");
+    check(html.contains("&lt;check&gt;"), "report: html escapes warning text");
+    check(!html.contains("<check>"), "report: no raw tag from warning");
+    // 無効な T20 は数値でなく「算出不可」になる
+    check(html.contains("dynamic range &lt; 30 dB"),
+          "report: html carries invalid reason");
+    // 未実行セクションの明示 (ja 既定文言)
+    check(html.contains(QString::fromUtf8("未実行")),
+          "report: html marks vocal section not run");
+    check(html.startsWith("<!DOCTYPE html>"), "report: html doctype");
+
+    // (d) Absolute にするとオフセットが載る
+    in.calibrationState = 0;
+    in.calibrationOffsetDb = 94.0;
+    check(AcousticReportBuilder::buildCsv(in)
+              .contains("meta,info,calibration_offset_db,,94.0"),
+          "report: csv offset present when absolute");
+
+    // 両方未実行なら hasAnyResult が false (空レポートを出さない判断に使う)
+    AcousticReportInput none;
+    check(!AcousticReportBuilder::hasAnyResult(none),
+          "report: hasAnyResult false when nothing run");
+    check(AcousticReportBuilder::hasAnyResult(in),
+          "report: hasAnyResult true with rir");
+
+    // 歌声分析を追加すると vocal 行が現れる
+    acoustics::VocalAnalysisResult voc;
+    voc.overallQuality = AnalysisQuality::Valid;
+    voc.totalFrameCount = 100;
+    voc.voicedFrameCount = 80;
+    voc.voicedRatio = 0.8;
+    voc.f0SearchMinHz = 80.0;
+    voc.f0SearchMaxHz = 1000.0;
+    voc.f0MedianHz = acoustics::makeValidMetric(440.0);
+    in.hasVocal = true;
+    in.vocal = voc;
+    const QString csv2 = AcousticReportBuilder::buildCsv(in);
+    check(csv2.contains("meta,status,vocal_analysis,,done"),
+          "report: csv vocal status done");
+    check(csv2.contains("vocal,metrics,F0 median,Full band,440.0,Hz,1,valid,"),
+          "report: csv vocal F0 row");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -1341,6 +1457,7 @@ int main(int argc, char *argv[])
     testRcwaCore();
     testBellhop();
     testRunGating();
+    testAcousticReport();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);
