@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -495,7 +496,7 @@ QWidget *PhotonicsSolversTab::buildFdtdPage()
     m_meshAccVal = new QLabel("4", s);
     m_meshAccVal->setMinimumWidth(24);
     m_meshAccVal->setAlignment(Qt::AlignCenter);
-    m_meshAccVal->setStyleSheet("font-family:'Consolas','Menlo',monospace;");
+    m_meshAccVal->setStyleSheet(Theme::monoQss());
     accRow->addWidget(m_meshAccVal);
     s->form()->addRow(I18n::tr("psol_mesh_acc"), accRow);
 

@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -120,7 +121,7 @@ const bool s_i18n = [] {
 }();
 
 // mock の CSS クラス相当 (最小限のスタイル)
-const char kMono[]  = "font-family:'Consolas','Menlo',monospace;";
+;
 const char kMuted[] = "color:#888888;";
 
 QLabel *mutedLabel(const QString &text, QWidget *parent)
@@ -174,7 +175,9 @@ QTableWidgetItem *monoItem(const QString &s)
     auto *it = new QTableWidgetItem(s);
     QFont f = it->font();
     f.setStyleHint(QFont::Monospace);
-    f.setFamily("Menlo");
+    // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
+    if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
+        f.setFamily(mf);
     it->setFont(f);
     return it;
 }
@@ -245,10 +248,10 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     // mock の 位置(x,y,z) / 向き(θ,φ) 行 (ローカル状態、既定値はモックのまま)。
     // 指向性行の前後に差し込んでモックの並び順にする。
     m_srcPos = new QLineEdit(QStringLiteral("-3.0, 1.6, 5.0"), ss);
-    m_srcPos->setStyleSheet(kMono);
+    m_srcPos->setStyleSheet(Theme::monoQss());
     ss->form()->insertRow(0, I18n::tr("ac2_src_pos"), m_srcPos);
     m_srcAim = new QLineEdit(QStringLiteral("90°, 0°"), ss);
-    m_srcAim->setStyleSheet(kMono);
+    m_srcAim->setStyleSheet(Theme::monoQss());
     ss->form()->insertRow(2, I18n::tr("ac2_src_aim"), m_srcAim);
     v->addWidget(ss);
 

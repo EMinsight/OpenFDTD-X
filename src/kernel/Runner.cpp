@@ -207,9 +207,21 @@ void Runner::launch(bool solverPhase)
     connect(m_proc, &QProcess::readyRead, this, &Runner::onReadyRead);
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &Runner::onFinished);
-    connect(m_proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+    connect(m_proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError e) {
         emit logLine("error: " + m_proc->errorString()
                      + " (" + m_proc->program() + ")");
+        // FailedToStart だけは QProcess::finished が発火しないので
+        // ここで完了扱いにしないと isRunning でないのに UI が実行状態のまま
+        // 固まる (カーネル未インストール環境で必ず踏む経路)。
+        // Crashed 等は finished も来るため二重発火させない。
+        if (e == QProcess::FailedToStart) {
+            m_proc->deleteLater();
+            m_proc = nullptr;
+            m_postPending = false;
+            emit logLine(QStringLiteral("=== failed (kernel not found) ==="));
+            emit finished(false);
+        }
     });
 
     emit logLine(QStringLiteral("$ cd %1").arg(m_cfg.workingDir));

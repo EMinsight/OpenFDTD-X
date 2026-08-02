@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -108,7 +109,7 @@ const bool s_i18nUnderwater = [] {
 }();
 
 // mock の CSS クラス相当 (最小限のスタイル)
-const char kMono[]  = "font-family:'Consolas','Menlo',monospace;";
+;
 const char kMuted[] = "color:#888888;";
 const char kAccUw[] = "#1E6FBF";     // styles.css --acc-underwater
 
@@ -318,7 +319,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     se->form()->addRow(I18n::tr("uw_salinity"), m_salinity);
     // 基準音速 c₀ — 水温・塩分からの計算値 (mock の「基準音速 c₀ … (計算値)」)
     m_c0 = new QLabel(se);
-    m_c0->setStyleSheet(kMono);
+    m_c0->setStyleSheet(Theme::monoQss());
     auto *c0Row = new QHBoxLayout();
     c0Row->addWidget(m_c0);
     c0Row->addWidget(mutedLabel(I18n::tr("uwx_calc_value"), se));

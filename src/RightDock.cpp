@@ -3,6 +3,7 @@
 #include "I18n.h"
 #include "core/Project.h"
 #include "widgets/LogConsole.h"
+#include "Theme.h"
 
 #include <QButtonGroup>
 #include <QFormLayout>
@@ -113,7 +114,7 @@ void RightDock::showProperties(QTreeWidgetItem *item)
 
     const auto mono = [this](const QString &text) {
         auto *l = new QLabel(text, m_propEmpty->parentWidget());
-        l->setStyleSheet("font-family:'Menlo','Consolas',monospace;");
+        l->setStyleSheet(Theme::monoQss());
         l->setTextInteractionFlags(Qt::TextSelectableByMouse);
         return l;
     };

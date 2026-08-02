@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -303,7 +304,10 @@ QTableWidgetItem *monoItem(const QString &text)
 {
     auto *it = new QTableWidgetItem(text);
     QFont f = it->font();
-    f.setFamily("Consolas");
+    // 実在するファミリのみ指定する (Theme が環境ごとに解決済み)
+    const QString mono = Theme::monoFontFamily();
+    if (!mono.isEmpty())
+        f.setFamily(mono);
     f.setStyleHint(QFont::Monospace);
     it->setFont(f);
     return it;
@@ -395,7 +399,7 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     auto *brow = new QHBoxLayout();
     brow->addWidget(new QPushButton(I18n::tr("iop_run_batch"), sc));
     auto *cli = new QLabel("CLI: ofdx-convert --in model.zmx --out project.ofd", sc);
-    cli->setStyleSheet("font-family:'Consolas','Menlo',monospace; color:#888888;");
+    cli->setStyleSheet(Theme::monoQss() + "color:#888888;");
     cli->setTextInteractionFlags(Qt::TextSelectableByMouse);
     brow->addWidget(cli);
     brow->addStretch(1);

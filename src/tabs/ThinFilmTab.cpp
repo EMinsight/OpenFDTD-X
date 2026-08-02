@@ -4,6 +4,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -292,7 +293,10 @@ QTableWidgetItem *monoItem(const QString &s)
 {
     auto *it = textItem(s);
     QFont f = it->font();
-    f.setFamily("monospace");
+    // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
+    if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
+        f.setFamily(mf);
+    f.setStyleHint(QFont::Monospace);
     it->setFont(f);
     return it;
 }

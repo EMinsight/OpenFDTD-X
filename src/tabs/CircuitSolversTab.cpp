@@ -4,6 +4,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -320,8 +321,11 @@ QWidget *CircuitSolversTab::buildModelPage()
     m_portTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_portTable->setMaximumHeight(140);
 
-    QFont mono("Menlo");
+    QFont mono;
     mono.setStyleHint(QFont::Monospace);
+    // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
+    if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
+        mono.setFamily(mf);
 
     for (int r = 0; r < 3; ++r) {
         const PortRow &p = kPorts[r];

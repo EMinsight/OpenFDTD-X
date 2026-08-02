@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -45,7 +46,7 @@ const bool s_i18n = [] {
 }();
 
 // mock の CSS クラス相当 (最小限のスタイル)
-const char kMono[]  = "font-family:'Consolas','Menlo',monospace;";
+;
 const char kMuted[] = "color:#888888;";
 
 // mock の badge 色 (ok / warn / err)
@@ -53,10 +54,10 @@ const char kOk[]   = "#2E8B57";
 const char kWarn[] = "#B45309";
 const char kErr[]  = "#B91C1C";
 
-QLabel *styledLabel(QWidget *parent, const char *css)
+QLabel *styledLabel(QWidget *parent, const QString &css)
 {
     auto *l = new QLabel(parent);
-    l->setStyleSheet(QString::fromLatin1(css));
+    l->setStyleSheet(css);
     return l;
 }
 
@@ -182,7 +183,7 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
     auto *st = new SectionBox(I18n::tr("mst_section"), body);
 
     auto *cellsRow = new QHBoxLayout();
-    m_statCells      = styledLabel(st, kMono);
+    m_statCells      = styledLabel(st, Theme::monoQss());
     m_statCellsBreak = styledLabel(st, kMuted);
     cellsRow->addWidget(m_statCells);
     cellsRow->addWidget(m_statCellsBreak);
@@ -190,7 +191,7 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
     st->form()->addRow(I18n::tr("me_total"), cellsRow);
 
     auto *dxRow = new QHBoxLayout();
-    m_statDxMin  = styledLabel(st, kMono);
+    m_statDxMin  = styledLabel(st, Theme::monoQss());
     m_statLambda = styledLabel(st, kMuted);
     m_statBadge  = new QLabel(st);
     dxRow->addWidget(m_statDxMin);
@@ -199,10 +200,10 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
     dxRow->addStretch(1);
     st->form()->addRow(I18n::tr("mst_dx_min"), dxRow);
 
-    m_statCfl = styledLabel(st, kMono);
+    m_statCfl = styledLabel(st, Theme::monoQss());
     st->form()->addRow(I18n::tr("mst_cfl"), m_statCfl);
 
-    m_statMem = styledLabel(st, kMono);
+    m_statMem = styledLabel(st, Theme::monoQss());
     st->form()->addRow(I18n::tr("mst_memory"), m_statMem);
     v->addWidget(st);
 

@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QFrame>
 #include <QGridLayout>
@@ -218,7 +219,7 @@ void SolverSelectorTab::rebuild()
         row->addWidget(makeBadge(badgeText, kind, widget()));
         if (!mono.isEmpty()) {
             auto *m = new QLabel(mono, widget());
-            m->setStyleSheet("font-family:'Consolas','Menlo',monospace;");
+            m->setStyleSheet(Theme::monoQss());
             row->addWidget(m);
         }
         auto *n = new QLabel(note, widget());

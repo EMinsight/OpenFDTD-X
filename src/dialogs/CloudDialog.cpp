@@ -2,6 +2,7 @@
 #include "CloudDialog.h"
 #include "../core/Project.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QFormLayout>
@@ -49,7 +50,7 @@ const int  kCloudPmlAuto  = 12;      // "自動 (12 layers)"
 QLabel *monoLabel(const QString &text, QWidget *parent)
 {
     auto *l = new QLabel(text, parent);
-    l->setStyleSheet("font-family:'Consolas','Menlo',monospace;");
+    l->setStyleSheet(Theme::monoQss());
     return l;
 }
 } // namespace

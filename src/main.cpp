@@ -1,5 +1,6 @@
 // main.cpp — OpenFDTD-X application entry
 #include <QApplication>
+#include <QFont>
 #include <QCommandLineParser>
 #include <QFile>
 #include <QSettings>
@@ -20,6 +21,16 @@ int main(int argc, char *argv[])
     // Force Fusion style on all platforms so the look matches the mock
     // (Windows Vista / macOS native styles diverge too much).
     QApplication::setStyle(QStyleFactory::create("Fusion"));
+
+    // アプリ既定フォントを実在ファミリへ固定する (--ff-ui 相当)。
+    // QPA の既定は "Sans Serif" のような非実在名のことがあり、そのままだと
+    // Qt のフォント別名解決で起動ごとに 60〜100 ms を失う。
+    // スタイル適用直後・ウィンドウ生成前に置くこと (最初の解決より先に効かせる)。
+    if (const QString ff = ofd::Theme::uiFontFamily(); !ff.isEmpty()) {
+        QFont appFont = QApplication::font();
+        appFont.setFamily(ff);
+        QApplication::setFont(appFont);
+    }
 
     QCommandLineParser cli;
     cli.setApplicationDescription("OpenFDTD-X — Multi-Domain FDTD GUI");
