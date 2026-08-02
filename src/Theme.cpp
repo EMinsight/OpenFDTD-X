@@ -8,6 +8,8 @@
 #include "Theme.h"
 
 #include <QColor>
+#include <QFontDatabase>
+#include <QStringList>
 
 namespace ofd {
 
@@ -60,6 +62,22 @@ QString lighten(const QString &hex, int factor)
 QString darken(const QString &hex, int factor)
 {
     return QColor(hex).darker(factor).name(QColor::HexRgb).toUpper();
+}
+
+// ── フォントスタックの解決 (--ff-ui / --ff-mono) ────────────────────────────
+// モックの font stack は Windows 優先で並んでいる ("Segoe UI" ほか)。
+// これを QSS へそのまま流すと、実在しないファミリを引くたびに Qt が
+// "Populating font family aliases took N ms" を出して毎回 100 ms 前後を失う。
+// そこで**この環境に実在する最初の 1 つ**だけを選んで QSS に出す。
+// 優先順位はモックの並び順そのままなので、見た目の意図は変わらない。
+QString pickFamily(const QStringList &prefs)
+{
+    const QStringList have = QFontDatabase::families();
+    for (const QString &f : prefs) {
+        if (have.contains(f, Qt::CaseInsensitive))
+            return f;
+    }
+    return QString();   // 見つからなければ総称名にフォールバック
 }
 
 // ── :root — Classic (Qt Fusion 相当・既定) ──────────────────────────────────
@@ -263,8 +281,18 @@ QString buildQss(const Palette &p)
     const QString fsXs  = px(p.fsXs);
     // 入力系の総高が --row-h になるよう content 高を出す (上下 border 1px 分を引く)
     const QString inputH = px(p.rowH > 6 ? p.rowH - 2 : p.rowH);
-    const QString mono =
-        "'Cascadia Mono','Consolas','SF Mono','Menlo','MS Gothic',monospace";
+    // --ff-ui / --ff-mono: 実在するファミリ **1 つだけ** を出す。
+    // sans-serif / monospace のような総称名は Qt の QSS では総称として
+    // 扱われず「その名前のファミリ」を探しに行くため、書くと必ず外れる。
+    // 解決できなければ font-family 自体を出さない (既定フォントに委ねる)。
+    const QString ffUi = Theme::uiFontFamily().isEmpty()
+        ? QString() : "'" + Theme::uiFontFamily() + "'";
+    const QString mono = Theme::monoFontFamily().isEmpty()
+        ? QString() : "'" + Theme::monoFontFamily() + "'";
+    const QString ffUiDecl   = ffUi.isEmpty() ? QString()
+                                              : "    font-family: " + ffUi + ";\n";
+    const QString monoDecl   = mono.isEmpty() ? QString()
+                                              : "    font-family: " + mono + ";\n";
 
     QString s;
     s.reserve(20000);
@@ -274,6 +302,7 @@ QString buildQss(const Palette &p)
     s += "QWidget {\n"
          "    background: " + p.bgApp + ";\n"
          "    color: " + p.fgApp + ";\n"
+         + ffUiDecl +
          "    font-size: " + fsApp + ";\n"
          "}\n";
     s += "QMainWindow, QDialog {\n"
@@ -857,7 +886,7 @@ QString buildQss(const Palette &p)
          "    border: 1px solid #2A2F3A;\n"
          "    border-radius: " + rSm + ";\n"
          "    padding: 6px 8px;\n"
-         "    font-family: " + mono + ";\n"
+         + monoDecl +
          "    font-size: " + fsSm + ";\n"
          "    selection-background-color: " + p.accent + ";\n"
          "    selection-color: #FFFFFF;\n"
@@ -882,6 +911,41 @@ QString buildQss(const Palette &p)
 QString Theme::qss(UiStyle style, UiTheme theme, Density density, Domain domain)
 {
     return buildQss(makePalette(style, theme, density, domain));
+}
+
+// styles.css の --ff-ui / --ff-mono の並び順をそのまま優先順位として解決する。
+// QFontDatabase の走査は 1 回だけで済ませたいので function-local static に保つ
+// (QGuiApplication 生成後に呼ばれる前提 — Theme::qss は main で app の後)。
+QString Theme::uiFontFamily()
+{
+    static const QString fam = pickFamily({
+        QStringLiteral("Segoe UI"),                    // Windows
+        QStringLiteral("Yu Gothic UI"),
+        QStringLiteral("Meiryo UI"),
+        QStringLiteral("Hiragino Kaku Gothic ProN"),   // macOS
+        QStringLiteral("Noto Sans CJK JP"),            // Linux
+        QStringLiteral("Noto Sans JP"),
+    });
+    return fam;
+}
+
+QString Theme::monoQss()
+{
+    const QString fam = monoFontFamily();
+    return fam.isEmpty() ? QString() : "font-family:'" + fam + "';";
+}
+
+QString Theme::monoFontFamily()
+{
+    static const QString fam = pickFamily({
+        QStringLiteral("Cascadia Mono"),               // Windows
+        QStringLiteral("Consolas"),
+        QStringLiteral("SF Mono"),                     // macOS
+        QStringLiteral("Menlo"),
+        QStringLiteral("MS Gothic"),
+        QStringLiteral("DejaVu Sans Mono"),            // Linux
+    });
+    return fam;
 }
 
 UiStyle Theme::styleFromKey(const QString &key)

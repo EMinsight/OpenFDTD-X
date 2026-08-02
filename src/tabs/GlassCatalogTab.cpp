@@ -4,6 +4,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QClipboard>
 #include <QColor>
@@ -97,7 +98,9 @@ QTableWidgetItem *monoItem(const QString &s)
     auto *it = new QTableWidgetItem(s);
     QFont f = it->font();
     f.setStyleHint(QFont::Monospace);
-    f.setFamily("Menlo");
+    // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
+    if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
+        f.setFamily(mf);
     it->setFont(f);
     return it;
 }

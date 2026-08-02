@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -270,7 +271,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         auto *f = new QFormLayout(m_pageTopology);
         f->setContentsMargins(0, 0, 0, 0);
         auto *region = new QLabel("5 × 5 μm × 220nm", m_pageTopology);
-        region->setStyleSheet("font-family:'Consolas','Menlo',monospace;");
+        region->setStyleSheet(Theme::monoQss());
         f->addRow(I18n::tr("opz_design_region"), region);
         auto *resRow = new QHBoxLayout();
         m_res = numEdit("20", 70, m_pageTopology);

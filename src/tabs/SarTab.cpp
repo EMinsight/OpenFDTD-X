@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -142,7 +143,10 @@ QLabel *makeMono(const QString &text, QWidget *parent)
 {
     auto *l = new QLabel(text, parent);
     QFont f = l->font();
-    f.setFamily("monospace");
+    // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
+    if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
+        f.setFamily(mf);
+    f.setStyleHint(QFont::Monospace);
     l->setFont(f);
     return l;
 }

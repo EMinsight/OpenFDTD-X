@@ -29,6 +29,17 @@ public:
     static Density densityFromKey(const QString &key);   // "compact"|"normal"|"comfortable"
     static QString densityKey(Density d);
 
+    // モック styles.css の --ff-ui / --ff-mono を、この環境に実在する
+    // ファミリ 1 つへ解決したもの (どれも無ければ空文字列)。
+    // QFont を直に組み立てる箇所は必ずこれを使う — 実在しないファミリ名を
+    // 指定すると Qt の別名解決で毎回 100 ms 級のコストと警告が出る。
+    static QString uiFontFamily();
+    static QString monoFontFamily();
+
+    // ウィジェット単位の setStyleSheet 用の等幅指定片。
+    // 解決できない環境では空文字列 (= 既定フォントに委ねる)。
+    static QString monoQss();
+
     // True when the resolved palette is dark (scientific counts as dark) —
     // callers use it to pick viewport/plot ink colours.
     // (ビューポート / プロットの線色を決めるのに使う)

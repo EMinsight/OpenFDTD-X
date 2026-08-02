@@ -4,6 +4,7 @@
 #include "../io/Tidy3dExporter.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../Theme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -162,7 +163,11 @@ QWidget *badgeCell(const QString &text, const char *kind,
 
 QFont monoFont()
 {
-    QFont f("Consolas");
+    // 実在するファミリのみ指定する (Theme が環境ごとに解決済み)
+    QFont f;
+    const QString mono = Theme::monoFontFamily();
+    if (!mono.isEmpty())
+        f.setFamily(mono);
     f.setStyleHint(QFont::Monospace);
     return f;
 }
