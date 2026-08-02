@@ -59,6 +59,7 @@ void I18n::loadTables() {
     add("tb_cloud_optical_only", "クラウド送信 (光のみ)", "Cloud (optical only)");
     add("tb_export", "エクスポート", "Export");
     add("m_acoustic_report", "音響レポート出力…", "Export acoustic report…");
+    add("m_kernel_paths", "カーネルパスの設定…", "Kernel paths…");
     add("m_exit", "終了", "Exit");
     add("m_lang", "言語", "Language");
     add("m_lang_restart", "言語設定を保存しました。再起動後に反映されます。",

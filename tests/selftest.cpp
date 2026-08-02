@@ -1246,6 +1246,21 @@ static void testRunGating()
         const QString direct = Runner::resolveBinary(bc, "ofd");
         check(direct.startsWith(kdir.path()) && !direct.contains("/bin/"),
               "bin: direct entry wins over bin/");
+
+        // (d) GUI 設定 (QSettings "OpenFDTD/Kernels") のディレクトリも
+        //     探索される (binaryDir 未指定でも見つかる)。既存の設定値は
+        //     退避して必ず復元する。
+        const QString prev = Runner::kernelDirSetting(Kernel::FDTD);
+        Runner::setKernelDirSetting(Kernel::FDTD, kdir.path());
+        check(Runner::kernelDirSetting(Kernel::FDTD) == kdir.path(),
+              "bin: QSettings kernel dir round-trips");
+        RunConfig noDir;   // binaryDir 未指定
+        check(Runner::resolveBinary(noDir, "ofd").startsWith(kdir.path()),
+              "bin: QSettings kernel dir searched");
+        Runner::setKernelDirSetting(Kernel::FDTD, QString());
+        check(Runner::kernelDirSetting(Kernel::FDTD).isEmpty(),
+              "bin: QSettings kernel dir cleared");
+        Runner::setKernelDirSetting(Kernel::FDTD, prev);
     }
 }
 
