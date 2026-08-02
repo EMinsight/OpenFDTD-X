@@ -35,10 +35,12 @@ cmake --build build -j
 | `-DUSE_HDF5=ON`   | OFF | HDF5 時系列/プロジェクト出力 (`io/H5Writer`) |
 | `-DUSE_LIBIGL=ON` | OFF | より高精度な共形/winding-number ボクセル化 (`docs/libigl-integration.md`)。標準ビルドでも `io/Voxelizer` の階段近似ボクセル化は有効 |
 | `-DBUILD_TESTS=ON`| ON  | `.ofd` ラウンドトリップ + ボクセル化 自己テスト (`ofdx_selftest`) |
+| `-DBUILD_OPENUWA=ON`| ON | 水中音響の分離アプリ `openuwa`。OFF でターゲットごと外せる (本体 `openfdtd_x` には影響しない) |
 
 ### 実行
 本体 `openfdtd_x` と、水中音響の分離アプリ `openuwa` の 2 つが生成される
-(共有 GUI は `ofdx_gui` 静的ライブラリとして 1 度だけコンパイルされる)。
+(共有 GUI は `ofdx_gui` 静的ライブラリとして 1 度だけコンパイルされる。
+`openuwa` は `-DBUILD_OPENUWA=OFF` で生成対象から外せる)。
 
 ```bash
 # 既存プロジェクトを開く
