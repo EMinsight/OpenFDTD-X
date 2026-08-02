@@ -80,6 +80,7 @@
 #include "dialogs/CloudDialog.h"
 #include "dialogs/AppGalleryDialog.h"
 #include "dialogs/ResourceDialog.h"
+#include "dialogs/KernelPathDialog.h"
 #include "dialogs/GettingStartedDialog.h"
 
 #include <QActionGroup>
@@ -268,6 +269,12 @@ void MainWindow::buildMenu()
 
     mTools->addAction(I18n::tr("tb_cloud"), this, &MainWindow::showCloudDialog);
     mTools->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
+    // カーネルの場所を GUI から設定 (Finder / Dock 起動では環境変数が
+    // 届かないため。QSettings に永続化 — kernel/Runner が探索時に参照)
+    mTools->addAction(I18n::tr("m_kernel_paths"), this, [this] {
+        KernelPathDialog dlg(this);
+        dlg.exec();
+    });
     mTools->addAction(I18n::tr("tb_gettingstarted"),
                       this, &MainWindow::showGettingStarted);
 

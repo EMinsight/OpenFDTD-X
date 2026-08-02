@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 
 using namespace ofd;
@@ -63,6 +64,24 @@ const char *Runner::homeVarFor(Kernel k) {
     return "OPENFDTD_HOME";
 }
 
+// GUI で設定したカーネルディレクトリの永続化。環境変数が届かない起動経路
+// (macOS の Finder / Dock 起動など) でもカーネルの場所を指定できるように、
+// openfdtd_x / openuwa で共有する専用スコープに保存する。
+QString Runner::kernelDirSetting(Kernel k)
+{
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    return s.value(QLatin1String(homeVarFor(k))).toString();
+}
+
+void Runner::setKernelDirSetting(Kernel k, const QString &dir)
+{
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    if (dir.isEmpty()) s.remove(QLatin1String(homeVarFor(k)));
+    else               s.setValue(QLatin1String(homeVarFor(k)), dir);
+}
+
 QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
     QString base = name;
 #ifdef Q_OS_WIN
@@ -70,6 +89,7 @@ QString Runner::resolveBinary(const RunConfig &cfg, const QString &name) {
 #endif
     const QString dirs[] = {
         cfg.binaryDir,
+        kernelDirSetting(cfg.kernel),
         qEnvironmentVariable(homeVarFor(cfg.kernel)),
         QCoreApplication::applicationDirPath() + "/kernel",
         QCoreApplication::applicationDirPath(),
@@ -240,14 +260,15 @@ void Runner::launch(bool solverPhase)
             // 環境で最初に踏むエラーなので、次の一手が分かる文言にする)。
             const char *homeVar = homeVarFor(m_cfg.kernel);
             emit logLine(QStringLiteral(
-                "hint: searched %1, $%2 (and its bin/), <app dir>/kernel, "
-                "<app dir>, PATH")
+                "hint: searched %1, kernel-path setting, $%2 (and their "
+                "bin/), <app dir>/kernel, <app dir>, PATH")
                 .arg(m_cfg.binaryDir.isEmpty() ? QStringLiteral("(binaryDir unset)")
                                                : m_cfg.binaryDir,
                      QLatin1String(homeVar)));
             emit logLine(QStringLiteral(
-                "hint: build the solver kernel and set %1 to its repository "
-                "root (bin/ is searched too) — see README 'カーネル'")
+                "hint: build the solver kernel, then set its folder in "
+                "ツール > カーネルパスの設定… (or set $%1 to the repository "
+                "root — bin/ is searched too). See README 'カーネル'")
                 .arg(QLatin1String(homeVar)));
             emit logLine(QStringLiteral("=== failed (kernel not found) ==="));
             emit finished(false);

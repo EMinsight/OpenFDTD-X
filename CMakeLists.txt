@@ -223,6 +223,8 @@ set(GUI_SOURCES
     src/dialogs/AppGalleryDialog.h
     src/dialogs/ResourceDialog.cpp
     src/dialogs/ResourceDialog.h
+    src/dialogs/KernelPathDialog.cpp
+    src/dialogs/KernelPathDialog.h
     src/dialogs/GettingStartedDialog.cpp
     src/dialogs/GettingStartedDialog.h
 

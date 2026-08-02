@@ -60,6 +60,13 @@ public:
     // カーネルの場所を指す環境変数名 (OPENFDTD_HOME 等)
     static const char *homeVarFor(Kernel k);
 
+    // GUI で設定したカーネルディレクトリ (QSettings "OpenFDTD/Kernels"、
+    // openfdtd_x / openuwa 共有)。環境変数が届かない Finder / Dock 起動でも
+    // 効く。空文字列で設定削除。探索順は binaryDir → この設定 → 環境変数 →
+    // <app dir>/kernel → <app dir> → PATH。
+    static QString kernelDirSetting(Kernel k);
+    static void    setKernelDirSetting(Kernel k, const QString &dir);
+
     // アクティブドメインとソルバー設定から実行カーネルを決める
     // (MainWindow の実行設定と selftest で共用)。
     //   光: RCWA → orcwa / BPM → obpm / FMM → orcwa (RCWA と同一手法の
