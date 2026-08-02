@@ -9,9 +9,17 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProcess>
 #include <QPushButton>
 #include <QSlider>
+#include <QThread>
 #include <QVBoxLayout>
+
+#ifdef Q_OS_WIN
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 using namespace ofd;
 
@@ -45,8 +53,18 @@ const bool s_i18n = [] {
     ofd::I18n::reg("res_mem", "メモリ上限", "Memory limit");
     ofd::I18n::reg("res_mem_unit", "GB / プロセス", "GB / process");
     ofd::I18n::reg("res_rate", "解析レート", "Solve rate");
-    ofd::I18n::reg("res_rate_hint", "(現在の設定での予測)",
-                   "(predicted for the current settings)");
+    ofd::I18n::reg("res_rate_na", "未実測", "not measured");
+    ofd::I18n::reg("res_rate_hint", "(ベンチマーク未実装のため予測値なし)",
+                   "(no prediction — benchmark not implemented)");
+    ofd::I18n::reg("res_gpu_none", "GPU 未検出 (CUDA 実行不可)",
+                   "No GPU detected (CUDA unavailable)");
+    ofd::I18n::reg("res_gpu_tip",
+        "nvidia-smi で NVIDIA GPU を検出します。CUDA カーネル "
+        "(ofd_cuda 等) は NVIDIA GPU が必要です",
+        "GPUs are detected via nvidia-smi. CUDA kernels (ofd_cuda etc.) "
+        "require an NVIDIA GPU");
+    ofd::I18n::reg("res_mem_detected", "GB / プロセス (実装 %1 GB)",
+                   "GB / process (installed: %1 GB)");
     ofd::I18n::reg("res_bench", "ベンチマーク", "Benchmark");
     ofd::I18n::reg("res_bench_run", "▶ ベンチマーク実行", "▶ Run benchmark");
     ofd::I18n::reg("res_bench_hint", "最適設定を自動探索",
@@ -56,7 +74,48 @@ const bool s_i18n = [] {
     return true;
 }();
 
-const int kMachineCores = 16;   // mock の machineCores
+// ── 実機検出 (モックの固定値 16 コア / RTX 4090 / 64GB は使わない) ──────────
+
+// 論理コア数。検出不能なら 1。
+int detectCores()
+{
+    return qMax(1, QThread::idealThreadCount());
+}
+
+// NVIDIA GPU 名の一覧 (CUDA カーネルの実行対象)。nvidia-smi が無い・
+// 失敗した場合は空 = GPU 未検出として扱う。ダイアログは遅延生成なので
+// 1 回だけの短い同期呼び出しに留める。
+QStringList detectGpus()
+{
+    QProcess p;
+    p.start(QStringLiteral("nvidia-smi"),
+            { QStringLiteral("--query-gpu=name"),
+              QStringLiteral("--format=csv,noheader") });
+    if (!p.waitForFinished(1500) || p.exitCode() != 0) return {};
+    QStringList names;
+    for (const QByteArray &line : p.readAllStandardOutput().split('\n')) {
+        const QString name = QString::fromUtf8(line).trimmed();
+        if (!name.isEmpty()) names << name;
+    }
+    return names;
+}
+
+// 実装メモリ [GB]。検出不能なら 0。
+double physicalRamGB()
+{
+#ifdef Q_OS_WIN
+    MEMORYSTATUSEX st;
+    st.dwLength = sizeof(st);
+    if (GlobalMemoryStatusEx(&st))
+        return double(st.ullTotalPhys) / (1024.0 * 1024.0 * 1024.0);
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES);
+    const long psize = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && psize > 0)
+        return double(pages) * double(psize) / (1024.0 * 1024.0 * 1024.0);
+#endif
+    return 0.0;
+}
 
 QFrame *sepH(QWidget *parent)
 {
@@ -70,6 +129,7 @@ QFrame *sepH(QWidget *parent)
 ResourceDialog::ResourceDialog(QWidget *parent)
     : QDialog(parent)
 {
+    m_machineCores = detectCores();
     setWindowTitle(I18n::tr("res_title"));
     setModal(true);
     setMinimumWidth(640);
@@ -97,10 +157,13 @@ ResourceDialog::ResourceDialog(QWidget *parent)
     bv->addLayout(form);
 
     // ── プロセス数 / スレッド数 (1〜16 スライダ) ────────────────────────────
-    auto sliderRow = [body](QSlider *&s, QLabel *&val, int def) {
+    // スライダ上限は実機コア数 (最低 16 — 意図的なオーバーサブスクライブは
+    // バッジの「超過!」で警告する)
+    const int sliderMax = qMax(16, m_machineCores);
+    auto sliderRow = [body, sliderMax](QSlider *&s, QLabel *&val, int def) {
         auto *h = new QHBoxLayout();
         s = new QSlider(Qt::Horizontal, body);
-        s->setRange(1, 16);
+        s->setRange(1, sliderMax);
         s->setValue(def);
         s->setTickPosition(QSlider::TicksBelow);
         s->setTickInterval(1);
@@ -121,7 +184,7 @@ ResourceDialog::ResourceDialog(QWidget *parent)
     m_total = new QLabel(body);
     m_total->setStyleSheet("font-size:14px; font-weight:600;");
     totalRow->addWidget(m_total);
-    auto *avail = new QLabel(I18n::tr("res_avail").arg(kMachineCores), body);
+    auto *avail = new QLabel(I18n::tr("res_avail").arg(m_machineCores), body);
     avail->setStyleSheet("color:palette(mid);");
     totalRow->addWidget(avail);
     m_badge = new QLabel(body);
@@ -159,17 +222,39 @@ ResourceDialog::ResourceDialog(QWidget *parent)
     m_cuda = new QCheckBox(I18n::tr("res_cuda"), body);
     gpuRow->addWidget(m_cuda);
     m_gpu = new QComboBox(body);
-    m_gpu->addItems({ "GPU 0 (RTX 4090)", "GPU 1 (RTX 4090)" });
+    // 実機の NVIDIA GPU を列挙する。未検出なら CUDA は選択不能にする
+    // (存在しない GPU を選ばせない — 絶対規則 5)。
+    const QStringList gpus = detectGpus();
+    if (gpus.isEmpty()) {
+        m_gpu->addItem(I18n::tr("res_gpu_none"));
+        m_gpu->setEnabled(false);
+        m_cuda->setChecked(false);
+        m_cuda->setEnabled(false);
+    } else {
+        for (int i = 0; i < gpus.size(); ++i)
+            m_gpu->addItem(QStringLiteral("GPU %1 (%2)").arg(i).arg(gpus[i]));
+    }
+    m_gpu->setToolTip(I18n::tr("res_gpu_tip"));
+    m_cuda->setToolTip(I18n::tr("res_gpu_tip"));
     gpuRow->addWidget(m_gpu);
     gpuRow->addStretch(1);
     form2->addRow(I18n::tr("res_gpu"), gpuRow);
 
     // ── メモリ上限 ──────────────────────────────────────────────────────────
     auto *memRow = new QHBoxLayout();
-    m_memLimit = new QLineEdit("64", body);
+    // 既定値は実装メモリ (検出できたとき)。検出不能なら控えめな 8 GB
+    // (モックの 64 GB は実機と乖離するため使わない)。
+    const double ramGB = physicalRamGB();
+    m_memLimit = new QLineEdit(
+        ramGB > 0.0 ? QString::number(qRound(ramGB)) : QStringLiteral("8"),
+        body);
     m_memLimit->setMaximumWidth(100);
     memRow->addWidget(m_memLimit);
-    auto *memUnit = new QLabel(I18n::tr("res_mem_unit"), body);
+    auto *memUnit = new QLabel(
+        ramGB > 0.0 ? I18n::tr("res_mem_detected")
+                          .arg(QString::number(ramGB, 'f', 1))
+                    : I18n::tr("res_mem_unit"),
+        body);
     memUnit->setStyleSheet("color:palette(mid);");
     memRow->addWidget(memUnit);
     memRow->addStretch(1);
@@ -186,7 +271,8 @@ ResourceDialog::ResourceDialog(QWidget *parent)
 
     // ── 解析レート / ベンチマーク ───────────────────────────────────────────
     auto *rateRow = new QHBoxLayout();
-    rateRow->addWidget(new QLabel("~245 Mnode/s", body));
+    // 実測機能が無いのに具体的な数値 (モックの ~245 Mnode/s) を出さない
+    rateRow->addWidget(new QLabel(I18n::tr("res_rate_na"), body));
     auto *rateHint = new QLabel(I18n::tr("res_rate_hint"), body);
     rateHint->setStyleSheet("font-size:11px; color:palette(mid);");
     rateRow->addWidget(rateHint);
@@ -239,8 +325,8 @@ void ResourceDialog::updateCores()
     m_procVal->setText(QString::number(p));
     m_threadVal->setText(QString::number(t));
 
-    const QString color = (total > kMachineCores) ? QStringLiteral("#B81818")
-                        : (total == kMachineCores) ? QStringLiteral("#0078D4")
+    const QString color = (total > m_machineCores) ? QStringLiteral("#B81818")
+                        : (total == m_machineCores) ? QStringLiteral("#0078D4")
                                                    : QStringLiteral("palette(mid)");
     m_total->setStyleSheet(QStringLiteral(
         "font-size:14px; font-weight:600; color:%1;").arg(color));
@@ -248,14 +334,14 @@ void ResourceDialog::updateCores()
 
     // badge err / ok / warn (styles.css の .badge.* を最小限で再現)
     QString text, css = "border-radius:3px; padding:1px 6px; font-size:11px;";
-    if (total > kMachineCores) {
+    if (total > m_machineCores) {
         text = I18n::tr("res_over");
         css += "background:#FBE5E5; color:#B81818;";
-    } else if (total == kMachineCores) {
+    } else if (total == m_machineCores) {
         text = I18n::tr("res_optimal");
         css += "background:#DFF6DD; color:#0F7B0F;";
     } else {
-        text = I18n::tr("res_idle").arg(kMachineCores - total);
+        text = I18n::tr("res_idle").arg(m_machineCores - total);
         css += "background:#FFF4CE; color:#9D5D00;";
     }
     m_badge->setStyleSheet(css);

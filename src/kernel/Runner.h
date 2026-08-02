@@ -53,7 +53,12 @@ public:
 
     static QString solverBinary(const RunConfig &cfg);
     static QString postBinary(const RunConfig &cfg);
+    // 探索順: binaryDir → $<KERNEL>_HOME → <app dir>/kernel → <app dir> → PATH。
+    // 各ディレクトリは直下と bin/ の両方を見る (HOME にリポジトリルートを
+    // 指定できるように — 各カーネルのビルドはバイナリを bin/ に置く)。
     static QString resolveBinary(const RunConfig &cfg, const QString &name);
+    // カーネルの場所を指す環境変数名 (OPENFDTD_HOME 等)
+    static const char *homeVarFor(Kernel k);
 
     // アクティブドメインとソルバー設定から実行カーネルを決める
     // (MainWindow の実行設定と selftest で共用)。

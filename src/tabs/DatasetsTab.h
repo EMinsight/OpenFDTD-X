@@ -1,12 +1,14 @@
 // DatasetsTab.h — Datasets タブ (optics-tabs.jsx DatasetsTab 相当)。
 // COMSOL 風の結果データ管理:
-//   - データセット→派生量→プロットグループ→レポートのツリー表示
-//   - 派生量定義フォーム (名前 / 式 / 単位 / 自動再計算)
-//   - エクスポート (PNG/SVG, CSV, HDF5, Auto-report, PDF, Touchstone)
+//   - 作業ディレクトリに実在する結果ファイルのツリー表示 (実行後に更新。
+//     モックの固定ツリーは表示しない — 実行していない結果を見せない)
+//   - 派生量定義フォーム (名前 / 式 / 単位 / 自動再計算 — 評価器は未実装)
+//   - エクスポート (一括出力は未実装 — 実装済みの出力は各タブにある)
 #pragma once
 #include <QScrollArea>
 
 class QCheckBox;
+class QLabel;
 class QLineEdit;
 class QTreeWidget;
 
@@ -19,10 +21,14 @@ class DatasetsTab : public QScrollArea {
 public:
     explicit DatasetsTab(Project *project, QWidget *parent = nullptr);
 
+private slots:
+    void rebuildTree();     // 作業ディレクトリの結果ファイルを再列挙
+
 private:
     Project     *m_p;
 
     QTreeWidget *m_tree;
+    QLabel      *m_wdLabel = nullptr;
     QLineEdit   *m_name, *m_expr, *m_unit;
     QCheckBox   *m_autoRecalc;
 };

@@ -1,15 +1,20 @@
 // DatasetsTab.cpp
 #include "DatasetsTab.h"
 #include "../core/Project.h"
+#include "../kernel/Runner.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
 #include <QCheckBox>
 #include <QColor>
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -21,9 +26,19 @@ namespace {
 const bool s_i18n = [] {
     ofd::I18n::reg("ds_title", "データセット", "Datasets");
     ofd::I18n::reg("ds_hint",
-        "COMSOL風の結果データ管理。データセット→派生量→プロットの順で結果を整理。",
-        "COMSOL-style result data management. Results are organized as "
-        "datasets → derived values → plots.");
+        "COMSOL風の結果データ管理。作業ディレクトリの実在する結果ファイルを"
+        "一覧します (計算実行後に更新)。",
+        "COMSOL-style result data management. Lists the result files that "
+        "actually exist in the working directory (updated after a run).");
+    ofd::I18n::reg("ds_files", "結果ファイル", "Result files");
+    ofd::I18n::reg("ds_wd", "作業ディレクトリ: %1", "Working directory: %1");
+    ofd::I18n::reg("ds_wd_none", "作業ディレクトリ未確定 (プロジェクト未保存)",
+                   "Working directory undecided (project not saved)");
+    ofd::I18n::reg("ds_empty",
+        "（結果なし — このプロジェクトの計算実行後に表示されます）",
+        "(no results — populated after running this project)");
+    ofd::I18n::reg("ds_reload", "↻ 再読込", "↻ Reload");
+    ofd::I18n::reg("ds_notimpl", "未実装", "Not implemented");
     ofd::I18n::reg("ds_derived", "派生量定義", "Derived value");
     ofd::I18n::reg("ds_name", "名前", "Name");
     ofd::I18n::reg("ds_expr", "式", "Expression");
@@ -34,6 +49,29 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ds_exp_h5", "💾 HDF5 (一括)", "💾 HDF5 (bulk)");
     return true;
 }();
+
+// 作業ディレクトリに現れうる結果ファイル (カーネル出力の既知パターン)。
+// ワイルドカードは QDir のネームフィルタ書式。
+const char *kResultPatterns[] = {
+    "*.log",                 // ofd.log / orcwa.log / obpm.log / solver.log
+    "*.out",                 // ofd.out / obpm.out (ポスト処理入力)
+    "*.csv",                 // zin.csv / rcwa_efficiency.csv / activation_curve.csv ...
+    "*.h5",                  // time_series_data.h5
+    "*.s[0-9]p",             // Touchstone
+    "ev2d*", "ev3d*", "*.htm",   // ofd_post の作図出力
+    "*.shd", "*.prt",        // bellhop (伝搬損失場 / テキスト結果)
+    "*.wav",                 // 可聴化出力
+};
+
+QString sizeText(qint64 bytes)
+{
+    if (bytes >= 1024 * 1024)
+        return QStringLiteral("%1 MB").arg(double(bytes) / (1024.0 * 1024.0),
+                                           0, 'f', 1);
+    if (bytes >= 1024)
+        return QStringLiteral("%1 KB").arg(double(bytes) / 1024.0, 0, 'f', 1);
+    return QStringLiteral("%1 B").arg(bytes);
+}
 } // namespace
 
 DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
@@ -44,54 +82,37 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(8);
 
-    // データセット / Datasets — 結果ブラウザツリー
+    // データセット / Datasets — 実在する結果ファイルのブラウザ。
+    // モックの固定ツリー (Study 1 / Cut Plane / Q-factor …) は実体が無いので
+    // 表示しない (絶対規則 5 — 実行していない結果を見せない)。
     auto *sd = new SectionBox(I18n::tr("ds_title"), body);
     auto *hint = new QLabel(I18n::tr("ds_hint"), sd);
     hint->setWordWrap(true);
     sd->vbox()->addWidget(hint);
+
+    m_wdLabel = new QLabel(sd);
+    m_wdLabel->setWordWrap(true);
+    m_wdLabel->setStyleSheet("font-size:11px; color:palette(mid);");
+    sd->vbox()->addWidget(m_wdLabel);
 
     m_tree = new QTreeWidget(sd);
     m_tree->setColumnCount(2);
     m_tree->setHeaderHidden(true);
     m_tree->setRootIsDecorated(true);
     m_tree->setIndentation(16);
-    auto top = [this](const char *text) {
-        return new QTreeWidgetItem(m_tree, { QString::fromUtf8(text) });
-    };
-    auto child = [](QTreeWidgetItem *parent, const char *text,
-                    const char *tag = nullptr) {
-        auto *it = new QTreeWidgetItem(parent, { QString::fromUtf8(text),
-            tag ? QString::fromUtf8(tag) : QString() });
-        it->setForeground(1, QColor("#888888"));   // tag は muted 表示
-        return it;
-    };
-    auto *nd = top("📁 Datasets");
-    child(nd, "📊 Study 1/Solution 1 (FDTD time)");
-    child(nd, "📊 Study 1/Solution 2 (Frequency)");
-    child(nd, "🔍 Cut Plane Z=2.5μm");
-    child(nd, "🔍 Cut Line along X");
-    child(nd, "📊 Parametric Sweep (R=4..6μm, 11pts)");
-    auto *nv = top("📐 Derived Values");
-    child(nv, "📈 Peak transmission (max T_drop)");
-    child(nv, "📈 Resonance λ (argmax)");
-    child(nv, "📈 Q-factor extraction");
-    child(nv, "📈 Volume integral |E|²");
-    auto *np = top("📊 Plot Groups");
-    child(np, "🌈 1D — T(λ)", "3 traces");
-    child(np, "🌈 2D — E-field surface (Z plane)");
-    child(np, "🌈 3D — |E| volume isosurface");
-    child(np, "🌈 Polar — far-field θ scan");
-    child(np, "🌈 Animation — propagation movie");
-    auto *nr = top("📄 Reports");
-    child(nr, "📝 Auto-report 1 (HTML)");
-    child(nr, "📝 Auto-report 2 (PDF)");
-    m_tree->expandAll();
-    m_tree->resizeColumnToContents(0);
-    m_tree->setMinimumHeight(340);
+    m_tree->setMinimumHeight(220);
     sd->vbox()->addWidget(m_tree);
+
+    auto *rrow = new QHBoxLayout();
+    auto *reload = new QPushButton(I18n::tr("ds_reload"), sd);
+    connect(reload, &QPushButton::clicked, this, &DatasetsTab::rebuildTree);
+    rrow->addWidget(reload);
+    rrow->addStretch(1);
+    sd->vbox()->addLayout(rrow);
     v->addWidget(sd);
 
-    // 派生量定義 / Derived value
+    // 派生量定義 / Derived value — フォームは設計どおり置くが、評価器が
+    // 無いので「追加」は未実装表示 (押せる見た目にしない)
     auto *sv = new SectionBox(I18n::tr("ds_derived"), body);
     m_name = new QLineEdit("peak_T", sv);
     sv->form()->addRow(I18n::tr("ds_name"), m_name);
@@ -104,20 +125,28 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
     m_autoRecalc->setChecked(true);
     sv->vbox()->addWidget(m_autoRecalc);
     auto *arow = new QHBoxLayout();
-    arow->addWidget(new QPushButton(I18n::tr("ds_add"), sv));
+    auto *add = new QPushButton(I18n::tr("ds_add"), sv);
+    add->setEnabled(false);
+    add->setToolTip(I18n::tr("ds_notimpl"));
+    arow->addWidget(add);
     arow->addStretch(1);
     sv->vbox()->addLayout(arow);
     v->addWidget(sv);
 
-    // エクスポート / Export
+    // エクスポート / Export — 実装済みの出力は各タブ (PlotPanel の CSV/PNG、
+    // H5 タブ等) にあり、ここからの一括出力は未実装。無効表示にする。
     auto *se = new SectionBox(I18n::tr("ds_export"), body);
     auto *erow = new QHBoxLayout();
-    erow->addWidget(new QPushButton("📊 PNG/SVG", se));
-    erow->addWidget(new QPushButton("📄 CSV", se));
-    erow->addWidget(new QPushButton(I18n::tr("ds_exp_h5"), se));
-    erow->addWidget(new QPushButton("📑 Auto-report (HTML)", se));
-    erow->addWidget(new QPushButton("📑 PDF", se));
-    erow->addWidget(new QPushButton("📁 Touchstone .s2p", se));
+    const char *kExpLabels[] = { "📊 PNG/SVG", "📄 CSV", nullptr,
+                                 "📑 Auto-report (HTML)", "📑 PDF",
+                                 "📁 Touchstone .s2p" };
+    for (const char *label : kExpLabels) {
+        auto *b = new QPushButton(
+            label ? QString::fromUtf8(label) : I18n::tr("ds_exp_h5"), se);
+        b->setEnabled(false);
+        b->setToolTip(I18n::tr("ds_notimpl"));
+        erow->addWidget(b);
+    }
     erow->addStretch(1);
     se->vbox()->addLayout(erow);
     v->addWidget(se);
@@ -126,4 +155,47 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+
+    // プロジェクトの読み込み/保存でパスが変わったら一覧を取り直す
+    connect(m_p, &Project::loaded, this, &DatasetsTab::rebuildTree);
+    rebuildTree();
+}
+
+// 作業ディレクトリを走査して実在する結果ファイルだけを列挙する
+void DatasetsTab::rebuildTree()
+{
+    m_tree->clear();
+
+    const QString wd = Runner::resolveWorkingDir(m_p, {});
+    m_wdLabel->setText(wd.isEmpty()
+        ? I18n::tr("ds_wd_none")
+        : I18n::tr("ds_wd").arg(QDir::toNativeSeparators(wd)));
+
+    auto *root = new QTreeWidgetItem(
+        m_tree, { QStringLiteral("📁 ") + I18n::tr("ds_files") });
+
+    QFileInfoList files;
+    if (!wd.isEmpty() && QDir(wd).exists()) {
+        QStringList patterns;
+        for (const char *p : kResultPatterns)
+            patterns << QString::fromLatin1(p);
+        files = QDir(wd).entryInfoList(patterns, QDir::Files, QDir::Time);
+    }
+
+    if (files.isEmpty()) {
+        auto *it = new QTreeWidgetItem(root, { I18n::tr("ds_empty") });
+        it->setForeground(0, QColor("#888888"));
+    } else {
+        const QLocale loc;
+        for (const QFileInfo &fi : files) {
+            auto *it = new QTreeWidgetItem(root,
+                { QStringLiteral("📄 ") + fi.fileName(),
+                  sizeText(fi.size()) + QStringLiteral("  ")
+                      + loc.toString(fi.lastModified(),
+                                     QLocale::ShortFormat) });
+            it->setForeground(1, QColor("#888888"));
+        }
+    }
+    m_tree->expandAll();
+    m_tree->resizeColumnToContents(0);
 }

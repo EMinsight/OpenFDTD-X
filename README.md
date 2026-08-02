@@ -54,11 +54,44 @@ cmake --build build -j
 # 起動ドメイン・言語を指定 (ja|en|both)
 ./build/openfdtd_x --domain optical --lang both
 
-# 処理ロジック (ソルバーカーネル) の場所 (なければ PATH を探索)
+# 処理ロジック (ソルバーカーネル) の場所 (なければ PATH を探索)。
+# リポジトリルートを指定すればよい (直下と bin/ の両方が探索される)
 export OPENFDTD_HOME=/path/to/OpenFDTD   # ofd, ofd_mpi, ofd_cuda ...
 export OPENRCWA_HOME=/path/to/OpenRCWA   # orcwa, orcwa_post ...
 export OPENBPM_HOME=/path/to/OpenBPM     # obpm, obpm_post ...
 ```
+
+#### カーネルが見つからないとき
+
+計算実行時にコンソールへ
+
+```
+error: Child process set up failed: execve: No such file or directory (ofd)
+=== failed (kernel not found) ===
+```
+
+と出る場合、ソルバーカーネル (別リポジトリ) が未導入か、場所が
+GUI に伝わっていない。このリポジトリは GUI のみで、計算本体は
+[OpenFDTD](https://github.com/Sirokujira/OpenFDTD) /
+[OpenRCWA](https://github.com/Sirokujira/OpenRCWA) /
+[OpenBPM](https://github.com/Sirokujira/OpenBPM) /
+[bellhopcuda](https://github.com/Sirokujira/bellhopcuda) を
+サブプロセスとして起動する。カーネルを別途ビルドして環境変数で場所を指定する:
+
+```bash
+# 例: 電磁 (FDTD) カーネル。macOS は brew install hdf5 libomp が先に必要
+git clone https://github.com/Sirokujira/OpenFDTD.git
+cmake -S OpenFDTD -B OpenFDTD/build -DCMAKE_BUILD_TYPE=Release \
+      -DWITH_CUDA=OFF -DWITH_MPI=OFF
+cmake --build OpenFDTD/build -j
+export OPENFDTD_HOME=$PWD/OpenFDTD      # bin/ofd が探索される
+
+# GUI は環境変数を起動時に読むので、export したシェルから GUI を起動する
+```
+
+探索順は `binaryDir (実行設定)` → `$OPENFDTD_HOME` (直下と `bin/`) →
+アプリ実行ディレクトリの `kernel/` → アプリ実行ディレクトリ → `PATH`。
+水中音響は `BELLHOPCUDA_HOME` (バイナリ名 `bellhopcxx`)。
 
 #### macOS での実行
 
