@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "audio/AudioEditEngine.h"
 #include "core/Project.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
@@ -496,6 +497,12 @@ static void testOperaAcousticSettings()
         check(s.auralizationGainMode == 0, "opera default gainMode=as-is");
         check(s.vocalF0MinHz == 0.0 && s.vocalF0MaxHz == 0.0,
               "opera default vocal F0 override=auto(0)");
+        // 音響ソルバー連携 (AcousticSolverTab) の既定値
+        check(s.solverBackend == 3, "opera default solver backend=ExternalFDTD");
+        check(s.solverExecutable.isEmpty(),
+              "opera default solver executable empty");
+        check(s.solverThreads == 4 && s.solverProcesses == 1,
+              "opera default solver threads=4 processes=1");
     }
 
     // 2) .ofdx 往復 (設定変更 → save → load → 一致)
@@ -518,6 +525,10 @@ static void testOperaAcousticSettings()
         s.auralizationGainMode = 1;
         s.vocalF0MinHz = 200.0;
         s.vocalF0MaxHz = 1200.0;
+        s.solverBackend = 4;
+        s.solverExecutable = "/opt/acoustic/solver";
+        s.solverThreads = 8;
+        s.solverProcesses = 2;
 
         QTemporaryFile ofdx;
         ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_opera_XXXXXX.ofdx");
@@ -545,6 +556,11 @@ static void testOperaAcousticSettings()
             check(q.auralizationGainMode == 1, "opera rt auralization gainMode");
             check(nearlyEq(q.vocalF0MinHz, 200.0), "opera rt vocal f0Min");
             check(nearlyEq(q.vocalF0MaxHz, 1200.0), "opera rt vocal f0Max");
+            check(q.solverBackend == 4, "opera rt solver backend");
+            check(q.solverExecutable == "/opt/acoustic/solver",
+                  "opera rt solver executable");
+            check(q.solverThreads == 8 && q.solverProcesses == 2,
+                  "opera rt solver threads/processes");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -582,6 +598,13 @@ static void testOperaAcousticSettings()
             check(vo.value("f0_min_hz").toDouble() == 200.0 &&
                   vo.value("f0_max_hz").toDouble() == 1200.0,
                   "opera json vocal f0 range");
+            // 音響ソルバー連携のネスト (AcousticSolverTab)
+            const QJsonObject so = oa.value("solver").toObject();
+            check(so.value("backend").toInt() == 4 &&
+                  so.value("executable").toString() == "/opt/acoustic/solver" &&
+                  so.value("threads").toInt() == 8 &&
+                  so.value("processes").toInt() == 2,
+                  "opera json solver nest");
         }
     }
 
@@ -610,6 +633,9 @@ static void testOperaAcousticSettings()
                   "legacy ofdx leaves auralization defaults");
             check(q.vocalF0MinHz == 0.0 && q.vocalF0MaxHz == 0.0,
                   "legacy ofdx leaves vocal defaults");
+            check(q.solverBackend == 3 && q.solverExecutable.isEmpty() &&
+                  q.solverThreads == 4 && q.solverProcesses == 1,
+                  "legacy ofdx leaves solver defaults");
             check(q.calibrationOffsetDb == 0.0,
                   "legacy ofdx leaves calibrationOffsetDb=0");
             const AcousticOpts &a = p3.acoustic();
@@ -646,6 +672,241 @@ static void testOperaAcousticSettings()
             check(p5.operaAcoustic().calibrationOffsetDb == 0.0,
                   "missing calibration_offset_db defaults to 0.0");
         }
+    }
+}
+
+// 音響編集エンジン (AudioEditorTab の DSP — src/audio/AudioEditEngine)。
+// 生成の決定性・編集の恒等式・K 特性ラウドネス (1kHz 正弦で LUFS ≒ dBFS)・
+// Schroeder RT (既知の指数減衰で T=RT60) を合成信号で検証する。
+static void testAudioEditEngine()
+{
+    using namespace ofd::audioedit;
+    g_file = "audioedit";
+    const double sr = 48000.0;
+
+    // ── 窓関数: Hann は中央 1 / 両端 0、Flat-top は中央 ≒ 1 ────────────────
+    check(std::fabs(windowValue(WindowKind::Hann, 512, 1025) - 1.0) < 1e-12,
+          "hann window center=1");
+    check(windowValue(WindowKind::Hann, 0, 1025) < 1e-12,
+          "hann window edge=0");
+    check(std::fabs(windowValue(WindowKind::FlatTop, 512, 1025) - 1.0) < 1e-3,
+          "flattop window center~1");
+    check(windowInfos().size() == 15, "15 window kinds");
+
+    // ── 生成: 正弦のピーク / 長さ、ノイズの決定性、MLS の 2 値性 ────────────
+    const AudioBuffer sine =
+        generateSignal(SignalKind::Sine, 1000, 0, 1.0, 0.5, sr);
+    check(sine.sampleCount() == 48000, "sine length 1s");
+    {
+        double pk = 0;
+        for (double v : sine.channels[0]) pk = std::max(pk, std::fabs(v));
+        check(std::fabs(pk - 0.5) < 1e-3, "sine peak = amp");
+    }
+    {
+        const AudioBuffer w1 =
+            generateSignal(SignalKind::White, 0, 0, 0.2, 0.7, sr);
+        const AudioBuffer w2 =
+            generateSignal(SignalKind::White, 0, 0, 0.2, 0.7, sr);
+        check(w1.channels[0] == w2.channels[0],
+              "white noise deterministic (fixed seed)");
+        const AudioBuffer mls =
+            generateSignal(SignalKind::Mls, 0, 0, 0.1, 0.6, sr);
+        bool binary = true;
+        for (double v : mls.channels[0])
+            if (std::fabs(std::fabs(v) - 0.6) > 1e-12) binary = false;
+        check(binary, "mls is two-valued ±amp");
+        const AudioBuffer imp =
+            generateSignal(SignalKind::Impulse, 0, 0, 0.01, 1.0, sr);
+        check(imp.channels[0][0] == 1.0 && imp.channels[0][1] == 0.0,
+              "impulse only at t=0");
+    }
+
+    // ── 編集: 恒等式と長さ ──────────────────────────────────────────────────
+    {
+        const AudioBuffer rev2 =
+            reverseRange(reverseRange(sine, 0, 0), 0, 0);
+        check(rev2.channels[0] == sine.channels[0],
+              "reverse twice = identity");
+        const AudioBuffer trimmed = trimToRange(sine, 1000, 5000);
+        check(trimmed.sampleCount() == 4000, "trim length");
+        check(trimmed.channels[0][0] == sine.channels[0][1000],
+              "trim copies from range start");
+        const AudioBuffer del = deleteRange(sine, 1000, 5000);
+        check(del.sampleCount() == 48000 - 4000, "delete length");
+        check(del.channels[0][1000] == sine.channels[0][5000],
+              "delete joins across range");
+        double gainDb = 0.0;
+        const AudioBuffer norm = normalizeRange(sine, 0, 0, 0.98, &gainDb);
+        double pk = 0;
+        for (double v : norm.channels[0]) pk = std::max(pk, std::fabs(v));
+        check(std::fabs(pk - 0.98) < 1e-3, "normalize peak=0.98");
+        check(std::fabs(gainDb - 20.0 * std::log10(0.98 / 0.5)) < 0.05,
+              "normalize reported gain");
+        const AudioBuffer g6 = gainRange(sine, 0, 0, 6.0);
+        check(std::fabs(g6.channels[0][12] /
+                        sine.channels[0][12] - std::pow(10.0, 0.3)) < 1e-6,
+              "gain +6dB factor");
+        const AudioBuffer fi = fadeRange(sine, 0, 0, true);
+        check(fi.channels[0][0] == 0.0, "fade-in starts at 0");
+        const AudioBuffer sil = silenceRange(sine, 100, 200);
+        check(sil.channels[0][150] == 0.0 && sil.channels[0][99] != 0.0,
+              "silence only in range");
+    }
+
+    // ── biquad: LP 1kHz は 100Hz を通し 8kHz を強く減衰 ─────────────────────
+    {
+        auto rmsOf = [](const AudioBuffer &b) {
+            double s = 0;
+            for (double v : b.channels[0]) s += v * v;
+            return std::sqrt(s / b.sampleCount());
+        };
+        const AudioBuffer lo =
+            generateSignal(SignalKind::Sine, 100, 0, 0.5, 0.5, sr);
+        const AudioBuffer hi =
+            generateSignal(SignalKind::Sine, 8000, 0, 0.5, 0.5, sr);
+        const double loRatio =
+            rmsOf(applyBiquad(lo, BiquadKind::LowPass, 1000, 0.707, 0)) /
+            rmsOf(lo);
+        const double hiRatio =
+            rmsOf(applyBiquad(hi, BiquadKind::LowPass, 1000, 0.707, 0)) /
+            rmsOf(hi);
+        check(std::fabs(loRatio - 1.0) < 0.02, "LP passes 100Hz");
+        check(hiRatio < 0.05, "LP attenuates 8kHz > 26dB");
+    }
+
+    // ── レベル指標: 単位正弦の RMS = -3.01 dBFS / crest = 3.01 dB ──────────
+    {
+        const AudioBuffer u =
+            generateSignal(SignalKind::Sine, 1000, 0, 1.0, 1.0, sr);
+        const LevelMetrics m = analyzeLevels(u, 0, 0);
+        check(std::fabs(m.rmsDbfs + 3.01) < 0.05, "sine RMS -3.01 dBFS");
+        check(std::fabs(m.crestDb - 3.01) < 0.05, "sine crest 3.01 dB");
+        check(std::fabs(m.peakDbfs) < 0.05, "sine peak 0 dBFS");
+    }
+
+    // ── 減衰が -25dB に達しない短い定常区間では T20/T30 を返さない ─────────
+    // (一定振幅 N=100: 逆積分の最終値は 10log10(1/N) = -20dB — 規則 6 の流儀)
+    {
+        AudioBuffer flat;
+        flat.sampleRateHz = sr;
+        flat.channels.assign(1, std::vector<double>(100, 1.0));
+        const LevelMetrics m = analyzeLevels(flat, 0, 0);
+        check(!m.hasT20 && !m.hasT30,
+              "insufficient decay yields no T20/T30");
+        check(m.hasEdt, "-10dB (EDT) still reachable at N=100");
+    }
+
+    // ── Schroeder RT: 既知の指数減衰 (RT60 = 0.5s) で T20/T30 ≒ 0.5 ───────
+    {
+        const double rt = 0.5;
+        AudioBuffer ir;
+        ir.sampleRateHz = sr;
+        ir.channels.assign(1, std::vector<double>(std::size_t(sr * 1.5), 0.0));
+        for (std::size_t i = 0; i < ir.channels[0].size(); ++i) {
+            const double t = i / sr;
+            ir.channels[0][i] = std::pow(10.0, -3.0 * t / rt)
+                              * std::sin(2 * 3.14159265358979 * 1000 * t);
+        }
+        const LevelMetrics m = analyzeLevels(ir, 0, 0);
+        check(m.hasEdt && m.hasT20 && m.hasT30, "exp decay has EDT/T20/T30");
+        check(std::fabs(m.t20Sec - rt) < rt * 0.05, "T20 within 5% of RT60");
+        check(std::fabs(m.t30Sec - rt) < rt * 0.05, "T30 within 5% of RT60");
+        check(std::fabs(m.edtSec - rt) < rt * 0.10, "EDT within 10% of RT60");
+    }
+
+    // ── ラウドネス: 1kHz 正弦 (フルスケール) は LUFS ≒ RMS dBFS ────────────
+    // K 特性の -0.691 dB 補正は 997Hz 正弦で LUFS = dBFS になる較正
+    // (EBU Tech 3341)。任意 fs の係数導出を 48k / 44.1k の両方で確認する。
+    {
+        for (double fs : { 48000.0, 44100.0 }) {
+            const AudioBuffer u =
+                generateSignal(SignalKind::Sine, 1000, 0, 3.0, 1.0, fs);
+            const LoudnessMetrics lm = analyzeLoudness(u);
+            check(std::fabs(lm.integratedLufs + 3.01) < 0.3,
+                  fs == 48000.0 ? "LUFS = dBFS for 1kHz sine (48k)"
+                                : "LUFS = dBFS for 1kHz sine (44.1k)");
+            check(lm.truePeakDbtp >= -0.05, "true peak >= sample peak");
+        }
+    }
+
+    // ── オクターブバンド: 1kHz 正弦は 1k 帯域が最大 ─────────────────────────
+    {
+        const std::vector<OctaveBand> bands = octaveBands(sine);
+        check(bands.size() == 10, "10 octave bands");
+        std::size_t best = 0;
+        for (std::size_t i = 1; i < bands.size(); ++i)
+            if (bands[i].db > bands[best].db) best = i;
+        check(bands[best].fcHz == 1000.0, "1kHz sine peaks in 1k band");
+    }
+
+    // ── スペクトル: 1kHz 正弦のピークが log10(1000) 近傍 ────────────────────
+    {
+        const std::vector<SpectrumPoint> sp =
+            spectrum(sine, 0, WindowKind::Hann);
+        check(!sp.empty(), "spectrum non-empty");
+        std::size_t best = 0;
+        for (std::size_t i = 1; i < sp.size(); ++i)
+            if (sp[i].db > sp[best].db) best = i;
+        check(std::fabs(sp[best].logF - 3.0) < 0.05,
+              "spectrum peak at 1kHz");
+    }
+
+    // ── 時間軸: 長さの規約 ──────────────────────────────────────────────────
+    {
+        const AudioBuffer sl = timeStretch(sine, 1.5);
+        check(std::fabs(double(sl.sampleCount()) - 48000 * 1.5) < 2,
+              "time stretch length ×1.5");
+        const AudioBuffer ps = pitchShift(sine, 5.0);
+        check(ps.sampleCount() == sine.sampleCount(),
+              "pitch shift keeps length");
+        const AudioBuffer rt2 = applyRate(sine, 2.0);
+        check(rt2.sampleCount() == 24000, "rate ×2 halves length");
+    }
+
+    // ── リバーブ: テール付加 + 決定性 ───────────────────────────────────────
+    {
+        const AudioBuffer clickBuf =
+            generateSignal(SignalKind::Click, 0, 0, 0.2, 0.8, sr);
+        const AudioBuffer r1 = applyReverb(clickBuf, 0.3, 0.35);
+        const AudioBuffer r2 = applyReverb(clickBuf, 0.3, 0.35);
+        check(r1.sampleCount() > clickBuf.sampleCount(),
+              "reverb adds IR tail");
+        check(r1.channels[0] == r2.channels[0],
+              "reverb deterministic (fixed-seed IR)");
+    }
+
+    // ── ノイズリダクション: 自己プロファイルで白色雑音の RMS が下がる ───────
+    {
+        const AudioBuffer noise =
+            generateSignal(SignalKind::White, 0, 0, 1.0, 0.3, sr);
+        const std::vector<double> prof = noiseProfile(noise, 0, 0);
+        const AudioBuffer den = denoise(noise, prof, 12.0);
+        auto rmsOf = [](const AudioBuffer &b) {
+            double s = 0;
+            for (double v : b.channels[0]) s += v * v;
+            return std::sqrt(s / b.sampleCount());
+        };
+        check(rmsOf(den) < rmsOf(noise) * 0.5,
+              "denoise reduces noise floor > 6dB");
+    }
+
+    // ── ステレオ: モノ化で L=R、Side 抽出で L=-R ────────────────────────────
+    {
+        AudioBuffer st;
+        st.sampleRateHz = sr;
+        st.channels.assign(2, std::vector<double>(100));
+        for (int i = 0; i < 100; ++i) {
+            st.channels[0][i] = 0.5;
+            st.channels[1][i] = -0.25;
+        }
+        const AudioBuffer mono = applyStereoOp(st, StereoOp::Mono);
+        check(mono.channels[0] == mono.channels[1] &&
+              std::fabs(mono.channels[0][0] - 0.125) < 1e-12,
+              "stereo mono = (L+R)/2");
+        const AudioBuffer side = applyStereoOp(st, StereoOp::Side);
+        check(std::fabs(side.channels[0][0] - 0.375) < 1e-12 &&
+              std::fabs(side.channels[1][0] + 0.375) < 1e-12,
+              "stereo side extraction");
     }
 }
 
@@ -1630,6 +1891,7 @@ int main(int argc, char *argv[])
     testGlassCatalog();
     testRoomAcoustics();
     testOperaAcousticSettings();
+    testAudioEditEngine();
     testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();

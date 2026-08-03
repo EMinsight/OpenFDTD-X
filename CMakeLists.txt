@@ -72,6 +72,11 @@ set(CORE_SOURCES
 
     src/kernel/Runner.cpp
     src/kernel/Runner.h
+
+    # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
+    # selftest からも直接検証するため CORE_SOURCES に置く
+    src/audio/AudioEditEngine.cpp
+    src/audio/AudioEditEngine.h
 )
 
 set(GUI_SOURCES
@@ -108,6 +113,8 @@ set(GUI_SOURCES
     src/widgets/LogConsole.h
     src/widgets/EvViewer.cpp
     src/widgets/EvViewer.h
+    src/widgets/AudioWaveformView.cpp
+    src/widgets/AudioWaveformView.h
 
     # タブ間で共有する GUI ヘルパー (品質バッジ / 波形包絡線 / テキスト保存)
     src/tabs/TabHelpers.cpp
@@ -247,6 +254,14 @@ set(GUI_SOURCES
     src/tabs/AuralizationTab.h
     src/kernel/AcousticRunner.cpp
     src/kernel/AcousticRunner.h
+
+    # handoff2 デザイン差分 (audio-editor.jsx / pic-tools.jsx / opera-analysis.jsx)
+    src/tabs/AudioEditorTab.cpp
+    src/tabs/AudioEditorTab.h
+    src/tabs/ModeSolverTab.cpp
+    src/tabs/ModeSolverTab.h
+    src/tabs/AcousticSolverTab.cpp
+    src/tabs/AcousticSolverTab.h
 
     resources/openfdtd.qrc
 )

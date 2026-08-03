@@ -936,9 +936,12 @@ void I18n::loadTables() {
     add("nav_layoutgds",    "GDS",            "GDS");
     add("nav_schematic",    "Schematic",      "Schematic");
     add("nav_photonics",    "FDTD/RCWA/BPM/FMM", "FDTD/RCWA/BPM/FMM");
+    add("nav_modesolver",   "〓 モードソルバ FDE", "〓 Mode Solver FDE");
     add("nav_acsource",     "🎤 音源/WAV/指向性", "🎤 Source/WAV/Directivity");
+    add("nav_audioedit",    "🎚 音響編集・解析", "🎚 Audio Editor");
     add("nav_oceanenv",     "🌏 海洋環境",    "🌏 Ocean Environment");
     add("nav_roomac",       "🏛 ホール解析",  "🏛 Hall Analysis");
+    add("nav_acsolver",     "🔌 音響ソルバ連携", "🔌 Acoustic Solver");
     add("nav_soundproof",   "🔇 防音設計",    "🔇 Soundproofing");
     add("nav_outdoor",      "🌳 屋外騒音",    "🌳 Outdoor Noise");
     add("nav_cabin",        "🚗 車内NVH",     "🚗 Cabin NVH");

@@ -200,7 +200,11 @@ src/
     ├── UnderwaterTab 水中音響 (SSP/SOFAR/ソナー)     ※水中ドメイン時のみ
     ├── Tidy3dTab     tidy3d クラウド連携             ※光ドメイン時のみ
     ├── GlassCatalogTab 🔷 ガラスカタログ (Sellmeier/アッベ図/AGF取込) ※光
-    └── RoomAcousticsTab 🏛 ホール解析 (カバレッジ/エコーグラム/Sabine/NC/障害診断) ※音響
+    ├── RoomAcousticsTab 🏛 ホール解析 (カバレッジ/エコーグラム/Sabine/NC/障害診断) ※音響
+    ├── ModeSolverTab 〓 モードソルバ FDE (簡易近似 — 実FDE連携は未実装) ※光
+    ├── AudioEditorTab 🎚 音響編集・解析 (波形/スペクトログラム編集・信号生成・
+    │                  エフェクト・LUFS/RT解析。DSP は src/audio/AudioEditEngine) ※音響/水中
+    └── AcousticSolverTab 🔌 音響ソルバ連携 (AcousticRunner — ADR-0007 出力契約) ※音響
 ```
 
 ## 設計判断

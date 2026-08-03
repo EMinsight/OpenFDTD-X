@@ -197,6 +197,14 @@ struct OperaAcousticSettings {
     // 校正状態は既存 calibrationState を再利用する (Absolute 時のみ SPL 有効)。
     double  vocalF0MinHz = 0.0;
     double  vocalF0MaxHz = 0.0;
+
+    // 音響ソルバー連携 (AcousticSolverTab, .ofdx "opera_analysis/solver")。
+    // backend は AcousticBackend (kernel/AcousticRunner.h) と同順の int
+    // (0=None 1=MeasuredRir 2=Statistical 3=ExternalFDTD 4=ExternalGeometric)
+    int     solverBackend = 3;
+    QString solverExecutable;     // 空 = 探索順による自動解決
+    int     solverThreads = 4;    // OMP_NUM_THREADS
+    int     solverProcesses = 1;  // >1 で mpiexec -n
 };
 
 // ── 水中音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
