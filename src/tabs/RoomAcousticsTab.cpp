@@ -1,5 +1,6 @@
 // RoomAcousticsTab.cpp
 #include "RoomAcousticsTab.h"
+#include "TabHelpers.h"
 #include "../core/OperaHalls.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
@@ -256,8 +257,8 @@ const bool s_i18n = [] {
     I18n::reg("rah_mic_pos", "マイク位置", "Mic position");
     I18n::reg("rah_gbf_hint", "(推奨 >6dB) — リンギング前の余裕",
               "(recommend >6 dB) — margin before ringing");
-    I18n::reg("rah_notch", "notchフィルタ自動提案 (215Hz, 1.1kHz)",
-              "Auto-suggest notch filters (215 Hz, 1.1 kHz)");
+    I18n::reg("rah_notch", "notchフィルタ自動提案 (自動提案は未実装)",
+              "Auto-suggest notch filters (auto-suggestion not implemented)");
     // 出力 (追加ボタン)
     I18n::reg("rah_export_aural", "🎧 各席の可聴化", "🎧 Per-seat auralization");
     I18n::reg("rah_export_ease", "📐 ODEON/EASE 形式エクスポート",
@@ -746,8 +747,13 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     auto *pngBtn = new QPushButton(I18n::tr("ra_export_png"), sExp);
     row->addWidget(repBtn);
     row->addWidget(pngBtn);
-    row->addWidget(new QPushButton(I18n::tr("rah_export_aural"), sExp));
-    row->addWidget(new QPushButton(I18n::tr("rah_export_ease"), sExp));
+    // 可聴化 / ODEON・EASE エクスポートは未配線 (絶対規則 5)
+    auto *auralBtn = new QPushButton(I18n::tr("rah_export_aural"), sExp);
+    auto *easeBtn  = new QPushButton(I18n::tr("rah_export_ease"), sExp);
+    tabhelp::markNotImplemented(auralBtn);
+    tabhelp::markNotImplemented(easeBtn);
+    row->addWidget(auralBtn);
+    row->addWidget(easeBtn);
     row->addStretch(1);
     sExp->vbox()->addLayout(row);
     v->addWidget(sExp);
@@ -816,7 +822,10 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     for (int i = 0; i < halls::kConcertHallCount; ++i)
         m_hallBox->addItem(QString::fromUtf8(halls::kConcertHalls[i].name));
     crow->addWidget(m_hallBox, 1);
-    crow->addWidget(new QPushButton(I18n::tr("rah_import_3d"), m_concertPane));
+    auto *imp3dConcert = new QPushButton(I18n::tr("rah_import_3d"),
+                                         m_concertPane);
+    tabhelp::markNotImplemented(imp3dConcert);   // 3D モデル取込は未配線
+    crow->addWidget(imp3dConcert);
     cv->addLayout(crow);
 
     auto *cinfo = new QHBoxLayout();
@@ -848,7 +857,9 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
                                             QString::fromUtf8(o.name)));
     }
     orow->addWidget(m_operaBox, 1);
-    orow->addWidget(new QPushButton(I18n::tr("rah_import_3d"), m_operaPane));
+    auto *imp3dOpera = new QPushButton(I18n::tr("rah_import_3d"), m_operaPane);
+    tabhelp::markNotImplemented(imp3dOpera);     // 3D モデル取込は未配線
+    orow->addWidget(imp3dOpera);
     ov->addLayout(orow);
 
     auto *oinfo = new QHBoxLayout();
@@ -885,6 +896,7 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     auto *run = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("rah_run_hall"), s);
     runBtn->setStyleSheet("font-weight:600;");
+    tabhelp::markNotImplemented(runBtn);   // FDTD/Ray 実行は未配線
     run->addWidget(runBtn);
     run->addWidget(makeHint(I18n::tr("rah_run_hint"), s), 1);
     s->vbox()->addLayout(run);
@@ -1049,8 +1061,12 @@ QWidget *RoomAcousticsTab::buildIRPage()
         { I18n::tr("rah_col_metric"), "125", "250", "500", "1k", "2k",
           "4k [Hz]" }, 6);
     sd->vbox()->addWidget(m_irBandTable);
+    // 帯域別指標はプリセット公表値+固定係数の派生 (IR 解析は未実装)
+    sd->vbox()->addWidget(tabhelp::sampleNote(sd));
     sd->vbox()->addWidget(makeCheck(I18n::tr("rah_t20t30_warn"), true, sd));
-    sd->vbox()->addWidget(makeCheck(I18n::tr("rah_inr_check"), true, sd));
+    auto *inrCheck = makeCheck(I18n::tr("rah_inr_check"), true, sd);
+    tabhelp::markNotImplemented(inrCheck);   // INR 検査は未実装・未使用
+    sd->vbox()->addWidget(inrCheck);
     v->addWidget(sd);
 
     auto *sv = new SectionBox(I18n::tr("rah_validation_section"), page);
@@ -1059,6 +1075,8 @@ QWidget *RoomAcousticsTab::buildIRPage()
           I18n::tr("rah_col_sim"), I18n::tr("rah_col_diff"), "JND",
           I18n::tr("ra_verdict") }, 3);
     sv->vbox()->addWidget(m_irValTable);
+    // 「シミュ」列は実行結果ではなく固定係数による見本 (絶対規則 5)
+    sv->vbox()->addWidget(tabhelp::sampleNote(sv));
     v->addWidget(sv);
     v->addStretch(1);
 
@@ -1201,6 +1219,8 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
           I18n::tr("rah_col_range"), I18n::tr("rah_col_meaning"),
           I18n::tr("ra_verdict") }, 5);
     sr->vbox()->addWidget(m_spatialTable);
+    // LF/LFC/IACC は回帰推定・固定値の見本 (IACC 計算は未実装 — 絶対規則 5)
+    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
     sr->vbox()->addWidget(makeHint(I18n::tr("rah_bqi_note"), sr));
     sr->vbox()->addWidget(makeHint(I18n::tr("rah_bqi_est"), sr));
     v->addWidget(sr);
@@ -1208,8 +1228,13 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
     auto *sm = new SectionBox(I18n::tr("rah_seatmap_section"), page);
     sm->vbox()->addWidget(makeHint(I18n::tr("rah_seatmap_hint"), sm));
     auto *maps = new QHBoxLayout();
-    maps->addWidget(new QPushButton(I18n::tr("rah_lf_map_btn"), sm));
-    maps->addWidget(new QPushButton(I18n::tr("rah_bqi_map_btn"), sm));
+    // LF/BQI マップ表示は未配線 (絶対規則 5)
+    auto *lfMapBtn  = new QPushButton(I18n::tr("rah_lf_map_btn"), sm);
+    auto *bqiMapBtn = new QPushButton(I18n::tr("rah_bqi_map_btn"), sm);
+    tabhelp::markNotImplemented(lfMapBtn);
+    tabhelp::markNotImplemented(bqiMapBtn);
+    maps->addWidget(lfMapBtn);
+    maps->addWidget(bqiMapBtn);
     maps->addStretch(1);
     sm->vbox()->addLayout(maps);
     v->addWidget(sm);
@@ -1284,6 +1309,7 @@ QWidget *RoomAcousticsTab::buildStagePage()
     auto *batch = new QHBoxLayout();
     auto *batchBtn = new QPushButton(I18n::tr("rah_va_batch"), sv);
     batchBtn->setStyleSheet("font-weight:600;");
+    tabhelp::markNotImplemented(batchBtn);   // 一括解析は未配線
     batch->addWidget(batchBtn);
     batch->addWidget(makeHint(I18n::tr("rah_va_batch_hint"), sv), 1);
     sv->vbox()->addLayout(batch);
@@ -1315,7 +1341,9 @@ QWidget *RoomAcousticsTab::buildMaterialsPage()
     auto *search = new QLineEdit(s);
     search->setPlaceholderText(I18n::tr("rah_mat_search"));
     tools->addWidget(search, 1);
-    tools->addWidget(new QPushButton(I18n::tr("rah_mat_import"), s));
+    auto *matImport = new QPushButton(I18n::tr("rah_mat_import"), s);
+    tabhelp::markNotImplemented(matImport);   // 材質 DB 取込は未配線
+    tools->addWidget(matImport);
     s->vbox()->addLayout(tools);
     v->addWidget(s);
 
@@ -1454,8 +1482,13 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     ls->setSpan(4, 0, 1, 6);
     sl->vbox()->addWidget(ls);
     auto *lsBtns = new QHBoxLayout();
-    lsBtns->addWidget(new QPushButton(I18n::tr("rah_auto_aim"), sl));
-    lsBtns->addWidget(new QPushButton(I18n::tr("rah_gll_lib"), sl));
+    // 自動エイミング / GLL ライブラリは未配線 (絶対規則 5)
+    auto *aimBtn = new QPushButton(I18n::tr("rah_auto_aim"), sl);
+    auto *gllBtn = new QPushButton(I18n::tr("rah_gll_lib"), sl);
+    tabhelp::markNotImplemented(aimBtn);
+    tabhelp::markNotImplemented(gllBtn);
+    lsBtns->addWidget(aimBtn);
+    lsBtns->addWidget(gllBtn);
     lsBtns->addStretch(1);
     sl->vbox()->addLayout(lsBtns);
     v->addWidget(sl);
@@ -1465,6 +1498,8 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     sd->form()->addRow(I18n::tr("rah_delay_row"),
                        makeCheck(I18n::tr("rah_haas"), true, sd));
     sd->vbox()->addWidget(makeHint(I18n::tr("rah_delay_hint"), sd));
+    // ディレイ値は固定のサンプル (距離補正の計算は未実装 — 絶対規則 5)
+    sd->vbox()->addWidget(tabhelp::sampleNote(sd));
     v->addWidget(sd);
 
     // ── STI マッピング
@@ -1476,6 +1511,9 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     badges->addWidget(makeBadge(I18n::tr("rah_spl_badge"), kAcc, sm));
     badges->addStretch(1);
     sm->vbox()->addLayout(badges);
+    // STI マップ・STI 平均・SPL バッジは固定のサンプル表示。
+    // 校正なしの絶対 SPL を実行結果として見せない (絶対規則 5・6)
+    sm->vbox()->addWidget(tabhelp::sampleNote(sm));
     v->addWidget(sm);
 
     // ── ハウリング余裕 (GBF)
@@ -1486,6 +1524,8 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     gbf->addWidget(makeBadge(I18n::tr("rah_gbf_badge"), kOk, sg));
     gbf->addWidget(makeHint(I18n::tr("rah_gbf_hint"), sg), 1);
     sg->vbox()->addLayout(gbf);
+    // GBF 値は固定のサンプル (ハウリング解析は未実装 — 絶対規則 5)
+    sg->vbox()->addWidget(tabhelp::sampleNote(sg));
     sg->vbox()->addWidget(makeCheck(I18n::tr("rah_notch"), false, sg));
     v->addWidget(sg);
     v->addStretch(1);

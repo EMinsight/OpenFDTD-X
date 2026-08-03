@@ -1,11 +1,13 @@
 // ChannelTab.cpp
 #include "ChannelTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -53,9 +55,11 @@ const bool s_i18n = [] {
     I18n::reg("chn_layout", "間取り/地形", "Floor plan / terrain");
     I18n::reg("chn_browse", "📁 参照…", "📁 Browse…");
     I18n::reg("chn_envm_hint",
-              "▸ 対応: IFC/BIM (屋内)、OpenStreetMap + 建物高さ (市街地)、STL/DXF",
-              "▸ Supported: IFC/BIM (indoor), OpenStreetMap + building heights "
-              "(urban), STL/DXF");
+              "▸ 対応: STL のみ (IFC/BIM・OpenStreetMap・DXF は未実装)",
+              "▸ Supported: STL only (IFC/BIM, OpenStreetMap and DXF are not "
+              "implemented yet)");
+    I18n::reg("chn_stl_filter", "STL (*.stl);;すべてのファイル (*)",
+              "STL (*.stl);;All files (*)");
     I18n::reg("chn_material", "材料", "Materials");
     I18n::reg("chn_mat_db", "コンクリート/石膏ボード/ガラスの透過損失DB",
               "Transmission-loss database for concrete / plasterboard / glass");
@@ -101,10 +105,9 @@ const bool s_i18n = [] {
     I18n::reg("chn_btn_h5", "💾 チャネル係数 (.h5) 書出",
               "💾 Export channel coefficients (.h5)");
     I18n::reg("chn_metrics_hint",
-              "▸ 3GPP TR 38.901 形式のチャネルモデル係数としても書出可能 "
-              "(リンクレベルシミュレータへ)。",
-              "▸ Can also be exported as 3GPP TR 38.901 channel-model coefficients "
-              "(for a link-level simulator).");
+              "▸ 3GPP TR 38.901 形式のチャネルモデル係数の書出は未実装です。",
+              "▸ Export as 3GPP TR 38.901 channel-model coefficients is not "
+              "implemented yet.");
     return true;
 }();
 
@@ -240,7 +243,15 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     m_envFile = new QLineEdit(QString::fromUtf8(kEnvFileIndoor), se);
     auto *fr = new QHBoxLayout();
     fr->addWidget(m_envFile, 1);
-    fr->addWidget(new QPushButton(I18n::tr("chn_browse"), se));
+    // 「📁 参照…」のみ実配線 (選択パスを欄へ反映する。読込・解析は未実装)
+    auto *browseBtn = new QPushButton(I18n::tr("chn_browse"), se);
+    connect(browseBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("chn_layout"), m_envFile->text(),
+            I18n::tr("chn_stl_filter"));
+        if (!path.isEmpty()) m_envFile->setText(path);
+    });
+    fr->addWidget(browseBtn);
     se->vbox()->addLayout(formRow(I18n::tr("chn_layout"), fr));
 
     se->vbox()->addWidget(makeHint(I18n::tr("chn_envm_hint"), se));
@@ -252,6 +263,8 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     mr->addWidget(m_matScatter);
     mr->addStretch(1);
     se->vbox()->addLayout(formRow(I18n::tr("chn_material"), mr));
+    // 環境モデルのフォームはどこにも読まれていない (未実装)
+    se->vbox()->addWidget(tabhelp::unwiredNote(se));
     v->addWidget(se);
 
     // ── 送受信 / TX-RX ──────────────────────────────────────────────────────
@@ -271,19 +284,27 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
                        segRow(sx, &m_rxKind, { I18n::tr("chn_rx_grid"),
                                                I18n::tr("chn_rx_route"),
                                                I18n::tr("chn_rx_points") }, 0));
+    // 送受信フォームはどこにも読まれていない (未実装)
+    sx->vbox()->addWidget(tabhelp::unwiredNote(sx));
     v->addWidget(sx);
 
-    // ── チャネル特性 / Channel metrics ──────────────────────────────────────
+    // ── チャネル特性 / Channel metrics — モック由来の固定サンプル値 ─────────
     auto *sm = new SectionBox(I18n::tr("chn_metrics_section"), body);
+    sm->vbox()->addWidget(tabhelp::sampleNote(sm));
     m_metrics = makeTable({ I18n::tr("chn_col_metric"), I18n::tr("chn_col_value"),
                             I18n::tr("chn_col_note") }, 6, sm, 190);
     sm->vbox()->addWidget(m_metrics);
     fillMetricsTable();
 
+    // ヒートマップ / PDP / 書出のボタンはいずれも未配線 (絶対規則 5)
     auto *bb = new QHBoxLayout();
-    bb->addWidget(new QPushButton(I18n::tr("chn_btn_heat"), sm));
-    bb->addWidget(new QPushButton(I18n::tr("chn_btn_pdp"), sm));
-    bb->addWidget(new QPushButton(I18n::tr("chn_btn_h5"), sm));
+    auto *heatBtn = new QPushButton(I18n::tr("chn_btn_heat"), sm);
+    auto *pdpBtn  = new QPushButton(I18n::tr("chn_btn_pdp"), sm);
+    auto *h5Btn   = new QPushButton(I18n::tr("chn_btn_h5"), sm);
+    for (QPushButton *b : { heatBtn, pdpBtn, h5Btn }) {
+        tabhelp::markNotImplemented(b);
+        bb->addWidget(b);
+    }
     bb->addStretch(1);
     sm->vbox()->addLayout(bb);
     sm->vbox()->addWidget(makeHint(I18n::tr("chn_metrics_hint"), sm));

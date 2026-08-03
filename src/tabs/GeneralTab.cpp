@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -24,6 +25,10 @@ const bool s_i18nGeneral = [] {
     I18n::reg("g_converge", "収束条件", "Convergence");
     I18n::reg("g_pml_sigma", "σ_max", "σ_max");
     I18n::reg("g_pml_sigma_unit", "×σopt", "×σopt");
+    I18n::reg("g_pml_sigma_note",
+              "(未実装 — .ofd に対応キーが無く、保存・計算に反映されません)",
+              "(not implemented — the .ofd format has no matching key, so this "
+              "value is neither saved nor applied)");
     I18n::reg("g_mur2", "Mur 2次", "Mur 2nd");
     I18n::reg("g_mur2_note",
               "Mur 2次は .ofd の abc キーに対応する値が無いため "
@@ -105,6 +110,8 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sAbc->form()->addRow(I18n::tr("g_pml_order"), m_pmlM);
     sAbc->form()->addRow(I18n::tr("g_pml_r0"), m_pmlR0);
     // σ_max スケール (mock の g_pml_sigma) — .ofd には無い量なのでローカル状態。
+    // apply() でも読まれない未実装値であることを、行内の注記で明示する
+    // (Mur 2次 の g_mur2_note と同趣旨。行ごと表示/非表示されるので行内に置く)。
     m_pmlSigma = new QDoubleSpinBox(sAbc);
     m_pmlSigma->setRange(0.1, 10.0);
     m_pmlSigma->setDecimals(3);
@@ -115,6 +122,9 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     sigRow->setContentsMargins(0, 0, 0, 0);
     sigRow->addWidget(m_pmlSigma);
     sigRow->addWidget(new QLabel(I18n::tr("g_pml_sigma_unit"), m_pmlSigmaRow));
+    auto *sigNote = new QLabel(I18n::tr("g_pml_sigma_note"), m_pmlSigmaRow);
+    sigNote->setStyleSheet("color:#888888; font-size:11px;");
+    sigRow->addWidget(sigNote);
     sigRow->addStretch(1);
     sAbc->form()->addRow(I18n::tr("g_pml_sigma"), m_pmlSigmaRow);
     // Mur 2次 を選んだときだけ出す注記 (保存されない旨)
@@ -183,6 +193,8 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     m_optIterSkip  = new QCheckBox(I18n::tr("g_opt_iter_skip"), sOpt);
     for (auto *c : { m_optMatch, m_optPol, m_optIterSkip })
         sOpt->vbox()->addWidget(c);
+    // 3 チェックとも apply() で読まれない (保存・計算に未反映)
+    sOpt->vbox()->addWidget(ofd::tabhelp::unwiredNote(sOpt));
     v->addWidget(sOpt);
 
     v->addStretch(1);

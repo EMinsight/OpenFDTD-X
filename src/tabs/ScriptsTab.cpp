@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QFontDatabase>
 #include <QHBoxLayout>
@@ -11,6 +12,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTextCursor>
 #include <QVBoxLayout>
 
 using namespace ofd;
@@ -28,8 +30,10 @@ const bool s_i18n = [] {
     I18n::reg("scr_examples", "📚 サンプル", "📚 Examples");
     I18n::reg("scr_run", "▶ 実行", "▶ Run");
     I18n::reg("scr_abort", "⏸ 中断", "⏸ Abort");
-    I18n::reg("scr_status", "行 12 列 8 · UTF-8", "Ln 12 Col 8 · UTF-8");
+    I18n::reg("scr_status_fmt", "行 %1 列 %2 · UTF-8", "Ln %1 Col %2 · UTF-8");
     I18n::reg("scr_console", "コンソール", "Console");
+    I18n::reg("scr_console_stub", "(スクリプト実行は未実装)",
+              "(Script execution is not implemented)");
     I18n::reg("scr_api_title", "API早見 (ドメイン別)", "Domain-aware API");
     I18n::reg("scr_c_func", "関数", "Function");
     I18n::reg("scr_c_desc", "説明", "Description");
@@ -159,17 +163,6 @@ const char *sampleCode(const QString &lang, ofd::Domain d)
     }
 }
 
-// コンソール最終行 (mock のドメイン別出力)
-const char *consoleResult(ofd::Domain d)
-{
-    switch (d) {
-        case ofd::Domain::Optical:    return "Peak T = 0.8472 @ 1551.83 nm";
-        case ofd::Domain::Acoustic:   return "RT60 @ 1kHz: 1.42 s,  C80: +1.8 dB";
-        case ofd::Domain::Underwater: return "TL at 50 km: -82.4 dB";
-        default:                      return "Bandwidth: 2.41~2.49 GHz";
-    }
-}
-
 // API 早見表 (mock の表をそのまま転記)
 struct ApiRow { const char *func, *desc; };
 const ApiRow kApiHead[2] = {
@@ -234,6 +227,7 @@ ScriptsTab::ScriptsTab(Project *project, QWidget *parent)
     for (const char *key : { "scr_load", "scr_save", "scr_examples" }) {
         auto *b = new QPushButton(I18n::tr(key), m_editorSec);
         b->setStyleSheet("font-size:11px; padding:2px 8px;");
+        tabhelp::markNotImplemented(b);   // 読込/保存/サンプル切替は未配線
         topRow->addWidget(b);
     }
     m_editorSec->vbox()->addLayout(topRow);
@@ -249,10 +243,23 @@ ScriptsTab::ScriptsTab(Project *project, QWidget *parent)
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("scr_run"), m_editorSec);
     runBtn->setStyleSheet("font-weight:600;");
+    tabhelp::markNotImplemented(runBtn);     // スクリプト実行エンジンは未実装
     runRow->addWidget(runBtn);
-    runRow->addWidget(new QPushButton(I18n::tr("scr_abort"), m_editorSec));
+    auto *abortBtn = new QPushButton(I18n::tr("scr_abort"), m_editorSec);
+    tabhelp::markNotImplemented(abortBtn);   // 同上 (中断も未実装)
+    runRow->addWidget(abortBtn);
     runRow->addStretch(1);
-    runRow->addWidget(new QLabel(I18n::tr("scr_status"), m_editorSec));
+    // ステータスは固定文言ではなく実カーソル位置を表示する
+    auto *statusLbl = new QLabel(m_editorSec);
+    auto updateStatus = [this, statusLbl] {
+        const QTextCursor c = m_editor->textCursor();
+        statusLbl->setText(I18n::tr("scr_status_fmt")
+                               .arg(c.blockNumber() + 1)
+                               .arg(c.columnNumber() + 1));
+    };
+    connect(m_editor, &QPlainTextEdit::cursorPositionChanged, this, updateStatus);
+    updateStatus();
+    runRow->addWidget(statusLbl);
     m_editorSec->vbox()->addLayout(runRow);
     v->addWidget(m_editorSec);
 
@@ -302,21 +309,14 @@ void ScriptsTab::rebuild()
         b->setChecked(b->property("lang").toString() == m_lang);
 
     m_editorSec->setTitle(I18n::tr("scr_title_fmt").arg(domainKey(d).toUpper()));
-    m_editor->setPlainText(QString::fromUtf8(sampleCode(m_lang, d)));
+    // サンプルコードはユーザーが編集していないときだけ差し替える
+    // (setPlainText は modified フラグをリセットするので初回・未編集時のみ更新)
+    if (!m_editor->document()->isModified())
+        m_editor->setPlainText(QString::fromUtf8(sampleCode(m_lang, d)));
 
-    // ── コンソール (mock の固定ログ + ドメイン別結果) ───────────────────────
-    m_console->clear();
-    auto line = [this](const QString &text, const char *color) {
-        m_console->appendHtml(QStringLiteral(
-            "<pre style=\"margin:0; color:%1;\">%2</pre>").arg(
-            QString::fromUtf8(color), text.toHtmlEscaped()));
-    };
-    line(">>> sim.run()", "#4FA3E3");
-    line("Loading project... ✓", "#DDE2E8");
-    line("Iterating 1000 steps...", "#DDE2E8");
-    line("[100%] converged at step 624 (Δ = 8.2e-04)", "#5FD68B");
-    line(">>> result", "#4FA3E3");
-    line(QString::fromUtf8(consoleResult(d)), "#DDE2E8");
+    // ── コンソール ─────────────────────────────────────────────────────────
+    // 実行機能が無いので実行結果風のログは出さない (絶対規則 5)
+    m_console->setPlainText(I18n::tr("scr_console_stub"));
 
     // ── API 早見表 ─────────────────────────────────────────────────────────
     const ApiRow *mid = kApiEm;

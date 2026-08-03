@@ -4,6 +4,7 @@
 #include "../io/BellhopIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QBrush>
 #include <QCheckBox>
@@ -169,10 +170,10 @@ const bool s_i18n = [] {
               "bathymetry (.bty) / SSP (.ssp) files is not implemented.");
     I18n::reg("oe_bty_note",
               "▸ 海域水深から合成した参考断面です (実地形データ未使用 — "
-              "実データ照会の実装後に置き換え予定)。",
+              "実データ照会の実装後に置き換え予定)。伝搬方位は現在未使用です。",
               "▸ Synthetic reference section derived from the area depth "
               "(no real bathymetry data — to be replaced once real-data "
-              "queries are implemented).");
+              "queries are implemented). The bearing is currently unused.");
     I18n::reg("oe_notimpl", "未実装", "Not implemented");
     // download manager
     I18n::reg("oe_dl_title", "📦 データセット取得マネージャ",
@@ -542,9 +543,10 @@ void OeBathyView::paintEvent(QPaintEvent *)
     p.setPen(QColor(kAcc));
     p.drawText(QPointF(vx(12), vy(14)), QStringLiteral("海面"));
     p.setPen(palette().mid().color());
+    // 実地形データ (J-EGG500/ETOPO) ではなく海域水深からの合成断面
     p.drawText(QRectF(vx(150), vy(108), vx(185), vy(12)),
                Qt::AlignRight | Qt::AlignVCenter,
-               QStringLiteral("J-EGG500 / ETOPO 断面"));
+               QStringLiteral("合成断面 (参考)"));
 }
 
 // ── OeDownloadManager — データセット取得マネージャ (オフラインファースト) ───
@@ -704,7 +706,9 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
         m_month->addItem(I18n::tr("oe_month_fmt").arg(i));
     m_month->setCurrentIndex(6);          // 既定 7月
     monthRow->addWidget(m_month);
-    monthRow->addWidget(new QCheckBox(I18n::tr("oe_annual"), sl));
+    auto *annualCk = new QCheckBox(I18n::tr("oe_annual"), sl);
+    tabhelp::markNotImplemented(annualCk);   // 年平均の併記は未実装 (どこにも読まれない)
+    monthRow->addWidget(annualCk);
     monthRow->addStretch(1);
     sl->form()->addRow(I18n::tr("oe_month"), monthRow);
 

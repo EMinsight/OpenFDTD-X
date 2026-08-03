@@ -88,6 +88,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -267,7 +268,11 @@ void MainWindow::buildMenu()
     mPost->addAction(I18n::tr("pp_export_h5"), this, &MainWindow::exportHdf5);
     mPost->addAction(I18n::tr("pp_export_s2p"), this, &MainWindow::exportTouchstone);
 
-    mTools->addAction(I18n::tr("tb_cloud"), this, &MainWindow::showCloudDialog);
+    // クラウド送信は光ドメイン専用 (showCloudDialog が非光では何もしないため
+    // ツールバー側と同様にドメインで有効/無効を切り替える)
+    m_cloudMenuAction =
+        mTools->addAction(I18n::tr("tb_cloud"), this,
+                          &MainWindow::showCloudDialog);
     mTools->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
     // カーネルの場所を GUI から設定 (Finder / Dock 起動では環境変数が
     // 届かないため。QSettings に永続化 — kernel/Runner が探索時に参照)
@@ -710,6 +715,7 @@ void MainWindow::onDomainChanged(Domain d)
 
     // cloud submission is optical-only
     m_cloudAction->setEnabled(d == Domain::Optical);
+    if (m_cloudMenuAction) m_cloudMenuAction->setEnabled(d == Domain::Optical);
     m_cloudAction->setText(d == Domain::Optical
         ? I18n::tr("tb_cloud") : I18n::tr("tb_cloud_optical_only"));
     updateEngineItems(d);
@@ -836,6 +842,11 @@ void MainWindow::showGallery()
             m_project->touch();
             updateWindowTitle();
         });
+        // フッタのボタンを実動作へ接続 (以前は閉じるだけだった)
+        connect(m_galleryDialog, &AppGalleryDialog::openFileRequested,
+                this, [this] { openProject(); });
+        connect(m_galleryDialog, &AppGalleryDialog::blankRequested,
+                this, &MainWindow::newProject);
     }
     m_galleryDialog->open();
 }
@@ -951,6 +962,7 @@ void MainWindow::runSimulation()
 
     // cfg は上でスナップショット済み — 再計算せずそのまま渡す
     // (実行前クリーンアップ判定と同一の設定で走らせる)。
+    m_runStartMs = QDateTime::currentMSecsSinceEpoch();
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -958,12 +970,20 @@ void MainWindow::runSimulation()
 void MainWindow::runPostProcess()
 {
     if (m_runner->isRunning()) return;
+    // エンジンに tidy3d Cloud を選んだままのポスト処理は、currentRunConfig の
+    // qMin により GPU_MPI へ落ちて選択と実行内容が食い違う。実行せず理由を出す。
+    if (m_engineBox->currentIndex() > 3) {
+        QMessageBox::information(this, I18n::tr("tb_post"),
+                                 I18n::tr("run_post_cloud_na"));
+        return;
+    }
     RunConfig cfg = currentRunConfig();
     cfg.mode = RunMode::Post;
     // ポスト処理は activation_curve.csv を作らない (残存 CSV を結果として
     // 表示しない)。
     m_expectActivation = false;
     m_sbState->setText("● " + I18n::tr("sb_running"));
+    m_runStartMs = QDateTime::currentMSecsSinceEpoch();
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -1136,6 +1156,20 @@ void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
+    // カーネルの HDF5 出力 (time_series_data.h5) を 2D 断面へ反映する。
+    // 「この実行が生成したもの」だけを表示するため、実行開始以降に更新された
+    // ファイルに限る (残存ファイルの再表示をしない — .claude/rules/gui.md)。
+    if (ok) {
+        const QString h5 = QDir(m_runner->workingDir())
+                               .filePath(QStringLiteral("time_series_data.h5"));
+        const QFileInfo fi(h5);
+        if (fi.exists()
+            && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs
+            && m_center->loadResultField(h5)) {
+            m_rightDock->appendLog(
+                I18n::tr("log_h5_slice").arg(fi.fileName()));
+        }
+    }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
     // 表示する (他カーネルの実行で過去の CSV を再表示しない)。
     if (ok && m_expectActivation)

@@ -1,5 +1,6 @@
 // LayoutGDSTab.cpp
 #include "LayoutGDSTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -57,8 +58,9 @@ const bool s_i18n = [] {
     I18n::reg("gds_drc_section", "DRC (デザインルールチェック)",
               "DRC (design rule check)");
     I18n::reg("gds_drc_hint",
-              "製造可能性を自動検証。Foundry PDK のルールに準拠。",
-              "Automatic manufacturability verification against the foundry PDK rules.");
+              "Foundry PDK のルールに基づく製造可能性チェック (未実装)。",
+              "Manufacturability check against the foundry PDK rules "
+              "(not implemented).");
     I18n::reg("gds_col_rule",       "ルール", "Rule");
     I18n::reg("gds_col_violations", "違反数", "Violations");
     I18n::reg("gds_rule_width",   "最小線幅 Si ≥ 80nm",   "Min. line width Si ≥ 80nm");
@@ -72,8 +74,11 @@ const bool s_i18n = [] {
     I18n::reg("gds_fdtd_section", "FDTD-IC 連携 / FDTD ↔ IC layout",
               "FDTD ↔ IC layout");
     I18n::reg("gds_fdtd_hint",
-              "選択した領域だけFDTDで詳細解析。残りはSパラメータライブラリで高速回路シミュレーション。",
-              "Only the selected region is analyzed rigorously with FDTD; the rest runs as a fast circuit simulation from the S-parameter library.");
+              "選択した領域だけFDTDで詳細解析し、残りはSパラメータライブラリで"
+              "回路シミュレーションする構想 (未実装)。",
+              "Concept: only the selected region is analyzed rigorously with FDTD, "
+              "the rest as a circuit simulation from the S-parameter library "
+              "(not implemented).");
     I18n::reg("gds_fdtd_sel", "選択セルをFDTD解析",
               "FDTD-analyze selected cells");
     I18n::reg("gds_fdtd_lib", "他セルはSパラメータライブラリ参照",
@@ -141,6 +146,8 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     m_grid->addItems({ "Manhattan", "DBU (1nm)", "Hexagonal" });
     m_grid->setCurrentIndex(1);        // mock: value="db"
     sTop->form()->addRow(I18n::tr("gds_grid"), m_grid);
+    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
     v->addWidget(sTop);
 
     // レイヤー / Layers
@@ -223,6 +230,8 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     add->setForeground(QColor("#7A7A7A"));
     m_cells->setItem(5, 1, add);
     sCells->vbox()->addWidget(m_cells);
+    // 配置済みセル表はモック由来の固定値 (絶対規則 5)
+    sCells->vbox()->addWidget(tabhelp::sampleNote(sCells));
     v->addWidget(sCells);
 
     // DRC (デザインルールチェック)
@@ -263,10 +272,17 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
         m_drc->setItem(i, 3, pos);
     }
     sDrc->vbox()->addWidget(m_drc);
+    // DRC 結果表はモック由来の固定値 (絶対規則 5)
+    sDrc->vbox()->addWidget(tabhelp::sampleNote(sDrc));
     auto *drcRow = new QHBoxLayout();
-    drcRow->addWidget(new QPushButton(I18n::tr("gds_run_drc"), sDrc));
-    drcRow->addWidget(new QPushButton(I18n::tr("gds_export"), sDrc));
-    drcRow->addWidget(new QPushButton(I18n::tr("gds_import"), sDrc));
+    // DRC 実行・GDS 入出力は未実装 — 無効化して明示する (絶対規則 5)
+    auto *btnDrc    = new QPushButton(I18n::tr("gds_run_drc"), sDrc);
+    auto *btnExport = new QPushButton(I18n::tr("gds_export"), sDrc);
+    auto *btnImport = new QPushButton(I18n::tr("gds_import"), sDrc);
+    for (QPushButton *b : { btnDrc, btnExport, btnImport }) {
+        tabhelp::markNotImplemented(b);
+        drcRow->addWidget(b);
+    }
     drcRow->addStretch(1);
     sDrc->vbox()->addLayout(drcRow);
     v->addWidget(sDrc);
@@ -283,9 +299,12 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     chkRow->addWidget(chkLib);
     chkRow->addStretch(1);
     sFdtd->vbox()->addLayout(chkRow);
+    // チェックはどこにも読まれていない (apply/refresh 不在)
+    sFdtd->vbox()->addWidget(tabhelp::unwiredNote(sFdtd));
     auto *rerunRow = new QHBoxLayout();
+    // FDTD 再解析は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *rerun = new QPushButton(I18n::tr("gds_fdtd_rerun"), sFdtd);
-    rerun->setProperty("primary", true);
+    tabhelp::markNotImplemented(rerun);
     rerunRow->addWidget(rerun);
     rerunRow->addStretch(1);
     sFdtd->vbox()->addLayout(rerunRow);

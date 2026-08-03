@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -28,9 +29,9 @@ const bool s_i18n = [] {
               "Photonic circuit simulation");
     I18n::reg("sch_sim_hint",
               "Ansys INTERCONNECT / Synopsys PhotonicCAD 風の回路エディタ。\n"
-              "Sパラメータ・コンパクトモデルを連結して、チップ全体を秒単位で解析。",
+              "(回路シミュレーションは未実装 — この画面は設計モックです)",
               "Circuit editor in the style of Ansys INTERCONNECT / Synopsys PhotonicCAD.\n"
-              "Chain S-parameters and compact models to analyze a whole chip in seconds.");
+              "(Circuit simulation is not implemented — this page is a design mock.)");
     I18n::reg("sch_mode",       "シミュレーションモード", "Simulation mode");
     I18n::reg("sch_mode_freq",  "周波数領域",             "Frequency domain");
     I18n::reg("sch_mode_time",  "時間領域",               "Time domain");
@@ -38,8 +39,11 @@ const bool s_i18n = [] {
               "Mixed (co-simulated opto-electronic)");
 
     I18n::reg("sch_lib_section", "要素ライブラリ / Element library", "Element library");
-    I18n::reg("sch_lib_hint", "ドラッグして回路図に配置 (各要素は S パラメータ / コンパクトモデル)。",
-              "Drag onto the schematic (each element is an S-parameter / compact model).");
+    I18n::reg("sch_lib_hint",
+              "各要素は S パラメータ / コンパクトモデル "
+              "(回路図キャンバス・ドラッグ配置は未実装)。",
+              "Each element is an S-parameter / compact model "
+              "(schematic canvas and drag placement are not implemented).");
     I18n::reg("sch_el_wg_s",   "Si リブ 450×220nm", "Si rib 450×220nm");
     I18n::reg("sch_el_eom_s",  "GHz級",             "GHz class");
 
@@ -54,8 +58,8 @@ const bool s_i18n = [] {
     I18n::reg("sch_rin",     "RIN (相対強度雑音)",   "RIN (relative intensity noise)");
     I18n::reg("sch_phase",   "位相雑音",             "Phase noise");
     I18n::reg("sch_temp",    "温度",                 "Temperature");
-    I18n::reg("sch_to_shift", "熱光学シフトを自動適用",
-              "Apply thermo-optic shift automatically");
+    I18n::reg("sch_to_shift", "熱光学シフトを自動適用 (未実装)",
+              "Apply thermo-optic shift automatically (not implemented)");
     return true;
 }();
 
@@ -120,6 +124,7 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_mode->addItem(I18n::tr("sch_mode_mixed"));
     m_mode->setCurrentIndex(0);              // mock: value="freq"
     sSim->form()->addRow(I18n::tr("sch_mode"), m_mode);
+    sSim->form()->addRow(tabhelp::unwiredNote(sSim));
     v->addWidget(sSim);
 
     // ── 要素ライブラリ / Element library (3列グリッドのカード) ─────────────
@@ -131,7 +136,9 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
         const ElemDef &e = kElements[i];
         auto *card = new QFrame(sLib);
         card->setObjectName("elemCard");
-        card->setCursor(Qt::OpenHandCursor);   // mock: cursor:"grab"
+        // キャンバスが無くドラッグできないため、掴めるカーソルにしない
+        // (mock は cursor:"grab" だが未実装機能を動作済みに見せない — 絶対規則 5)
+        card->setCursor(Qt::ArrowCursor);
         card->setStyleSheet(
             "#elemCard { border:1px solid palette(mid); border-radius:3px;"
             " background:palette(alternate-base); }");
@@ -185,6 +192,8 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
         m_net->setItem(i, 3, wl);
     }
     sNet->vbox()->addWidget(m_net);
+    // ネットリストは固定のサンプルデータ (編集・回路図との連動は未実装)
+    sNet->vbox()->addWidget(tabhelp::sampleNote(sNet));
     v->addWidget(sNet);
 
     // ── ノイズ・温度効果 ───────────────────────────────────────────────────
@@ -218,6 +227,7 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_toShift = new QCheckBox(I18n::tr("sch_to_shift"), sNo);
     m_toShift->setChecked(true);
     sNo->form()->addRow(m_toShift);
+    sNo->form()->addRow(tabhelp::unwiredNote(sNo));
     v->addWidget(sNo);
 
     v->addStretch(1);

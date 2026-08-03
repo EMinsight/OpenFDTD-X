@@ -1,5 +1,6 @@
 // ThinFilmTab.cpp
 #include "ThinFilmTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -32,12 +33,13 @@ const bool s_i18n = [] {
     // 上段
     I18n::reg("tfc_title", "薄膜多層膜設計 / Multilayer coating design",
               "Multilayer coating design");
+    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 計算は未実装であることを明記する
     I18n::reg("tfc_hint",
               "等価アドミッタンス法 (Abeles行列) で高速計算、必要に応じFDTD/RCWAで検証。"
-              "Essential Macleod / OptiLayer / TFCalc 相当の設計環境。",
+              "(計算は未実装 — 画面は設計モック)",
               "Fast evaluation with the equivalent-admittance (Abeles matrix) method, "
-              "verified with FDTD/RCWA when needed. An Essential Macleod / OptiLayer / "
-              "TFCalc class design environment.");
+              "verified with FDTD/RCWA when needed. (Computation not implemented — "
+              "this screen is a design mock.)");
     I18n::reg("tfc_preset", "プリセット", "Preset");
     I18n::reg("tfc_layers_n", "%1 層", "%1 layers");
     I18n::reg("tfc_target_fmt", "目標: %1", "Target: %1");
@@ -457,7 +459,9 @@ QWidget *ThinFilmTab::buildStackPage()
     auto *perRow = new QHBoxLayout();
     m_periodic = numEdit("Air | (H L)^12 H | Sub    H=TiO2 L=SiO2 @ 1550nm", 0, s);
     perRow->addWidget(m_periodic, 1);
-    perRow->addWidget(new QPushButton(I18n::tr("tfc_expand"), s));
+    auto *expandBtn = new QPushButton(I18n::tr("tfc_expand"), s);
+    tabhelp::markNotImplemented(expandBtn);   // 周期記法の展開は未配線
+    perRow->addWidget(expandBtn);
     f2->addRow(I18n::tr("tfc_periodic"), perRow);
 
     // 材料オプション
@@ -469,6 +473,8 @@ QWidget *ThinFilmTab::buildStackPage()
     optRow->addWidget(new QLabel(I18n::tr("tfc_matsource"), s));
     optRow->addStretch(1);
     f2->addRow(optRow);
+    // この節の設定はどこにも読まれない (Project 書込ゼロ)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     v->addStretch(1);
@@ -529,14 +535,23 @@ QWidget *ThinFilmTab::buildSpecPage()
         m_specTable->setCellWidget(r, 3, badgeCell(I18n::tr("tfc_met"), "ok"));
     }
     s->vbox()->addWidget(m_specTable);
+    // スペクトル図・指標判定表はモック固定値 (計算していない)
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_rta"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_map"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_field"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_fdtd"), s));
+    // 4 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ
+    auto *rtaBtn   = new QPushButton(I18n::tr("tfc_btn_rta"), s);
+    auto *mapBtn   = new QPushButton(I18n::tr("tfc_btn_map"), s);
+    auto *fieldBtn = new QPushButton(I18n::tr("tfc_btn_field"), s);
+    auto *fdtdBtn  = new QPushButton(I18n::tr("tfc_btn_fdtd"), s);
+    for (QPushButton *b : { rtaBtn, mapBtn, fieldBtn, fdtdBtn }) {
+        tabhelp::markNotImplemented(b);
+        btnRow->addWidget(b);
+    }
     btnRow->addStretch(1);
     s->vbox()->addLayout(btnRow);
+    // 入射角・波長範囲などの設定はどこにも読まれない
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     v->addStretch(1);
@@ -594,10 +609,15 @@ QWidget *ThinFilmTab::buildDesignPage()
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("tfc_run_opt"), s);
     runBtn->setDefault(true);                    // q-btn primary
+    tabhelp::markNotImplemented(runBtn);         // 最適化は未実装
     runRow->addWidget(runBtn);
     runRow->addWidget(new QLabel(I18n::tr("tfc_merit"), s));
     runRow->addStretch(1);
     s->vbox()->addLayout(runRow);
+    // Merit 値は未実行のモック固定値
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
+    // 手法・変数・ターゲットの設定はどこにも読まれない
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     v->addStretch(1);
@@ -646,6 +666,7 @@ QWidget *ThinFilmTab::buildMfgPage()
     auto *mcRow = new QHBoxLayout();
     auto *mcBtn = new QPushButton(I18n::tr("tfc_run_mc"), s);
     mcBtn->setDefault(true);                     // q-btn primary
+    tabhelp::markNotImplemented(mcBtn);          // モンテカルロは未実装
     mcRow->addWidget(mcBtn);
     mcRow->addStretch(1);
     s->vbox()->addLayout(mcRow);
@@ -657,12 +678,20 @@ QWidget *ThinFilmTab::buildMfgPage()
     yRow->addWidget(m_sensitiveLabel);
     yRow->addStretch(1);
     s->vbox()->addLayout(yRow);
+    // 歩留まり・敏感層は MC 未実行のモック固定値
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_recipe"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("tfc_btn_sens"), s));
+    auto *recipeBtn = new QPushButton(I18n::tr("tfc_btn_recipe"), s);
+    auto *sensBtn   = new QPushButton(I18n::tr("tfc_btn_sens"), s);
+    tabhelp::markNotImplemented(recipeBtn);      // レシピ書出は未配線
+    tabhelp::markNotImplemented(sensBtn);        // 感度解析は未実装
+    btnRow->addWidget(recipeBtn);
+    btnRow->addWidget(sensBtn);
     btnRow->addStretch(1);
     s->vbox()->addLayout(btnRow);
+    // 成膜法・膜厚誤差などの設定はどこにも読まれない
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     v->addStretch(1);

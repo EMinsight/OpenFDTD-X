@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -18,8 +19,10 @@ const bool s_i18n = [] {
     using ofd::I18n;
     I18n::reg("ant_title", "アンテナ特性 (OpenFDTD §2.13)",
               "Antenna characteristics (OpenFDTD §2.13)");
-    I18n::reg("ant_hint", "アンテナ解析専用の評価指標。給電点 #1 を基準に自動計算。",
-              "Antenna-specific figures of merit, computed automatically about feed point #1.");
+    I18n::reg("ant_hint",
+              "アンテナ解析専用の評価指標 (計算は未実装 — 出力項目の選択のみ)。",
+              "Antenna-specific figures of merit (computation not implemented — "
+              "this page only selects output items).");
 
     // 入力特性 / Input characteristics
     I18n::reg("ant_input", "入力特性", "Input characteristics");
@@ -108,9 +111,15 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     // ── 出力先 ────────────────────────────────────────────────────────────
     auto *sOut = new SectionBox(I18n::tr("ant_output"), body);
     auto *row = new QHBoxLayout();
-    row->addWidget(new QPushButton("📄 antenna_report.csv", sOut));
-    row->addWidget(new QPushButton("📊 antenna_pattern.h5", sOut));
-    row->addWidget(new QPushButton("📐 .nec / .ffe", sOut));
+    auto *csvBtn = new QPushButton("📄 antenna_report.csv", sOut);
+    auto *h5Btn  = new QPushButton("📊 antenna_pattern.h5", sOut);
+    auto *necBtn = new QPushButton("📐 .nec / .ffe", sOut);
+    tabhelp::markNotImplemented(csvBtn);
+    tabhelp::markNotImplemented(h5Btn);
+    tabhelp::markNotImplemented(necBtn);
+    row->addWidget(csvBtn);
+    row->addWidget(h5Btn);
+    row->addWidget(necBtn);
     row->addStretch(1);
     sOut->vbox()->addLayout(row);
     v->addWidget(sOut);
@@ -132,5 +141,7 @@ SectionBox *AntennaCharTab::checkSection(QWidget *parent, const char *titleKey,
         s->vbox()->addWidget(ck);
         out->push_back(ck);
     }
+    // チェック状態はまだどこにも読まれない (ローカル状態のみ)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
 }

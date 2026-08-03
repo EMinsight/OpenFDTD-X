@@ -3,10 +3,12 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -30,9 +32,11 @@ const bool s_i18n = [] {
     // 概要
     I18n::reg("cab_main_section", "車内・機内音響 (NVH)", "Cabin NVH");
     I18n::reg("cab_main_hint",
-              "自動車・航空機・鉄道の車内騒音を、構造振動+音響のFEM/FDTD/SEA連成で予測。",
-              "Predicts interior noise of cars, aircraft and trains with coupled "
-              "structural-acoustic FEM / FDTD / SEA.");
+              "自動車・航空機・鉄道の車内騒音を、構造振動+音響のFEM/FDTD/SEA連成で"
+              "予測する構想 (連成解析は未実装 — この画面は設計モック)。",
+              "Concept for predicting interior noise of cars, aircraft and "
+              "trains with coupled structural-acoustic FEM / FDTD / SEA "
+              "(coupled analysis not implemented — this page is a design mock).");
     I18n::reg("cab_target", "対象", "Target");
     I18n::reg("cab_veh_car", "乗用車", "Passenger car");
     I18n::reg("cab_veh_ev", "EV", "EV");
@@ -247,6 +251,8 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     m_srcStack->addWidget(buildTrainSources());     // 2 train
     m_srcStack->addWidget(buildAircraftSources());  // 3 aircraft
     ss->vbox()->addWidget(m_srcStack);
+    // 騒音源チェックはローカル状態のみ (どこにも読まれない)
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 解析手法 (帯域別) ───────────────────────────────────────────────────
@@ -274,11 +280,14 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     auto *hCad = new QHBoxLayout();
     m_cadFile = new QLineEdit("cabin_interior.step", sc);
     hCad->addWidget(m_cadFile, 1);
-    hCad->addWidget(new QPushButton(I18n::tr("cab_browse"), sc));
+    auto *cadBrowse = new QPushButton(I18n::tr("cab_browse"), sc);
+    hCad->addWidget(cadBrowse);
     sc->form()->addRow(I18n::tr("cab_cad"), hCad);
     m_modal = makeCheck(I18n::tr("cab_modal"), true, sc);
     sc->form()->addRow(I18n::tr("cab_modal_row"), m_modal);
     sc->vbox()->addWidget(makeHint(I18n::tr("cab_modal_note"), sc));
+    // モード周波数は固定サンプル (解析結果ではない)
+    sc->vbox()->addWidget(tabhelp::sampleNote(sc));
     m_absRoof   = makeCheck(I18n::tr("cab_abs_roof"),   true, sc);
     m_absCarpet = makeCheck(I18n::tr("cab_abs_carpet"), true, sc);
     m_absDoor   = makeCheck(I18n::tr("cab_abs_door"),   true, sc);
@@ -286,6 +295,8 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     sc->form()->addRow(I18n::tr("cab_absorb"),
                        checkRow({ m_absRoof, m_absCarpet, m_absDoor,
                                   m_absSeat }));
+    // 車室モデル設定はまだどこにも読まれない
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
     v->addWidget(sc);
 
     // ── 評価 ────────────────────────────────────────────────────────────────
@@ -296,14 +307,23 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     m_mSharpness = makeCheck(I18n::tr("cab_m_sharp"),  false, se);
     se->vbox()->addLayout(checkRow({ m_mSpl, m_mAi }));
     se->vbox()->addLayout(checkRow({ m_mLoudness, m_mSharpness }));
+    // 評価指標チェックはローカル状態のみ (どこにも読まれない)
+    se->vbox()->addWidget(tabhelp::unwiredNote(se));
     auto *hBadge = new QHBoxLayout();
     hBadge->addWidget(makeBadge(I18n::tr("cab_result"), kAcc, se));
     hBadge->addWidget(makeBadge(I18n::tr("cab_seg_avg"), kOk, se));
     hBadge->addStretch(1);
     se->vbox()->addLayout(hBadge);
+    // 評価バッジは固定サンプル — 校正なし絶対 SPL を実測と誤認させない
+    // (絶対規則 5・6)
+    se->vbox()->addWidget(tabhelp::sampleNote(se));
     auto *hBtn = new QHBoxLayout();
-    hBtn->addWidget(new QPushButton(I18n::tr("cab_aural_btn"), se));
-    hBtn->addWidget(new QPushButton(I18n::tr("cab_tpa_btn"), se));
+    auto *auralBtn = new QPushButton(I18n::tr("cab_aural_btn"), se);
+    auto *tpaBtn   = new QPushButton(I18n::tr("cab_tpa_btn"), se);
+    tabhelp::markNotImplemented(auralBtn);
+    tabhelp::markNotImplemented(tpaBtn);
+    hBtn->addWidget(auralBtn);
+    hBtn->addWidget(tpaBtn);
     hBtn->addStretch(1);
     se->vbox()->addLayout(hBtn);
     v->addWidget(se);
@@ -333,6 +353,8 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
         m_measureTable->setItem(i, 4, textItem(I18n::tr(kMeas[i].cost)));
     }
     sw->vbox()->addWidget(m_measureTable);
+    // 対策効果・重量・コストは固定サンプル (解析結果ではない)
+    sw->vbox()->addWidget(tabhelp::sampleNote(sw));
     v->addWidget(sw);
 
     v->addStretch(1);
@@ -340,6 +362,13 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
 
+    // 3D モデルの参照ボタンのみ実配線 (隣の QLineEdit にパスを反映)
+    connect(cadBrowse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("cab_cad"), QString(),
+            "3D model (*.step *.stp *.iges *.igs *.stl *.obj);;All files (*)");
+        if (!path.isEmpty()) m_cadFile->setText(path);
+    });
     connect(m_vehicle, &QComboBox::currentIndexChanged, this, [this](int i) {
         // ローカル state のみ (Project に対応フィールド無し → 永続化しない)
         if (m_updating) return;

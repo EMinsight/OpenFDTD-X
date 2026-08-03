@@ -1,5 +1,6 @@
 // OutdoorNoiseTab.cpp
 #include "OutdoorNoiseTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -32,10 +33,12 @@ const bool s_i18n = [] {
               "Outdoor propagation (ISO 9613-2 / CNOSSOS-EU)");
     I18n::reg("onz_main_hint",
               "道路・鉄道・工場・風車の環境騒音を距離減衰+地面効果+障壁+気象で予測。\n"
-              "SoundPLAN / CadnaA 相当の機能。",
+              "SoundPLAN / CadnaA 相当の機能。\n"
+              "(予測計算は未実装 — 画面は設計モック)",
               "Predicts environmental noise from roads, railways, plants and wind "
               "turbines with divergence + ground + barrier + meteorology.\n"
-              "Equivalent to SoundPLAN / CadnaA.");
+              "Equivalent to SoundPLAN / CadnaA.\n"
+              "(Prediction is not implemented — this screen is a design mock.)");
     I18n::reg("onz_src_type", "騒音源種別", "Source type");
     I18n::reg("onz_sc_road", "道路交通", "Road traffic");
     I18n::reg("onz_sc_rail", "鉄道", "Railway");
@@ -304,6 +307,8 @@ OutdoorNoiseTab::OutdoorNoiseTab(Project *project, QWidget *parent)
     m_srcStack->addWidget(buildWindPage());       // 3 wind
     m_srcStack->addWidget(buildAircraftPage());   // 4 aircraft
     ss->vbox()->addWidget(m_srcStack);
+    // 音源モデルの入力はどこにも反映されない (未実装の明示 — 絶対規則 5)
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 伝搬経路 (ISO 9613-2) ───────────────────────────────────────────────
@@ -323,6 +328,8 @@ OutdoorNoiseTab::OutdoorNoiseTab(Project *project, QWidget *parent)
     m_recvHeight = numEdit("1.2", sp);
     sp->form()->addRow(I18n::tr("onz_recv_h"),
                        unitRow(m_recvHeight, I18n::tr("onz_recv_h_u"), sp));
+    // 伝搬経路の設定も計算へは未接続 (未実装の明示 — 絶対規則 5)
+    sp->vbox()->addWidget(tabhelp::unwiredNote(sp));
     v->addWidget(sp);
 
     // ── 防音壁設計 ──────────────────────────────────────────────────────────
@@ -342,6 +349,9 @@ OutdoorNoiseTab::OutdoorNoiseTab(Project *project, QWidget *parent)
     hb->addWidget(new QLabel(I18n::tr("onz_bar_note"), sb));
     hb->addStretch(1);
     sb->vbox()->addLayout(hb);
+    // ΔL バッジは固定のサンプル値 (回折計算は未実装 — 絶対規則 5)
+    sb->vbox()->addWidget(tabhelp::sampleNote(sb));
+    sb->vbox()->addWidget(tabhelp::unwiredNote(sb));
     v->addWidget(sb);
 
     // ── 等高線マップ ────────────────────────────────────────────────────────
@@ -350,9 +360,14 @@ OutdoorNoiseTab::OutdoorNoiseTab(Project *project, QWidget *parent)
     sc->vbox()->addWidget(m_contour);
     auto *hm = new QHBoxLayout();
     hm->addWidget(makeBadge(I18n::tr("onz_std_ok"), kOk, sc));
-    hm->addWidget(new QPushButton(I18n::tr("onz_assess_btn"), sc));
+    auto *assessBtn = new QPushButton(I18n::tr("onz_assess_btn"), sc);
+    tabhelp::markNotImplemented(assessBtn);   // 報告書出力は未配線
+    hm->addWidget(assessBtn);
     hm->addStretch(1);
     sc->vbox()->addLayout(hm);
+    // 等高線・予測 dB(A)・「環境基準クリア」は全て固定のサンプル表示
+    // (基準適合の判定は行っていない — 絶対規則 5)
+    sc->vbox()->addWidget(tabhelp::sampleNote(sc));
     v->addWidget(sc);
 
     v->addStretch(1);

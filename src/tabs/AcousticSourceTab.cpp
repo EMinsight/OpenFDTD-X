@@ -4,6 +4,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -39,9 +40,11 @@ const bool s_i18n = [] {
               "Place sonar transmitters and underwater sources. WAV/PCM, chirp "
               "and tone signals can be fed directly.");
     I18n::reg("asrc_src_hint_room",
-              "AFMG EASE / Odeon 風のスピーカー配置。CLF/GLL指向性ファイルをロード。",
-              "AFMG EASE / Odeon style loudspeaker placement. Loads CLF/GLL "
-              "directivity files.");
+              "AFMG EASE / Odeon 風のスピーカー配置。CLF/GLL指向性ファイルは"
+              "パーサ未実装 — ファイル名の記録のみ。",
+              "AFMG EASE / Odeon style loudspeaker placement. CLF/GLL "
+              "directivity files: parser not implemented — only the file name "
+              "is recorded.");
     I18n::reg("asrc_col_name", "名前", "Name");
     I18n::reg("asrc_col_kind", "種類", "Type");
     I18n::reg("asrc_col_pos", "位置 (x,y,z)", "Position (x,y,z)");
@@ -88,6 +91,8 @@ const bool s_i18n = [] {
     I18n::reg("asrc_ch_stereo", "ステレオ → 2音源", "Stereo → 2 sources");
     I18n::reg("asrc_ch_51", "5.1ch → 6音源", "5.1ch → 6 sources");
     I18n::reg("asrc_srate", "サンプリングレート", "Sample rate");
+    // 実ファイルを解析していないため「例」であることを明示 (絶対規則 5)
+    I18n::reg("asrc_srate_sample", "例: 48000 Hz", "e.g. 48000 Hz");
     I18n::reg("asrc_resample", "自動リサンプル", "Auto resample");
     I18n::reg("asrc_loop", "ループ", "Loop");
     I18n::reg("asrc_loop_chk", "ファイル末尾でループ再生",
@@ -126,10 +131,12 @@ const bool s_i18n = [] {
     I18n::reg("asrc_dir_section", "指向性パターン", "Directivity");
     I18n::reg("asrc_dir_hint",
               "音源の放射特性。CLF (Common Loudspeaker Format) / GLL (Generic "
-              "Loudspeaker Library) / 測定 polar データ / 解析モデルから選択。",
+              "Loudspeaker Library) / 測定 polar データ / 解析モデルから選択 "
+              "(CLF/GLL はパーサ未実装 — ファイル名の記録のみ)。",
               "Radiation characteristics of the source. Choose from CLF (Common "
               "Loudspeaker Format) / GLL (Generic Loudspeaker Library) / "
-              "measured polar data / analytic models.");
+              "measured polar data / analytic models. (CLF/GLL parser not "
+              "implemented — only the file name is recorded.)");
     I18n::reg("asrc_model_section", "モデル選択", "Model");
     I18n::reg("asrc_m_omni", "無指向性", "Omni");
     I18n::reg("asrc_m_card", "カーディオイド", "Cardioid");
@@ -204,11 +211,12 @@ const bool s_i18n = [] {
     I18n::reg("asrc_aural_section", "可聴化", "Auralization");
     I18n::reg("asrc_aural_hint",
               "シミュレーション結果のIRF (Impulse Response) と入力WAVを畳み込み、"
-              "その空間で聴いた音を再現。<br/>EASE AURA / Odeon の auralisation "
-              "engine 相当。",
+              "その空間で聴いた音を再現。<br/>畳み込み処理は可聴化タブで実行 "
+              "(このページは設定のみ・未実装)。",
               "Convolves the simulated IRF (impulse response) with the input WAV "
-              "to reproduce the sound heard in that space.<br/>Equivalent to the "
-              "EASE AURA / Odeon auralisation engine.");
+              "to reproduce the sound heard in that space.<br/>Convolution runs "
+              "in the Auralization tab (this page is settings only — not "
+              "implemented).");
     I18n::reg("asrc_conv_section", "畳み込み設定", "Convolution");
     I18n::reg("asrc_input_wav", "入力WAV", "Input WAV");
     I18n::reg("asrc_recv_irf", "受音点 (IRF)", "Receiver (IRF)");
@@ -416,11 +424,16 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     m_srcTable->verticalHeader()->setDefaultSectionSize(22);
     m_srcTable->setMinimumHeight(190);
     s->vbox()->addWidget(m_srcTable);
+    // 音源一覧は固定サンプル (モデル未接続) — 注記を明示 (絶対規則 5)
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     auto *row = new QHBoxLayout();
     auto *addBtn = new QPushButton(I18n::tr("asrc_btn_addfile"), s);
     auto *libBtn = new QPushButton(I18n::tr("asrc_btn_clflib"), s);
     m_presetBtn = new QPushButton(s);
+    tabhelp::markNotImplemented(addBtn);
+    tabhelp::markNotImplemented(libBtn);
+    tabhelp::markNotImplemented(m_presetBtn);
     row->addWidget(addBtn);
     row->addWidget(libBtn);
     row->addWidget(m_presetBtn);
@@ -445,6 +458,8 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     sc->form()->addRow(I18n::tr("asrc_delay"), dist);
     auto *coh = new QCheckBox(I18n::tr("asrc_coherence"), sc);
     sc->form()->addRow(I18n::tr("asrc_phase"), coh);
+    // 正規化/遅延/位相のチェックはどこにも読まれない — 注記 (基準SPLのみ有効)
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
     v->addWidget(sc);
     v->addStretch(1);
 
@@ -546,6 +561,7 @@ QWidget *AcousticSourceTab::buildSignalPage()
     m_wavFile = new QLineEdit("anechoic_speech_48k.wav", sw);
     auto *browse = new QPushButton(I18n::tr("asrc_browse"), sw);
     auto *listen = new QPushButton(I18n::tr("asrc_listen"), sw);
+    tabhelp::markNotImplemented(listen);   // 再生機能は未実装
     fileRow->addWidget(m_wavFile, 1);
     fileRow->addWidget(browse);
     fileRow->addWidget(listen);
@@ -565,7 +581,8 @@ QWidget *AcousticSourceTab::buildSignalPage()
     sw->form()->addRow(I18n::tr("asrc_channels"), ch);
 
     auto *srRow = new QHBoxLayout();
-    srRow->addWidget(new QLabel("48000 Hz", sw));
+    // 実ファイルを解析していないので固定値ではなく「例」と表示する
+    srRow->addWidget(new QLabel(I18n::tr("asrc_srate_sample"), sw));
     auto *resample = new QCheckBox(I18n::tr("asrc_resample"), sw);
     resample->setChecked(true);
     srRow->addWidget(resample);
@@ -595,6 +612,8 @@ QWidget *AcousticSourceTab::buildSignalPage()
     auto *hpf = new QCheckBox(I18n::tr("asrc_hpf_chk"), sw);
     hpf->setChecked(true);
     sw->form()->addRow(I18n::tr("asrc_hpf"), hpf);
+    // WAV 入力設定はまだどこにも読まれない
+    sw->vbox()->addWidget(tabhelp::unwiredNote(sw));
     v->addWidget(sw);
 
     auto *sl = new SectionBox(I18n::tr("asrc_lib_section"), page);
@@ -627,6 +646,8 @@ QWidget *AcousticSourceTab::buildSignalPage()
         QString::fromUtf8("RMS: -18 dBFS · Peak: -3 dBFS · Crest factor: 15 dB"),
         sp);
     sp->vbox()->addWidget(stats);
+    // 波形・統計とも解析式による固定サンプル (実ファイル未解析)
+    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
     v->addWidget(sp);
     v->addStretch(1);
 
@@ -719,6 +740,8 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
             band->setItem(r, c, new QTableWidgetItem(
                 QString::fromUtf8(kBand[r][c])));
     sb->vbox()->addWidget(band);
+    // 指向性表は固定サンプル (ファイル未解析)
+    sb->vbox()->addWidget(tabhelp::sampleNote(sb));
     v->addWidget(sb);
 
     auto *sp = new SectionBox(I18n::tr("asrc_polar_section"), page);
@@ -740,6 +763,8 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
     polarRow->addWidget(info);
     polarRow->addStretch(1);
     sp->vbox()->addLayout(polarRow);
+    // ポーラ図・特性値は固定サンプル (選択モデル非連動)
+    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
     v->addWidget(sp);
 
     auto *sr = new SectionBox(I18n::tr("asrc_fr_section"), page);
@@ -761,6 +786,8 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
     }
     m_freqResp->setSeries({ fr });
     sr->vbox()->addWidget(m_freqResp);
+    // 周波数特性は解析式による固定サンプル
+    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
     v->addWidget(sr);
     v->addStretch(1);
 
@@ -858,6 +885,8 @@ QWidget *AcousticSourceTab::buildArrayPage()
     delayRow->addStretch(1);
     ss->form()->addRow(I18n::tr("asrc_delay_rear"), delayRow);
     v->addWidget(ss);
+    // アレイページの設定は全節ともまだどこにも読まれない
+    v->addWidget(tabhelp::unwiredNote(page));
     v->addStretch(1);
     return page;
 }
@@ -911,6 +940,8 @@ QWidget *AcousticSourceTab::buildAuralPage()
     conv->addItem(I18n::tr("asrc_cv_part"));
     conv->setCurrentIndex(2);   // mock: value="partition"
     sc->form()->addRow(I18n::tr("asrc_convmode"), conv);
+    // 畳み込み設定はまだどこにも読まれない
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
     v->addWidget(sc);
 
     auto *sr = new SectionBox(I18n::tr("asrc_render_section"), page);
@@ -925,9 +956,15 @@ QWidget *AcousticSourceTab::buildAuralPage()
     bits->setCurrentIndex(1);   // mock: value="24"
     sr->form()->addRow(I18n::tr("asrc_bits"), bits);
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("asrc_btn_render"), sr));
-    btnRow->addWidget(new QPushButton(I18n::tr("asrc_btn_listen2"), sr));
-    btnRow->addWidget(new QPushButton(I18n::tr("asrc_btn_ab"), sr));
+    auto *renderBtn = new QPushButton(I18n::tr("asrc_btn_render"), sr);
+    auto *listenBtn = new QPushButton(I18n::tr("asrc_btn_listen2"), sr);
+    auto *abBtn     = new QPushButton(I18n::tr("asrc_btn_ab"), sr);
+    tabhelp::markNotImplemented(renderBtn);
+    tabhelp::markNotImplemented(listenBtn);
+    tabhelp::markNotImplemented(abBtn);
+    btnRow->addWidget(renderBtn);
+    btnRow->addWidget(listenBtn);
+    btnRow->addWidget(abBtn);
     btnRow->addStretch(1);
     sr->vbox()->addLayout(btnRow);
     v->addWidget(sr);
@@ -951,7 +988,9 @@ QWidget *AcousticSourceTab::buildAuralPage()
     seat->addItem(I18n::tr("asrc_seat3"));
     seat->addItem(I18n::tr("asrc_seat4"));
     seatRow->addWidget(seat, 1);
-    seatRow->addWidget(new QPushButton(I18n::tr("asrc_play"), sa));
+    auto *playBtn = new QPushButton(I18n::tr("asrc_play"), sa);
+    tabhelp::markNotImplemented(playBtn);
+    seatRow->addWidget(playBtn);
     sa->form()->addRow(I18n::tr("asrc_seat"), seatRow);
     auto *abx = new QCheckBox(I18n::tr("asrc_abx_chk"), sa);
     sa->form()->addRow(I18n::tr("asrc_abx"), abx);
@@ -977,9 +1016,18 @@ QWidget *AcousticSourceTab::buildAuralPage()
         q->setItem(r, 2, ver);
     }
     sq->vbox()->addWidget(q);
+    // 品質指標は固定サンプル — 実測値と誤認させない (絶対規則 5・6)
+    sq->vbox()->addWidget(tabhelp::sampleNote(sq));
     v->addWidget(sq);
     v->addStretch(1);
 
+    // 入力WAV の参照ボタンのみ実配線 (隣の QLineEdit にパスを反映)
+    connect(inBtn, &QPushButton::clicked, this, [this, inWav] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("asrc_input_wav"), QString(),
+            "Audio (*.wav *.flac *.aiff *.ogg);;All files (*)");
+        if (!path.isEmpty()) inWav->setText(path);
+    });
     connect(m_renderRate, &QComboBox::currentIndexChanged, this,
             [this] { apply(); });
     return page;

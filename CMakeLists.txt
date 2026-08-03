@@ -62,6 +62,8 @@ set(CORE_SOURCES
     src/io/Tidy3dExporter.h
     src/io/H5Writer.cpp
     src/io/H5Writer.h
+    src/io/H5Reader.cpp
+    src/io/H5Reader.h
     src/io/EvReader.h
     src/io/StlImporter.cpp
     src/io/StlImporter.h
@@ -376,6 +378,13 @@ if(BUILD_TESTS)
         tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
     target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)
+    if(USE_HDF5)
+        # selftest は CORE_SOURCES (H5Writer/H5Reader を含む) を自前で
+        # コンパイルするため、HDF5 の定義とリンクをここにも与える
+        target_link_libraries(ofdx_selftest PRIVATE ${HDF5_C_LIBRARIES})
+        target_include_directories(ofdx_selftest PRIVATE ${HDF5_INCLUDE_DIRS})
+        target_compile_definitions(ofdx_selftest PRIVATE OFD_USE_HDF5)
+    endif()
     set_target_properties(ofdx_selftest PROPERTIES
         WIN32_EXECUTABLE OFF
         MACOSX_BUNDLE    OFF

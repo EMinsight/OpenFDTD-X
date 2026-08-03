@@ -2,12 +2,15 @@
 #include "CenterPane.h"
 #include "I18n.h"
 #include "core/Project.h"
+#include "io/H5Reader.h"
 #include "widgets/FieldHeatmap.h"
 #include "widgets/MeshPreview.h"
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
 
 #include <QButtonGroup>
+#include <algorithm>
+#include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
@@ -35,10 +38,14 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_move",    "平行移動 (G)",   "Move (G)");
     ofd::I18n::reg("vp_rotate",  "回転 (R)",       "Rotate (R)");
     ofd::I18n::reg("vp_scale",   "スケール (S)",   "Scale (S)");
-    ofd::I18n::reg("vp_snap",    "Snap:",          "Snap:");
+    ofd::I18n::reg("vp_show",    "表示:",          "Show:");
+    ofd::I18n::reg("vp_gizmo_notimpl",
+                   "モード切替は未実装 (操作は Viewport のマウスドラッグ)",
+                   "Mode switching not implemented (use mouse drag in the "
+                   "viewport)");
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
     ofd::I18n::reg("vp_boundary","境界 (PML)",     "Boundary (PML)");
-    ofd::I18n::reg("vp_vertex",  "頂点",           "Vertex");
+    ofd::I18n::reg("vp_vertex",  "頂点スナップ",   "Vertex snap");
     ofd::I18n::reg("vp_vertex_tip",
         "スナップ動作は未実装 (表示のみ)",
         "Snap behavior not implemented (display only)");
@@ -51,6 +58,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_snapshot","📷 Snap",        "📷 Snap");
     ofd::I18n::reg("vp_slice_title",
         "近傍界面上分布 / Near-field slice", "Near-field slice");
+    ofd::I18n::reg("vp_slice_result",
+        "解析結果 %1 (正規化 |値|)", "Result %1 (normalised |value|)");
     ofd::I18n::reg("vp_saved",   "スクリーンショットを保存", "Save screenshot");
     return true;
 }();
@@ -83,7 +92,9 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     reset->setText(I18n::tr("vp_reset"));
     h->addWidget(reset);
 
-    // 操作ギズモ (モックでは操作モードの示唆。実操作は Viewport3D のマウス)
+    // 操作ギズモ (モック由来のモード表示)。モード切替の実装が無いため
+    // 無効表示にする — 押すとチェックが入って「切り替わった」ように見える
+    // 状態にしない (実操作は Viewport3D のマウスドラッグ)。
     auto *gizmoGroup = new QButtonGroup(this);
     gizmoGroup->setExclusive(true);
     struct G { const char *glyph, *tipKey; };
@@ -93,21 +104,24 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     for (const G &g : gizmos) {
         auto *b = new QToolButton(m_vpToolbar);
         b->setText(QString::fromUtf8(g.glyph));
-        b->setToolTip(I18n::tr(g.tipKey));
+        b->setToolTip(I18n::tr(g.tipKey) + QStringLiteral(" — ")
+                      + I18n::tr("vp_gizmo_notimpl"));
         b->setCheckable(true);
+        b->setEnabled(false);
         if (gi++ == 0) b->setChecked(true);
         gizmoGroup->addButton(b);
         h->addWidget(b);
     }
 
-    h->addWidget(new QLabel(I18n::tr("vp_snap"), m_vpToolbar));
+    // グリッド/境界は「表示」の切替 (実動作)。スナップではないので
+    // ラベルを「表示:」にする。頂点スナップは未実装のため無効表示。
+    h->addWidget(new QLabel(I18n::tr("vp_show"), m_vpToolbar));
     auto *grid = new QCheckBox(I18n::tr("vp_grid"), m_vpToolbar);
     grid->setChecked(true);
     auto *bnd = new QCheckBox(I18n::tr("vp_boundary"), m_vpToolbar);
-    // 頂点スナップ (mock の Snap チェック群)。スナップ動作そのものは
-    // 未実装なので tooltip で明示する (CLAUDE.md 絶対規則 5)。
     auto *vtx = new QCheckBox(I18n::tr("vp_vertex"), m_vpToolbar);
     vtx->setToolTip(I18n::tr("vp_vertex_tip"));
+    vtx->setEnabled(false);
     h->addWidget(grid);
     h->addWidget(bnd);
     h->addWidget(vtx);
@@ -255,4 +269,48 @@ void CenterPane::saveSnapshot()
         this, I18n::tr("vp_saved"), "viewport.png", "PNG (*.png)");
     if (path.isEmpty()) return;
     m_stack->currentWidget()->grab().save(path);
+}
+
+// カーネルの HDF5 出力から 2D 断面へ実データを反映する。
+// gui.md の規則どおり「その実行が生成したもの」だけを表示する判断は
+// 呼び出し側 (MainWindow — 実行開始時刻と mtime の比較) が行う。
+bool CenterPane::loadResultField(const QString &h5Path)
+{
+    if (!H5Reader::available()) return false;
+
+    QVector<double> cells;
+    int rows = 0, cols = 0;
+    QString shown;
+
+    // obpm の伝搬マップ |E(x,z)|^2 を最優先 (2D でそのまま表示できる)
+    if (H5Reader::read2D(h5Path, QStringLiteral("/field/Ixz"),
+                         cells, rows, cols)) {
+        shown = QStringLiteral("/field/Ixz");
+    } else {
+        // 最終電界 |Efinal| = sqrt(re^2 + im^2)
+        QVector<double> re, im;
+        int r2 = 0, c2 = 0;
+        if (H5Reader::read2D(h5Path, QStringLiteral("/field/Efinal_r"),
+                             re, rows, cols)
+            && H5Reader::read2D(h5Path, QStringLiteral("/field/Efinal_i"),
+                                im, r2, c2)
+            && r2 == rows && c2 == cols) {
+            cells.resize(re.size());
+            for (int i = 0; i < re.size(); ++i)
+                cells[i] = std::sqrt(re[i] * re[i] + im[i] * im[i]);
+            shown = QStringLiteral("|/field/Efinal|");
+        } else {
+            return false;   // 表示できる 2D 場が無い (ofd の /dataNNNNNN は未対応)
+        }
+    }
+
+    // 0..1 へ正規化 (カラーバーの 0.0-1.0 表示と整合)
+    double vmax = 0.0;
+    for (const double v : cells) vmax = std::max(vmax, std::fabs(v));
+    if (vmax > 0.0)
+        for (double &v : cells) v = std::fabs(v) / vmax;
+
+    m_heatmap->setData(cells, cols, rows);
+    m_heatmap->setTitle(I18n::tr("vp_slice_result").arg(shown));
+    return true;
 }

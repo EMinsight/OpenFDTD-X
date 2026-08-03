@@ -1,5 +1,6 @@
 // FamilySolverTab.cpp
 #include "FamilySolverTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -26,8 +27,11 @@ const bool s_i18n = [] {
     I18n::reg("fam_title", "姉妹ソルバ一覧 (ss023804.stars.ne.jp)",
               "OpenFDTD Family (ss023804.stars.ne.jp)");
     I18n::reg("fam_intro",
-              "<b>OpenFDTD家族</b> — 同じプロジェクトから複数手法を切替可能。問題に応じて最適なソルバを選択。",
-              "<b>OpenFDTD family</b> — switch methods from the same project. Pick the best solver for the problem.");
+              "<b>OpenFDTD家族</b> — 姉妹ソルバの一覧。"
+              "ソルバ切替の実行連携は未実装 — 表示のみで、実行されるのは常に FDTD 系 (ofd) です。",
+              "<b>OpenFDTD family</b> — overview of the sibling solvers. "
+              "Running the selected solver is not implemented — display only; "
+              "execution always uses the FDTD kernels (ofd).");
     I18n::reg("fam_selected", "選択", "Selected");
     I18n::reg("fam_detail_title", "選択中: %1 — 詳細設定", "Selected: %1 — Details");
     I18n::reg("fam_strengths", "強み:", "Strengths:");
@@ -179,8 +183,9 @@ FamilyCard::FamilyCard(const QString &name, const QString &ver, const QString &c
     auto *nameL = new QLabel(name, this);
     nameL->setStyleSheet(QString("font-size:14px; font-weight:700; color:%1;").arg(color));
     head->addWidget(nameL);
-    auto *verL = new QLabel(QStringLiteral("v") + ver, this);
-    head->addWidget(verL);
+    // バージョンは実行バイナリから検出していない (モックの想定値) ため
+    // 表示しない (絶対規則 5 — 未確認情報を事実のように見せない)
+    Q_UNUSED(ver);
     head->addStretch(1);
     m_badge = new QLabel(I18n::tr("fam_selected"), this);
     m_badge->setStyleSheet("background:#DEECF9; color:#0078D4; border-radius:3px; "
@@ -254,6 +259,8 @@ FamilySolverTab::FamilySolverTab(Project *project, QWidget *parent)
     sCross->vbox()->addWidget(hintLabel(I18n::tr("fam_cross_hint"), sCross));
     for (const char *key : { "fam_cross_1", "fam_cross_2", "fam_cross_3", "fam_cross_4" })
         sCross->vbox()->addWidget(new QCheckBox(I18n::tr(key), sCross));
+    // 連携チェックはどこにも読まれていない (未実装)
+    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross));
     v->addWidget(sCross);
 
     v->addStretch(1);
@@ -328,6 +335,7 @@ QWidget *FamilySolverTab::buildFdtdPage()
     outRow->addWidget(h5Ck);
     outRow->addStretch(1);
     form->addRow(I18n::tr("fam_fdtd_output"), outRow);
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }
 
@@ -357,6 +365,7 @@ QWidget *FamilySolverTab::buildRtmPage()
     row2->addWidget(new QCheckBox(I18n::tr("fam_rtm_pol"), page));
     row2->addStretch(1);
     form->addRow(row2);
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }
 
@@ -379,6 +388,7 @@ QWidget *FamilySolverTab::buildThfdPage()
     solver->addItems({ "BiCGStab", "GMRES", I18n::tr("fam_thfd_direct") });
     form->addRow(I18n::tr("fam_solver"), solver);
     form->addRow(I18n::tr("fam_converge"), numEdit("1e-6", 110, page));
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }
 
@@ -404,6 +414,7 @@ QWidget *FamilySolverTab::buildMomPage()
     form->addRow(I18n::tr("fam_freq"), freqRow);
     form->addRow(I18n::tr("fam_mom_input"),
                  new QCheckBox(I18n::tr("fam_mom_nec"), page));
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }
 
@@ -435,6 +446,8 @@ QWidget *FamilySolverTab::buildStfPage()
     tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tbl->setMaximumHeight(120);
     form->addRow(I18n::tr("fam_stf_electrodes"), tbl);
+    form->addRow(tabhelp::sampleNote(page));    // 電極表はモック由来の固定サンプル
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }
 
@@ -459,5 +472,6 @@ QWidget *FamilySolverTab::buildTomoPage()
     auto *mfCk = new QCheckBox(I18n::tr("fam_tomo_multifreq"), page);
     mfCk->setChecked(true);
     form->addRow(mfCk);
+    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
     return page;
 }

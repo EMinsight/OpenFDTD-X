@@ -4,6 +4,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -227,9 +228,10 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     for (auto *c : { m_rt60, m_c80, m_d50, m_sti, m_edt, m_irf, m_aural })
         sm->vbox()->addWidget(c);
     // mock の Metrics 行にある LF (側方音エネルギー)。Project に該当フィールドが
-    // 無いのでローカル状態 (既定 off)。
+    // 無いのでローカル状態 (既定 off) — どこにも読まれないことを注記。
     m_lf = makeCheck(I18n::tr("ac2_lf"), false, sm);
     sm->vbox()->addWidget(m_lf);
+    sm->vbox()->addWidget(tabhelp::unwiredNote(sm));
     m_sampleRate = new QComboBox(sm);
     m_sampleRate->addItems({ "44100", "48000", "96000" });
     sm->form()->addRow(I18n::tr("ac_sample_rate"), m_sampleRate);
@@ -253,6 +255,8 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_srcAim = new QLineEdit(QStringLiteral("90°, 0°"), ss);
     m_srcAim->setStyleSheet(Theme::monoQss());
     ss->form()->insertRow(2, I18n::tr("ac2_src_aim"), m_srcAim);
+    // 位置・向きはローカル状態のみ (指向性・SPL は Project に反映される)
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     auto *sr = new SectionBox(I18n::tr("ac_mics"), body);
@@ -289,6 +293,8 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_micTable->setItem(4, 1, micAdd);
     m_micTable->setSpan(4, 1, 1, 4);
     sr->vbox()->addWidget(m_micTable);
+    // 受音点表は固定サンプル (受音点数スピンとは非連動)
+    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
     v->addWidget(sr);
 
     // ── 以下、モック (tabs.jsx AcousticTab) にあって未実装だったセクションを
@@ -346,6 +352,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_hybridSplit = makeSpin(m_hybridPanel, 20, 20000, 500, QStringLiteral(" Hz"));
     hybForm->addRow(I18n::tr("ac2_hybrid_split"), m_hybridSplit);
     sv->vbox()->addWidget(m_hybridPanel);
+    sv->vbox()->addWidget(tabhelp::unwiredNote(sv));
     v->addWidget(sv);
 
     // 室内音響 / Room acoustics — 解析タイプ
@@ -353,6 +360,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_analysisType = makeSeg(ra, { I18n::tr("ac_irf"), I18n::tr("ac_rt60"),
                                    I18n::tr("ac2_sti") }, 0);
     ra->form()->addRow(I18n::tr("ac2_analysis_type"), m_analysisType);
+    ra->vbox()->addWidget(tabhelp::unwiredNote(ra));
     v->addWidget(ra);
 
     // 周波数帯域 / Band
@@ -366,13 +374,17 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     bandRow->addWidget(m_bandRange);
     bandRow->addStretch(1);
     fb->vbox()->addLayout(bandRow);
+    fb->vbox()->addWidget(tabhelp::unwiredNote(fb));
     v->addWidget(fb);
 
     // 可聴化 / Auralization
     auto *au = new SectionBox(I18n::tr("ac2_aural_section"), body);
     auto *auralBtns = new QHBoxLayout();
-    for (const char *k : { "ac2_play", "ac2_record", "ac2_convolve" })
-        auralBtns->addWidget(new QPushButton(I18n::tr(k), au));
+    for (const char *k : { "ac2_play", "ac2_record", "ac2_convolve" }) {
+        auto *b = new QPushButton(I18n::tr(k), au);
+        tabhelp::markNotImplemented(b);   // 再生/録音/畳み込みは未実装
+        auralBtns->addWidget(b);
+    }
     auralBtns->addStretch(1);
     au->vbox()->addLayout(auralBtns);
     m_auralSource = makeSeg(au, { I18n::tr("ac2_src_click"),
@@ -389,6 +401,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
         outRow->addWidget(c);
     outRow->addStretch(1);
     au->form()->addRow(I18n::tr("ac2_out_format"), outRow);
+    au->vbox()->addWidget(tabhelp::unwiredNote(au));
     v->addWidget(au);
 
     // 材質設定 / Surface materials — mock の吸音率表 (125Hz / 1kHz / 4kHz)
@@ -414,6 +427,8 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
         m_surfTable->setItem(r, 4, numItem(QString::fromLatin1(kSurf[r].a4k)));
     }
     ms->vbox()->addWidget(m_surfTable);
+    // 吸音率表は固定サンプル (モデル未接続)
+    ms->vbox()->addWidget(tabhelp::sampleNote(ms));
     v->addWidget(ms);
 
     v->addStretch(1);

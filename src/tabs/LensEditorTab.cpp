@@ -1,5 +1,6 @@
 // LensEditorTab.cpp
 #include "LensEditorTab.h"
+#include "TabHelpers.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
@@ -18,6 +19,7 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPushButton>
+#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -58,15 +60,19 @@ const bool s_i18n = [] {
     I18n::reg("lde_field_unit",  "° (半角)",    "° (half angle)");
     I18n::reg("lde_waves",       "波長サンプル", "Wavelength samples");
     I18n::reg("lde_wave_add",    "+ 追加",      "+ Add");
+    I18n::reg("lde_wave_note",   "(プレビューは d 線のみ)",
+              "(preview traces the d line only)");
     I18n::reg("lde_coord",       "座標系",      "Coordinate system");
     I18n::reg("lde_coord_seq",   "順次光線追跡", "Sequential ray tracing");
-    I18n::reg("lde_coord_nonseq","非順次 (LightTools/TracePro)",
-              "Non-sequential (LightTools/TracePro)");
-    I18n::reg("lde_coord_hybrid","ハイブリッド", "Hybrid");
+    I18n::reg("lde_coord_nonseq","非順次 (LightTools/TracePro) (未実装)",
+              "Non-sequential (LightTools/TracePro) (not implemented)");
+    I18n::reg("lde_coord_hybrid","ハイブリッド (未実装)",
+              "Hybrid (not implemented)");
     I18n::reg("lde_merit_section","Merit Function (FoM)", "Merit Function (FoM)");
     I18n::reg("lde_merit_hint",
-              "最適化評価関数。各オペランドの重み付き二乗和を最小化。",
-              "Optimization merit function. Minimizes the weighted sum of squares of each operand.");
+              "最適化評価関数の定義 (最適化は未実装 — 定義の記録のみ)。",
+              "Merit-function definition (optimization is not implemented — "
+              "the definition is only recorded).");
     I18n::reg("lde_col_operand", "オペランド",  "Operand");
     I18n::reg("lde_col_target",  "目標",        "Target");
     I18n::reg("lde_col_weight",  "重み",        "Weight");
@@ -82,8 +88,10 @@ const bool s_i18n = [] {
     I18n::reg("lde_preview_section", "レイトレース プレビュー / Raytrace preview",
               "Raytrace preview");
     I18n::reg("lde_preview_hint",
-              "面テーブルから子午面 2D 光線追跡 (軸上=マゼンタ、±視野=赤/青、瞳内5本)。テーブル編集で自動更新。",
-              "2D meridional ray trace from the surface table (on-axis = magenta, ±field = red/blue, 5 pupil rays). Updates as you edit the table.");
+              "面テーブルから子午面 2D 光線追跡 (軸上=マゼンタ、±視野=赤/青、瞳内5本)。テーブル編集で自動更新。"
+              "カタログ外ガラスは n=1.6 と仮定。",
+              "2D meridional ray trace from the surface table (on-axis = magenta, ±field = red/blue, 5 pupil rays). Updates as you edit the table. "
+              "Glasses not in the catalog are assumed to have n = 1.6.");
     I18n::reg("lde_air",         "空気",        "Air");
     return true;
 }();
@@ -382,7 +390,11 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     waveRow->addWidget(makeBadge("656.3nm (C)", "", sSys));
     auto *waveAdd = new QPushButton(I18n::tr("lde_wave_add"), sSys);
     waveAdd->setFixedHeight(22);
+    // 波長追加は未実装 — 無効化して明示する (絶対規則 5)
+    tabhelp::markNotImplemented(waveAdd);
     waveRow->addWidget(waveAdd);
+    // 3 波長を並べているがプレビューのトレースは d 線単一
+    waveRow->addWidget(mutedLabel(I18n::tr("lde_wave_note"), sSys));
     waveRow->addStretch(1);
     sSys->form()->addRow(I18n::tr("lde_waves"), waveRow);
 
@@ -390,6 +402,12 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     m_coord->addItem(I18n::tr("lde_coord_seq"));
     m_coord->addItem(I18n::tr("lde_coord_nonseq"));
     m_coord->addItem(I18n::tr("lde_coord_hybrid"));
+    // 実装があるのは順次のみ — 未実装の選択肢は選べなくする (絶対規則 5)
+    if (auto *model = qobject_cast<QStandardItemModel *>(m_coord->model())) {
+        for (int i : { 1, 2 })
+            if (auto *item = model->item(i))
+                item->setEnabled(false);
+    }
     sSys->form()->addRow(I18n::tr("lde_coord"), m_coord);
     v->addWidget(sSys);
 
@@ -427,9 +445,12 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
         merit->setItem(i, 4, num(QString::fromUtf8(fom[i].value)));
     }
     sMerit->vbox()->addWidget(merit);
+    // 値列はモック由来の固定値 (絶対規則 5)
+    sMerit->vbox()->addWidget(tabhelp::sampleNote(sMerit));
     auto *optRow = new QHBoxLayout();
+    // 最適化は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *optBtn = new QPushButton(I18n::tr("lde_optimize"), sMerit);
-    optBtn->setProperty("primary", true);
+    tabhelp::markNotImplemented(optBtn);
     optRow->addWidget(optBtn);
     optRow->addWidget(mutedLabel("Damped Least-Squares / Hammer", sMerit));
     optRow->addStretch(1);
@@ -454,6 +475,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
         auto *b = new QPushButton(analyses[i], sAn);
         b->setFixedHeight(30);
         b->setStyleSheet("text-align:left; padding-left:8px;");
+        // 解析プロットは未実装 — 無効化して明示する (絶対規則 5)
+        tabhelp::markNotImplemented(b);
         grid->addWidget(b, i / 2, i % 2);
     }
     sAn->vbox()->addLayout(grid);

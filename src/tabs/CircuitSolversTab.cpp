@@ -1,5 +1,6 @@
 // CircuitSolversTab.cpp
 #include "CircuitSolversTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -8,6 +9,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -120,22 +122,25 @@ const bool s_i18n = [] {
     I18n::reg("cir_sweep_eigen", "固有モード", "Eigenmode");
     I18n::reg("cir_range", "範囲", "Range");
     I18n::reg("cir_run_extract", "▶ 抽出実行", "▶ Run extraction");
-    I18n::reg("cir_estimate", "推定: %1", "Estimate: %1");
+    I18n::reg("cir_estimate", "推定 (目安の例 — 実測ではありません): %1",
+              "Estimate (illustrative example, not measured): %1");
     I18n::reg("cir_est_peec", "~2分 (14k要素)", "~2 min (14k elements)");
     I18n::reg("cir_est_femq", "~30秒", "~30 s");
     I18n::reg("cir_est_femw", "~15分 (適応6パス)", "~15 min (6 adaptive passes)");
     I18n::reg("cir_handoff", "FDTD連成", "Hand-off to FDTD");
     I18n::reg("cir_handoff_sp",
-              "抽出Sパラメータを FDTD ポートの周波数依存負荷として使用",
+              "抽出Sパラメータを FDTD ポートの周波数依存負荷として使用 (連携は未実装)",
               "Use the extracted S-parameters as a frequency-dependent load on the "
-              "FDTD ports");
+              "FDTD ports (hand-off not implemented)");
     I18n::reg("cir_handoff_rom",
-              "PEEC等価回路を FDTD 集中定数素子へ縮約 (低次モデル ROM)",
-              "Reduce the PEEC equivalent circuit to FDTD lumped elements (ROM)");
+              "PEEC等価回路を FDTD 集中定数素子へ縮約 (ROM) (連携は未実装)",
+              "Reduce the PEEC equivalent circuit to FDTD lumped elements (ROM) "
+              "(hand-off not implemented)");
     I18n::reg("cir_handoff_hint",
-              "▸ 基板近傍=PEEC/FEM、筐体放射=FDTD の分担でマルチスケール解析。",
+              "▸ 基板近傍=PEEC/FEM、筐体放射=FDTD の分担でマルチスケール解析 "
+              "(連携は未実装)。",
               "▸ Multi-scale analysis: PEEC/FEM near the board, FDTD for enclosure "
-              "radiation.");
+              "radiation (hand-off not implemented).");
 
     // SPICE
     I18n::reg("cir_spice", "SPICE 共シミュレーション", "SPICE co-simulation");
@@ -296,8 +301,16 @@ QWidget *CircuitSolversTab::buildModelPage()
     sStr->form()->addRow(I18n::tr("cir_import"), imp);
 
     auto *fileRow = new QHBoxLayout();
-    fileRow->addWidget(numEdit("power_board_v3.odb", 0, sStr), 1);
-    fileRow->addWidget(new QPushButton(I18n::tr("cir_browse"), sStr));
+    auto *fileEdit = numEdit("power_board_v3.odb", 0, sStr);
+    fileRow->addWidget(fileEdit, 1);
+    // 「📁 参照…」のみ実配線 (選択パスを欄へ反映する。取込処理自体は未実装)
+    auto *browseBtn = new QPushButton(I18n::tr("cir_browse"), sStr);
+    connect(browseBtn, &QPushButton::clicked, this, [this, fileEdit] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("cir_file"), fileEdit->text());
+        if (!path.isEmpty()) fileEdit->setText(path);
+    });
+    fileRow->addWidget(browseBtn);
     sStr->form()->addRow(I18n::tr("cir_file"), fileRow);
 
     auto *optRow = new QHBoxLayout();
@@ -307,8 +320,9 @@ QWidget *CircuitSolversTab::buildModelPage()
     sStr->form()->addRow(optRow);
     v->addWidget(sStr);
 
-    // ポート定義 / Ports
+    // ポート定義 / Ports — 表の中身はモック由来の固定サンプル (絶対規則 5)
     auto *sPort = new SectionBox(I18n::tr("cir_ports"), page);
+    sPort->vbox()->addWidget(tabhelp::sampleNote(sPort));
     m_portTable = new QTableWidget(4, 6, sPort);
     m_portTable->setHorizontalHeaderLabels({ QString(), "#", I18n::tr("cir_col_name"),
                                              I18n::tr("cir_col_kind"),
@@ -473,10 +487,12 @@ QWidget *CircuitSolversTab::buildExtractPage()
     m_extractStack->addWidget(buildFemqPage());   // [1] femq
     m_extractStack->addWidget(buildFemwPage());   // [2] femw
     sExt->vbox()->addWidget(m_extractStack);
+    // 抽出設定フォームはどこにも読まれていない (未実装)
+    sExt->vbox()->addWidget(tabhelp::unwiredNote(sExt));
 
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("cir_run_extract"), sExt);
-    runBtn->setDefault(true);                     // q-btn primary
+    tabhelp::markNotImplemented(runBtn);          // 抽出実行は未配線 (絶対規則 5)
     runRow->addWidget(runBtn);
     m_estimate = new QLabel(sExt);
     runRow->addWidget(m_estimate);
@@ -504,8 +520,16 @@ QWidget *CircuitSolversTab::buildSpicePage()
 
     auto *s = new SectionBox(I18n::tr("cir_spice"), page);
     auto *netRow = new QHBoxLayout();
-    netRow->addWidget(numEdit("buck_converter.cir", 0, s), 1);
-    netRow->addWidget(new QPushButton(I18n::tr("cir_browse"), s));
+    auto *netEdit = numEdit("buck_converter.cir", 0, s);
+    netRow->addWidget(netEdit, 1);
+    // 「📁 参照…」のみ実配線 (選択パスを欄へ反映する。共シミュレーションは未実装)
+    auto *netBrowse = new QPushButton(I18n::tr("cir_browse"), s);
+    connect(netBrowse, &QPushButton::clicked, this, [this, netEdit] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("cir_netlist"), netEdit->text());
+        if (!path.isEmpty()) netEdit->setText(path);
+    });
+    netRow->addWidget(netBrowse);
     s->form()->addRow(I18n::tr("cir_netlist"), netRow);
 
     auto *engine = new QComboBox(s);
@@ -527,9 +551,12 @@ QWidget *CircuitSolversTab::buildSpicePage()
     anaRow->addStretch(1);
     s->form()->addRow(I18n::tr("cir_analysis"), anaRow);
 
+    // 設定フォームはどこにも読まれていない (未実装)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("cir_run_spice"), s);
-    runBtn->setDefault(true);
+    tabhelp::markNotImplemented(runBtn);   // 共シミュレーション実行は未配線 (絶対規則 5)
     runRow->addWidget(runBtn);
     runRow->addStretch(1);
     s->vbox()->addLayout(runRow);
@@ -547,6 +574,8 @@ QWidget *CircuitSolversTab::buildResultsPage()
     v->setSpacing(8);
 
     auto *s = new SectionBox(I18n::tr("cir_results"), page);
+    // 表と |Z| 曲線はモック由来の固定サンプル値 — 実行結果ではない (絶対規則 5)
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     m_resultTable = new QTableWidget(4, 4, s);
     m_resultTable->setHorizontalHeaderLabels({ I18n::tr("cir_col_item"), "@1MHz",
@@ -574,11 +603,16 @@ QWidget *CircuitSolversTab::buildResultsPage()
     m_zPlot->setMinimumSize(340, 120);
     s->vbox()->addWidget(m_zPlot);
 
+    // 書出/適用ボタンはいずれも未配線 (絶対規則 5)
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("cir_exp_snp"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("cir_exp_spice"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("cir_exp_h5"), s));
-    btnRow->addWidget(new QPushButton(I18n::tr("cir_exp_fdtd"), s));
+    auto *expSnp   = new QPushButton(I18n::tr("cir_exp_snp"), s);
+    auto *expSpice = new QPushButton(I18n::tr("cir_exp_spice"), s);
+    auto *expH5    = new QPushButton(I18n::tr("cir_exp_h5"), s);
+    auto *expFdtd  = new QPushButton(I18n::tr("cir_exp_fdtd"), s);
+    for (QPushButton *b : { expSnp, expSpice, expH5, expFdtd }) {
+        tabhelp::markNotImplemented(b);
+        btnRow->addWidget(b);
+    }
     btnRow->addStretch(1);
     s->vbox()->addLayout(btnRow);
     v->addWidget(s);

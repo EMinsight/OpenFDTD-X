@@ -1,5 +1,6 @@
 // EmcTab.cpp
 #include "EmcTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -81,8 +82,8 @@ const bool s_i18n = [] {
 
     // 放射源
     I18n::reg("emc_src_section", "放射源 / Emission sources", "Emission sources");
-    I18n::reg("emc_src_switching", "基板のスイッチングノイズ (PEEC抽出結果を使用)",
-              "Board switching noise (uses the PEEC extraction result)");
+    I18n::reg("emc_src_switching", "基板のスイッチングノイズ (PEEC 連携は未実装)",
+              "Board switching noise (PEEC hand-off not implemented)");
     I18n::reg("emc_src_cm", "ケーブル・コモンモード電流",
               "Cable common-mode current");
     I18n::reg("emc_src_slit", "筐体スリット・開口",
@@ -138,10 +139,10 @@ const bool s_i18n = [] {
     I18n::reg("emc_det_qp", "準尖頭値 (QP) 検波", "Quasi-peak (QP) detection");
     I18n::reg("emc_det_av", "平均値 (AV) 検波", "Average (AV) detection");
     I18n::reg("emc_cond_hint",
-              "▸ PEEC抽出した基板寄生+電源フィルタ回路をSPICE共シミュレーション"
-              "して算出。",
-              "▸ Computed by SPICE co-simulation of the PEEC-extracted board "
-              "parasitics plus the power-line filter.");
+              "▸ PEEC抽出した基板寄生+電源フィルタ回路のSPICE共シミュレーションに"
+              "よる算出は未実装です (PEEC 連携は未実装)。",
+              "▸ Computation by SPICE co-simulation of the PEEC-extracted board "
+              "parasitics plus the power-line filter is not implemented yet.");
 
     // イミュニティ
     I18n::reg("emc_imm_section", "イミュニティ / Immunity", "Immunity");
@@ -415,6 +416,8 @@ QWidget *EmcTab::buildEmissionPage()
     m_gndCable = makeCheck(I18n::tr("emc_gnd_cable"), true, ss);
     ss->form()->addRow(I18n::tr("emc_gnd"),
                        checkRow({ m_gndPec, m_gndCable }));
+    // 試験配置フォームはどこにも読まれていない (未実装)
+    ss->vbox()->addWidget(ofd::tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // 放射源 / Emission sources
@@ -427,10 +430,14 @@ QWidget *EmcTab::buildEmissionPage()
     m_clock = numEdit("100", se);
     se->form()->addRow(I18n::tr("emc_clock"),
                        unitRow(m_clock, I18n::tr("emc_clock_unit"), se));
+    // 放射源フォームはどこにも読まれていない (未実装)
+    se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
     v->addWidget(se);
 
-    // 判定結果 / Compliance check
+    // 判定結果 / Compliance check — 表・スペクトルともモック由来の固定サンプル
+    // (不合格判定を含むが実行結果ではない — 絶対規則 5)
     auto *sc = new SectionBox(I18n::tr("emc_check_section"), page);
+    sc->vbox()->addWidget(ofd::tabhelp::sampleNote(sc));
     m_compTable = makeTable({ I18n::tr("emc_col_freq"), I18n::tr("emc_col_meas"),
                               I18n::tr("emc_col_limit"),
                               I18n::tr("emc_col_margin"),
@@ -444,15 +451,21 @@ QWidget *EmcTab::buildEmissionPage()
     sc->vbox()->addWidget(m_spectrum);
     updateSpectrumPlot();
 
+    // 放射源特定 / レポートのボタンは未配線 (絶対規則 5)
     auto *cb = new QHBoxLayout();
-    cb->addWidget(new QPushButton(I18n::tr("emc_btn_locate"), sc));
-    cb->addWidget(new QPushButton(I18n::tr("emc_btn_report"), sc));
+    auto *locateBtn = new QPushButton(I18n::tr("emc_btn_locate"), sc);
+    auto *reportBtn = new QPushButton(I18n::tr("emc_btn_report"), sc);
+    ofd::tabhelp::markNotImplemented(locateBtn);
+    ofd::tabhelp::markNotImplemented(reportBtn);
+    cb->addWidget(locateBtn);
+    cb->addWidget(reportBtn);
     cb->addStretch(1);
     sc->vbox()->addLayout(cb);
     v->addWidget(sc);
 
-    // 対策検討 / Mitigation
+    // 対策検討 / Mitigation — 改善量・予測バッジともモック由来の固定サンプル
     auto *sm = new SectionBox(I18n::tr("emc_mit_section"), page);
+    sm->vbox()->addWidget(ofd::tabhelp::sampleNote(sm));
     m_mitTable = makeTable({ QString(), I18n::tr("emc_col_mit"),
                              I18n::tr("emc_col_gain"),
                              I18n::tr("emc_col_cost") }, 4, sm, 140);
@@ -525,6 +538,8 @@ QWidget *EmcTab::buildConductedPage()
     m_detAv = makeCheck(I18n::tr("emc_det_av"), true, s);
     s->vbox()->addLayout(checkRow({ m_detQp, m_detAv }));
     s->vbox()->addWidget(makeHint(I18n::tr("emc_cond_hint"), s));
+    // 伝導エミッションのフォームはどこにも読まれていない (未実装)
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
     v->addWidget(s);
 
     return page;
@@ -553,11 +568,15 @@ QWidget *EmcTab::buildImmunityPage()
     m_immField   = makeCheck(I18n::tr("emc_imm_field"), true, s);
     m_immInduced = makeCheck(I18n::tr("emc_imm_induced"), true, s);
     s->vbox()->addLayout(checkRow({ m_immField, m_immInduced }));
+    // イミュニティのフォームはどこにも読まれていない (未実装)
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
     m_immBadge = makeBadge(I18n::tr("emc_imm_badge"), kWarn, s);
     auto *bb = new QHBoxLayout();
     bb->addWidget(m_immBadge);
     bb->addStretch(1);
     s->vbox()->addLayout(bb);
+    // 「クリティカル: …」バッジはモック由来の固定サンプル (絶対規則 5)
+    s->vbox()->addWidget(ofd::tabhelp::sampleNote(s));
     v->addWidget(s);
 
     return page;

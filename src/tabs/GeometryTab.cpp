@@ -6,6 +6,7 @@
 #include "../widgets/SectionBox.h"
 #include "../widgets/UnitNav.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -49,55 +50,38 @@ const Tr kTr[] = {
     { "geoc_fmt_mesh", "メッシュ:", "Mesh:" },
     { "geoc_fmt_eda", "2D/EDA:", "2D/EDA:" },
     { "geoc_cad_hint",
-      "▸ STEP/IGES は B-rep (境界表現) CAD — FDTD用に内部でテセレーション "
-      "(三角形分割) します。OpenCASCADE (OCCT) エンジン経由でアセンブリ・"
-      "ソリッド・材質を保持。",
-      "▸ STEP/IGES are B-rep (boundary representation) CAD — they are "
-      "tessellated internally for FDTD. Assemblies, solids and materials are "
-      "kept through the OpenCASCADE (OCCT) engine." },
+      "▸ STEP/IGES など B-rep CAD の実取込は未実装 — 現在取込できるのは "
+      "STL のみです (OCCT 連携によるテセレーション・アセンブリ対応は今後追加予定)。",
+      "▸ Importing STEP/IGES and other B-rep CAD is not implemented yet — "
+      "only STL can be imported today (OCCT-based tessellation and assembly "
+      "support is planned)." },
+    { "geoc_file_ph", "例: antenna.stl (STL のみ取込可)",
+      "e.g. antenna.stl (STL only)" },
 
     // ── マウス操作 / Mouse shortcuts ────────────────────────────────────────
+    // 実装済みの操作のみ掲載する (Viewport3D::mouse*Event / wheelEvent 準拠)。
+    // モック由来の選択/ギズモ/スナップ等は未実装のため表から除外し注記に集約。
     { "geoc_mouse_section", "マウス操作 / Mouse shortcuts", "Mouse shortcuts" },
     { "geoc_col_op", "操作", "Action" },
     { "geoc_col_key", "キー / マウス", "Key / mouse" },
     { "geoc_col_effect", "動作", "Effect" },
-    { "geoc_ms1_o", "選択", "Select" },
-    { "geoc_ms1_k", "左クリック", "Left click" },
-    { "geoc_ms1_a", "ユニット選択", "Select a unit" },
-    { "geoc_ms2_o", "複数選択", "Multi-select" },
-    { "geoc_ms2_k", "Shift+クリック / 矩形ドラッグ",
-      "Shift+click / rubber-band drag" },
-    { "geoc_ms2_a", "追加・矩形選択", "Add to / box-select" },
-    { "geoc_ms3_o", "平行移動", "Translate" },
-    { "geoc_ms3_k", "G または ギズモ赤緑青軸", "G or the RGB gizmo axes" },
-    { "geoc_ms3_a", "選択軸でドラッグ", "Drag along the locked axis" },
-    { "geoc_ms4_o", "回転", "Rotate" },
-    { "geoc_ms4_k", "R または 回転ギズモ", "R or the rotate gizmo" },
-    { "geoc_ms4_a", "選択軸を中心に回転", "Rotate about the locked axis" },
-    { "geoc_ms5_o", "スケール", "Scale" },
-    { "geoc_ms5_k", "S または スケールギズモ", "S or the scale gizmo" },
-    { "geoc_ms5_a", "サイズ変更", "Resize" },
-    { "geoc_ms6_o", "軸ロック", "Axis lock" },
-    { "geoc_ms6_k", "X / Y / Z", "X / Y / Z" },
-    { "geoc_ms6_a", "指定軸のみ", "Restrict to one axis" },
-    { "geoc_ms7_o", "グリッドスナップ", "Grid snap" },
-    { "geoc_ms7_k", "Ctrl+ドラッグ", "Ctrl+drag" },
-    { "geoc_ms7_a", "Δxにスナップ", "Snap to Δx" },
-    { "geoc_ms8_o", "頂点スナップ", "Vertex snap" },
-    { "geoc_ms8_k", "V+ドラッグ", "V+drag" },
-    { "geoc_ms8_a", "他形状の頂点へ", "Snap to another shape's vertex" },
-    { "geoc_ms9_o", "新規ブロック", "New block" },
-    { "geoc_ms9_k", "空所で B+ドラッグ", "B+drag on empty space" },
-    { "geoc_ms9_a", "直方体を即時作成", "Create a brick immediately" },
     { "geoc_ms10_o", "カメラ回転", "Orbit" },
-    { "geoc_ms10_k", "中ドラッグ", "Middle drag" },
+    { "geoc_ms10_k", "左ドラッグ", "Left drag" },
     { "geoc_ms10_a", "視点旋回", "Orbit the view" },
     { "geoc_ms11_o", "パン", "Pan" },
-    { "geoc_ms11_k", "Shift+中ドラッグ", "Shift+middle drag" },
+    { "geoc_ms11_k", "中ドラッグ", "Middle drag" },
     { "geoc_ms11_a", "平行移動", "Translate the view" },
-    { "geoc_ms12_o", "正面ビュー", "Axis views" },
-    { "geoc_ms12_k", "1 / 3 / 7", "1 / 3 / 7" },
-    { "geoc_ms12_a", "+X / +Y / +Z", "+X / +Y / +Z" },
+    { "geoc_ms13_o", "ズーム", "Zoom" },
+    { "geoc_ms13_k", "ホイール (ダブルクリック=全体表示)",
+      "Wheel (double-click = fit view)" },
+    { "geoc_ms13_a", "拡大縮小", "Zoom in / out" },
+    { "geoc_mouse_todo",
+      "▸ 3D ビュー内での選択・ギズモ移動/回転/スケール・軸ロック・スナップ・"
+      "数字キービュー切替は未実装 (今後追加予定)。ユニットの編集は上の"
+      "「ユニット編集」節を使用してください。",
+      "▸ In-viewport selection, gizmo translate/rotate/scale, axis lock, "
+      "snapping and number-key views are not implemented yet (planned). "
+      "Use the Unit transform section above to edit units." },
 
     // ── STEP テセレーション / Tessellation (OCCT) ───────────────────────────
     { "geoc_tess_section", "STEP テセレーション / Tessellation (OCCT)",
@@ -217,6 +201,7 @@ const Tr kTr[] = {
       "▸ 取込後は「ボクセル化」で Yee 格子へ変換 → FDTD 計算へ",
       "▸ After import, convert to the Yee grid in Voxelization → FDTD run" },
     { "geoc_mdl_live", "%1 (現在の取込)", "%1 (live import)" },
+    { "geoc_mdl_sample_fmt", "%1 (例)", "%1 (sample)" },
 
     // ── ボクセル化 / Voxelization ───────────────────────────────────────────
     { "geoc_vox_section", "ボクセル化 / Voxelization", "Voxelization" },
@@ -277,6 +262,7 @@ const Tr kTr[] = {
     { "geoc_stat_conf_val", "62.3%", "62.3%" },
     { "geoc_stat_stair", "0.0% (階段近似)", "0.0% (staircase)" },
     { "geoc_stat_na", "— (階段近似 / PVF 無効)", "— (staircase, PVF off)" },
+    { "geoc_stat_notrun", "— (未実行)", "— (not run yet)" },
 
     // ── メッシュ細分化 / Mesh refinement ────────────────────────────────────
     { "geoc_ref_section", "メッシュ細分化 / Mesh refinement",
@@ -306,8 +292,8 @@ const Tr kTr[] = {
     { "geoc_ref_autocheck", "自動チェック", "Auto check" },
     { "geoc_ref_showviol", "違反箇所を赤表示", "Highlight violations in red" },
     { "geoc_ref_run", "▶ 自動細分化", "▶ Auto-refine" },
-    { "geoc_ref_badge_fmt", "セル増加: +%1% (推定)",
-      "Cell growth: +%1% (est.)" },
+    { "geoc_ref_badge_fmt", "セル増加: +%1% (机上の目安 — 実測値ではありません)",
+      "Cell growth: +%1% (rough paper estimate — not measured)" },
 
     // ── 細分化領域 / Refined regions ────────────────────────────────────────
     { "geoc_regions_section", "細分化領域 / Refined regions",
@@ -898,18 +884,22 @@ void GeometryTab::insertUnitAfterCurrent(const Geometry &g)
 }
 
 // ── マウス操作 / Mouse shortcuts ────────────────────────────────────────────
+// Viewport3D が実際に処理する 3 操作 (+ダブルクリック) だけを表にする。
+// モックにあった選択/ギズモ/スナップ等は未実装なので掲載せず、注記で明示。
 QWidget *GeometryTab::buildMouseSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_mouse_section"));
+    static const char *kRows[3] = { "geoc_ms10_", "geoc_ms11_", "geoc_ms13_" };
     auto *t = makeTable({ I18n::tr("geoc_col_op"), I18n::tr("geoc_col_key"),
-                          I18n::tr("geoc_col_effect") }, 12, s);
-    for (int r = 0; r < 12; ++r) {
-        const QString base = QStringLiteral("geoc_ms%1_").arg(r + 1);
+                          I18n::tr("geoc_col_effect") }, 3, s);
+    for (int r = 0; r < 3; ++r) {
+        const QString base = QLatin1String(kRows[r]);
         t->setItem(r, 0, textItem(I18n::tr(base + "o")));
         t->setItem(r, 1, textItem(I18n::tr(base + "k")));
         t->setItem(r, 2, textItem(I18n::tr(base + "a")));
     }
     s->vbox()->addWidget(t);
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_mouse_todo"), s));
     return s;
 }
 
@@ -920,7 +910,9 @@ void GeometryTab::addCadImportRows(SectionBox *s)
     auto *fh = new QHBoxLayout(fileRow);
     fh->setContentsMargins(0, 0, 0, 0);
     fh->setSpacing(6);
-    m_cadFile = new QLineEdit("radome_assembly.step", fileRow);
+    // 既定値のダミーファイル名は誤解を招くので空 + placeholder にする
+    m_cadFile = new QLineEdit(fileRow);
+    m_cadFile->setPlaceholderText(I18n::tr("geoc_file_ph"));
     fh->addWidget(m_cadFile, 1);
     auto *browse = new QPushButton(I18n::tr("geoc_browse"), fileRow);
     fh->addWidget(browse);
@@ -931,9 +923,10 @@ void GeometryTab::addCadImportRows(SectionBox *s)
     auto *ch = new QHBoxLayout(cadRow);
     ch->setContentsMargins(0, 0, 0, 0);
     ch->setSpacing(6);
+    // 対応済み (アクセント色) は STL だけ — B-rep CAD 系は全て未対応 (muted)
     ch->addWidget(makeHint(I18n::tr("geoc_fmt_cad"), cadRow));
-    ch->addWidget(makeBadge("STEP (.stp/.step)", kAcc, cadRow));
-    ch->addWidget(makeBadge("IGES (.igs)", kAcc, cadRow));
+    ch->addWidget(makeBadge("STEP (.stp/.step)", kMuted, cadRow));
+    ch->addWidget(makeBadge("IGES (.igs)", kMuted, cadRow));
     ch->addWidget(makeBadge("BREP", kMuted, cadRow));
     ch->addWidget(makeBadge("Parasolid (.x_t)", kMuted, cadRow));
     ch->addWidget(makeBadge("SAT (ACIS)", kMuted, cadRow));
@@ -944,7 +937,8 @@ void GeometryTab::addCadImportRows(SectionBox *s)
     auto *meshRow = new QHBoxLayout();
     meshRow->setSpacing(6);
     meshRow->addWidget(makeHint(I18n::tr("geoc_fmt_mesh"), s));
-    for (const char *f : { "STL", "OBJ", "PLY", "3MF" })
+    meshRow->addWidget(makeBadge("STL", kAcc, s));   // 実装済みは STL のみ
+    for (const char *f : { "OBJ", "PLY", "3MF" })
         meshRow->addWidget(makeBadge(QString::fromLatin1(f), kMuted, s));
     meshRow->addSpacing(8);
     meshRow->addWidget(makeHint(I18n::tr("geoc_fmt_eda"), s));
@@ -992,6 +986,7 @@ QWidget *GeometryTab::buildTessellationSection()
     cr->addWidget(m_tessCurvature);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // テセレーション自体が未実装
     return s;
 }
 
@@ -1029,10 +1024,16 @@ QWidget *GeometryTab::buildAssemblySection()
     m_asmTree->expandAll();
     m_asmTree->resizeColumnToContents(0);
     s->vbox()->addWidget(m_asmTree);
+    // ツリー内容は STEP 取込が未実装のため固定サンプル
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     auto *br = new QHBoxLayout();
-    br->addWidget(new QPushButton(I18n::tr("geoc_asm_assign"), s));
-    br->addWidget(new QPushButton(I18n::tr("geoc_asm_autoignore"), s));
+    auto *assignBtn = new QPushButton(I18n::tr("geoc_asm_assign"), s);
+    auto *ignoreBtn = new QPushButton(I18n::tr("geoc_asm_autoignore"), s);
+    tabhelp::markNotImplemented(assignBtn);
+    tabhelp::markNotImplemented(ignoreBtn);
+    br->addWidget(assignBtn);
+    br->addWidget(ignoreBtn);
     br->addStretch(1);
     s->vbox()->addLayout(br);
     return s;
@@ -1086,6 +1087,7 @@ QWidget *GeometryTab::buildPlacementSection()
     cr->addWidget(m_placeAutoAxis);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // 取込/ボクセル化とも未接続
     return s;
 }
 
@@ -1108,9 +1110,13 @@ QWidget *GeometryTab::buildHealingSection()
         m_healTable->setItem(r, 3, badgeItem(I18n::tr(base + "s"), kColor[r]));
     }
     s->vbox()->addWidget(m_healTable);
+    // 検出数 (「3 箇所」等) は固定のサンプル — 修復エンジン自体が未実装
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
 
     auto *br = new QHBoxLayout();
-    br->addWidget(new QPushButton(I18n::tr("geoc_heal_run"), s));
+    auto *healBtn = new QPushButton(I18n::tr("geoc_heal_run"), s);
+    tabhelp::markNotImplemented(healBtn);
+    br->addWidget(healBtn);
     br->addStretch(1);
     br->addWidget(makeHint(I18n::tr("geoc_heal_next"), s));
     s->vbox()->addLayout(br);
@@ -1132,6 +1138,7 @@ QWidget *GeometryTab::buildMaterialMapSection()
     m_mapDefault->addItem(I18n::tr("geoc_map_m1"));
     m_mapDefault->addItem(I18n::tr("geoc_map_m3"));
     s->form()->addRow(I18n::tr("geoc_map_default"), m_mapDefault);
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // 取込材質は m_voxMat のみ有効
     return s;
 }
 
@@ -1152,11 +1159,21 @@ QWidget *GeometryTab::buildPreviewSection()
     br->addStretch(1);
     s->vbox()->addLayout(br);
 
+    // 取込前のバッジは固定サンプル値 — 実取込後 refreshImportBadges() が
+    // 実測値へ上書きし、この注記を隠す
+    auto *note = tabhelp::sampleNote(s);
+    note->setObjectName(QStringLiteral("geoPrevSampleNote"));
+    s->vbox()->addWidget(note);
+
     auto *hr = new QHBoxLayout();
     auto *runImport = new QPushButton(I18n::tr("geoc_prev_import"), s);
     hr->addWidget(runImport);
-    hr->addWidget(new QPushButton(I18n::tr("geoc_prev_3d"), s));
-    hr->addWidget(new QPushButton(I18n::tr("geoc_prev_measure"), s));
+    auto *prev3dBtn = new QPushButton(I18n::tr("geoc_prev_3d"), s);
+    auto *measureBtn = new QPushButton(I18n::tr("geoc_prev_measure"), s);
+    tabhelp::markNotImplemented(prev3dBtn);
+    tabhelp::markNotImplemented(measureBtn);
+    hr->addWidget(prev3dBtn);
+    hr->addWidget(measureBtn);
     hr->addStretch(1);
     s->vbox()->addLayout(hr);
 
@@ -1190,15 +1207,20 @@ QWidget *GeometryTab::buildImportedSection()
     };
     for (int r = 0; r < 4; ++r) {
         m_modelTable->setItem(r, 0, checkItem(kMdl[r].on));
-        m_modelTable->setItem(r, 1, textItem(QString::fromUtf8(kMdl[r].name)));
+        // 固定行はサンプル — 実取込行 (geoc_mdl_live) と区別できるよう「(例)」
+        m_modelTable->setItem(r, 1, textItem(I18n::tr("geoc_mdl_sample_fmt")
+            .arg(QString::fromUtf8(kMdl[r].name))));
         m_modelTable->setItem(r, 2, textItem(QString::fromLatin1(kMdl[r].fmt)));
         m_modelTable->setItem(r, 3, numItem(QString::fromLatin1(kMdl[r].tri)));
         m_modelTable->setItem(r, 4, numItem(QString::fromUtf8(kMdl[r].vol)));
         m_modelTable->setItem(r, 5, textItem(I18n::tr(kMdl[r].mat)));
-        m_modelTable->setCellWidget(r, 6,
-            new QPushButton(I18n::tr("geoc_models_edit"), m_modelTable));
+        auto *editBtn = new QPushButton(I18n::tr("geoc_models_edit"),
+                                        m_modelTable);
+        tabhelp::markNotImplemented(editBtn);
+        m_modelTable->setCellWidget(r, 6, editBtn);
     }
     s->vbox()->addWidget(m_modelTable);
+    s->vbox()->addWidget(tabhelp::sampleNote(s));   // 「(例)」行はモック由来
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_models_hint"), s));
     return s;
 }
@@ -1218,11 +1240,12 @@ QWidget *GeometryTab::buildVoxelSection()
                              { I18n::tr("geoc_vox_ray"),
                                I18n::tr("geoc_vox_winding"),
                                I18n::tr("geoc_vox_sdf") }, 1));
+    // 実装済みの表面処理は階段近似のみ (io/Voxelizer) なので既定もそれに合わせる
     s->form()->addRow(I18n::tr("geoc_vox_surface"),
                       segRow(s, &m_voxSurface,
                              { I18n::tr("geoc_vox_stair"),
                                I18n::tr("geoc_vox_conformal"),
-                               I18n::tr("geoc_vox_subcell") }, 1));
+                               I18n::tr("geoc_vox_subcell") }, 0));
     // 行順を守るため、フォーム内に全幅行として差し込む
     s->form()->addRow(makeHint(I18n::tr("geoc_vox_surf_hint"), s));
 
@@ -1250,18 +1273,25 @@ QWidget *GeometryTab::buildVoxelSection()
     m_voxGpu = makeCheck(I18n::tr("geoc_vox_gpu"), true, s);
     s->form()->addRow(I18n::tr("geoc_vox_gpu_label"), m_voxGpu);
 
+    // 上のオプション群 (内外判定/表面処理/PVF/八分木/GPU) は Voxelizer が
+    // まだ読まない (staircase 固定)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+
     // 実行行: ボクセル化 (実処理) + 材質番号 + 占有セルバッジ
     auto *runRow = new QHBoxLayout();
     m_voxBtn = new QPushButton(I18n::tr("ge_voxelize_btn"), s);
     m_voxBtn->setEnabled(false);
     runRow->addWidget(m_voxBtn);
-    runRow->addWidget(new QPushButton(I18n::tr("geoc_vox_preview"), s));
+    auto *voxPrevBtn = new QPushButton(I18n::tr("geoc_vox_preview"), s);
+    tabhelp::markNotImplemented(voxPrevBtn);
+    runRow->addWidget(voxPrevBtn);
     runRow->addWidget(new QLabel(I18n::tr("ge_voxel_mat"), s));
     m_voxMat = new QSpinBox(s);
     m_voxMat->setRange(1, 9999);
     m_voxMat->setValue(2);
     runRow->addWidget(m_voxMat);
-    m_voxBadge = makeBadge(I18n::tr("geoc_vox_badge"), kOk, s);
+    // 実行前は固定サンプル値ではなく「未実行」を出す (実行後に実測値で上書き)
+    m_voxBadge = makeBadge(I18n::tr("geoc_stat_notrun"), kMuted, s);
     runRow->addWidget(m_voxBadge);
     runRow->addStretch(1);
     s->vbox()->addLayout(runRow);
@@ -1269,26 +1299,19 @@ QWidget *GeometryTab::buildVoxelSection()
 }
 
 // ── ボクセル統計 / Voxel statistics ────────────────────────────────────────
+// 実行前はモックの固定値ではなく「— (未実行)」を出す。実行後は
+// refreshVoxelStats() が実測値 (staircase で算出できる範囲) に上書きする。
 QWidget *GeometryTab::buildVoxelStatsSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_stat_section"));
 
-    m_statOcc = makeMono(I18n::tr("geoc_stat_occ_val"), s);
+    m_statOcc = makeMono(I18n::tr("geoc_stat_notrun"), s);
     s->form()->addRow(I18n::tr("geoc_stat_occ"), m_statOcc);
-    m_statBnd = makeMono(I18n::tr("geoc_stat_bnd_val"), s);
+    m_statBnd = makeMono(I18n::tr("geoc_stat_notrun"), s);
     s->form()->addRow(I18n::tr("geoc_stat_bnd"), m_statBnd);
-
-    auto *errRow = new QWidget(s);
-    auto *eh = new QHBoxLayout(errRow);
-    eh->setContentsMargins(0, 0, 0, 0);
-    eh->setSpacing(6);
-    m_statErr = makeMono(I18n::tr("geoc_stat_err_val"), errRow);
-    eh->addWidget(m_statErr);
-    eh->addWidget(makeBadge(I18n::tr("geoc_stat_ok"), kOk, errRow));
-    eh->addStretch(1);
-    s->form()->addRow(I18n::tr("geoc_stat_err"), errRow);
-
-    m_statConf = makeMono(I18n::tr("geoc_stat_conf_val"), s);
+    m_statErr = makeMono(I18n::tr("geoc_stat_notrun"), s);
+    s->form()->addRow(I18n::tr("geoc_stat_err"), m_statErr);
+    m_statConf = makeMono(I18n::tr("geoc_stat_notrun"), s);
     s->form()->addRow(I18n::tr("geoc_stat_conf"), m_statConf);
     return s;
 }
@@ -1341,8 +1364,13 @@ QWidget *GeometryTab::buildRefineSection()
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
 
+    // 細分化はエンジン未実装 — 設定はどこにも反映されない
+    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+
     auto *rr = new QHBoxLayout();
-    rr->addWidget(new QPushButton(I18n::tr("geoc_ref_run"), s));
+    auto *refineBtn = new QPushButton(I18n::tr("geoc_ref_run"), s);
+    tabhelp::markNotImplemented(refineBtn);
+    rr->addWidget(refineBtn);
     m_refBadge = makeBadge(QString(), kWarn, s);
     rr->addWidget(m_refBadge);
     rr->addStretch(1);
@@ -1386,6 +1414,8 @@ QWidget *GeometryTab::buildRefinedRegionsSection()
         m_refTable->setItem(r, 4, numItem(QString::fromLatin1(kReg[r].dcells)));
     }
     s->vbox()->addWidget(m_refTable);
+    // 細分化未実装のため領域一覧は固定サンプル
+    s->vbox()->addWidget(tabhelp::sampleNote(s));
     return s;
 }
 
@@ -1455,6 +1485,10 @@ void GeometryTab::refreshImportBadges()
 {
     if (!m_hasMesh || !m_prevTri) return;
 
+    // 実測値で置き換わるので「サンプル表示」の注記を隠す
+    if (auto *note = findChild<QLabel *>(QStringLiteral("geoPrevSampleNote")))
+        note->hide();
+
     const double volCm3 = meshVolume(m_lastMesh) * 1e6;   // m³ → cm³
     const double sx = (m_lastMesh.bbox[3] - m_lastMesh.bbox[0]) * 1e3;
     const double sy = (m_lastMesh.bbox[4] - m_lastMesh.bbox[1]) * 1e3;
@@ -1506,10 +1540,14 @@ void GeometryTab::refreshVoxelStats()
     m_statErr->setText(QString::fromUtf8("—"));
     m_statConf->setText(I18n::tr("geoc_stat_stair"));
 
-    if (m_voxBadge)
+    if (m_voxBadge) {
         m_voxBadge->setText(I18n::tr("geoc_vox_badge_fmt")
                                 .arg(groupNum(m_voxTotal),
                                      groupNum(m_voxOccupied)));
+        // 「未実行」の muted 表示から実測値の ok 表示へ
+        m_voxBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+                                      .arg(QLatin1String(kOk)));
+    }
 }
 
 void GeometryTab::applyTable()

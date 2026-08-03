@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -127,6 +128,8 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     swRow->addWidget(new QLabel(I18n::tr("sct_points") + QStringLiteral(")"), sInc));
     swRow->addStretch(1);
     sInc->form()->addRow(I18n::tr("sct_sweep_range"), swRow);
+    // このタブの入力はまだ Project / .ofd へ配線されていない (絶対規則 5)
+    sInc->form()->addRow(tabhelp::unwiredNote(sInc));
     v->addWidget(sInc);
 
     // ── RCS ────────────────────────────────────────────────────────────────
@@ -142,6 +145,7 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sRcs->form()->addRow(I18n::tr("sct_unit"), m_rcsUnit);
     m_rcsMatrix = new QCheckBox(I18n::tr("sct_rcs_matrix"), sRcs);
     sRcs->form()->addRow(m_rcsMatrix);
+    sRcs->form()->addRow(tabhelp::unwiredNote(sRcs));
     v->addWidget(sRcs);
 
     // ── 近傍/遠方界変換 / NTFF ─────────────────────────────────────────────
@@ -156,11 +160,15 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sNtff->form()->addRow(I18n::tr("sct_ntff_surface"), m_ntffSurface);
     m_ntffWide = new QCheckBox(I18n::tr("sct_ntff_wide"), sNtff);
     sNtff->form()->addRow(m_ntffWide);
+    sNtff->form()->addRow(tabhelp::unwiredNote(sNtff));
     v->addWidget(sNtff);
 
     // ── その他散乱量 ──────────────────────────────────────────────────────
-    v->addWidget(checkSection(body, "sct_misc", kMiscKeys, kMiscOn,
-                              int(sizeof(kMiscKeys) / sizeof(kMiscKeys[0])), &m_misc));
+    auto *sMisc = checkSection(body, "sct_misc", kMiscKeys, kMiscOn,
+                               int(sizeof(kMiscKeys) / sizeof(kMiscKeys[0])),
+                               &m_misc);
+    sMisc->vbox()->addWidget(tabhelp::unwiredNote(sMisc));
+    v->addWidget(sMisc);
 
     v->addStretch(1);
     setWidget(body);

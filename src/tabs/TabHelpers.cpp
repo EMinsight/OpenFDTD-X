@@ -2,15 +2,53 @@
 #include "TabHelpers.h"
 #include "../I18n.h"
 
+#include <QAbstractButton>
 #include <QFile>
 #include <QFileDialog>
+#include <QLabel>
 #include <QMessageBox>
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <algorithm>
 
+namespace {
+const bool s_i18n = [] {
+    ofd::I18n::reg("th_notimpl", "未実装", "Not implemented");
+    ofd::I18n::reg("th_sample",
+        "⚠ サンプル表示 — 実行結果ではありません (機能未実装)",
+        "⚠ Sample display — not a computed result (feature not implemented)");
+    ofd::I18n::reg("th_unwired",
+        "▸ この設定は現在計算へ反映されません (未実装)",
+        "▸ These settings are not applied to any computation yet "
+        "(not implemented)");
+    return true;
+}();
+} // namespace
+
 namespace ofd {
 namespace tabhelp {
+
+void markNotImplemented(QAbstractButton *b)
+{
+    b->setEnabled(false);
+    b->setToolTip(I18n::tr("th_notimpl"));
+}
+
+QLabel *sampleNote(QWidget *parent)
+{
+    auto *l = new QLabel(I18n::tr("th_sample"), parent);
+    l->setWordWrap(true);
+    l->setStyleSheet("font-size:11px; color:#B8860B;");
+    return l;
+}
+
+QLabel *unwiredNote(QWidget *parent)
+{
+    auto *l = new QLabel(I18n::tr("th_unwired"), parent);
+    l->setWordWrap(true);
+    l->setStyleSheet("font-size:11px; color:palette(mid);");
+    return l;
+}
 
 QString qualityBadge(const QString &token)
 {

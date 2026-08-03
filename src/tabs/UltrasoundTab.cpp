@@ -1,5 +1,6 @@
 // UltrasoundTab.cpp
 #include "UltrasoundTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -30,12 +31,14 @@ const bool s_i18n = [] {
     // 概要
     I18n::reg("us_main_section", "超音波解析 (k-Wave / Field II 相当)",
               "Ultrasound (k-Wave / Field II class)");
+    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 未実装であることを明記する
     I18n::reg("us_main_hint",
               "MHz帯の超音波伝搬。医療イメージング・HIFU治療・非破壊検査 (NDT)。\n"
-              "非線形伝搬 (Westervelt / KZK) と減衰 (power-law) に対応。",
+              "非線形伝搬 (Westervelt / KZK) と減衰 (power-law) は未実装 — "
+              "画面は設計モック。",
               "MHz-band ultrasound propagation: medical imaging, HIFU therapy and "
-              "NDT.\nSupports nonlinear propagation (Westervelt / KZK) and "
-              "power-law absorption.");
+              "NDT.\nNonlinear propagation (Westervelt / KZK) and power-law "
+              "absorption are not implemented — this screen is a design mock.");
     I18n::reg("us_app", "用途", "Application");
     I18n::reg("us_app_medical", "医療イメージング", "Medical imaging");
     I18n::reg("us_app_hifu", "HIFU治療", "HIFU therapy");
@@ -266,6 +269,8 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_transStack->addWidget(buildNdtTrans());       // 2 ndt
     m_transStack->addWidget(buildSonarTrans());     // 3 sonar
     st->vbox()->addWidget(m_transStack);
+    // トランスデューサ設定はどこにも読まれない (Project 書込ゼロ)
+    st->vbox()->addWidget(tabhelp::unwiredNote(st));
     v->addWidget(st);
 
     // ── 媒質 ────────────────────────────────────────────────────────────────
@@ -275,9 +280,13 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
                              QString::fromUtf8("α [dB/cm/MHz]"), "B/A" },
                            5, sd, 170);
     sd->vbox()->addWidget(m_medTable);
+    // 媒質表はモックの固定文献値 (プロジェクトの材料とは無関係)
+    sd->vbox()->addWidget(tabhelp::sampleNote(sd));
     m_powerLaw  = makeCheck(I18n::tr("us_powerlaw"),  true,  sd);
     m_nonlinear = makeCheck(I18n::tr("us_nonlinear"), false, sd);
     sd->vbox()->addLayout(checkRow({ m_powerLaw, m_nonlinear }));
+    // チェック状態はどこにも読まれない
+    sd->vbox()->addWidget(tabhelp::unwiredNote(sd));
     v->addWidget(sd);
 
     // ── ビームフォーミング ──────────────────────────────────────────────────
@@ -291,6 +300,8 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_steerAngle = numEdit("0", sb);
     sb->form()->addRow(I18n::tr("us_steer"),
                        unitRow(m_steerAngle, QString::fromUtf8("±45°"), sb));
+    // ビームフォーミング設定はどこにも読まれない
+    sb->form()->addRow(tabhelp::unwiredNote(sb));
     v->addWidget(sb);
 
     // ── 評価・出力 (用途ごとに切替 + 共通ボタン) ────────────────────────────
@@ -302,11 +313,18 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_outStack->addWidget(buildSonarOut());     // 3 sonar
     so->vbox()->addWidget(m_outStack);
     auto *hb = new QHBoxLayout();
-    hb->addWidget(new QPushButton(I18n::tr("us_btn_beam"), so));
-    hb->addWidget(new QPushButton(I18n::tr("us_btn_anim"), so));
-    hb->addWidget(new QPushButton(I18n::tr("us_btn_report"), so));
+    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ
+    auto *beamBtn   = new QPushButton(I18n::tr("us_btn_beam"), so);
+    auto *animBtn   = new QPushButton(I18n::tr("us_btn_anim"), so);
+    auto *reportBtn = new QPushButton(I18n::tr("us_btn_report"), so);
+    for (QPushButton *b : { beamBtn, animBtn, reportBtn }) {
+        tabhelp::markNotImplemented(b);
+        hb->addWidget(b);
+    }
     hb->addStretch(1);
     so->vbox()->addLayout(hb);
+    // 出力チェックはどこにも読まれない
+    so->vbox()->addWidget(tabhelp::unwiredNote(so));
     v->addWidget(so);
 
     v->addStretch(1);
@@ -400,6 +418,8 @@ QWidget *UltrasoundTab::buildHifuTrans()
     h->addWidget(makeBadge(I18n::tr("us_nonlinear_zone"), kWarn, page));
     h->addStretch(1);
     fl->addRow(I18n::tr("us_focal_p"), h);
+    // 焦点音圧・非線形域バッジはモック固定値 (計算していない)
+    fl->addRow(tabhelp::sampleNote(page));
     return page;
 }
 

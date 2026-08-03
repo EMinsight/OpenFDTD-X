@@ -21,11 +21,15 @@ const bool s_i18n = [] {
     ofd::I18n::reg("gal_title",
         "応用ギャラリー / Application Gallery — FDTDで出来ること一覧",
         "Application Gallery — what FDTD can do");
+    // テンプレートは現状ドメイン切替とタイトル設定のみ (物性値・メッシュ・
+    // 波源のプリセットは未実装)。実態どおりに書く (絶対規則 5)。
     ofd::I18n::reg("gal_hint",
         "プロジェクトテンプレートを選択してください。"
-        "物性値・メッシュ・波源が事前設定された状態で開きます。",
-        "Pick a project template. It opens with materials, mesh and sources "
-        "already configured.");
+        "現在はドメインの切替とタイトル設定のみを行います "
+        "(物性値・メッシュ・波源のプリセットは未実装)。",
+        "Pick a project template. For now this only switches the domain and "
+        "sets the title (material / mesh / source presets are not "
+        "implemented).");
     ofd::I18n::reg("gal_count", "— %1 テンプレート", "— %1 templates");
     ofd::I18n::reg("gal_cancel", "キャンセル", "Cancel");
     ofd::I18n::reg("gal_open_file", "📂 ファイルから開く…", "📂 Open from file…");
@@ -261,6 +265,14 @@ AppGalleryDialog::AppGalleryDialog(QWidget *parent)
     v->addWidget(foot);
 
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
-    connect(openFile, &QPushButton::clicked, this, &QDialog::reject);
-    connect(blank, &QPushButton::clicked, this, &QDialog::accept);
+    // 「ファイルから開く」「空のプロジェクト」は実動作をシグナルで通知する
+    // (以前は閉じるだけで何も起きなかった)
+    connect(openFile, &QPushButton::clicked, this, [this] {
+        emit openFileRequested();
+        accept();
+    });
+    connect(blank, &QPushButton::clicked, this, [this] {
+        emit blankRequested();
+        accept();
+    });
 }

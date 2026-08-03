@@ -478,6 +478,13 @@ void I18n::loadTables() {
         "bellhopcuda 同梱の MATLAB/Python ツール等で表示してください。",
         "Note: in-app visualization of .shd (TL plots) is not implemented. "
         "Use the MATLAB/Python tools bundled with bellhopcuda.");
+    add("run_post_cloud_na",
+        "エンジンに「tidy3d Cloud」を選択中はポスト処理を実行できません。\n"
+        "ローカルのポスト処理を行うには、エンジンで CPU / MPI / GPU の"
+        "いずれかを選択してください。",
+        "Post-processing is not available while the engine is set to "
+        "\"tidy3d Cloud\".\nSelect CPU / MPI / GPU to run local "
+        "post-processing.");
     add("run_rcwa_stack_err",
         "RCWA / FMM の層スタックが空または不正なため実行できません。\n"
         "光タブの「層構成 (入射側 → 透過側)」で 2 層以上の有効な層を"
@@ -980,6 +987,9 @@ void I18n::loadTables() {
     add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
     add("run_device", "デバイス番号", "Device no.");
     add("log_starting", "計算開始", "Starting computation");
+    add("log_h5_slice",
+        "HDF5 結果 (%1) を 2D 断面ビューに反映しました",
+        "Loaded the HDF5 result (%1) into the 2D slice view");
     add("log_validate", "入力データを検証中…", "Validating input data…");
 
     // 編集メニュー

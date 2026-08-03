@@ -4,6 +4,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "TabHelpers.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -30,9 +31,9 @@ const bool s_i18n = [] {
     // シナリオ選択
     I18n::reg("sp_scenario_section", "解析シナリオ", "Scenario");
     I18n::reg("sp_scenario_hint",
-              "評価したい防音シナリオを選択 — 構造・測定法・規格表記が自動切替されます。",
-              "Choose the soundproofing scenario — structure, test method and "
-              "rating notation switch automatically.");
+              "評価したい防音シナリオを選択 — 下に表示される設定ページが切り替わります。",
+              "Choose the soundproofing scenario — this switches the settings "
+              "page shown below.");
     I18n::reg("sp_sc_partition", "間仕切壁 (Airborne)", "Partition (airborne)");
     I18n::reg("sp_sc_partition_d",
               "オフィス・住居の隣室間の遮音。STC / Rw を評価。",
@@ -477,13 +478,15 @@ SoundproofTab::SoundproofTab(Project *project, QWidget *parent)
     m_stack->addWidget(buildSpeechPage());      // 7 speech
     v->addWidget(m_stack);
 
-    // 出力 (全シナリオ共通)
+    // 出力 (全シナリオ共通) — いずれも出力処理は未実装なので無効化する
     auto *se = new SectionBox(I18n::tr("sp_export_section"), body);
     auto *he = new QHBoxLayout();
-    he->addWidget(new QPushButton(I18n::tr("sp_exp_report"), se));
-    he->addWidget(new QPushButton(I18n::tr("sp_exp_csv"), se));
-    he->addWidget(new QPushButton(I18n::tr("sp_exp_aural"), se));
-    he->addWidget(new QPushButton(I18n::tr("sp_exp_std"), se));
+    for (const char *key : { "sp_exp_report", "sp_exp_csv",
+                             "sp_exp_aural", "sp_exp_std" }) {
+        auto *b = new QPushButton(I18n::tr(key), se);
+        tabhelp::markNotImplemented(b);
+        he->addWidget(b);
+    }
     he->addStretch(1);
     se->vbox()->addLayout(he);
     v->addWidget(se);
@@ -579,11 +582,17 @@ QWidget *SoundproofTab::buildPartitionPage()
     t->setItem(6, 1, add);
     sb->vbox()->addWidget(t);
     auto *hb = new QHBoxLayout();
-    hb->addWidget(new QPushButton(I18n::tr("sp_preset_btn"), sb));
-    hb->addWidget(new QPushButton(I18n::tr("sp_dxf_btn"), sb));
+    auto *presetBtn = new QPushButton(I18n::tr("sp_preset_btn"), sb);
+    tabhelp::markNotImplemented(presetBtn);   // プリセット読込は未実装
+    hb->addWidget(presetBtn);
+    auto *dxfBtn = new QPushButton(I18n::tr("sp_dxf_btn"), sb);
+    tabhelp::markNotImplemented(dxfBtn);      // .dxf 取込は未実装
+    hb->addWidget(dxfBtn);
     hb->addStretch(1);
     hb->addWidget(new QLabel(I18n::tr("sp_rw_est"), sb));
     sb->vbox()->addLayout(hb);
+    // 層テーブル・「推定 Rw」は固定のサンプル値 (層構成を変えても計算されない)
+    sb->vbox()->addWidget(tabhelp::sampleNote(sb));
     v->addWidget(sb);
 
     // ディテール
@@ -602,6 +611,8 @@ QWidget *SoundproofTab::buildPartitionPage()
     hFrame->addWidget(new QLabel(I18n::tr("sp_det_frame_note"), sd));
     hFrame->addStretch(1);
     sd->form()->addRow(I18n::tr("sp_det_frame"), hFrame);
+    // ディテールのチェックはどこにも反映されない (絶対規則 5)
+    sd->vbox()->addWidget(tabhelp::unwiredNote(sd));
     v->addWidget(sd);
 
     // 評価結果 R(f) — mock のデータ点をそのまま転記 (x は log10(f))
@@ -627,6 +638,8 @@ QWidget *SoundproofTab::buildPartitionPage()
     plot->setSeries({ tl });
     st->vbox()->addWidget(plot);
     st->vbox()->addWidget(makeHint(I18n::tr("sp_tl_dip_note"), st));
+    // R(f) 曲線はモックの固定 21 点 — 上の層構成からの計算結果ではない
+    st->vbox()->addWidget(tabhelp::sampleNote(st));
     v->addWidget(st);
 
     // シングルナンバー評価
@@ -663,6 +676,8 @@ QWidget *SoundproofTab::buildPartitionPage()
     hu->addWidget(makeBadge(I18n::tr("sp_use_office"), kWarn, sg));
     hu->addStretch(1);
     sg->vbox()->addLayout(hu);
+    // Rw / STC などのバッジ・表も固定のサンプル値
+    sg->vbox()->addWidget(tabhelp::sampleNote(sg));
     v->addWidget(sg);
 
     v->addStretch(1);
@@ -719,6 +734,8 @@ QWidget *SoundproofTab::buildFacadePage()
     hOk->addWidget(makeBadge(I18n::tr("sp_indoor_ok"), kOk, si));
     hOk->addStretch(1);
     si->vbox()->addLayout(hOk);
+    // 室内 Lp・判定バッジは固定のサンプル値 (予測計算は未実装)
+    si->vbox()->addWidget(tabhelp::sampleNote(si));
     v->addWidget(si);
 
     v->addStretch(1);
@@ -768,6 +785,8 @@ QWidget *SoundproofTab::buildFloorPage()
     hj->addWidget(makeBadge(I18n::tr("sp_jis_l50"), kOk, sr));
     hj->addStretch(1);
     sr->vbox()->addLayout(hj);
+    // Ln,w / IIC / JIS 等級は固定のサンプル値 (床衝撃音計算は未実装)
+    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
     v->addWidget(sr);
 
     v->addStretch(1);
@@ -809,6 +828,8 @@ QWidget *SoundproofTab::buildFlankingPage()
     hb->addWidget(new QLabel(I18n::tr("sp_flank_note"), sp));
     hb->addStretch(1);
     sp->vbox()->addLayout(hb);
+    // 経路別 R と合成 R'w は固定のサンプル値 (側路伝搬計算は未実装)
+    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
     v->addWidget(sp);
 
     auto *si = new SectionBox(I18n::tr("sp_improve_section"), page);
@@ -816,8 +837,12 @@ QWidget *SoundproofTab::buildFlankingPage()
     si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_hanger"), false, si));
     si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_tape"), false, si));
     si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_elastic"), false, si));
+    // 改善案チェックはどこにも反映されない (絶対規則 5)
+    si->vbox()->addWidget(tabhelp::unwiredNote(si));
     auto *hr = new QHBoxLayout();
-    hr->addWidget(new QPushButton(I18n::tr("sp_recalc_btn"), si));
+    auto *recalcBtn = new QPushButton(I18n::tr("sp_recalc_btn"), si);
+    tabhelp::markNotImplemented(recalcBtn);   // 再計算は未実装
+    hr->addWidget(recalcBtn);
     hr->addStretch(1);
     si->vbox()->addLayout(hr);
     v->addWidget(si);
@@ -877,6 +902,8 @@ QWidget *SoundproofTab::buildDuctPage()
     hn->addWidget(makeBadge(I18n::tr("sp_nc35"), kOk, si));
     hn->addStretch(1);
     si->vbox()->addLayout(hn);
+    // 室内 SPL / NC 値は固定のサンプル値 (ダクト減衰計算は未実装)
+    si->vbox()->addWidget(tabhelp::sampleNote(si));
     v->addWidget(si);
 
     v->addStretch(1);
@@ -919,6 +946,8 @@ QWidget *SoundproofTab::buildMachinePage()
     hb->addStretch(1);
     si->vbox()->addLayout(hb);
     si->vbox()->addWidget(makeHint(I18n::tr("sp_il_note"), si));
+    // IL と判定文言は固定のサンプル値 (挿入損失計算は未実装)
+    si->vbox()->addWidget(tabhelp::sampleNote(si));
     v->addWidget(si);
 
     v->addStretch(1);
@@ -975,6 +1004,8 @@ QWidget *SoundproofTab::buildReverbPage()
     hb->addStretch(1);
     se->vbox()->addLayout(hb);
     se->vbox()->addWidget(makeHint(I18n::tr("sp_rev_note"), se));
+    // RT60 と判定バッジは固定のサンプル値 (Sabine 計算は未実装)
+    se->vbox()->addWidget(tabhelp::sampleNote(se));
     v->addWidget(se);
 
     v->addStretch(1);
@@ -1028,6 +1059,8 @@ QWidget *SoundproofTab::buildSpeechPage()
         t->setItem(i, 2, pv);
     }
     sm->vbox()->addWidget(t);
+    // STI 値と判定バッジは固定のサンプル値 (STI 計算は未実装)
+    sm->vbox()->addWidget(tabhelp::sampleNote(sm));
     v->addWidget(sm);
 
     v->addStretch(1);

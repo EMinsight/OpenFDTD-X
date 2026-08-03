@@ -1,5 +1,6 @@
 // Tidy3dTab.cpp
 #include "Tidy3dTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../io/Tidy3dExporter.h"
 #include "../widgets/SectionBox.h"
@@ -58,15 +59,25 @@ const bool s_i18n = [] {
               "※ 光ドメイン専用です。電磁/音響/水中では使用できません。",
               "* Optical domain only — not available for EM / acoustic / "
               "underwater.");
-    // 接続
+    // 接続 — API との実疎通確認は未実装なので「検証/接続中」を名乗らない
+    // (CLAUDE.md 絶対規則 5)。ボタンは保存のみ、バッジはキー設定の有無のみ。
     I18n::reg("t3x_conn_section", "接続 / Connection", "Connection");
-    I18n::reg("t3x_verify", "検証", "Verify");
-    I18n::reg("t3x_connected", "接続中", "Connected");
+    I18n::reg("t3x_verify", "保存", "Save");
+    I18n::reg("t3x_verify_tip",
+              "APIキーを保存するだけです (tidy3d への実疎通確認は未実装)",
+              "Only stores the API key (no actual connectivity check with "
+              "tidy3d — not implemented)");
+    I18n::reg("t3x_connected", "APIキー設定済み", "API key set");
     I18n::reg("t3x_no_key", "APIキー未設定", "No API key");
-    I18n::reg("t3x_tier", "tier: Standard", "tier: Standard");
-    // 自動変換マッピング
-    I18n::reg("t3x_map_hint", "ローカル設定 → tidy3d API への自動変換状況",
-              "Auto-conversion status: local settings → tidy3d API");
+    I18n::reg("t3x_tier", "tier: 未取得", "tier: not fetched");
+    // 残高・見積は API 未接続のため取得できない (偽装値を表示しない)
+    I18n::reg("t3x_credits_na", "未取得 (API 未接続)",
+              "Not fetched (API not connected)");
+    I18n::reg("t3x_cost_na", "未算出 (tidy3d 側で見積)",
+              "Not estimated (estimated on the tidy3d side)");
+    // 変換対応の一覧 (静的表 — 実プロジェクトの自動判定ではない)
+    I18n::reg("t3x_map_hint", "ローカル設定 → tidy3d API の変換対応の一覧 (静的)",
+              "Conversion support list: local settings → tidy3d API (static)");
     I18n::reg("t3x_h_state", "状態", "Status");
     I18n::reg("t3x_partial", "部分対応", "Partial");
     I18n::reg("t3x_unsupported", "非対応 (光のみ)", "Unsupported (optical only)");
@@ -98,8 +109,9 @@ const bool s_i18n = [] {
               "tidy3d script preview");
     // ジョブ送信
     I18n::reg("t3x_submit_section", "ジョブ送信", "Job submission");
-    I18n::reg("t3x_cost_remain", "(残: 1,245.8)", "(left: 1,245.8)");
-    I18n::reg("t3x_runtime_val", "~2分 30秒", "~2 min 30 s");
+    I18n::reg("t3x_cost_remain", "(残高: 未取得)", "(balance: not fetched)");
+    I18n::reg("t3x_runtime_val", "未算出 (tidy3d 側で見積)",
+              "Not estimated (estimated on the tidy3d side)");
     I18n::reg("t3x_priority", "優先度", "Priority");
     I18n::reg("t3x_prio_normal", "通常", "Normal");
     I18n::reg("t3x_prio_high", "高 (+25%)", "High (+25%)");
@@ -287,6 +299,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     m_apiKey = new QLineEdit(sc);
     m_apiKey->setEchoMode(QLineEdit::Password);
     auto *verifyBtn = new QPushButton(I18n::tr("t3x_verify"), sc);
+    verifyBtn->setToolTip(I18n::tr("t3x_verify_tip"));   // 実疎通確認はしない
     auto *keyRow = new QHBoxLayout();
     keyRow->addWidget(m_apiKey, 1);
     keyRow->addWidget(verifyBtn);
@@ -298,8 +311,10 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
 
     auto *credRow = new QHBoxLayout();
     credRow->addWidget(mutedLabel(I18n::tr("t3_credits") + ":", sc));
-    credRow->addWidget(monoLabel("1,245.8 FlexCredits", sc));
+    // 残高は API 未接続なので取得できない (固定値の偽装をしない)
+    credRow->addWidget(monoLabel(I18n::tr("t3x_credits_na"), sc));
     m_connBadge = makeBadge(I18n::tr("t3x_connected"), "ok", sc);
+    m_connBadge->setToolTip(I18n::tr("t3x_verify_tip"));
     credRow->addWidget(m_connBadge);
     credRow->addStretch(1);
     credRow->addWidget(mutedLabel(I18n::tr("t3x_tier"), sc));
@@ -338,6 +353,9 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     se->vbox()->addWidget(m_autoPml);
     se->vbox()->addWidget(m_subpixel);
     se->vbox()->addWidget(m_dft);
+    // サブピクセル平均化・DFT 記録はまだエクスポートに反映されない
+    // (autoPml のみ apply() → Tidy3dExporter で使用)
+    se->vbox()->addWidget(tabhelp::unwiredNote(se));
 
     // mock: "📤 {t3_export} (.py)" (primary) + "プレビュー (.json)"
     auto *exportBtn = new QPushButton("📤 " + I18n::tr("t3x_export") + " (.py)", se);
@@ -356,7 +374,8 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     // ── ジョブ送信 ───────────────────────────────────────────────────────────
     auto *sj = new SectionBox(I18n::tr("t3x_submit_section"), body);
     auto *costRow = new QHBoxLayout();
-    costRow->addWidget(monoLabel("~8.4 FlexCredits", sj));
+    // コスト見積は未実装 (tidy3d 側で見積されるため偽装値を出さない)
+    costRow->addWidget(monoLabel(I18n::tr("t3x_cost_na"), sj));
     costRow->addWidget(mutedLabel(I18n::tr("t3x_cost_remain"), sj));
     costRow->addStretch(1);
     sj->form()->addRow(I18n::tr("t3_cost"), costRow);
@@ -366,6 +385,8 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     m_priority->addItems({ I18n::tr("t3x_prio_normal"),
                            I18n::tr("t3x_prio_high") });
     sj->form()->addRow(I18n::tr("t3x_priority"), m_priority);
+    // 優先度はどこにも読まれない (スクリプト生成にも未反映)
+    sj->form()->addRow(tabhelp::unwiredNote(sj));
     // ジョブ状態: GUI から直接送信はしないので既定は「待機中」
     auto *stateRow = new QHBoxLayout();
     stateRow->addWidget(makeBadge(I18n::tr("t3_pending"), "warn", sj));
@@ -374,6 +395,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     auto *submitBtn = new QPushButton("🚀 " + I18n::tr("t3_submit"), sj);
     submitBtn->setStyleSheet("font-weight:600;");
     auto *pauseBtn = new QPushButton(I18n::tr("t3x_pause"), sj);
+    tabhelp::markNotImplemented(pauseBtn);   // ジョブ制御は未実装
     auto *subRow = new QHBoxLayout();
     subRow->addWidget(submitBtn);
     subRow->addWidget(pauseBtn);
@@ -398,13 +420,18 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
         m_jobs->setItem(r, 3, monoItem(QString::fromUtf8(kJobs[r].time)));
         // mock の行ボタンは "DL" / "…" / "log"。DL は結果ダウンロードなので
         // 正式名称 (t3_download) をヒントに出す。
+        // 行ボタン (DL/…/log) は未配線 → 無効化 (ツールチップは「未実装」)
         auto *rowBtn = new QPushButton(QString::fromUtf8(kJobs[r].btn), m_jobs);
+        tabhelp::markNotImplemented(rowBtn);
         if (qstrcmp(kJobs[r].btn, "DL") == 0)
-            rowBtn->setToolTip(I18n::tr("t3_download"));
+            rowBtn->setToolTip(I18n::tr("t3_download") + " — "
+                               + rowBtn->toolTip());
         m_jobs->setCellWidget(r, 4, rowBtn);
     }
     m_jobs->resizeRowsToContents();
     sl->vbox()->addWidget(m_jobs);
+    // ジョブ一覧はモックの静的プロトタイプ (実ジョブを取得していない)
+    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
     v->addWidget(sl);
 
     // ── ローカル ↔ クラウド比較 ─────────────────────────────────────────────
@@ -419,6 +446,8 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     cmpRow->addWidget(m_cmpNotify);
     cmpRow->addStretch(1);
     sp->vbox()->addLayout(cmpRow);
+    // 比較機能はどこにも配線されていない
+    sp->vbox()->addWidget(tabhelp::unwiredNote(sp));
     v->addWidget(sp);
 
     v->addStretch(1);
@@ -485,6 +514,7 @@ void Tidy3dTab::previewScript()
     dlg.exec();
 }
 
+// APIキーの保存のみ (tidy3d への実疎通確認は未実装 — ボタン表記も「保存」)
 void Tidy3dTab::verifyKey()
 {
     QSettings().setValue("tidy3d/apiKey", m_apiKey->text());

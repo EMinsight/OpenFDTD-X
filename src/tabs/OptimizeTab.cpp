@@ -4,6 +4,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
+#include "TabHelpers.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -38,9 +39,8 @@ const bool s_i18n = [] {
     I18n::reg("opz_hint_ga", "遺伝的アルゴリズム。離散変数・トポロジー混合に強い。",
               "Genetic algorithm: strong with discrete variables and mixed topology.");
     I18n::reg("opz_hint_adjoint_opt",
-              "随伴感度法による高速勾配最適化 (Lumerical/CHARGEと等価)。",
-              "Fast gradient optimization by adjoint sensitivity (equivalent to "
-              "Lumerical/CHARGE).");
+              "随伴感度法による勾配最適化 (未実装)。",
+              "Gradient optimization by adjoint sensitivity (not implemented).");
     I18n::reg("opz_hint_adjoint_other",
               "随伴感度法。光以外では一般的でなく実装制限あり。",
               "Adjoint sensitivity. Uncommon outside optics; implementation is limited.");
@@ -98,9 +98,9 @@ const bool s_i18n = [] {
     // 最適化ブロックが無いので英語は "Pareto front" とする。
     I18n::reg("opz_pareto", "Paretoフロント", "Pareto front");
     I18n::reg("opz_pareto_tip",
-              "多目的 FoM のとき非劣解集合 (Paretoフロント) を出力します。",
-              "Outputs the non-dominated set (Pareto front) for a "
-              "multi-objective FoM.");
+              "多目的 FoM のとき非劣解集合 (Paretoフロント) を出力する予定 (未実装)。",
+              "Planned output of the non-dominated set (Pareto front) for a "
+              "multi-objective FoM (not implemented).");
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
@@ -194,6 +194,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
 
     m_methodHint = hintLabel(QString(), sMethod);
     sMethod->vbox()->addWidget(m_methodHint);
+    // 手法選択はローカル state のみ (Project へは書き込まれない)
+    sMethod->vbox()->addWidget(tabhelp::unwiredNote(sMethod));
     v->addWidget(sMethod);
 
     // ── パラメータ / Parameters ─────────────────────────────────────────────
@@ -210,6 +212,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     sParam->vbox()->addWidget(m_params);
     m_jobs = new QLabel(sParam);
     sParam->vbox()->addWidget(m_jobs);
+    // 変数表はドメイン別の既定例で、編集内容はどこにも読まれない
+    sParam->vbox()->addWidget(tabhelp::unwiredNote(sParam));
     v->addWidget(sParam);
 
     // ── 目的関数 (FoM) / Objective ──────────────────────────────────────────
@@ -234,6 +238,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     conRow->addWidget(m_cSym);
     conRow->addStretch(1);
     sObj->form()->addRow(I18n::tr("opz_constraint"), conRow);
+    sObj->form()->addRow(tabhelp::unwiredNote(sObj));
     v->addWidget(sObj);
 
     // ── ハイパーパラメータ / Hyper-parameters (mode != sweep のみ) ───────────
@@ -287,6 +292,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         f->addRow(I18n::tr("opz_filter_radius"), filtRow);
     }
     m_hyperSec->vbox()->addWidget(m_pageTopology);
+    m_hyperSec->vbox()->addWidget(tabhelp::unwiredNote(m_hyperSec));
     v->addWidget(m_hyperSec);
 
     // ── 実行 / Run ──────────────────────────────────────────────────────────
@@ -294,10 +300,15 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     auto *btnRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("opz_run_optimize"), sRun);
     runBtn->setStyleSheet("font-weight:600;");
-    btnRow->addWidget(runBtn);
-    btnRow->addWidget(new QPushButton(I18n::tr("opz_pause"), sRun));
+    auto *pauseBtn = new QPushButton(I18n::tr("opz_pause"), sRun);
     auto *stopBtn = new QPushButton(I18n::tr("opz_stop"), sRun);
     stopBtn->setStyleSheet("color:#C42B1C;");
+    // 最適化ランナーは未実装 — 3 ボタンとも未配線
+    tabhelp::markNotImplemented(runBtn);
+    tabhelp::markNotImplemented(pauseBtn);
+    tabhelp::markNotImplemented(stopBtn);
+    btnRow->addWidget(runBtn);
+    btnRow->addWidget(pauseBtn);
     btnRow->addWidget(stopBtn);
     btnRow->addStretch(1);
     sRun->vbox()->addLayout(btnRow);
@@ -309,6 +320,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_pareto = new QCheckBox(I18n::tr("opz_pareto"), sRun);
     m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
     sRun->vbox()->addWidget(m_pareto);
+    // 実行先・Pareto 出力もローカル state のみ
+    sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun));
     v->addWidget(sRun);
 
     v->addStretch(1);

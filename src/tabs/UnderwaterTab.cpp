@@ -1,5 +1,6 @@
 // UnderwaterTab.cpp
 #include "UnderwaterTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -306,6 +307,9 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_peAngular = makeSpin(m_pePanel, 1, 90, 30, 0);
     peForm->addRow(I18n::tr("uwx_pe_angular"), m_peAngular);
     sv->vbox()->addWidget(m_pePanel);
+    // ソルバー選択と Bellhop/PE パラメータはローカル状態のみで、
+    // 計算にも .ofdx にも反映されない (apply() 非対象)
+    sv->vbox()->addWidget(tabhelp::unwiredNote(sv));
     v->addWidget(sv);
 
     // environment
@@ -373,9 +377,11 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     sb->form()->addRow(I18n::tr("uw_bottom_type"), m_bottomType);
     sb->form()->addRow(I18n::tr("uw_bottom_c"), m_bottomC);
     sb->form()->addRow(I18n::tr("uw_bottom_rho"), m_bottomRho);
-    // 底質の吸収係数 α [dB/λ] — .ofdx に無いのでローカル状態
+    // 底質の吸収係数 α [dB/λ] — .ofdx に無いのでローカル状態。
+    // 直下の unwiredNote は α のみが対象 (種類・音速・密度は apply() 済み)。
     m_bottomAlpha = makeSpin(sb, 0.0, 20.0, 0.8, 2);
     sb->form()->addRow(I18n::tr("uwx_bottom_alpha"), m_bottomAlpha);
+    sb->form()->addRow(tabhelp::unwiredNote(sb));
     v->addWidget(sb);
 
     // 海面 / Sea surface (mock 追加分) — すべてローカル状態
@@ -389,6 +395,8 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     surfRow->addWidget(m_surfBragg);
     surfRow->addStretch(1);
     ssf->vbox()->addLayout(surfRow);
+    // 海面の設定はすべてローカル状態 (apply() 非対象)
+    ssf->vbox()->addWidget(tabhelp::unwiredNote(ssf));
     v->addWidget(ssf);
 
     // sonar
@@ -406,6 +414,8 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     ss->form()->addRow(I18n::tr("uwx_sonar_dir"), m_sonarDir);
     m_beamWidth = makeSpin(ss, 1.0, 180.0, 15.0, 0);
     ss->form()->addRow(I18n::tr("uwx_beam_width"), m_beamWidth);
+    // 直上の指向性・ビーム幅のみローカル状態 (周波数・SL・距離は apply() 済み)
+    ss->form()->addRow(tabhelp::unwiredNote(ss));
     ss->form()->addRow(I18n::tr("uw_sl"), m_sonarSL);
     ss->form()->addRow(I18n::tr("uw_range"), m_rangeMax);
     v->addWidget(ss);
@@ -427,6 +437,8 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     loss2->addWidget(m_tlSurface);
     loss2->addStretch(1);
     st->vbox()->addLayout(loss2);
+    // 損失項の選択と距離下限はローカル状態 (距離上限のみ「最大距離」と同期)
+    st->vbox()->addWidget(tabhelp::unwiredNote(st));
     // 上限は既存の m_rangeMax と同じ刻み (decimals) にして値ズレを防ぐ
     m_tlRangeMin = makeSpin(st, 0.0, 10000.0, 0.0, 2);
     m_tlRangeMax = makeSpin(st, 0.1, 10000.0, 50.0, 2);

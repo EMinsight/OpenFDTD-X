@@ -1,5 +1,6 @@
 // FieldHeatmap.cpp
 #include "FieldHeatmap.h"
+#include "../I18n.h"
 
 #include <QFontInfo>
 #include <QPainter>
@@ -7,11 +8,23 @@
 
 using namespace ofd;
 
+namespace {
+const bool s_i18n = [] {
+    // プレースホルダ表示の明示 (実行結果と誤読させない — 絶対規則 5)
+    ofd::I18n::reg("fh_demo",
+        "デモ表示 — 実行結果ではありません (実データの 2D 断面表示は未実装)",
+        "Demo pattern — not a simulation result (real 2D slice display is "
+        "not implemented)");
+    return true;
+}();
+} // namespace
+
 FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
 {
     setMinimumHeight(240);
-    // モックの解析パターンを初期表示に (v = |sin(4r)·exp(-0.4r)|)
-    const int n = m_n;
+    // モックの解析パターンを初期表示に (v = |sin(4r)·exp(-0.4r)|)。
+    // setData が呼ばれるまではデモ表示バナー付きで描画される。
+    const int n = m_cols;
     m_cells.resize(n * n);
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) {
@@ -22,11 +35,13 @@ FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
         }
 }
 
-void FieldHeatmap::setData(const QVector<double> &cells, int n)
+void FieldHeatmap::setData(const QVector<double> &cells, int cols, int rows)
 {
-    if (n > 0 && cells.size() >= n * n) {
+    if (cols > 0 && rows > 0 && cells.size() >= cols * rows) {
         m_cells = cells;
-        m_n = n;
+        m_cols = cols;
+        m_rows = rows;
+        m_demo = false;
         update();
     }
 }
@@ -68,11 +83,11 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
 
     // ── ヒートマップ本体 (黒背景 + セル塗り) ──
     p.fillRect(area, Qt::black);
-    const double cw = double(area.width()) / m_n;
-    const double chh = double(area.height()) / m_n;
-    for (int i = 0; i < m_n; ++i)
-        for (int j = 0; j < m_n; ++j) {
-            const double v = m_cells[j * m_n + i];
+    const double cw = double(area.width()) / m_cols;
+    const double chh = double(area.height()) / m_rows;
+    for (int i = 0; i < m_cols; ++i)
+        for (int j = 0; j < m_rows; ++j) {
+            const double v = m_cells[j * m_cols + i];
             p.fillRect(QRectF(area.left() + i * cw, area.top() + j * chh,
                               cw + 1.0, chh + 1.0), jet(v));
         }
@@ -101,5 +116,19 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
         mono.setPointSizeF(8);
         p.setFont(mono);
         p.drawText(QRect(bx - 6, by + bh + 32, 40, 14), Qt::AlignLeft, "V/m");
+    }
+
+    // ── プレースホルダの明示バナー (setData 前は実行結果ではない) ──
+    if (m_demo) {
+        const QRect band(area.left(), area.bottom() - 24,
+                         area.width(), 24);
+        p.fillRect(band, QColor(0, 0, 0, 170));
+        p.setPen(QColor("#FFD54F"));
+        QFont f = p.font();
+        f.setPointSizeF(9);
+        p.setFont(f);
+        p.drawText(band.adjusted(6, 0, -6, 0),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   I18n::tr("fh_demo"));
     }
 }

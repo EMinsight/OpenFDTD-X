@@ -1,5 +1,6 @@
 // VerificationTab.cpp
 #include "VerificationTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -22,10 +23,20 @@ namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
     I18n::reg("ver_title", "精度検証", "Result Verification");
+    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 未実装であることを明記する
     I18n::reg("ver_hint",
-              "FDTD結果の信頼性を3つの観点から自動チェック。Lumerical FDTD course の「Result Verification」相当。",
-              "Automatically checks FDTD result reliability from three angles. "
-              "Equivalent to \"Result Verification\" in the Lumerical FDTD course.");
+              "FDTD結果の信頼性を3つの観点からチェックする画面 (未実装)。",
+              "Screen for checking FDTD result reliability from three angles "
+              "(not implemented).");
+    // タブ全体がモックであることの強い注記 (このタブは全出力が固定サンプル)
+    I18n::reg("ver_mock_note",
+              "⚠ このタブの表示は設計モックです — 検証機能 (収束テスト/PML 反射/"
+              "エネルギー減衰/自動診断) は未実装で、表示中の数値・判定はすべて"
+              "サンプルです",
+              "⚠ This tab is a design mock — the verification features "
+              "(convergence test / PML reflection / energy decay / "
+              "auto-diagnostics) are not implemented, and every value and "
+              "verdict shown is sample data");
 
     I18n::reg("ver_mesh_title", "① メッシュ収束", "① Mesh convergence");
     I18n::reg("ver_mesh_hint", "メッシュ精度を段階的に上げて結果の収束を確認",
@@ -125,6 +136,12 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     // 精度検証
     auto *sTop = new SectionBox(I18n::tr("ver_title"), body);
     sTop->vbox()->addWidget(hintLabel(I18n::tr("ver_hint"), sTop));
+    // タブ先頭の強い注記: 全出力が固定サンプル (捏造値を実行結果と誤認させない)
+    auto *mockNote = hintLabel(I18n::tr("ver_mock_note"), sTop);
+    mockNote->setStyleSheet(
+        "background:#FFF4CE; color:#9D5D00; border-radius:3px; "
+        "padding:4px 8px; font-weight:600;");
+    sTop->vbox()->addWidget(mockNote);
     v->addWidget(sTop);
 
     // ① メッシュ収束
@@ -132,6 +149,8 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     sMesh->vbox()->addWidget(hintLabel(I18n::tr("ver_mesh_hint"), sMesh));
     m_qtyBox = new QComboBox(sMesh);
     sMesh->form()->addRow(I18n::tr("ver_mesh_qty"), m_qtyBox);
+    // 「チェックする量」はどこにも読まれない
+    sMesh->form()->addRow(tabhelp::unwiredNote(sMesh));
 
     auto *meshTbl = new QTableWidget(5, 4, sMesh);
     meshTbl->setHorizontalHeaderLabels({
@@ -171,9 +190,13 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
 
     auto *meshRow = new QHBoxLayout();
     meshRow->addWidget(makeBadge(I18n::tr("ver_mesh_ok"), "ok", sMesh));
-    meshRow->addWidget(new QPushButton(I18n::tr("ver_mesh_run"), sMesh));
+    auto *meshRunBtn = new QPushButton(I18n::tr("ver_mesh_run"), sMesh);
+    tabhelp::markNotImplemented(meshRunBtn);   // 収束テストは未実装
+    meshRow->addWidget(meshRunBtn);
     meshRow->addStretch(1);
     sMesh->vbox()->addLayout(meshRow);
+    // 収束表と「収束」バッジはモック固定値 (実行していない)
+    sMesh->vbox()->addWidget(tabhelp::sampleNote(sMesh));
     v->addWidget(sMesh);
 
     // ② PML吸収品質
@@ -202,10 +225,17 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     pmlTbl->setMinimumHeight(170);
     sPml->vbox()->addWidget(pmlTbl);
     auto *pmlRow = new QHBoxLayout();
-    pmlRow->addWidget(new QPushButton(I18n::tr("ver_pml_btn1"), sPml));
-    pmlRow->addWidget(new QPushButton(I18n::tr("ver_pml_btn2"), sPml));
+    // 2 ボタンとも未配線 (設定を書き換えない) → 無効化
+    auto *pmlBtn1 = new QPushButton(I18n::tr("ver_pml_btn1"), sPml);
+    auto *pmlBtn2 = new QPushButton(I18n::tr("ver_pml_btn2"), sPml);
+    tabhelp::markNotImplemented(pmlBtn1);
+    tabhelp::markNotImplemented(pmlBtn2);
+    pmlRow->addWidget(pmlBtn1);
+    pmlRow->addWidget(pmlBtn2);
     pmlRow->addStretch(1);
     sPml->vbox()->addLayout(pmlRow);
+    // PML 反射表はモック固定値 (測定していない)
+    sPml->vbox()->addWidget(tabhelp::sampleNote(sPml));
     v->addWidget(sPml);
 
     // ③ 時間精度
@@ -232,6 +262,8 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     timeRow->addWidget(makeBadge(I18n::tr("ver_time_ok"), "ok", sTime));
     timeRow->addStretch(1);
     sTime->vbox()->addLayout(timeRow);
+    // 減衰曲線は乱数合成のモック、「エネルギー残量」バッジも固定値
+    sTime->vbox()->addWidget(tabhelp::sampleNote(sTime));
     sTime->vbox()->addWidget(hintLabel(I18n::tr("ver_time_note"), sTime));
     v->addWidget(sTime);
 
@@ -242,8 +274,12 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     crossBox->addItems({ "FEM (Frequency)", "RCWA", "STACK", "tidy3d (Cloud)" });
     crossBox->setCurrentIndex(1);
     sCross->form()->addRow(I18n::tr("ver_cross_solver"), crossBox);
+    // 比較ソルバの選択はどこにも読まれない
+    sCross->form()->addRow(tabhelp::unwiredNote(sCross));
     auto *crossRow = new QHBoxLayout();
-    crossRow->addWidget(new QPushButton(I18n::tr("ver_cross_run"), sCross));
+    auto *crossRunBtn = new QPushButton(I18n::tr("ver_cross_run"), sCross);
+    tabhelp::markNotImplemented(crossRunBtn);   // クロスバリデーションは未実装
+    crossRow->addWidget(crossRunBtn);
     crossRow->addStretch(1);
     sCross->vbox()->addLayout(crossRow);
     v->addWidget(sCross);
@@ -274,6 +310,8 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     m_diag->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_diag->setMinimumHeight(230);
     sDiag->vbox()->addWidget(m_diag);
+    // 自動診断の 7 行は判定・備考ともモック固定値 (診断していない)
+    sDiag->vbox()->addWidget(tabhelp::sampleNote(sDiag));
     v->addWidget(sDiag);
 
     v->addStretch(1);

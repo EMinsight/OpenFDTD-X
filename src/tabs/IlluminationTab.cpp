@@ -1,5 +1,6 @@
 // IlluminationTab.cpp
 #include "IlluminationTab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -7,6 +8,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -47,10 +49,15 @@ const bool s_i18n = [] {
     I18n::reg("ilm_mdl_chip",    "LEDチップ (FDTD連携)", "LED chip (FDTD coupled)");
     I18n::reg("ilm_raydata", "レイデータ", "Ray data");
     I18n::reg("ilm_browse", "📁 参照…", "📁 Browse…");
+    I18n::reg("ilm_ray_filter",
+              "レイデータ (*.ray *.dat *.txt);;すべてのファイル (*)",
+              "Ray data (*.ray *.dat *.txt);;All files (*)");
     I18n::reg("ilm_formats",
-              "▸ 対応形式: .ray (LightTools), .dat (ASAP), IES TM-25, .txt (Radiant)",
-              "▸ Supported formats: .ray (LightTools), .dat (ASAP), IES TM-25, "
-              ".txt (Radiant)");
+              "▸ 対応予定形式: .ray (LightTools), .dat (ASAP), IES TM-25, .txt (Radiant) "
+              "(取込は未実装 — ファイル名の記録のみ)",
+              "▸ Planned formats: .ray (LightTools), .dat (ASAP), IES TM-25, "
+              ".txt (Radiant) (import is not implemented — only the file name is "
+              "recorded)");
     I18n::reg("ilm_spectrum", "スペクトル", "Spectrum");
     I18n::reg("ilm_sp_white", "白色LED 5000K (青LED+YAG蛍光体)",
               "White LED 5000 K (blue LED + YAG phosphor)");
@@ -107,10 +114,10 @@ const bool s_i18n = [] {
     I18n::reg("ilm_btn_ies",   "💾 IES / LDT 配光ファイル書出",
               "💾 Export IES / LDT photometric file");
     I18n::reg("ilm_ies_hint",
-              "▸ IES LM-63 / EULUMDAT (.ldt) で書出せば DIALux・AGi32 等の"
-              "照明設計ソフトで使用可能。",
-              "▸ Exporting as IES LM-63 / EULUMDAT (.ldt) makes the data usable in "
-              "lighting design tools such as DIALux and AGi32.");
+              "▸ IES LM-63 / EULUMDAT (.ldt) 書出は DIALux・AGi32 等の"
+              "照明設計ソフト向け (書出は未実装)。",
+              "▸ IES LM-63 / EULUMDAT (.ldt) export targets lighting design tools "
+              "such as DIALux and AGi32 (export is not implemented).");
     return true;
 }();
 
@@ -244,6 +251,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
                              I18n::tr("ilm_app_solar") },
                    0, sTop);                        // 既定 "led"
     sTop->form()->addRow(I18n::tr("ilm_app"), appRow);
+    // 用途の選択もまだ計算へ配線されていない (apply/refresh 不在)
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
     v->addWidget(sTop);
 
     // ── 光源 / Light source ─────────────────────────────────────────────────
@@ -260,7 +269,15 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     auto *rayRow = new QHBoxLayout();
     m_rayFile = numEdit("CREE_XPG3_5000K.ray", 0, sSrc);
     rayRow->addWidget(m_rayFile, 1);
-    rayRow->addWidget(new QPushButton(I18n::tr("ilm_browse"), sSrc));
+    // 参照: ファイル選択のみ実配線 (取込パーサは未実装 — ファイル名の記録のみ)
+    auto *rayBrowse = new QPushButton(I18n::tr("ilm_browse"), sSrc);
+    connect(rayBrowse, &QPushButton::clicked, this, [this] {
+        const QString f = QFileDialog::getOpenFileName(
+            this, I18n::tr("ilm_raydata"), m_rayFile->text(),
+            I18n::tr("ilm_ray_filter"));
+        if (!f.isEmpty()) m_rayFile->setText(f);
+    });
+    rayRow->addWidget(rayBrowse);
     sSrc->form()->addRow(I18n::tr("ilm_raydata"), rayRow);
 
     sSrc->form()->addRow(hintLabel(I18n::tr("ilm_formats"), sSrc));
@@ -281,6 +298,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     fluxRow->addWidget(m_rays);
     fluxRow->addStretch(1);
     sSrc->form()->addRow(I18n::tr("ilm_flux"), fluxRow);
+    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    sSrc->vbox()->addWidget(tabhelp::unwiredNote(sSrc));
     v->addWidget(sSrc);
 
     // ── 光学系 / Optics ─────────────────────────────────────────────────────
@@ -312,6 +331,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
                                 I18n::tr("ilm_sf_abg") },
                        2, sOpt);                    // 既定 "bsdf"
     sOpt->form()->addRow(I18n::tr("ilm_surface"), sfRow);
+    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    sOpt->vbox()->addWidget(tabhelp::unwiredNote(sOpt));
     v->addWidget(sOpt);
 
     // ── 測光・測色 / Photometry & color ─────────────────────────────────────
@@ -338,12 +359,19 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
                                     badgeCell(I18n::tr(p.judgeKey), p.kind));
     }
     sPh->vbox()->addWidget(m_photoTable);
+    // 測光・測色表と適合バッジはモック由来の固定値 (絶対規則 5)
+    sPh->vbox()->addWidget(tabhelp::sampleNote(sPh));
 
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(new QPushButton(I18n::tr("ilm_btn_polar"), sPh));
-    btnRow->addWidget(new QPushButton(I18n::tr("ilm_btn_cie"), sPh));
-    btnRow->addWidget(new QPushButton(I18n::tr("ilm_btn_illum"), sPh));
-    btnRow->addWidget(new QPushButton(I18n::tr("ilm_btn_ies"), sPh));
+    // プロット生成・IES/LDT 書出は未実装 — 無効化して明示する (絶対規則 5)
+    auto *btnPolar = new QPushButton(I18n::tr("ilm_btn_polar"), sPh);
+    auto *btnCie   = new QPushButton(I18n::tr("ilm_btn_cie"), sPh);
+    auto *btnIllum = new QPushButton(I18n::tr("ilm_btn_illum"), sPh);
+    auto *btnIes   = new QPushButton(I18n::tr("ilm_btn_ies"), sPh);
+    for (QPushButton *b : { btnPolar, btnCie, btnIllum, btnIes }) {
+        tabhelp::markNotImplemented(b);
+        btnRow->addWidget(b);
+    }
     btnRow->addStretch(1);
     sPh->vbox()->addLayout(btnRow);
 
