@@ -2,12 +2,15 @@
 #include "CenterPane.h"
 #include "I18n.h"
 #include "core/Project.h"
+#include "io/H5Reader.h"
 #include "widgets/FieldHeatmap.h"
 #include "widgets/MeshPreview.h"
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
 
 #include <QButtonGroup>
+#include <algorithm>
+#include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
@@ -55,6 +58,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_snapshot","📷 Snap",        "📷 Snap");
     ofd::I18n::reg("vp_slice_title",
         "近傍界面上分布 / Near-field slice", "Near-field slice");
+    ofd::I18n::reg("vp_slice_result",
+        "解析結果 %1 (正規化 |値|)", "Result %1 (normalised |value|)");
     ofd::I18n::reg("vp_saved",   "スクリーンショットを保存", "Save screenshot");
     return true;
 }();
@@ -264,4 +269,48 @@ void CenterPane::saveSnapshot()
         this, I18n::tr("vp_saved"), "viewport.png", "PNG (*.png)");
     if (path.isEmpty()) return;
     m_stack->currentWidget()->grab().save(path);
+}
+
+// カーネルの HDF5 出力から 2D 断面へ実データを反映する。
+// gui.md の規則どおり「その実行が生成したもの」だけを表示する判断は
+// 呼び出し側 (MainWindow — 実行開始時刻と mtime の比較) が行う。
+bool CenterPane::loadResultField(const QString &h5Path)
+{
+    if (!H5Reader::available()) return false;
+
+    QVector<double> cells;
+    int rows = 0, cols = 0;
+    QString shown;
+
+    // obpm の伝搬マップ |E(x,z)|^2 を最優先 (2D でそのまま表示できる)
+    if (H5Reader::read2D(h5Path, QStringLiteral("/field/Ixz"),
+                         cells, rows, cols)) {
+        shown = QStringLiteral("/field/Ixz");
+    } else {
+        // 最終電界 |Efinal| = sqrt(re^2 + im^2)
+        QVector<double> re, im;
+        int r2 = 0, c2 = 0;
+        if (H5Reader::read2D(h5Path, QStringLiteral("/field/Efinal_r"),
+                             re, rows, cols)
+            && H5Reader::read2D(h5Path, QStringLiteral("/field/Efinal_i"),
+                                im, r2, c2)
+            && r2 == rows && c2 == cols) {
+            cells.resize(re.size());
+            for (int i = 0; i < re.size(); ++i)
+                cells[i] = std::sqrt(re[i] * re[i] + im[i] * im[i]);
+            shown = QStringLiteral("|/field/Efinal|");
+        } else {
+            return false;   // 表示できる 2D 場が無い (ofd の /dataNNNNNN は未対応)
+        }
+    }
+
+    // 0..1 へ正規化 (カラーバーの 0.0-1.0 表示と整合)
+    double vmax = 0.0;
+    for (const double v : cells) vmax = std::max(vmax, std::fabs(v));
+    if (vmax > 0.0)
+        for (double &v : cells) v = std::fabs(v) / vmax;
+
+    m_heatmap->setData(cells, cols, rows);
+    m_heatmap->setTitle(I18n::tr("vp_slice_result").arg(shown));
+    return true;
 }

@@ -195,6 +195,9 @@ private:
     // OpenFDTD (EM) は基幹カーネルなので起動直後から表示され得る。
     QToolButton  *m_sbKernelWarn = nullptr;
     void updateKernelWarn();
+
+    // 実行開始時刻 [ms]。HDF5 結果の「この実行が生成したものか」判定に使う
+    qint64 m_runStartMs = 0;
 };
 
 } // namespace ofd

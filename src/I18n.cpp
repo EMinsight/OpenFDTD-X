@@ -987,6 +987,9 @@ void I18n::loadTables() {
     add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
     add("run_device", "デバイス番号", "Device no.");
     add("log_starting", "計算開始", "Starting computation");
+    add("log_h5_slice",
+        "HDF5 結果 (%1) を 2D 断面ビューに反映しました",
+        "Loaded the HDF5 result (%1) into the 2D slice view");
     add("log_validate", "入力データを検証中…", "Validating input data…");
 
     // 編集メニュー

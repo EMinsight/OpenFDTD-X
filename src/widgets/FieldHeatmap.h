@@ -16,9 +16,11 @@ class FieldHeatmap : public QWidget {
 public:
     explicit FieldHeatmap(QWidget *parent = nullptr);
 
-    // 実データ (row-major, n×n, 0..1 正規化済み) を与えると解析パターンを置換する
-    void setData(const QVector<double> &cells, int n);
+    // 実データ (row-major, rows×cols, 0..1 正規化済み) を与えると
+    // 解析パターンを置換しデモ表示バナーを消す
+    void setData(const QVector<double> &cells, int cols, int rows);
     void setTitle(const QString &t) { m_title = t; update(); }
+    bool hasRealData() const { return !m_demo; }
 
     static QColor jet(double t);      // 0..1 → jet 色
 
@@ -27,7 +29,7 @@ protected:
 
 private:
     QVector<double> m_cells;
-    int      m_n = 50;
+    int      m_cols = 50, m_rows = 50;
     QString  m_title;
     bool     m_demo = true;   // まだ setData されていない = プレースホルダ表示中
 };

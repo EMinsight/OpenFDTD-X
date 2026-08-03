@@ -14,6 +14,7 @@
 #include "core/Project.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
+#include "io/H5Reader.h"
 #include "io/OfdIO.h"
 #include "kernel/Runner.h"
 #include "io/StlImporter.h"
@@ -28,6 +29,10 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QTemporaryDir>
+
+#ifdef OFD_USE_HDF5
+#include <hdf5.h>
+#endif
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -1346,6 +1351,82 @@ static void testBellhop()
     check(shd.exists() && shd.size() > 0, "bellhop: .shd generated");
 }
 
+// ── HDF5 結果リーダー (io/H5Reader) ─────────────────────────────────────────
+// USE_HDF5 ビルドのみ実行 (CI Linux が担う)。既知の値で 2D/3D データセットを
+// 書き、列挙・2D 読み・フレーム読み・次元不一致の拒否を検証する。
+static void testH5Reader()
+{
+    g_file = "h5_reader";
+#ifndef OFD_USE_HDF5
+    check(!H5Reader::available(), "h5: reader reports unavailable");
+    std::printf("  (h5 reader tests skipped: built without USE_HDF5)\n");
+#else
+    check(H5Reader::available(), "h5: reader available");
+    QTemporaryDir dir;
+    check(dir.isValid(), "h5: temp dir");
+    const QString path = dir.filePath("t.h5");
+
+    // /field/Ixz (3×4, v = i*10+j) と /field/frames (2×3×4, v = f*100+i*10+j)
+    {
+        const hid_t file = H5Fcreate(path.toLocal8Bit().constData(),
+                                     H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        check(file >= 0, "h5: fixture file created");
+        const hid_t grp = H5Gcreate2(file, "/field", H5P_DEFAULT, H5P_DEFAULT,
+                                     H5P_DEFAULT);
+        float m2[3][4];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 4; ++j) m2[i][j] = float(i * 10 + j);
+        const hsize_t d2[2] = { 3, 4 };
+        hid_t sp = H5Screate_simple(2, d2, nullptr);
+        hid_t ds = H5Dcreate2(grp, "Ixz", H5T_NATIVE_FLOAT, sp, H5P_DEFAULT,
+                              H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, m2);
+        H5Dclose(ds); H5Sclose(sp);
+
+        float m3[2][3][4];
+        for (int f = 0; f < 2; ++f)
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 4; ++j)
+                    m3[f][i][j] = float(f * 100 + i * 10 + j);
+        const hsize_t d3[3] = { 2, 3, 4 };
+        sp = H5Screate_simple(3, d3, nullptr);
+        ds = H5Dcreate2(grp, "frames", H5T_NATIVE_FLOAT, sp, H5P_DEFAULT,
+                        H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, m3);
+        H5Dclose(ds); H5Sclose(sp);
+        H5Gclose(grp);
+        H5Fclose(file);
+    }
+
+    QVector<H5DatasetInfo> list;
+    check(H5Reader::listDatasets(path, list), "h5: listDatasets ok");
+    check(list.size() == 2, "h5: two datasets listed");
+    bool foundIxz = false;
+    for (const H5DatasetInfo &d : list)
+        if (d.path == QLatin1String("/field/Ixz")) {
+            foundIxz = true;
+            check(d.dims == (QVector<qlonglong>{ 3, 4 }), "h5: Ixz dims");
+            check(d.typeName == QLatin1String("float32"), "h5: Ixz type");
+        }
+    check(foundIxz, "h5: Ixz found in listing");
+
+    QVector<double> m;
+    int r = 0, c = 0;
+    check(H5Reader::read2D(path, "/field/Ixz", m, r, c), "h5: read2D ok");
+    check(r == 3 && c == 4, "h5: read2D dims");
+    check(m[1 * 4 + 2] == 12.0, "h5: read2D value (float→double 変換込み)");
+
+    check(H5Reader::readFrame(path, "/field/frames", 1, m, r, c),
+          "h5: readFrame ok");
+    check(r == 3 && c == 4 && m[2 * 4 + 3] == 123.0, "h5: readFrame value");
+
+    check(!H5Reader::read2D(path, "/field/frames", m, r, c),
+          "h5: read2D rejects 3-D dataset");
+    check(!H5Reader::readFrame(path, "/field/frames", 9, m, r, c),
+          "h5: readFrame rejects out-of-range frame");
+#endif
+}
+
 // ── OpenFDTD (基幹カーネル) 統合 ────────────────────────────────────────────
 // 環境変数 OFDX_OFD_BIN が指す実カーネルがあれば、同梱サンプル dipole.ofd を
 // 実行して正常終了 (ofd.log の "normal end") まで検証する。GUI → subprocess
@@ -1553,6 +1634,7 @@ int main(int argc, char *argv[])
     testOnnActivation();
     testRcwaCore();
     testBellhop();
+    testH5Reader();
     testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();

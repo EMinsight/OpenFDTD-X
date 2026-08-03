@@ -88,6 +88,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -961,6 +962,7 @@ void MainWindow::runSimulation()
 
     // cfg は上でスナップショット済み — 再計算せずそのまま渡す
     // (実行前クリーンアップ判定と同一の設定で走らせる)。
+    m_runStartMs = QDateTime::currentMSecsSinceEpoch();
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -981,6 +983,7 @@ void MainWindow::runPostProcess()
     // 表示しない)。
     m_expectActivation = false;
     m_sbState->setText("● " + I18n::tr("sb_running"));
+    m_runStartMs = QDateTime::currentMSecsSinceEpoch();
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -1153,6 +1156,20 @@ void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
+    // カーネルの HDF5 出力 (time_series_data.h5) を 2D 断面へ反映する。
+    // 「この実行が生成したもの」だけを表示するため、実行開始以降に更新された
+    // ファイルに限る (残存ファイルの再表示をしない — .claude/rules/gui.md)。
+    if (ok) {
+        const QString h5 = QDir(m_runner->workingDir())
+                               .filePath(QStringLiteral("time_series_data.h5"));
+        const QFileInfo fi(h5);
+        if (fi.exists()
+            && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs
+            && m_center->loadResultField(h5)) {
+            m_rightDock->appendLog(
+                I18n::tr("log_h5_slice").arg(fi.fileName()));
+        }
+    }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
     // 表示する (他カーネルの実行で過去の CSV を再表示しない)。
     if (ok && m_expectActivation)

@@ -22,8 +22,9 @@ const bool s_i18n = [] {
 FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
 {
     setMinimumHeight(240);
-    // モックの解析パターンを初期表示に (v = |sin(4r)·exp(-0.4r)|)
-    const int n = m_n;
+    // モックの解析パターンを初期表示に (v = |sin(4r)·exp(-0.4r)|)。
+    // setData が呼ばれるまではデモ表示バナー付きで描画される。
+    const int n = m_cols;
     m_cells.resize(n * n);
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) {
@@ -34,11 +35,12 @@ FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
         }
 }
 
-void FieldHeatmap::setData(const QVector<double> &cells, int n)
+void FieldHeatmap::setData(const QVector<double> &cells, int cols, int rows)
 {
-    if (n > 0 && cells.size() >= n * n) {
+    if (cols > 0 && rows > 0 && cells.size() >= cols * rows) {
         m_cells = cells;
-        m_n = n;
+        m_cols = cols;
+        m_rows = rows;
         m_demo = false;
         update();
     }
@@ -81,11 +83,11 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
 
     // ── ヒートマップ本体 (黒背景 + セル塗り) ──
     p.fillRect(area, Qt::black);
-    const double cw = double(area.width()) / m_n;
-    const double chh = double(area.height()) / m_n;
-    for (int i = 0; i < m_n; ++i)
-        for (int j = 0; j < m_n; ++j) {
-            const double v = m_cells[j * m_n + i];
+    const double cw = double(area.width()) / m_cols;
+    const double chh = double(area.height()) / m_rows;
+    for (int i = 0; i < m_cols; ++i)
+        for (int j = 0; j < m_rows; ++j) {
+            const double v = m_cells[j * m_cols + i];
             p.fillRect(QRectF(area.left() + i * cw, area.top() + j * chh,
                               cw + 1.0, chh + 1.0), jet(v));
         }

@@ -1,12 +1,16 @@
 // H5ViewerTab.h — H5アニメタブ (h5-viewer.jsx 相当)。
-// HDF5 時系列場データセットのアニメーションビューア:
-//   - ファイル選択 + HDFView 風データセットツリー
-//   - ヒートマップ/等高線/ベクトル場/3D等値面/線プロット (QPainter 合成場)
-//   - QTimer による再生コントロール (0.25x〜5x, 30fps 基準)
-//   - Jet/Viridis/Seismic/Gray カラーマップ + カラーバー
-//   - 断面選択 / 動画・画像エクスポート / 統計 / 外部連携ボタン
+// カーネルが出力する HDF5 (time_series_data.h5 等) を io/H5Reader で読み、
+//   - データセットツリー (実ファイルの列挙結果, パス階層をグループ化)
+//   - 2D データセットのヒートマップ表示 (jet/viridis/seismic/gray)
+//   - 3D (frames×rows×cols) データセットのフレーム再生 (QTimer)
+//   - 表示中フレームの min / max / 平均 の実計算表示
+// を行う。1D / 4D 以上のデータセットは表示未対応 (ofd の /data*/E 等)。
 #pragma once
+#include <QImage>
 #include <QScrollArea>
+#include <QVector>
+
+#include "../io/H5Reader.h"   // H5DatasetInfo
 
 class QCheckBox;
 class QComboBox;
@@ -16,40 +20,46 @@ class QPushButton;
 class QSlider;
 class QTimer;
 class QTreeWidget;
+class QTreeWidgetItem;
 
 namespace ofd {
 
 class Project;
 class SectionBox;
 
-// モックの SVG ヒートマップ相当 — 数式で場を合成し QPainter で描画する
-// キャンバス。v = sin(4r - t)·exp(-0.4r), t = frame/240·2π·4 (mock と同一)。
+// rows×cols の実データ行列をカラーマップで描くキャンバス。
+// データ未読込・表示未対応時は中央にメッセージを表示する。
 class FieldCanvas : public QWidget {
     Q_OBJECT
 public:
     explicit FieldCanvas(QWidget *parent = nullptr);
-    void setFrame(int f)                { m_frame = f; update(); }
-    void setView(int v)                 { m_view = v; update(); }
-    void setColormap(int c)             { m_cmap = c; update(); }
-    void setScale(double lo, double hi) { m_lo = lo; m_hi = hi; update(); }
-    void setShowGrid(bool on)           { m_grid = on; update(); }
-    void setShowAxes(bool on)           { m_axes = on; update(); }
-    void setIso(double v)               { m_iso = v; update(); }
+
+    // 実データ行列をセットして再描画 (row-major, rows×cols)
+    void setData(const QVector<double> &d, int rows, int cols);
+    // データを破棄し、中央メッセージ表示に切り替える (空 = 既定の「未読込」文言)
+    void setMessage(const QString &msg);
+    void setColormap(int c);                 // 0=jet 1=viridis 2=seismic 3=gray
+    void setScale(double lo, double hi);     // 正規化範囲 (表示側で 0..1 へ)
+    void setShowGrid(bool on)  { m_grid = on; update(); }
+    void setShowAxes(bool on)  { m_axes = on; update(); }
     void setDatasetName(const QString &n) { m_name = n; update(); }
+    bool hasData() const { return !m_img.isNull(); }
 
 protected:
     void paintEvent(QPaintEvent *) override;
 
 private:
-    QColor mapColor(double v) const;   // mock の colormap_fn を転記
+    QColor mapColor(double v) const;   // mock の colormap_fn を転記 (正規化付き)
+    void rebuildImage();               // m_data → m_img (1 セル = 1 ピクセル)
 
-    int     m_frame = 0;
-    int     m_view = 0;                // 0=heatmap 1=contour 2=vector 3=iso3d 4=line
+    QVector<double> m_data;
+    int     m_rows = 0, m_cols = 0;
+    QImage  m_img;                     // 事前レンダ済み行列画像
+    QString m_msg;                     // データ無し時の中央表示文言
     int     m_cmap = 0;                // 0=jet 1=viridis 2=seismic 3=grayscale
-    double  m_lo = -1.0, m_hi = 1.0;
+    double  m_lo = 0.0, m_hi = 1.0;
     bool    m_grid = false, m_axes = true;
-    double  m_iso = 0.5;
-    QString m_name = "E_surface";
+    QString m_name;                    // 左上オーバーレイ (データセット名)
 };
 
 // カラーバー (縦グラデーション, mock の CSS linear-gradient を転記)
@@ -70,25 +80,37 @@ public:
     explicit H5ViewerTab(Project *project, QWidget *parent = nullptr);
 
 private:
-    void setFrame(int f);     // スライダー / タイマー / ボタン共通のフレーム更新
-    void applyScale();        // スケール欄 → キャンバス + カラーバーラベル
+    void loadFile();                  // m_file のパスを列挙してツリー再構築
+    void rebuildTree();               // m_dsets → パス階層ツリー
+    void selectDataset(int idx);      // ツリー選択 → 読込 + 表示切替
+    void loadCurrentFrame();          // 3D の現在フレームを読込・表示
+    void showData(const QVector<double> &d, int rows, int cols);  // 描画+統計
+    void setFrame(int f);             // スライダー / タイマー / ボタン共通
+    void applyScale();                // 手動スケール欄 → キャンバス + バー
+    void setScaleLabels(double lo, double hi);
+    void setPlaybackEnabled(bool on); // 3D のときだけ再生 UI を有効化
+    void clearStats();
 
     Project     *m_p;
 
     // ファイル / ツリー
     QLineEdit   *m_file;
+    QPushButton *m_browseBtn, *m_reloadBtn;
     QTreeWidget *m_tree;
     QLabel      *m_selected;
-    QString      m_dataset = "/monitors/E_surface";
+    QString      m_filePath;                  // 読込済みファイル
+    QVector<H5DatasetInfo> m_dsets;           // 列挙結果 (UserRole = index)
+
+    // 選択中データセットの状態
+    QString      m_dataset;                   // 例 "/field/Ixz"
+    int          m_nframes = 0;               // 3D のフレーム数 (2D は 0)
+    QVector<double> m_data;                   // 表示中の行列
+    int          m_rows = 0, m_cols = 0;
 
     // 可視化
-    QComboBox   *m_view, *m_cmap;
+    QComboBox   *m_cmap;
     QCheckBox   *m_autoScale;
     QLineEdit   *m_scaleMin, *m_scaleMax;
-    QLabel      *m_isoLabel;
-    QWidget     *m_isoField;
-    QSlider     *m_isoSlider;
-    QLabel      *m_isoValue;
 
     // プレビュー
     SectionBox  *m_previewBox;
@@ -96,15 +118,18 @@ private:
     ColorBar    *m_bar;
     QLabel      *m_barMax, *m_barMin;
 
+    // 統計 (実計算)
+    QLabel      *m_statMin, *m_statMax, *m_statMean;
+
     // 再生
-    QPushButton *m_playBtn;
+    QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
     QSlider     *m_frameSlider;
     QLabel      *m_frameLabel;
     QComboBox   *m_speed;
     QTimer      *m_timer;
     int          m_frame = 0;
 
-    // 断面
+    // 断面 (未配線のまま — unwiredNote 付き)
     QSlider     *m_secSlider;
     QLabel      *m_secValue;
 };

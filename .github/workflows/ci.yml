@@ -22,10 +22,12 @@ jobs:
       - name: Install Qt6
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ qt6-base-dev
+          sudo apt-get install -y cmake g++ qt6-base-dev libhdf5-dev
 
+      # Linux ジョブは USE_HDF5=ON でビルドし、HDF5 読み取り (H5Reader —
+      # 解析結果の 2D 断面反映と H5 アニメタブ) の gated コードも検証する
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_HDF5=ON
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
