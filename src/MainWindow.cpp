@@ -48,6 +48,9 @@
 #include "tabs/SchematicTab.h"
 #include "tabs/PhotonicsSolversTab.h"
 #include "tabs/AcousticSourceTab.h"
+#include "tabs/AudioEditorTab.h"
+#include "tabs/ModeSolverTab.h"
+#include "tabs/AcousticSolverTab.h"
 #include "tabs/OceanEnvironmentTab.h"
 #include "tabs/SoundproofTab.h"
 #include "tabs/OutdoorNoiseTab.h"
@@ -490,6 +493,9 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabSchematic    = new SchematicTab(P);
     m_tabPhotonics    = new PhotonicsSolversTab(P);
     m_tabAcSource     = new AcousticSourceTab(P);
+    m_tabAudioEdit    = new AudioEditorTab(P);
+    m_tabModeSolver   = new ModeSolverTab(P);
+    m_tabAcSolver     = new AcousticSolverTab(P);
     m_tabOceanEnv     = new OceanEnvironmentTab(P);
     m_tabRoomAc       = new RoomAcousticsTab(P);
     m_tabRirAnalysis  = new RirAnalysisTab(P);
@@ -562,6 +568,9 @@ void MainWindow::buildLeftNav(QWidget *parent)
           { D::Optical }, false },
         { "photonics",    "cat_library", "nav_photonics",    m_tabPhotonics,
           { D::Optical }, true },
+        // モードソルバ FDE (pic-tools.jsx — mock の並びどおり photonics の直後)
+        { "modesolver",   "cat_library", "nav_modesolver",   m_tabModeSolver,
+          { D::Optical }, true },
         { "thinfilm",     "cat_library", "nav_thinfilm",     m_tabThinFilm,
           { D::Optical }, true },
         { "illum",        "cat_library", "nav_illum",        m_tabIllum,
@@ -570,9 +579,15 @@ void MainWindow::buildLeftNav(QWidget *parent)
           { D::Optical }, true },
         { "acsource",     "cat_library", "nav_acsource",     m_tabAcSource,
           { D::Acoustic, D::Underwater }, true },
+        // 音響編集・解析 (audio-editor.jsx — mock の並びどおり acsource の直後)
+        { "audioedit",    "cat_library", "nav_audioedit",    m_tabAudioEdit,
+          { D::Acoustic, D::Underwater }, true },
         { "oceanenv",     "cat_library", "nav_oceanenv",     m_tabOceanEnv,
           { D::Underwater }, true },
         { "roomac",       "cat_library", "nav_roomac",       m_tabRoomAc,
+          { D::Acoustic }, true },
+        // 音響ソルバ連携 (opera-analysis.jsx AcousticSolverTab)
+        { "acsolver",     "cat_library", "nav_acsolver",     m_tabAcSolver,
           { D::Acoustic }, true },
         { "soundproof",   "cat_library", "nav_soundproof",   m_tabSoundproof,
           { D::Acoustic }, true },

@@ -675,7 +675,14 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             // 歌声分析 (フェーズ3) — F0 探索範囲の上書き (0 = 声種プリセット)
             {"vocal", QJsonObject{
                 {"f0_min_hz", oa.vocalF0MinHz},
-                {"f0_max_hz", oa.vocalF0MaxHz} }} };
+                {"f0_max_hz", oa.vocalF0MaxHz} }},
+            // 音響ソルバー連携 (AcousticSolverTab) — ネスト追加のみ。
+            // backend は AcousticBackend と同順 (並び替え・挿入は禁止)
+            {"solver", QJsonObject{
+                {"backend", oa.solverBackend},
+                {"executable", oa.solverExecutable},
+                {"threads", oa.solverThreads},
+                {"processes", oa.solverProcesses} }} };
         root["acoustic"] = ac;
     }
     {
@@ -875,6 +882,15 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             const QJsonObject vo = oa["vocal"].toObject();
             s.vocalF0MinHz = vo.value("f0_min_hz").toDouble(s.vocalF0MinHz);
             s.vocalF0MaxHz = vo.value("f0_max_hz").toDouble(s.vocalF0MaxHz);
+            // 音響ソルバー連携 — 欠落キーは既定値のまま (旧ファイル互換)
+            const QJsonObject so = oa["solver"].toObject();
+            // 壊れたファイルの範囲外値で不正 enum を作らない (0..4 にクランプ)
+            s.solverBackend =
+                qBound(0, so.value("backend").toInt(s.solverBackend), 4);
+            s.solverExecutable =
+                so.value("executable").toString(s.solverExecutable);
+            s.solverThreads = so.value("threads").toInt(s.solverThreads);
+            s.solverProcesses = so.value("processes").toInt(s.solverProcesses);
         }
     }
     if (root.contains("underwater")) {

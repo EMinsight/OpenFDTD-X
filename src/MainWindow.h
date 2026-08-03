@@ -170,6 +170,9 @@ private:
     QWidget *m_tabEmc = nullptr,      *m_tabSar = nullptr,
             *m_tabChannel = nullptr,  *m_tabThinFilm = nullptr,
             *m_tabIllum = nullptr,    *m_tabDisplayOpt = nullptr;
+    // handoff2 デザイン差分 (audio-editor / pic-tools / opera-analysis)
+    QWidget *m_tabAudioEdit = nullptr, *m_tabModeSolver = nullptr,
+            *m_tabAcSolver = nullptr;
 
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;

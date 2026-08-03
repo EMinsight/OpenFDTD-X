@@ -49,15 +49,18 @@
 | 10 | ST 系 / G / 実測 STI / 校正ワークフロー拡充が未実装 (旧フェーズ4 計画分)。~~レポート出力~~ は**解消済み** | 舞台支援・声の届きの定量値が不足 | **レポート出力は完了**: `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
 | 12 | リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー) | fs の異なる素材は外部ツールで変換が必要 | 高品質リサンプラーの追加は需要が出た時点で検討 (仮定 §21) |
-| 13 | 実音響ソルバーが存在しない (CI はモックのみ) | ExternalFDTD / ExternalGeometric は契約準拠ソルバーを別途用意して初めて機能する | ソルバー本体は別リポジトリで開発 (ADR-0004 / ADR-0007) |
+| 13 | 実音響ソルバーが存在しない (CI はモックのみ) | ExternalFDTD / ExternalGeometric は契約準拠ソルバーを別途用意して初めて機能する | ソルバー本体は別リポジトリで開発 (ADR-0004 / ADR-0007)。GUI 入口は**実装済み**: `AcousticSolverTab` (🔌 音響ソルバ連携) がバックエンド 5 値の選択 (`.ofdx` `opera_analysis.solver.{backend,executable,threads,processes}` に永続化)・探索順どおりの解決結果のライブ表示・`AcousticRunner` の起動/停止/ログ/進捗・`rirReady` → `rirPath` 反映 (RIR 分析への引き渡し) を提供する |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **1922 checks,
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **2003 checks,
   0 failures** (減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
-  +5 checks で 1927。実行種別ゲート / TPA 入力検証 / 解析解の検証 /
-  校正オフセットの往復・ゲート検証 / 一括レポート (負債 #10) を追加済み)。
+  +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
+  TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
+  一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
+  生成の決定性・K 特性ラウドネス・Schroeder RT・ノイズ除去) /
+  音響ソルバー連携設定の往復 (`opera_analysis.solver`) を追加済み)。
 - 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
   0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
