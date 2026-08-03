@@ -2,13 +2,11 @@
 #include "GettingStartedDialog.h"
 #include "../I18n.h"
 
-#include <QDesktopServices>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -17,16 +15,16 @@ using namespace ofd;
 // ── ダイアログ固有語彙 (gsd_) — file-local 登録 ─────────────────────────────
 namespace {
 const bool s_i18n = [] {
+    // OpenFDTD-X 自身のワークフロー案内 (外部製品のチュートリアルではない)
     ofd::I18n::reg("gsd_title",
-        "🎓 はじめてのシミュレーション / My First Simulation (Lumerical風ガイド)",
-        "🎓 My First Simulation (Lumerical-style guide)");
+        "🎓 はじめてのシミュレーション",
+        "🎓 My first simulation");
     ofd::I18n::reg("gsd_hint",
-        "Ansys Lumerical FDTDの標準ワークフローを9ステップでガイドします。"
-        "各ステップをクリックすると該当タブにジャンプ。",
-        "A nine-step guide through the standard Ansys Lumerical FDTD workflow. "
-        "Click a step to jump to the matching tab.");
+        "OpenFDTD-X の標準ワークフローを 9 ステップで案内します。"
+        "各ステップのボタンで該当画面へ移動します。",
+        "A nine-step guide through the standard OpenFDTD-X workflow. "
+        "Each step's button takes you to the matching screen.");
     ofd::I18n::reg("gsd_close", "閉じる", "Close");
-    ofd::I18n::reg("gsd_course", "📺 Ansys 公式コース", "📺 Official Ansys course");
     ofd::I18n::reg("gsd_from_template", "▶ テンプレートから始める",
                    "▶ Start from a template");
     return true;
@@ -41,46 +39,42 @@ struct Step {
     const char *jump;
 };
 
+// 記載は OpenFDTD-X の実装済み機能に合わせる (未実装の操作を案内しない)
 const Step kSteps[] = {
     { 1, "テンプレートを選択",
-      "アプリケーションギャラリーから類似プロジェクトを選んで開く。"
-      "空白から始めるより推奨。",
+      "アプリケーションギャラリーからテンプレートを選ぶと、ドメインの切替と"
+      "プロジェクト名の設定が行われます。空のプロジェクトから始めることも可能。",
       "ギャラリーを開く", "gallery" },
     { 2, "形状を配置",
-      "「形状」タブ、またはコンポーネントライブラリから3Dオブジェクトをドラッグ。"
-      "STL/GDSの取込も可能。",
+      "「形状」タブで直方体・球・円柱などの形状を追加し、座標を入力。"
+      "STL の取込にも対応 (取込は「形状」タブの CAD セクション)。",
       "形状タブへ", "geometry" },
     { 3, "物性値を割当",
       "「物性値」タブで誘電体・金属・分散材料を定義し、各形状に番号で割り当て。",
       "物性値タブへ", "material" },
-    { 4, "ソルバ領域を定義",
-      "「ソルバ領域」タブで計算範囲・メッシュ精度(1〜8)・境界条件(PML推奨)を設定。",
+    { 4, "ソルバ領域を確認",
+      "PML 層数は「ソルバ領域」タブで設定 (計算範囲はメッシュタブの節点定義"
+      "から決まる)。",
       "ソルバ領域タブへ", "solverregion" },
     { 5, "波源を配置",
-      "ガウシアンパルス/平面波/モード源など、検査対象に応じて選択。",
+      "「波源」タブで給電点や平面波など、検査対象に応じて選択。",
       "波源タブへ", "source" },
-    { 6, "モニターを配置",
-      "結果取得点。Field/Mode/Flux/NTFFなど目的別に。"
-      "位置は波源・物体から十分離す。",
+    { 6, "観測点を確認",
+      "「ポスト処理」の周波数・観測面の設定と合わせて、結果の取得内容を決める。",
       "モニタータブへ", "monitors" },
     { 7, "計算実行",
-      "ツールバーの「▶ 計算」ボタン。停止するとカーネルを終了させるため、"
-      "その時点までの出力が残るかはカーネル側の実装に依存します。",
+      "ツールバーの「▶ 計算」ボタンでカーネル (ofd 等) を起動。"
+      "カーネル未導入なら「ツール > カーネルパスの設定…」で場所を指定。",
       "▶ 実行", "run" },
     { 8, "結果を確認",
-      "「Datasets」または「ポスト処理」で2D/3Dプロット。"
-      "Touchstone/HDF5でエクスポート。",
+      "計算後、「2D 断面」ビューに HDF5 結果が自動反映され (USE_HDF5 ビルド)、"
+      "「H5アニメ」タブで time_series_data.h5 を閲覧できます。",
       "Datasetsへ", "datasets" },
-    { 9, "精度を検証",
-      "「検証」タブ (エキスパート表示) にメッシュ収束・PML反射・時間精度の"
-      "確認画面があります。自動チェック機能は未実装で、表示中の数値は"
-      "サンプルです。",
+    { 9, "精度を確認",
+      "「検証」タブはエキスパート表示にあります (ボタンで切替えて移動)。"
+      "自動チェック機能は未実装で、表示中の数値はサンプルです。",
       "検証タブへ", "verification" }
 };
-
-const char kCourseUrl[] =
-    "https://innovationspace.ansys.com/courses/courses/"
-    "lumerical-fdtd-my-first-simulation/";
 } // namespace
 
 GettingStartedDialog::GettingStartedDialog(QWidget *parent)
@@ -164,18 +158,13 @@ GettingStartedDialog::GettingStartedDialog(QWidget *parent)
     fh->setContentsMargins(12, 8, 12, 8);
     fh->addStretch(1);
     auto *close = new QPushButton(I18n::tr("gsd_close"), foot);
-    auto *course = new QPushButton(I18n::tr("gsd_course"), foot);
     auto *fromTpl = new QPushButton(I18n::tr("gsd_from_template"), foot);
     fromTpl->setDefault(true);
     fh->addWidget(close);
-    fh->addWidget(course);
     fh->addWidget(fromTpl);
     v->addWidget(foot);
 
     connect(close, &QPushButton::clicked, this, &QDialog::reject);
-    connect(course, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl(QString::fromLatin1(kCourseUrl)));
-    });
     connect(fromTpl, &QPushButton::clicked, this, [this] {
         emit jumpTo(QStringLiteral("gallery"));
         accept();

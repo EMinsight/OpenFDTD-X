@@ -987,6 +987,9 @@ void I18n::loadTables() {
     add("run_engine_tidy3d", "☁ tidy3d Cloud", "☁ tidy3d Cloud");
     add("run_device", "デバイス番号", "Device no.");
     add("log_starting", "計算開始", "Starting computation");
+    add("gsd_expert_switched",
+        "検証タブ表示のためエキスパート表示に切替えました",
+        "Switched to expert mode to show the verification tab");
     add("log_h5_slice",
         "HDF5 結果 (%1) を 2D 断面ビューに反映しました",
         "Loaded the HDF5 result (%1) into the 2D slice view");

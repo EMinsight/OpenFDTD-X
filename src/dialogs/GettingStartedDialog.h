@@ -1,11 +1,13 @@
 // GettingStartedDialog.h — はじめてのシミュレーション
-// (ansys-workflow.jsx GettingStartedDialog 相当)。
+// (元 mock: ansys-workflow.jsx GettingStartedDialog)。
 //
-// Ansys Lumerical FDTD の標準ワークフローを 9 ステップでガイドするモーダル。
+// OpenFDTD-X の標準ワークフローを 9 ステップで案内するモーダル。
 // 各ステップのボタンは jumpTo(target) を発火して閉じる。target は
 //   "gallery" (ギャラリーを開く) / "run" (計算実行) / タブキー
 //   ("geometry" "material" "solverregion" "source" "monitors"
-//    "datasets" "verification") のいずれか。
+//    "datasets" "verification") のいずれか。verification は
+// エキスパート表示のみのため、受け側 (MainWindow) が表示レベルを
+// 切替えてから選択する。
 #pragma once
 #include <QDialog>
 

@@ -864,9 +864,16 @@ void MainWindow::showGettingStarted()
         m_gettingStarted = new GettingStartedDialog(this);
         connect(m_gettingStarted, &GettingStartedDialog::jumpTo, this,
                 [this](const QString &target) {
-            if (target == "gallery")   showGallery();
-            else if (target == "run")  runSimulation();
-            else                       selectLeftTab(target);
+            if (target == "gallery") { showGallery(); return; }
+            if (target == "run")     { runSimulation(); return; }
+            // 検証タブはエキスパート表示のみ。標準表示のままだと選択が
+            // 静かに失敗して「押しても何も起きない」になるため、明示的な
+            // ジャンプ要求として表示レベルを切替えてから選択する。
+            if (target == QLatin1String("verification") && !m_expert) {
+                setUiLevel(true);
+                statusBar()->showMessage(I18n::tr("gsd_expert_switched"), 4000);
+            }
+            selectLeftTab(target);
         });
     }
     m_gettingStarted->open();
