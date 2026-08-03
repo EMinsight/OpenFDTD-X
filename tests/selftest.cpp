@@ -888,6 +888,21 @@ static void testAudioEditEngine()
         };
         check(rmsOf(den) < rmsOf(noise) * 0.5,
               "denoise reduces noise floor > 6dB");
+        // 2048 サンプル未満の選択は学習失敗 (空プロファイル) を返す
+        check(noiseProfile(noise, 0, 1000).empty(),
+              "noise profile fails on short selection");
+    }
+
+    // ── Nyquist 超のオクターブ帯域は出力しない (fs=8kHz → 8k/16k 帯を除外) ──
+    {
+        const AudioBuffer lowFs =
+            generateSignal(SignalKind::Sine, 1000, 0, 1.0, 0.5, 8000.0);
+        const std::vector<OctaveBand> bands = octaveBands(lowFs);
+        bool hasAbove = false;
+        for (const OctaveBand &b : bands)
+            if (b.fcHz / std::sqrt(2.0) >= 4000.0) hasAbove = true;
+        check(!hasAbove && bands.size() < 10,
+              "octave bands above Nyquist excluded");
     }
 
     // ── ステレオ: モノ化で L=R、Side 抽出で L=-R ────────────────────────────

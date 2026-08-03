@@ -48,13 +48,19 @@ const bool s_i18n = [] {
     I18n::reg("mds_mat_air", "クラッド: 空気 (n=1.0)", "Cladding: air (n=1.0)");
     I18n::reg("mds_mat_sin", "コア: SiN (n=2.0)", "Core: SiN (n=2.0)");
     I18n::reg("mds_mat_lnoi", "コア: LiNbO₃ (ne=2.138)", "Core: LiNbO₃ (ne=2.138)");
-    I18n::reg("mds_mat_note", "材料Explorer と連動 · dn/dT 温度依存対応",
-              "Linked to Material Explorer · dn/dT temperature dependence");
+    I18n::reg("mds_mat_note", "材料Explorer 連動・dn/dT 温度依存は未実装",
+              "Material Explorer link and dn/dT dependence are not implemented");
     I18n::reg("mds_wl_pol", "波長・偏波", "Wavelength / polarization");
     I18n::reg("mds_temp", "温度", "Temperature");
     I18n::reg("mds_run", "▶ モード計算", "▶ Compute modes");
-    I18n::reg("mds_run_note", "メッシュ 10nm · PML境界 · 計算 <1秒",
-              "10 nm mesh · PML boundaries · <1 s compute");
+    I18n::reg("mds_run_note",
+              "実 FDE 計算は未実装 — 表は簡易近似で入力に追従します",
+              "Real FDE compute is not implemented — the table tracks inputs "
+              "with the quick approximation");
+    I18n::reg("mds_unwired_note",
+              "材料・波長・温度は現在近似計算へ反映されません (未実装)",
+              "Material, wavelength and temperature currently do not affect "
+              "the approximation (not implemented)");
     I18n::reg("mds_sec_modes", "固有モード / Eigenmodes", "Eigenmodes");
     I18n::reg("mds_col_mode", "モード", "Mode");
     I18n::reg("mds_col_ng", "ng (群)", "ng (group)");
@@ -82,6 +88,17 @@ const bool s_i18n = [] {
     I18n::reg("mds_col_metric", "指標", "Metric");
     I18n::reg("mds_col_value", "値", "Value");
     I18n::reg("mds_col_use", "用途", "Use");
+    I18n::reg("mds_d1", "群速度分散 D", "Group-velocity dispersion D");
+    I18n::reg("mds_d1_use", "高速変調の波形歪み評価",
+              "Waveform distortion at high modulation rates");
+    I18n::reg("mds_d2", "複屈折 Δn (TE-TM)", "Birefringence Δn (TE-TM)");
+    I18n::reg("mds_d2_use", "偏波依存性", "Polarization dependence");
+    I18n::reg("mds_d3", "dneff/dT", "dneff/dT");
+    I18n::reg("mds_d3_use", "熱チューニング設計 (ヒーター)",
+              "Thermal tuning design (heaters)");
+    I18n::reg("mds_d4", "dneff/dw (感度)", "dneff/dw (sensitivity)");
+    I18n::reg("mds_d4_use", "製造ばらつき→コーナー解析へ",
+              "Fab variation → corner analysis");
     I18n::reg("mds_sec_bend", "曲げ損失 / Bend loss", "Bend loss");
     I18n::reg("mds_col_radius", "曲げ半径", "Bend radius");
     I18n::reg("mds_col_rad_loss", "放射損失 [dB/90°]", "Radiation loss [dB/90°]");
@@ -223,6 +240,11 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     wl->addWidget(new QLabel(QStringLiteral("°C"), s1));
     wl->addStretch(1);
     s1->form()->addRow(I18n::tr("mds_wl_pol"), wl);
+    // 材料・波長・温度は近似式に入らない — 反映されないことを明示 (規則 5)
+    auto *unwired = new QLabel(I18n::tr("mds_unwired_note"), s1);
+    unwired->setWordWrap(true);
+    unwired->setStyleSheet("color:palette(mid); font-size:11px;");
+    s1->vbox()->addWidget(unwired);
 
     auto *runRow = new QHBoxLayout();
     auto *btnRun = new QPushButton(I18n::tr("mds_run"), s1);
@@ -276,16 +298,17 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     auto *dispTable = makeTable(s3, { I18n::tr("mds_col_metric"),
         I18n::tr("mds_col_value"), I18n::tr("mds_col_use") });
     const char *kDisp[][3] = {
-        { "群速度分散 D", "-1180 ps/nm/km", "高速変調の波形歪み評価" },
-        { "複屈折 Δn (TE-TM)", "0.72", "偏波依存性" },
-        { "dneff/dT", "1.86e-4 /K", "熱チューニング設計 (ヒーター)" },
-        { "dneff/dw (感度)", "9.0e-4 /nm", "製造ばらつき→コーナー解析へ" },
+        { "mds_d1", "-1180 ps/nm/km", "mds_d1_use" },
+        { "mds_d2", "0.72", "mds_d2_use" },
+        { "mds_d3", "1.86e-4 /K", "mds_d3_use" },
+        { "mds_d4", "9.0e-4 /nm", "mds_d4_use" },
     };
     for (const auto &row : kDisp) {
         const int r = dispTable->rowCount();
         dispTable->insertRow(r);
-        for (int c = 0; c < 3; ++c)
-            dispTable->setItem(r, c, roItem(QString::fromUtf8(row[c])));
+        dispTable->setItem(r, 0, roItem(I18n::tr(row[0])));
+        dispTable->setItem(r, 1, roItem(QString::fromUtf8(row[1])));
+        dispTable->setItem(r, 2, roItem(I18n::tr(row[2])));
     }
     fitTable(dispTable);
     s3->vbox()->addWidget(dispTable);

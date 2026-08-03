@@ -65,6 +65,24 @@ const bool s_i18n = [] {
     I18n::reg("acs_col_order", "#", "#");
     I18n::reg("acs_col_where", "探索場所", "Location");
     I18n::reg("acs_col_use", "用途", "Purpose");
+    I18n::reg("acs_o1", "cfg.executable (明示指定)",
+              "cfg.executable (explicit path)");
+    I18n::reg("acs_o1_use", "最優先", "Highest priority");
+    I18n::reg("acs_o2_use", "絶対パス直接指定 (CI/開発オーバーライド)",
+              "Direct absolute path (CI / dev override)");
+    I18n::reg("acs_o3", "$OPENFDTD_ACOUSTICS_HOME 配下",
+              "Under $OPENFDTD_ACOUSTICS_HOME");
+    I18n::reg("acs_o3_use", "導入先指定", "Install location");
+    I18n::reg("acs_o4", "アプリ実行ディレクトリ kernel/",
+              "kernel/ next to the app executable");
+    I18n::reg("acs_o4_use", "同梱配置", "Bundled layout");
+    I18n::reg("acs_o5_use", "最後", "Last resort");
+    I18n::reg("acs_c1", "ソルバー情報・格子・実行条件",
+              "Solver info, grid and run conditions");
+    I18n::reg("acs_c2", "算出RIR (名前は outputRirFile で変更可)",
+              "Computed RIR (name configurable via outputRirFile)");
+    I18n::reg("acs_c3", "ソルバー側算出の指標", "Solver-side metrics");
+    I18n::reg("acs_c4", "実行ログ", "Run log");
     I18n::reg("acs_sec_contract", "出力契約 / Output contract (docs/adr/0007)",
               "Output contract (docs/adr/0007)");
     I18n::reg("acs_col_file", "ファイル", "File");
@@ -226,18 +244,22 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     auto *s2 = new SectionBox(I18n::tr("acs_sec_resolve"), body);
     auto *resTable = makeTable(s2, { I18n::tr("acs_col_order"),
         I18n::tr("acs_col_where"), I18n::tr("acs_col_use") });
-    const char *kOrder[][3] = {
-        { "1", "cfg.executable (明示指定)", "最優先" },
-        { "2", "$OFDX_ACOUSTIC_SOLVER", "絶対パス直接指定 (CI/開発オーバーライド)" },
-        { "3", "$OPENFDTD_ACOUSTICS_HOME 配下", "導入先指定" },
-        { "4", "アプリ実行ディレクトリ kernel/", "同梱配置" },
-        { "5", "PATH", "最後" },
+    // 探索場所は I18n キー or そのまま表示するリテラル (環境変数名/PATH)
+    const struct { const char *n; const char *where; bool whereIsKey;
+                   const char *useKey; } kOrder[] = {
+        { "1", "acs_o1", true, "acs_o1_use" },
+        { "2", "$OFDX_ACOUSTIC_SOLVER", false, "acs_o2_use" },
+        { "3", "acs_o3", true, "acs_o3_use" },
+        { "4", "acs_o4", true, "acs_o4_use" },
+        { "5", "PATH", false, "acs_o5_use" },
     };
     for (const auto &row : kOrder) {
         const int r = resTable->rowCount();
         resTable->insertRow(r);
-        for (int c = 0; c < 3; ++c)
-            resTable->setItem(r, c, roItem(QString::fromUtf8(row[c])));
+        resTable->setItem(r, 0, roItem(QString::fromUtf8(row.n)));
+        resTable->setItem(r, 1, roItem(row.whereIsKey
+            ? I18n::tr(row.where) : QString::fromUtf8(row.where)));
+        resTable->setItem(r, 2, roItem(I18n::tr(row.useKey)));
     }
     fitTable(resTable);
     s2->vbox()->addWidget(resTable);
@@ -250,12 +272,12 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     auto *s3 = new SectionBox(I18n::tr("acs_sec_contract"), body);
     auto *conTable = makeTable(s3, { I18n::tr("acs_col_file"),
         I18n::tr("acs_col_required"), I18n::tr("acs_col_content") });
-    const struct { const char *file; bool required; const char *what; }
+    const struct { const char *file; bool required; const char *whatKey; }
     kContract[] = {
-        { "metadata.json", true,  "ソルバー情報・格子・実行条件" },
-        { "rir.wav",       true,  "算出RIR (名前は outputRirFile で変更可)" },
-        { "metrics.json",  false, "ソルバー側算出の指標" },
-        { "solver.log",    true,  "実行ログ" },
+        { "metadata.json", true,  "acs_c1" },
+        { "rir.wav",       true,  "acs_c2" },
+        { "metrics.json",  false, "acs_c3" },
+        { "solver.log",    true,  "acs_c4" },
     };
     for (const auto &row : kContract) {
         const int r = conTable->rowCount();
@@ -263,7 +285,7 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         conTable->setItem(r, 0, roItem(QString::fromUtf8(row.file)));
         conTable->setItem(r, 1, roItem(I18n::tr(
             row.required ? "acs_req_yes" : "acs_req_no")));
-        conTable->setItem(r, 2, roItem(QString::fromUtf8(row.what)));
+        conTable->setItem(r, 2, roItem(I18n::tr(row.whatKey)));
     }
     fitTable(conTable);
     s3->vbox()->addWidget(conTable);

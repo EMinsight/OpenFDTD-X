@@ -140,6 +140,9 @@ std::vector<std::complex<double>>
 windowedFft(const std::vector<double> &x, std::size_t offset,
             std::size_t fftSize, WindowKind window)
 {
+    // fftForward は 2 の冪以外を拒否する — 非 2 冪は切り上げて丸める
+    if (!acoustics::isPowerOfTwo(fftSize))
+        fftSize = acoustics::nextPowerOfTwo(fftSize);
     std::vector<std::complex<double>> spec(fftSize);
     for (std::size_t i = 0; i < fftSize; ++i) {
         const double v = (offset + i < x.size()) ? x[offset + i] : 0.0;
@@ -648,8 +651,9 @@ std::vector<double> noiseProfile(const AudioBuffer &in, std::size_t a,
             prof[k] += std::abs(spec[k]);
         ++cnt;
     }
-    if (cnt)
-        for (double &v : prof) v /= cnt;
+    if (cnt == 0)
+        return std::vector<double>();   // 選択が短すぎ (< 2048) — 学習失敗
+    for (double &v : prof) v /= cnt;
     return prof;
 }
 
@@ -671,6 +675,7 @@ AudioBuffer denoise(const AudioBuffer &in, const std::vector<double> &profile,
                 const double mag = std::abs(spec[k]);
                 // 上半分 (負周波数) は共役対称の鏡像ビンのプロファイルを使う
                 const double np = profile[std::min(k, FS - k)] * 2.5;
+                if (np <= 0.0) continue;   // プロファイル無しのビンは素通し
                 if (mag < np) {
                     spec[k] *= g;                                  // ゲート
                 } else {
@@ -897,6 +902,8 @@ std::vector<OctaveBand> octaveBands(const AudioBuffer &in)
     static const double kBands[] = { 31.5, 63, 125, 250, 500,
                                      1000, 2000, 4000, 8000, 16000 };
     for (double fc : kBands) {
+        // Nyquist 超の帯域は測れない — 「それらしい値」を返さず除外する
+        if (fc / std::sqrt(2.0) >= sr * 0.5) continue;
         const std::size_t k1 = std::max<std::size_t>(
             1, static_cast<std::size_t>(fc / std::sqrt(2.0) * FS / sr));
         const std::size_t k2 = std::min<std::size_t>(

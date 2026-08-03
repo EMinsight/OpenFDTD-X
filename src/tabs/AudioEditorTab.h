@@ -10,6 +10,7 @@
 #pragma once
 #include <QScrollArea>
 #include <cstddef>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -47,11 +48,20 @@ private:
 
     void setStatus(const QString &s);
     void updateInfo();          // ch/fs/長さ/選択の表示と各ボタンの有効化
+    // 重い処理 (リバーブ/ピッチ/ストレッチ/NR) を QThread で非同期実行する
+    // (gui.md: 秒単位の処理を GUI スレッドで同期実行しない)。op は
+    // 呼び出し時にバッファをコピーで捕捉した純関数であること。
+    void runHeavy(const std::function<audioedit::AudioBuffer()> &op,
+                  const QString &doneStatus);
     void loadWav();
     void exportWav();
     void playViaSystemPlayer();
     void generateSignal();
-    void runAnalysis();
+    void runAnalysis();      // 計算は QThread、結果表示は showAnalysis
+    void showAnalysis(const audioedit::LevelMetrics &m,
+                      const std::vector<audioedit::SpectrumPoint> &spec,
+                      const audioedit::LoudnessMetrics &loud,
+                      const std::vector<audioedit::OctaveBand> &bands);
     audioedit::WindowKind currentWindow() const;
 
     Project *m_p;
@@ -60,6 +70,7 @@ private:
     audioedit::AudioBuffer              m_buf;
     std::vector<audioedit::AudioBuffer> m_undo;
     std::vector<double>                 m_noiseProfile;
+    bool                                m_busy = false;  // 非同期処理中
 
     // ヘッダ部
     AudioWaveformView *m_view = nullptr;

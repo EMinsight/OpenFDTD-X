@@ -884,7 +884,9 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             s.vocalF0MaxHz = vo.value("f0_max_hz").toDouble(s.vocalF0MaxHz);
             // 音響ソルバー連携 — 欠落キーは既定値のまま (旧ファイル互換)
             const QJsonObject so = oa["solver"].toObject();
-            s.solverBackend = so.value("backend").toInt(s.solverBackend);
+            // 壊れたファイルの範囲外値で不正 enum を作らない (0..4 にクランプ)
+            s.solverBackend =
+                qBound(0, so.value("backend").toInt(s.solverBackend), 4);
             s.solverExecutable =
                 so.value("executable").toString(s.solverExecutable);
             s.solverThreads = so.value("threads").toInt(s.solverThreads);

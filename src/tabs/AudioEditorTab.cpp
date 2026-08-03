@@ -8,7 +8,6 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
-#include <QApplication>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -21,10 +20,12 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QThread>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <cmath>
 #include <iterator>
+#include <memory>
 
 using namespace ofd;
 using namespace ofd::audioedit;
@@ -66,12 +67,50 @@ const bool s_i18n = [] {
     I18n::reg("ae_status_generated", "%1 を生成 (%2s, %3Hz)",
               "Generated %1 (%2s, %3Hz)");
     I18n::reg("ae_status_analyzed", "解析完了", "Analysis complete");
+    I18n::reg("ae_status_processing", "処理中…", "Processing…");
     I18n::reg("ae_sel_info", " · 選択 %1s", " · selection %1s");
 
     // 使い方
     I18n::reg("ae_howto", "📋 使い方 / 代表的な手順", "📋 How-to / typical workflows");
     I18n::reg("ae_howto_goal", "目的", "Goal");
     I18n::reg("ae_howto_steps", "手順", "Steps");
+    I18n::reg("ae_h1g", "🏛 ホールのIR実測", "🏛 Measure a hall IR");
+    I18n::reg("ae_h1s",
+        "①「信号生成」で ESSスイープを生成 → ②「💾 WAV書出」でファイル化し、"
+        "外部の再生・録音機材 (またはOSの録音アプリ) で放音・収音 → "
+        "③ 録音WAVを「📁 WAV読込」→ ④「解析」で T20/T30/EDT 算出 → "
+        "ホール解析タブの実測値と比較 (アプリ内録音は未実装)",
+        "① Generate an ESS sweep → ② export it with \"Export WAV\" and "
+        "play/record it with external gear (or the OS recorder) → ③ load the "
+        "recorded WAV → ④ compute T20/T30/EDT in Analyze and compare with the "
+        "hall analysis tab (in-app recording is not implemented)");
+    I18n::reg("ae_h2g", "🎧 響きの試聴 (可聴化)", "🎧 Audition reverberance");
+    I18n::reg("ae_h2s",
+        "①「📁 WAV読込」で乾いた音源 (声・楽器) を開く → "
+        "②「エフェクト > リバーブ」にホール解析の RT60 値を入力 → "
+        "③「畳み込み適用」→「▶ 再生」でそのホールの響きを試聴",
+        "① Load a dry source (voice/instrument) → ② enter the hall's RT60 in "
+        "Effects > Reverb → ③ apply convolution and press Play to audition");
+    I18n::reg("ae_h3g", "🔇 ノイズ除去", "🔇 Denoise");
+    I18n::reg("ae_h3s",
+        "① 波形上で無音部 (暗騒音のみ) をドラッグ選択 → "
+        "②「エフェクト > ノイズリダクション > 🎙 学習」→ ③ 選択解除して「適用」",
+        "① Drag-select a silent (noise-only) part → ② learn it in Effects > "
+        "Spectral denoise → ③ clear the selection and apply");
+    I18n::reg("ae_h4g", "📊 レベル・周波数確認", "📊 Check levels & spectrum");
+    I18n::reg("ae_h4s",
+        "① 解析したい範囲をドラッグ選択 (未選択なら全体) → "
+        "②「解析」タブで窓関数を選ぶ (レベル計測は Flat-top) → "
+        "③「📊 選択範囲を解析」で LUFS/スペクトル/オクターブバンド表示",
+        "① Drag-select the range (or none for the whole clip) → ② pick a "
+        "window in Analyze (Flat-top for level metering) → ③ run the analysis "
+        "for LUFS / spectrum / octave bands");
+    I18n::reg("ae_h5g", "✂ 切り出し・整音", "✂ Trim & clean up");
+    I18n::reg("ae_h5s",
+        "① 残す範囲をドラッグ選択 → ②「編集 > ✂ 切出し」→ ③「ノーマライズ」→ "
+        "④「💾 WAV書出」で保存。失敗したら「↶ 元に戻す」",
+        "① Drag-select the part to keep → ② Edit > Trim → ③ Normalize → "
+        "④ Export WAV. Use Undo if something goes wrong");
 
     // サブタブ
     I18n::reg("ae_tab_edit", "編集", "Edit");
@@ -128,6 +167,9 @@ const bool s_i18n = [] {
               "MLS: IR via correlation; robust under steady background noise");
     I18n::reg("ae_gen_hint_click", "風船破裂・ピストル音の代替 (簡易測定)",
               "Substitute for balloon pops / starter pistols (quick tests)");
+    I18n::reg("ae_gen_sweep_bad",
+              "スイープには 0 < 開始周波数 < 終了周波数 が必要です",
+              "Sweeps need 0 < start frequency < end frequency");
     I18n::reg("ae_sec_hall", "ホール解析との連携 / Link to hall analysis",
               "Link to hall analysis");
     I18n::reg("ae_hall_hint",
@@ -195,6 +237,9 @@ const bool s_i18n = [] {
     I18n::reg("ae_nr_apply", "適用", "Apply");
     I18n::reg("ae_st_nr_learn", "ノイズプロファイルを学習 (選択範囲)",
               "Noise profile learned from selection");
+    I18n::reg("ae_st_nr_fail",
+              "学習失敗 — 選択範囲が短すぎます (2048 サンプル以上必要)",
+              "Learning failed — selection too short (needs ≥ 2048 samples)");
     I18n::reg("ae_st_nr", "ノイズ除去 -%1dB 適用", "Denoise -%1 dB applied");
     I18n::reg("ae_nr_note",
         "▸ 手順: 無音部 (暗騒音のみ) を選択→学習→適用。スペクトルゲート方式 "
@@ -275,27 +320,13 @@ const bool s_i18n = [] {
 }();
 
 // 使い方テーブル (実装済みの手順のみ — 録音は未実装のため外部録音を案内)
-struct HowTo { const char *goal; const char *steps; };
+struct HowTo { const char *goalKey; const char *stepsKey; };
 const HowTo kHowTo[] = {
-    { "🏛 ホールのIR実測",
-      "①「信号生成」で ESSスイープを生成 → ②「💾 WAV書出」でファイル化し、"
-      "外部の再生・録音機材 (またはOSの録音アプリ) で放音・収音 → "
-      "③ 録音WAVを「📁 WAV読込」→ ④「解析」で T20/T30/EDT 算出 → "
-      "ホール解析タブの実測値と比較 (アプリ内録音は未実装)" },
-    { "🎧 響きの試聴 (可聴化)",
-      "①「📁 WAV読込」で乾いた音源 (声・楽器) を開く → "
-      "②「エフェクト > リバーブ」にホール解析の RT60 値を入力 → "
-      "③「畳み込み適用」→「▶ 再生」でそのホールの響きを試聴" },
-    { "🔇 ノイズ除去",
-      "① 波形上で無音部 (暗騒音のみ) をドラッグ選択 → "
-      "②「エフェクト > ノイズリダクション > 🎙 学習」→ ③ 選択解除して「適用」" },
-    { "📊 レベル・周波数確認",
-      "① 解析したい範囲をドラッグ選択 (未選択なら全体) → "
-      "②「解析」タブで窓関数を選ぶ (レベル計測は Flat-top) → "
-      "③「📊 選択範囲を解析」で LUFS/スペクトル/オクターブバンド表示" },
-    { "✂ 切り出し・整音",
-      "① 残す範囲をドラッグ選択 → ②「編集 > ✂ 切出し」→ ③「ノーマライズ」→ "
-      "④「💾 WAV書出」で保存。失敗したら「↶ 元に戻す」" },
+    { "ae_h1g", "ae_h1s" },
+    { "ae_h2g", "ae_h2s" },
+    { "ae_h3g", "ae_h3s" },
+    { "ae_h4g", "ae_h4s" },
+    { "ae_h5g", "ae_h5s" },
 };
 
 QTableWidget *makeTable(QWidget *parent, const QStringList &headers)
@@ -393,9 +424,8 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
     for (const HowTo &h : kHowTo) {
         const int r = howTable->rowCount();
         howTable->insertRow(r);
-        howTable->setItem(r, 0, roItem(QString::fromUtf8(h.goal)));
-        auto *steps = roItem(QString::fromUtf8(h.steps));
-        howTable->setItem(r, 1, steps);
+        howTable->setItem(r, 0, roItem(I18n::tr(h.goalKey)));
+        howTable->setItem(r, 1, roItem(I18n::tr(h.stepsKey)));
     }
     howTable->setWordWrap(true);
     fitTable(howTable);
@@ -583,12 +613,10 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
             if (!hasBuf()) return;
             // mock の applySimIR: RT=2.0s の合成 IR で可聴化
             m_revRT->setValue(2.0);
-            QApplication::setOverrideCursor(Qt::WaitCursor);
-            audioedit::AudioBuffer b = applyReverb(m_buf, 2.0,
-                                                   m_revMix->value());
-            QApplication::restoreOverrideCursor();
-            pushBuffer(std::move(b),
-                       I18n::tr("ae_st_reverb").arg(2.0, 0, 'f', 1));
+            const audioedit::AudioBuffer buf = m_buf;
+            const double mix = m_revMix->value();
+            runHeavy([buf, mix] { return applyReverb(buf, 2.0, mix); },
+                     I18n::tr("ae_st_reverb").arg(2.0, 0, 'f', 1));
         });
     }
     tabs->addTab(pageGen, I18n::tr("ae_tab_gen"));
@@ -706,12 +734,10 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
         });
         connect(btnRev2, &QPushButton::clicked, this, [this] {
             if (!hasBuf()) return;
-            QApplication::setOverrideCursor(Qt::WaitCursor);
-            audioedit::AudioBuffer b =
-                applyReverb(m_buf, m_revRT->value(), m_revMix->value());
-            QApplication::restoreOverrideCursor();
-            pushBuffer(std::move(b),
-                I18n::tr("ae_st_reverb").arg(m_revRT->value(), 0, 'f', 1));
+            const audioedit::AudioBuffer buf = m_buf;
+            const double rt = m_revRT->value(), mix = m_revMix->value();
+            runHeavy([buf, rt, mix] { return applyReverb(buf, rt, mix); },
+                     I18n::tr("ae_st_reverb").arg(rt, 0, 'f', 1));
         });
 
         // 時間軸
@@ -752,21 +778,19 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
         });
         connect(btnPitch, &QPushButton::clicked, this, [this] {
             if (!hasBuf()) return;
-            QApplication::setOverrideCursor(Qt::WaitCursor);
-            audioedit::AudioBuffer b = pitchShift(m_buf, m_semi->value());
-            QApplication::restoreOverrideCursor();
+            const audioedit::AudioBuffer buf = m_buf;
             const double semi = m_semi->value();
-            pushBuffer(std::move(b), I18n::tr("ae_st_pitch").arg(semi > 0
-                ? QStringLiteral("+%1").arg(semi, 0, 'f', 0)
-                : QString::number(semi, 'f', 0)));
+            runHeavy([buf, semi] { return pitchShift(buf, semi); },
+                I18n::tr("ae_st_pitch").arg(semi > 0
+                    ? QStringLiteral("+%1").arg(semi, 0, 'f', 0)
+                    : QString::number(semi, 'f', 0)));
         });
         connect(btnStretch, &QPushButton::clicked, this, [this] {
             if (!hasBuf()) return;
-            QApplication::setOverrideCursor(Qt::WaitCursor);
-            audioedit::AudioBuffer b = timeStretch(m_buf, m_stretch->value());
-            QApplication::restoreOverrideCursor();
-            pushBuffer(std::move(b),
-                I18n::tr("ae_st_stretch").arg(m_stretch->value(), 0, 'f', 2));
+            const audioedit::AudioBuffer buf = m_buf;
+            const double factor = m_stretch->value();
+            runHeavy([buf, factor] { return timeStretch(buf, factor); },
+                     I18n::tr("ae_st_stretch").arg(factor, 0, 'f', 2));
         });
 
         // ノイズリダクション
@@ -792,17 +816,18 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
             if (!hasBuf() || !m_view->hasSelection()) return;
             const auto [a, z] = range();
             m_noiseProfile = noiseProfile(m_buf, a, z);
-            m_nrApply->setEnabled(true);
-            setStatus(I18n::tr("ae_st_nr_learn"));
+            // 2048 サンプル未満の選択では学習できない — 成功と偽らない
+            setStatus(I18n::tr(m_noiseProfile.empty() ? "ae_st_nr_fail"
+                                                      : "ae_st_nr_learn"));
+            updateInfo();
         });
         connect(m_nrApply, &QPushButton::clicked, this, [this] {
             if (!hasBuf() || m_noiseProfile.empty()) return;
-            QApplication::setOverrideCursor(Qt::WaitCursor);
-            audioedit::AudioBuffer b =
-                denoise(m_buf, m_noiseProfile, m_nrDb->value());
-            QApplication::restoreOverrideCursor();
-            pushBuffer(std::move(b),
-                       I18n::tr("ae_st_nr").arg(m_nrDb->value(), 0, 'f', 0));
+            const audioedit::AudioBuffer buf = m_buf;
+            const std::vector<double> prof = m_noiseProfile;
+            const double db = m_nrDb->value();
+            runHeavy([buf, prof, db] { return denoise(buf, prof, db); },
+                     I18n::tr("ae_st_nr").arg(db, 0, 'f', 0));
         });
 
         // ステレオ
@@ -993,19 +1018,39 @@ void AudioEditorTab::updateInfo()
     } else {
         m_info->setText(QStringLiteral("—"));
     }
-    const bool has = hasBuf();
+    // 非同期処理中は全操作を止める (バッファ差し替え中の競合防止)
+    const bool has = hasBuf() && !m_busy;
     const bool sel = has && m_view->hasSelection();
     m_btnPlay->setEnabled(has);
     m_btnExport->setEnabled(has);
-    m_btnUndo->setEnabled(!m_undo.empty());
+    m_btnUndo->setEnabled(!m_undo.empty() && !m_busy);
     m_btnUndo->setText(m_undo.empty()
         ? I18n::tr("ae_undo")
         : I18n::tr("ae_undo") + QStringLiteral(" (%1)").arg(m_undo.size()));
     m_btnClearSel->setVisible(sel);
     for (QPushButton *b : m_needBuf) b->setEnabled(has);
     for (QPushButton *b : m_needSel) b->setEnabled(sel);
-    if (!sel && m_nrApply && m_noiseProfile.empty())
-        m_nrApply->setEnabled(false);
+    if (m_nrApply)
+        m_nrApply->setEnabled(has && !m_noiseProfile.empty());
+}
+
+// 重い処理の非同期実行。op はバッファをコピーで捕捉済みの純関数
+void AudioEditorTab::runHeavy(
+    const std::function<audioedit::AudioBuffer()> &op,
+    const QString &doneStatus)
+{
+    if (m_busy) return;
+    m_busy = true;
+    setStatus(I18n::tr("ae_status_processing"));
+    updateInfo();
+    auto result = std::make_shared<audioedit::AudioBuffer>();
+    QThread *th = QThread::create([op, result] { *result = op(); });
+    connect(th, &QThread::finished, this, [this, th, result, doneStatus] {
+        th->deleteLater();
+        m_busy = false;
+        pushBuffer(std::move(*result), doneStatus);
+    });
+    th->start();
 }
 
 // ── 入出力 ──────────────────────────────────────────────────────────────────
@@ -1074,6 +1119,12 @@ void AudioEditorTab::generateSignal()
     };
     const int i = m_genKind->currentIndex();
     if (i < 0 || i >= static_cast<int>(std::size(kKinds))) return;
+    // ESS は 0 < f1 < f2 が前提 — 満たさない入力を黙って無音にしない
+    if (kKinds[i] == SignalKind::ExpSweep &&
+        (m_genF1->value() <= 0.0 || m_genF2->value() <= m_genF1->value())) {
+        setStatus(I18n::tr("ae_gen_sweep_bad"));
+        return;
+    }
     // fs は既存バッファに合わせる (無ければ 48 kHz)
     const double sr = hasBuf() ? m_buf.sampleRateHz : 48000.0;
     audioedit::AudioBuffer b = audioedit::generateSignal(
@@ -1096,16 +1147,42 @@ audioedit::WindowKind AudioEditorTab::currentWindow() const
 
 void AudioEditorTab::runAnalysis()
 {
-    if (!hasBuf()) return;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const auto [a, z] = range();
+    if (!hasBuf() || m_busy) return;
+    m_busy = true;
+    setStatus(I18n::tr("ae_status_processing"));
+    updateInfo();
+    // 構造化束縛はラムダに捕捉できない (C++17) — 素の変数に受ける
+    const std::pair<std::size_t, std::size_t> rz = range();
+    const std::size_t a = rz.first, z = rz.second;
     const WindowKind win = currentWindow();
-    const LevelMetrics m = analyzeLevels(m_buf, a, z);
-    const std::vector<SpectrumPoint> spec = spectrum(m_buf, a, win);
-    const LoudnessMetrics loud = analyzeLoudness(m_buf);
-    const std::vector<OctaveBand> bands = octaveBands(m_buf);
-    QApplication::restoreOverrideCursor();
+    const audioedit::AudioBuffer buf = m_buf;
 
+    struct AnalysisData {
+        LevelMetrics m;
+        std::vector<SpectrumPoint> spec;
+        LoudnessMetrics loud;
+        std::vector<OctaveBand> bands;
+    };
+    auto data = std::make_shared<AnalysisData>();
+    QThread *th = QThread::create([buf, a, z, win, data] {
+        data->m = analyzeLevels(buf, a, z);
+        data->spec = spectrum(buf, a, win);
+        data->loud = analyzeLoudness(buf);
+        data->bands = octaveBands(buf);
+    });
+    connect(th, &QThread::finished, this, [this, th, data] {
+        th->deleteLater();
+        m_busy = false;
+        showAnalysis(data->m, data->spec, data->loud, data->bands);
+        updateInfo();
+    });
+    th->start();
+}
+
+void AudioEditorTab::showAnalysis(
+    const LevelMetrics &m, const std::vector<SpectrumPoint> &spec,
+    const LoudnessMetrics &loud, const std::vector<OctaveBand> &bands)
+{
     // 指標テーブル
     m_metricsTable->setRowCount(0);
     auto addRow = [this](const QString &name, const QString &value,
