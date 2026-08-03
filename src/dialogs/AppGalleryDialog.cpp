@@ -21,15 +21,13 @@ const bool s_i18n = [] {
     ofd::I18n::reg("gal_title",
         "応用ギャラリー / Application Gallery — FDTDで出来ること一覧",
         "Application Gallery — what FDTD can do");
-    // テンプレートは現状ドメイン切替とタイトル設定のみ (物性値・メッシュ・
-    // 波源のプリセットは未実装)。実態どおりに書く (絶対規則 5)。
     ofd::I18n::reg("gal_hint",
-        "プロジェクトテンプレートを選択してください。"
-        "現在はドメインの切替とタイトル設定のみを行います "
-        "(物性値・メッシュ・波源のプリセットは未実装)。",
-        "Pick a project template. For now this only switches the domain and "
-        "sets the title (material / mesh / source presets are not "
-        "implemented).");
+        "プロジェクトテンプレートを選択してください。選ぶとシナリオに応じた"
+        "メッシュ・物性値・形状・波源・周波数と各ドメイン設定を投入した"
+        "新規プロジェクトを作成します (現在のプロジェクトは置き換え)。",
+        "Pick a project template. It creates a new project pre-filled with a "
+        "scenario-matched mesh, materials, geometry, sources, frequencies and "
+        "domain settings (the current project is replaced).");
     ofd::I18n::reg("gal_count", "— %1 テンプレート", "— %1 templates");
     ofd::I18n::reg("gal_cancel", "キャンセル", "Cancel");
     ofd::I18n::reg("gal_open_file", "📂 ファイルから開く…", "📂 Open from file…");
@@ -38,7 +36,8 @@ const bool s_i18n = [] {
 }();
 
 // ── テンプレート定義 (mock の groups 配列をそのまま転記) ────────────────────
-struct Item { const char *name; const char *sub; };
+// id は core/ProjectTemplates のレジストリと 1:1 (テンプレート内容の実体)
+struct Item { const char *id; const char *name; const char *sub; };
 struct Group {
     const char *domain;
     const char *color;
@@ -49,51 +48,51 @@ struct Group {
 };
 
 const Item kEmItems[] = {
-    { "アンテナ放射パターン",      "ダイポール・パッチ・アレイ・ホーン" },
-    { "EMC / EMI 適合性解析",     "シールド・キャビティ・PCB放射" },
-    { "RCS (レーダー断面積)",     "ステルス機・船舶・地形" },
-    { "マイクロ波回路",            "導波管・フィルタ・カプラ" },
-    { "MRIコイル設計",             "B1場分布・SAR評価" },
-    { "ワイヤレス給電 (WPT)",      "共鳴結合・効率最適化" },
-    { "生体電磁波 / SAR",          "人体モデル・温度上昇" },
-    { "5G/6G ミリ波解析",          "ビームフォーミング・基地局" }
+    { "em_antenna",   "アンテナ放射パターン",  "ダイポール・パッチ・アレイ・ホーン" },
+    { "em_emc",       "EMC / EMI 適合性解析", "シールド・キャビティ・PCB放射" },
+    { "em_rcs",       "RCS (レーダー断面積)", "ステルス機・船舶・地形" },
+    { "em_waveguide", "マイクロ波回路",        "導波管・フィルタ・カプラ" },
+    { "em_mri",       "MRIコイル設計",         "B1場分布・SAR評価" },
+    { "em_wpt",       "ワイヤレス給電 (WPT)",  "共鳴結合・効率最適化" },
+    { "em_sar",       "生体電磁波 / SAR",      "人体モデル・温度上昇" },
+    { "em_5g",        "5G/6G ミリ波解析",      "ビームフォーミング・基地局" }
 };
 const Item kOpticalItems[] = {
-    { "BPF (バンドパスフィルタ)",  "DBR・FBG・薄膜多層" },
-    { "リング共振器・MZI",         "Si Photonics モジュレータ" },
-    { "フォトニック結晶 / 欠陥モード", "バンド構造・スローライト" },
-    { "メタサーフェス・メタレンズ", "位相設計・偏向" },
-    { "プラズモニクス",            "金属ナノ構造・SPR" },
-    { "非線形光学 / 高調波生成",   "χ(2)/χ(3) 媒質" },
-    { "太陽電池 / 薄膜",            "光吸収最適化・光閉じ込め" },
-    { "LiDAR / イメージング",       "TOF・FMCW・コヒーレント検出" },
-    { "Raycast 大規模光学系",      "カメラ・望遠鏡・レンズ系" },
-    { "ハイブリッドFDTD+Ray",      "ナノ構造+大スケール伝搬" }
+    { "opt_bpf",       "BPF (バンドパスフィルタ)",  "DBR・FBG・薄膜多層" },
+    { "opt_ring",      "リング共振器・MZI",         "Si Photonics モジュレータ" },
+    { "opt_phc",       "フォトニック結晶 / 欠陥モード", "バンド構造・スローライト" },
+    { "opt_meta",      "メタサーフェス・メタレンズ", "位相設計・偏向" },
+    { "opt_plasmon",   "プラズモニクス",            "金属ナノ構造・SPR" },
+    { "opt_nonlinear", "非線形光学 / 高調波生成",   "χ(2)/χ(3) 媒質" },
+    { "opt_solar",     "太陽電池 / 薄膜",            "光吸収最適化・光閉じ込め" },
+    { "opt_lidar",     "LiDAR / イメージング",       "TOF・FMCW・コヒーレント検出" },
+    { "opt_raycast",   "Raycast 大規模光学系",      "カメラ・望遠鏡・レンズ系" },
+    { "opt_hybrid",    "ハイブリッドFDTD+Ray",      "ナノ構造+大スケール伝搬" }
 };
 const Item kAcousticItems[] = {
-    { "コンサートホール / オペラハウス", "RT60・C80・D50 評価" },
-    { "オフィス・教室",            "STI 言葉の明瞭度" },
-    { "スタジオ・コントロールルーム", "モーダル解析・吸音最適化" },
-    { "屋外音響伝播",              "障壁・地形・気象影響" },
-    { "オーラリゼーション",         "バイノーラル/Ambisonics再生" },
-    { "幾何音響レイトレース",       "Odeon/CATT-Acoustic相当" },
-    { "鏡像法 (Image-Source)",     "初期反射の高速計算" },
-    { "騒音解析 / 防音設計",       "壁透過・床衝撃音" }
+    { "ac_hall",        "コンサートホール / オペラハウス", "RT60・C80・D50 評価" },
+    { "ac_office",      "オフィス・教室",            "STI 言葉の明瞭度" },
+    { "ac_studio",      "スタジオ・コントロールルーム", "モーダル解析・吸音最適化" },
+    { "ac_outdoor",     "屋外音響伝播",              "障壁・地形・気象影響" },
+    { "ac_aural",       "オーラリゼーション",         "バイノーラル/Ambisonics再生" },
+    { "ac_raytrace",    "幾何音響レイトレース",       "Odeon/CATT-Acoustic相当" },
+    { "ac_imagesource", "鏡像法 (Image-Source)",     "初期反射の高速計算" },
+    { "ac_noise",       "騒音解析 / 防音設計",       "壁透過・床衝撃音" }
 };
 const Item kUnderwaterItems[] = {
-    { "海洋音響伝搬 (SOFAR)",      "Bellhop型レイトレース" },
-    { "ソナー指向性",              "TX/RX ビーム・アレイ" },
-    { "海底地形マッピング",         "マルチビーム・サイドスキャン" },
-    { "海洋生物検出",              "魚群・鯨類エコー" },
-    { "潜水艦・水中ドローン通信",   "ADCP・モデムリンク" },
-    { "津波・地震波結合",          "T-wave・地中音響" },
-    { "PE法 (放物方程式)",         "RAM/RAMGeo相当" }
+    { "uw_sofar",  "海洋音響伝搬 (SOFAR)",      "Bellhop型レイトレース" },
+    { "uw_sonar",  "ソナー指向性",              "TX/RX ビーム・アレイ" },
+    { "uw_bathy",  "海底地形マッピング",         "マルチビーム・サイドスキャン" },
+    { "uw_bio",    "海洋生物検出",              "魚群・鯨類エコー" },
+    { "uw_comm",   "潜水艦・水中ドローン通信",   "ADCP・モデムリンク" },
+    { "uw_seismo", "津波・地震波結合",          "T-wave・地中音響" },
+    { "uw_pe",     "PE法 (放物方程式)",         "RAM/RAMGeo相当" }
 };
 const Item kTidy3dItems[] = {
-    { "大規模3D光学シミュレーション", "メタサーフェスアレイ・PIC" },
-    { "パラメータスイープ",        "1000+ジョブ並列実行" },
-    { "形状最適化 / 逆設計",        "adjoint / topology" },
-    { "ML/AI連携",                 "tidy3d-AI · データセット生成" }
+    { "t3_large",   "大規模3D光学シミュレーション", "メタサーフェスアレイ・PIC" },
+    { "t3_sweep",   "パラメータスイープ",        "1000+ジョブ並列実行" },
+    { "t3_inverse", "形状最適化 / 逆設計",        "adjoint / topology" },
+    { "t3_ml",      "ML/AI連携",                 "tidy3d-AI · データセット生成" }
 };
 
 const Group kGroups[] = {
@@ -230,12 +229,14 @@ AppGalleryDialog::AppGalleryDialog(QWidget *parent)
         auto *grid = new QGridLayout();
         grid->setSpacing(8);
         for (int i = 0; i < g.count; ++i) {
+            const QString id = QString::fromLatin1(g.items[i].id);
             const QString name = QString::fromUtf8(g.items[i].name);
             auto *card = new GalleryCard(name,
                                          QString::fromUtf8(g.items[i].sub),
                                          accent, groupBox);
-            connect(card, &GalleryCard::clicked, this, [this, domain, name] {
-                emit templatePicked(domain, name);
+            connect(card, &GalleryCard::clicked, this,
+                    [this, domain, id, name] {
+                emit templatePicked(domain, id, name);
                 accept();
             });
             grid->addWidget(card, i / kCols, i % kCols);
