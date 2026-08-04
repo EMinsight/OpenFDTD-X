@@ -202,6 +202,13 @@ FilmResponse filmResponse(double n0, const std::vector<FilmLayer> &layers,
     if (std::abs(qs) < 1e-300) return out;          // 基板内で臨界角ちょうど
     const cd etas = etaOf(Ns, qs, pol);
 
+    // 全反射 (無損失基板 + 臨界角超): 基板側の波はエバネッセントで正味の
+    // 電力輸送が無く、T は厳密に 0。T = 4·η0·Re(ηs)/|den|² は Re(ηs) が
+    // 厳密に 0 になることを前提にしているが、複素平方根・複素除算の実装差で
+    // 微小な非零が残る処理系がある (Apple clang / arm64 で実測: macOS だけ
+    // T が 0 にならず CI が落ちた)。丸め残差に頼らず入力から判定する。
+    const bool tir = (ksub == 0.0) && (s0 > nsub);
+
     cd B(1.0, 0.0), C = etas;
     for (int j = int(layers.size()) - 1; j >= 0; --j) {
         const FilmLayer &L = layers[j];
@@ -231,8 +238,8 @@ FilmResponse filmResponse(double n0, const std::vector<FilmLayer> &layers,
     const cd r = (eta0 * B - C) / den;
 
     out.R = std::norm(r);
-    out.T = 4.0 * eta0 * etas.real() / d2;
-    if (out.T < 0.0) out.T = 0.0;                   // 全反射時の数値誤差
+    out.T = tir ? 0.0 : (4.0 * eta0 * etas.real() / d2);
+    if (out.T < 0.0) out.T = 0.0;                   // 残る丸め誤差の保険
     out.A = 1.0 - out.R - out.T;
     if (out.A < 0.0) out.A = 0.0;                   // 無損失系の丸め誤差
     out.phase_rad = std::arg(r);

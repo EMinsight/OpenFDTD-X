@@ -2470,7 +2470,14 @@ static void testThinFilmStack()
             const FilmResponse r = filmResponse(n0, {}, ns, 0.0, 550.0,
                                                 crit + 10.0, pol);
             check(r.valid && std::fabs(r.R - 1.0) < 1e-12, "tmm: TIR R = 1");
+            // 厳密に 0 であること (処理系の丸め残差に依存しない実装を要求する
+            // — Apple clang で Re(ηs) に微小な非零が残り macOS CI が落ちた)
             check(r.T == 0.0, "tmm: TIR T = 0");
+            check(r.A == 0.0, "tmm: TIR は吸収も 0");
+            // 臨界角の直上でも同じ (境界付近で分岐が崩れないこと)
+            const FilmResponse e = filmResponse(n0, {}, ns, 0.0, 550.0,
+                                                crit + 1e-6, pol);
+            check(e.valid && e.T == 0.0, "tmm: 臨界角直上でも T = 0");
         }
         // 臨界角未満では透過する
         const FilmResponse t = filmResponse(n0, {}, ns, 0.0, 550.0,
