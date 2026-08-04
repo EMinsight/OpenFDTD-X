@@ -2,6 +2,7 @@
 #include "IlluminationTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../optics/SourceSpectrum.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -15,9 +16,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <QVector>
+#include <cmath>
 
 using namespace ofd;
 
@@ -59,14 +63,40 @@ const bool s_i18n = [] {
               ".txt (Radiant) (import is not implemented — only the file name is "
               "recorded)");
     I18n::reg("ilm_spectrum", "スペクトル", "Spectrum");
-    I18n::reg("ilm_sp_white", "白色LED 5000K (青LED+YAG蛍光体)",
-              "White LED 5000 K (blue LED + YAG phosphor)");
+    I18n::reg("ilm_sp_white", "白色LED (青LED + 蛍光体)",
+              "White LED (blue LED + phosphor)");
     I18n::reg("ilm_sp_rgb",   "RGB 3チップ", "RGB 3-chip");
-    I18n::reg("ilm_sp_full",  "フルスペクトル (高CRI)", "Full spectrum (high CRI)");
+    I18n::reg("ilm_sp_full",  "フルスペクトル (黒体放射)",
+              "Full spectrum (blackbody)");
     I18n::reg("ilm_sp_mono",  "単色 (波長指定)", "Monochromatic (specified wavelength)");
     I18n::reg("ilm_flux", "光束", "Luminous flux");
     I18n::reg("ilm_flux_unit", "lm · ", "lm · ");
     I18n::reg("ilm_rays", "レイ数", "Rays");
+    I18n::reg("ilm_sp_params", "スペクトル パラメータ", "Spectrum parameters");
+    I18n::reg("ilm_sp_hint",
+              "▸ 分光分布はここで指定したモデル (ガウシアンローブ / プランク黒体) "
+              "から作られ、測色量はその分布から計算される。",
+              "▸ The spectral power distribution is built from the model specified "
+              "here (Gaussian lobes / Planckian radiator); the colorimetric "
+              "quantities below are computed from that distribution.");
+    I18n::reg("ilm_blue",  "青LED ピーク / 半値全幅", "Blue LED peak / FWHM");
+    I18n::reg("ilm_phos",  "蛍光体 ピーク / 半値全幅 / ピーク強度比",
+              "Phosphor peak / FWHM / peak-intensity ratio");
+    I18n::reg("ilm_red",   "R ピーク / 半値全幅 / 強度比",
+              "R peak / FWHM / intensity ratio");
+    I18n::reg("ilm_green", "G ピーク / 半値全幅 / 強度比",
+              "G peak / FWHM / intensity ratio");
+    I18n::reg("ilm_blue3", "B ピーク / 半値全幅 / 強度比",
+              "B peak / FWHM / intensity ratio");
+    I18n::reg("ilm_bbtemp", "黒体温度", "Blackbody temperature");
+    I18n::reg("ilm_mono",  "波長 / 線幅 (半値全幅)", "Wavelength / linewidth (FWHM)");
+    I18n::reg("ilm_nm", "nm", "nm");
+    I18n::reg("ilm_slash", "/", "/");
+    I18n::reg("ilm_kelvin", "K", "K");
+    I18n::reg("ilm_target_sec", "設計目標", "Design targets");
+    I18n::reg("ilm_tg_cct", "CCT", "CCT");
+    I18n::reg("ilm_tg_pm", "K ±", "K ±");
+    I18n::reg("ilm_tg_duv", "K · |Duv| ≤", "K · |Duv| ≤");
 
     // 光学系
     I18n::reg("ilm_opt_sec", "光学系 / Optics", "Optics");
@@ -90,22 +120,65 @@ const bool s_i18n = [] {
     I18n::reg("ilm_c_value",  "値", "Value");
     I18n::reg("ilm_c_target", "目標/規格", "Target / standard");
     I18n::reg("ilm_c_judge",  "判定", "Verdict");
+    I18n::reg("ilm_c_basis",  "根拠 / 必要な計算", "Basis / required computation");
     I18n::reg("ilm_pass", "適合", "Pass");
+    I18n::reg("ilm_fail", "不適合", "Fail");
     I18n::reg("ilm_ref",  "参考", "Reference");
-    I18n::reg("ilm_m_flux",    "全光束", "Total luminous flux");
+    I18n::reg("ilm_uncomputed", "未計算", "Not computed");
+    I18n::reg("ilm_dash", "—", "—");
+    I18n::reg("ilm_m_srcflux", "光源光束 (入力値)", "Source luminous flux (input)");
+    I18n::reg("ilm_m_flux",    "系の全光束", "System luminous flux");
     I18n::reg("ilm_m_eff",     "光学効率", "Optical efficiency");
     I18n::reg("ilm_m_beam",    "ビーム角 (FWHM)", "Beam angle (FWHM)");
     I18n::reg("ilm_m_unif",    "照度均斉度", "Illuminance uniformity");
     I18n::reg("ilm_m_cct",     "相関色温度 CCT", "Correlated color temperature CCT");
+    I18n::reg("ilm_m_duv",     "Duv (黒体軌跡からのずれ)",
+              "Duv (distance from the Planckian locus)");
     I18n::reg("ilm_m_ra",      "演色評価数 Ra", "Color rendering index Ra");
     I18n::reg("ilm_m_tm30",    "TM-30 Rf / Rg", "TM-30 Rf / Rg");
-    I18n::reg("ilm_m_uv",      "色度座標 (u',v')", "Chromaticity (u', v')");
+    I18n::reg("ilm_m_xy",      "色度座標 (x, y)", "Chromaticity (x, y)");
+    I18n::reg("ilm_m_uv",      "色度座標 (u', v')", "Chromaticity (u', v')");
+    I18n::reg("ilm_m_ler",     "放射発光効率 K", "Luminous efficacy of radiation K");
+    I18n::reg("ilm_m_peak",    "ピーク波長", "Peak wavelength");
     I18n::reg("ilm_m_uvspread","色ムラ (Δu'v' 配光内)",
               "Color non-uniformity (Δu'v' across the beam)");
     I18n::reg("ilm_m_ugr",     "UGR (グレア)", "UGR (glare)");
-    I18n::reg("ilm_t_ansi", "ANSI C78.377 5000K枠内",
-              "Inside the ANSI C78.377 5000 K quadrangle");
-    I18n::reg("ilm_t_ugr",  "< 19 (オフィス)", "< 19 (office)");
+    I18n::reg("ilm_b_cie",
+              "CIE 1931 等色関数 (Wyman 2013 の解析近似) による三刺激値",
+              "Tristimulus values from the CIE 1931 colour-matching functions "
+              "(analytic fit, Wyman 2013)");
+    I18n::reg("ilm_b_cct",
+              "CIE 1960 UCS 上で黒体軌跡までの距離を最小化 (Judd の定義)",
+              "Minimum distance to the Planckian locus in the CIE 1960 UCS "
+              "(Judd's definition)");
+    I18n::reg("ilm_b_ler", "K = 683·∫S·V(λ)dλ / ∫S dλ",
+              "K = 683·∫S·V(λ)dλ / ∫S dλ");
+    I18n::reg("ilm_b_input", "入力値 (光源仕様)", "Input value (source spec)");
+    I18n::reg("ilm_b_needray",
+              "レイトレース (配光計算) が必要 — 未実装",
+              "Requires a ray trace (intensity distribution) — not implemented");
+    I18n::reg("ilm_b_needtcs",
+              "CIE 13.3 試験色 R1..R8 の分光反射率データが必要 — 未実装",
+              "Requires the CIE 13.3 test-colour reflectance data (R1..R8) — "
+              "not implemented");
+    I18n::reg("ilm_b_needtm30",
+              "IES TM-30 の 99 試験色データが必要 — 未実装",
+              "Requires the 99 IES TM-30 test colours — not implemented");
+    I18n::reg("ilm_b_needugr",
+              "器具の輝度分布と観測位置 (CIE 117) が必要 — 未実装",
+              "Requires the luminaire luminance distribution and observer geometry "
+              "(CIE 117) — not implemented");
+    I18n::reg("ilm_cct_undef",
+              "黒体軌跡から離れすぎて CCT は定義されない (単色光など)",
+              "Too far from the Planckian locus for CCT to be defined "
+              "(e.g. monochromatic light)");
+    I18n::reg("ilm_photo_note",
+              "▸ 測色量は上のスペクトルモデルから計算した結果。"
+              "「—」の行はレイトレース・分光反射率データ (未実装) が必要な量で、"
+              "値を推定して表示することはしない。",
+              "▸ The colorimetric quantities are computed from the spectrum model "
+              "above. Rows showing “—” need ray tracing or spectral reflectance data "
+              "(not implemented); no estimated numbers are shown for them.");
     I18n::reg("ilm_btn_polar", "🗺 配光曲線 (極座標)",
               "🗺 Intensity distribution (polar)");
     I18n::reg("ilm_btn_cie",   "🎨 CIE色度図", "🎨 CIE chromaticity diagram");
@@ -121,22 +194,10 @@ const bool s_i18n = [] {
     return true;
 }();
 
-// 測光・測色 表 (モックの <tbody> をそのまま)。target が nullptr のときは
-// targetKey (規格名など) を左寄せで表示する。
-struct PhotoRow {
-    const char *itemKey, *value, *target, *targetKey, *judgeKey, *kind;
-};
-const PhotoRow kPhoto[10] = {
-    { "ilm_m_flux",     "1043 lm",         "≥ 1000",     nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_eff",      "86.9 %",          "≥ 85",       nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_beam",     "24.2 °",          "25 ± 3",     nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_unif",     "0.78",            "≥ 0.7",      nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_cct",      "4980 K",          "5000 ± 300", nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_ra",       "83.4",            "≥ 80",       nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_tm30",     "86 / 98",         "—",          nullptr,      "ilm_ref",  ""   },
-    { "ilm_m_uv",       "0.2131, 0.4956",  nullptr,      "ilm_t_ansi", "ilm_pass", "ok" },
-    { "ilm_m_uvspread", "0.0042",          "< 0.006",    nullptr,      "ilm_pass", "ok" },
-    { "ilm_m_ugr",      "17.8",            nullptr,      "ilm_t_ugr",  "ilm_pass", "ok" },
+// 測光・測色表の 1 行 (kind: "ok"/"warn"/"acc"/"" = 未計算)
+struct PhotoOut {
+    QString item, value, target, judge, basis;
+    const char *kind = "";
 };
 
 // バッジ (mock の .badge ok / warn / err / acc)
@@ -178,23 +239,29 @@ QLabel *hintLabel(const QString &text, QWidget *parent)
     return l;
 }
 
-QLineEdit *numEdit(const char *value, int width, QWidget *parent)
+QLabel *noteLabel(const QString &text, QWidget *parent)
 {
-    auto *e = new QLineEdit(QString::fromUtf8(value), parent);
+    auto *l = new QLabel(text, parent);
+    l->setTextFormat(Qt::PlainText);
+    l->setWordWrap(true);
+    l->setStyleSheet("font-size:11px; color:palette(mid);");
+    return l;
+}
+
+QLineEdit *numEdit(int width, QWidget *parent)
+{
+    auto *e = new QLineEdit(parent);
     if (width > 0) e->setMaximumWidth(width);
     return e;
 }
 
-QCheckBox *makeCheck(const QString &text, bool on, QWidget *parent)
+QCheckBox *makeCheck(const QString &text, QWidget *parent)
 {
-    auto *c = new QCheckBox(text, parent);
-    c->setChecked(on);
-    return c;
+    return new QCheckBox(text, parent);
 }
 
 // <Seg> 相当: 排他 checkable QPushButton の一列
-QButtonGroup *segRow(QHBoxLayout *row, const QStringList &labels, int current,
-                     QWidget *parent)
+QButtonGroup *segRow(QHBoxLayout *row, const QStringList &labels, QWidget *parent)
 {
     auto *g = new QButtonGroup(parent);
     g->setExclusive(true);
@@ -202,12 +269,16 @@ QButtonGroup *segRow(QHBoxLayout *row, const QStringList &labels, int current,
         auto *b = new QPushButton(labels.at(i), parent);
         b->setCheckable(true);
         b->setStyleSheet("font-size:11px; padding:2px 8px;");
-        if (i == current) b->setChecked(true);
         g->addButton(b, i);
         row->addWidget(b);
     }
     row->addStretch(1);
     return g;
+}
+
+void setSeg(QButtonGroup *g, int index)
+{
+    if (auto *b = g->button(index)) b->setChecked(true);
 }
 
 QTableWidgetItem *textItem(const QString &s)
@@ -223,6 +294,58 @@ QTableWidgetItem *numItem(const QString &s)
     it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
     return it;
 }
+
+QString fmt(double v, int dec) { return QString::number(v, 'f', dec); }
+
+double readNum(QLineEdit *e, double fallback)
+{
+    bool ok = false;
+    const double v = e->text().toDouble(&ok);
+    return ok ? v : fallback;
+}
+
+// 未計算行 (値も目標も出さない)
+PhotoOut uncomputed(const QString &item, const QString &basis)
+{
+    PhotoOut p;
+    p.item = item;
+    p.value = I18n::tr("ilm_dash");
+    p.target = I18n::tr("ilm_dash");
+    p.judge = I18n::tr("ilm_uncomputed");
+    p.basis = basis;
+    p.kind = "";
+    return p;
+}
+
+// 計算済みだが判定対象でない行
+PhotoOut computed(const QString &item, const QString &value,
+                  const QString &basis)
+{
+    PhotoOut p;
+    p.item = item;
+    p.value = value;
+    p.target = I18n::tr("ilm_dash");
+    p.judge = I18n::tr("ilm_ref");
+    p.basis = basis;
+    p.kind = "acc";
+    return p;
+}
+
+// パラメータ 1 行 (ラベル + QLineEdit の並び) を作るヘルパー
+QWidget *paramRow(QWidget *parent, const QVector<QLineEdit *> &edits,
+                  const QStringList &units)
+{
+    auto *w = new QWidget(parent);
+    auto *h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < edits.size(); ++i) {
+        h->addWidget(edits[i]);
+        if (i < units.size() && !units[i].isEmpty())
+            h->addWidget(new QLabel(units[i], w));
+    }
+    h->addStretch(1);
+    return w;
+}
 } // namespace
 
 // ── IlluminationTab ─────────────────────────────────────────────────────────
@@ -230,7 +353,14 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project),
       m_app(nullptr),
       m_srcModel(nullptr), m_rayFile(nullptr), m_spectrum(nullptr),
-      m_flux(nullptr), m_rays(nullptr),
+      m_flux(nullptr), m_rays(nullptr), m_spectrumStack(nullptr),
+      m_bluePeak(nullptr), m_blueFwhm(nullptr), m_phosPeak(nullptr),
+      m_phosFwhm(nullptr), m_phosRatio(nullptr),
+      m_rPeak(nullptr), m_rFwhm(nullptr), m_rRatio(nullptr),
+      m_gPeak(nullptr), m_gFwhm(nullptr), m_gRatio(nullptr),
+      m_bPeak(nullptr), m_bFwhm(nullptr), m_bRatio(nullptr),
+      m_blackbody(nullptr), m_monoPeak(nullptr), m_monoFwhm(nullptr),
+      m_cctTarget(nullptr), m_cctTol(nullptr), m_duvTol(nullptr),
       m_reflector(nullptr), m_tirLens(nullptr), m_diffuser(nullptr),
       m_lightGuide(nullptr), m_phosphor(nullptr), m_surface(nullptr),
       m_photoTable(nullptr)
@@ -248,11 +378,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     appRow->setSpacing(4);
     m_app = segRow(appRow, { I18n::tr("ilm_app_led"), I18n::tr("ilm_app_auto"),
                              I18n::tr("ilm_app_backlight"),
-                             I18n::tr("ilm_app_solar") },
-                   0, sTop);                        // 既定 "led"
+                             I18n::tr("ilm_app_solar") }, sTop);
     sTop->form()->addRow(I18n::tr("ilm_app"), appRow);
-    // 用途の選択もまだ計算へ配線されていない (apply/refresh 不在)
-    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
     v->addWidget(sTop);
 
     // ── 光源 / Light source ─────────────────────────────────────────────────
@@ -262,12 +389,11 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     mdlRow->setSpacing(4);
     m_srcModel = segRow(mdlRow, { I18n::tr("ilm_mdl_lambert"),
                                   I18n::tr("ilm_mdl_ray"),
-                                  I18n::tr("ilm_mdl_chip") },
-                        1, sSrc);                   // 既定 "ray"
+                                  I18n::tr("ilm_mdl_chip") }, sSrc);
     sSrc->form()->addRow(I18n::tr("ilm_model"), mdlRow);
 
     auto *rayRow = new QHBoxLayout();
-    m_rayFile = numEdit("CREE_XPG3_5000K.ray", 0, sSrc);
+    m_rayFile = new QLineEdit(sSrc);
     rayRow->addWidget(m_rayFile, 1);
     // 参照: ファイル選択のみ実配線 (取込パーサは未実装 — ファイル名の記録のみ)
     auto *rayBrowse = new QPushButton(I18n::tr("ilm_browse"), sSrc);
@@ -275,7 +401,7 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
         const QString f = QFileDialog::getOpenFileName(
             this, I18n::tr("ilm_raydata"), m_rayFile->text(),
             I18n::tr("ilm_ray_filter"));
-        if (!f.isEmpty()) m_rayFile->setText(f);
+        if (!f.isEmpty()) { m_rayFile->setText(f); onEdited(); }
     });
     rayRow->addWidget(rayBrowse);
     sSrc->form()->addRow(I18n::tr("ilm_raydata"), rayRow);
@@ -289,26 +415,89 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     m_spectrum->addItem(I18n::tr("ilm_sp_mono"));
     sSrc->form()->addRow(I18n::tr("ilm_spectrum"), m_spectrum);
 
+    // スペクトルモデルのパラメータ (選択したモデルの欄だけを見せる)
+    m_spectrumStack = new QStackedWidget(sSrc);
+    {   // 0: 白色 LED (青 + 蛍光体)
+        auto *pg = new QWidget(m_spectrumStack);
+        auto *f = new QFormLayout(pg);
+        f->setContentsMargins(0, 0, 0, 0);
+        m_bluePeak = numEdit(70, pg); m_blueFwhm = numEdit(70, pg);
+        m_phosPeak = numEdit(70, pg); m_phosFwhm = numEdit(70, pg);
+        m_phosRatio = numEdit(70, pg);
+        f->addRow(I18n::tr("ilm_blue"),
+                  paramRow(pg, { m_bluePeak, m_blueFwhm },
+                           { I18n::tr("ilm_nm"), I18n::tr("ilm_nm") }));
+        f->addRow(I18n::tr("ilm_phos"),
+                  paramRow(pg, { m_phosPeak, m_phosFwhm, m_phosRatio },
+                           { I18n::tr("ilm_nm"), I18n::tr("ilm_nm"), QString() }));
+        m_spectrumStack->addWidget(pg);
+    }
+    {   // 1: RGB 3 チップ
+        auto *pg = new QWidget(m_spectrumStack);
+        auto *f = new QFormLayout(pg);
+        f->setContentsMargins(0, 0, 0, 0);
+        m_rPeak = numEdit(70, pg); m_rFwhm = numEdit(70, pg); m_rRatio = numEdit(70, pg);
+        m_gPeak = numEdit(70, pg); m_gFwhm = numEdit(70, pg); m_gRatio = numEdit(70, pg);
+        m_bPeak = numEdit(70, pg); m_bFwhm = numEdit(70, pg); m_bRatio = numEdit(70, pg);
+        const QStringList u = { I18n::tr("ilm_nm"), I18n::tr("ilm_nm"), QString() };
+        f->addRow(I18n::tr("ilm_red"),   paramRow(pg, { m_rPeak, m_rFwhm, m_rRatio }, u));
+        f->addRow(I18n::tr("ilm_green"), paramRow(pg, { m_gPeak, m_gFwhm, m_gRatio }, u));
+        f->addRow(I18n::tr("ilm_blue3"), paramRow(pg, { m_bPeak, m_bFwhm, m_bRatio }, u));
+        m_spectrumStack->addWidget(pg);
+    }
+    {   // 2: フルスペクトル (黒体放射)
+        auto *pg = new QWidget(m_spectrumStack);
+        auto *f = new QFormLayout(pg);
+        f->setContentsMargins(0, 0, 0, 0);
+        m_blackbody = numEdit(80, pg);
+        f->addRow(I18n::tr("ilm_bbtemp"),
+                  paramRow(pg, { m_blackbody }, { I18n::tr("ilm_kelvin") }));
+        m_spectrumStack->addWidget(pg);
+    }
+    {   // 3: 単色
+        auto *pg = new QWidget(m_spectrumStack);
+        auto *f = new QFormLayout(pg);
+        f->setContentsMargins(0, 0, 0, 0);
+        m_monoPeak = numEdit(70, pg); m_monoFwhm = numEdit(70, pg);
+        f->addRow(I18n::tr("ilm_mono"),
+                  paramRow(pg, { m_monoPeak, m_monoFwhm },
+                           { I18n::tr("ilm_nm"), I18n::tr("ilm_nm") }));
+        m_spectrumStack->addWidget(pg);
+    }
+    sSrc->form()->addRow(I18n::tr("ilm_sp_params"), m_spectrumStack);
+    sSrc->form()->addRow(noteLabel(I18n::tr("ilm_sp_hint"), sSrc));
+
     auto *fluxRow = new QHBoxLayout();
-    m_flux = numEdit("1200", 100, sSrc);
-    m_rays = numEdit("5000000", 100, sSrc);
+    m_flux = numEdit(100, sSrc);
+    m_rays = numEdit(100, sSrc);
     fluxRow->addWidget(m_flux);
     fluxRow->addWidget(new QLabel(I18n::tr("ilm_flux_unit"), sSrc));
     fluxRow->addWidget(new QLabel(I18n::tr("ilm_rays"), sSrc));
     fluxRow->addWidget(m_rays);
     fluxRow->addStretch(1);
     sSrc->form()->addRow(I18n::tr("ilm_flux"), fluxRow);
-    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
-    sSrc->vbox()->addWidget(tabhelp::unwiredNote(sSrc));
+
+    auto *tgRow = new QHBoxLayout();
+    m_cctTarget = numEdit(80, sSrc);
+    m_cctTol    = numEdit(70, sSrc);
+    m_duvTol    = numEdit(80, sSrc);
+    tgRow->addWidget(new QLabel(I18n::tr("ilm_tg_cct"), sSrc));
+    tgRow->addWidget(m_cctTarget);
+    tgRow->addWidget(new QLabel(I18n::tr("ilm_tg_pm"), sSrc));
+    tgRow->addWidget(m_cctTol);
+    tgRow->addWidget(new QLabel(I18n::tr("ilm_tg_duv"), sSrc));
+    tgRow->addWidget(m_duvTol);
+    tgRow->addStretch(1);
+    sSrc->form()->addRow(I18n::tr("ilm_target_sec"), tgRow);
     v->addWidget(sSrc);
 
     // ── 光学系 / Optics ─────────────────────────────────────────────────────
     auto *sOpt = new SectionBox(I18n::tr("ilm_opt_sec"), body);
 
     auto *o1 = new QHBoxLayout();
-    m_reflector = makeCheck(I18n::tr("ilm_o_reflector"), true,  sOpt);
-    m_tirLens   = makeCheck(I18n::tr("ilm_o_tir"),       false, sOpt);
-    m_diffuser  = makeCheck(I18n::tr("ilm_o_diffuser"),  true,  sOpt);
+    m_reflector = makeCheck(I18n::tr("ilm_o_reflector"), sOpt);
+    m_tirLens   = makeCheck(I18n::tr("ilm_o_tir"),       sOpt);
+    m_diffuser  = makeCheck(I18n::tr("ilm_o_diffuser"),  sOpt);
     o1->addWidget(m_reflector);
     o1->addWidget(m_tirLens);
     o1->addWidget(m_diffuser);
@@ -316,8 +505,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     sOpt->form()->addRow(o1);
 
     auto *o2 = new QHBoxLayout();
-    m_lightGuide = makeCheck(I18n::tr("ilm_o_guide"),    false, sOpt);
-    m_phosphor   = makeCheck(I18n::tr("ilm_o_phosphor"), true,  sOpt);
+    m_lightGuide = makeCheck(I18n::tr("ilm_o_guide"),    sOpt);
+    m_phosphor   = makeCheck(I18n::tr("ilm_o_phosphor"), sOpt);
     o2->addWidget(m_lightGuide);
     o2->addWidget(m_phosphor);
     o2->addStretch(1);
@@ -328,39 +517,30 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     m_surface = segRow(sfRow, { I18n::tr("ilm_sf_specular"),
                                 I18n::tr("ilm_sf_lambert"),
                                 I18n::tr("ilm_sf_bsdf"),
-                                I18n::tr("ilm_sf_abg") },
-                       2, sOpt);                    // 既定 "bsdf"
+                                I18n::tr("ilm_sf_abg") }, sOpt);
     sOpt->form()->addRow(I18n::tr("ilm_surface"), sfRow);
-    // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
+    // 光学系の構成は保存されるがレイトレースは未実装 (配光量は表で「—」)
     sOpt->vbox()->addWidget(tabhelp::unwiredNote(sOpt));
     v->addWidget(sOpt);
 
     // ── 測光・測色 / Photometry & color ─────────────────────────────────────
     auto *sPh = new SectionBox(I18n::tr("ilm_photo_sec"), body);
 
-    m_photoTable = new QTableWidget(10, 4, sPh);
+    m_photoTable = new QTableWidget(0, 5, sPh);
     m_photoTable->setHorizontalHeaderLabels({ I18n::tr("ilm_c_metric"),
                                               I18n::tr("ilm_c_value"),
                                               I18n::tr("ilm_c_target"),
-                                              I18n::tr("ilm_c_judge") });
+                                              I18n::tr("ilm_c_judge"),
+                                              I18n::tr("ilm_c_basis") });
     m_photoTable->verticalHeader()->setVisible(false);
     m_photoTable->verticalHeader()->setDefaultSectionSize(26);
-    m_photoTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_photoTable->horizontalHeader()
+        ->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_photoTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     m_photoTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_photoTable->setMinimumHeight(300);
-    for (int r = 0; r < 10; ++r) {
-        const PhotoRow &p = kPhoto[r];
-        m_photoTable->setItem(r, 0, textItem(I18n::tr(p.itemKey)));
-        m_photoTable->setItem(r, 1, numItem(QString::fromUtf8(p.value)));
-        // モックで className="num" が付かないセル (規格名) は左寄せのまま
-        m_photoTable->setItem(r, 2, p.target ? numItem(QString::fromUtf8(p.target))
-                                             : textItem(I18n::tr(p.targetKey)));
-        m_photoTable->setCellWidget(r, 3,
-                                    badgeCell(I18n::tr(p.judgeKey), p.kind));
-    }
+    m_photoTable->setMinimumHeight(330);
     sPh->vbox()->addWidget(m_photoTable);
-    // 測光・測色表と適合バッジはモック由来の固定値 (絶対規則 5)
-    sPh->vbox()->addWidget(tabhelp::sampleNote(sPh));
+    sPh->vbox()->addWidget(noteLabel(I18n::tr("ilm_photo_note"), sPh));
 
     auto *btnRow = new QHBoxLayout();
     // プロット生成・IES/LDT 書出は未実装 — 無効化して明示する (絶対規則 5)
@@ -382,4 +562,215 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+
+    // ── 配線 ────────────────────────────────────────────────────────────────
+    for (QLineEdit *e : { m_rayFile, m_flux, m_rays,
+                          m_bluePeak, m_blueFwhm, m_phosPeak, m_phosFwhm,
+                          m_phosRatio, m_rPeak, m_rFwhm, m_rRatio,
+                          m_gPeak, m_gFwhm, m_gRatio, m_bPeak, m_bFwhm, m_bRatio,
+                          m_blackbody, m_monoPeak, m_monoFwhm,
+                          m_cctTarget, m_cctTol, m_duvTol })
+        connect(e, &QLineEdit::editingFinished, this, &IlluminationTab::onEdited);
+    for (QCheckBox *c : { m_reflector, m_tirLens, m_diffuser, m_lightGuide,
+                          m_phosphor })
+        connect(c, &QCheckBox::toggled, this, &IlluminationTab::onEdited);
+    for (QButtonGroup *g : { m_app, m_srcModel, m_surface })
+        connect(g, &QButtonGroup::idClicked, this, &IlluminationTab::onEdited);
+    connect(m_spectrum, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateSpectrumPage(); onEdited(); });
+    connect(project, &Project::loaded, this, &IlluminationTab::refresh);
+
+    refresh();
+}
+
+void IlluminationTab::apply()
+{
+    if (m_updating) return;
+    IlluminationOpts &o = m_p->illumination();
+
+    o.app      = qBound(0, m_app->checkedId(), 3);
+    o.srcModel = qBound(0, m_srcModel->checkedId(), 2);
+    o.rayFile  = m_rayFile->text();
+    o.spectrum = qBound(0, m_spectrum->currentIndex(), 3);
+    o.flux_lm  = readNum(m_flux, o.flux_lm);
+    o.rays     = readNum(m_rays, o.rays);
+
+    o.reflector  = m_reflector->isChecked();
+    o.tirLens    = m_tirLens->isChecked();
+    o.diffuser   = m_diffuser->isChecked();
+    o.lightGuide = m_lightGuide->isChecked();
+    o.phosphor   = m_phosphor->isChecked();
+    o.surface    = qBound(0, m_surface->checkedId(), 3);
+
+    o.bluePeak_nm = readNum(m_bluePeak, o.bluePeak_nm);
+    o.blueFwhm_nm = readNum(m_blueFwhm, o.blueFwhm_nm);
+    o.phosPeak_nm = readNum(m_phosPeak, o.phosPeak_nm);
+    o.phosFwhm_nm = readNum(m_phosFwhm, o.phosFwhm_nm);
+    o.phosRatio   = readNum(m_phosRatio, o.phosRatio);
+    o.rPeak_nm = readNum(m_rPeak, o.rPeak_nm);
+    o.rFwhm_nm = readNum(m_rFwhm, o.rFwhm_nm);
+    o.rRatio   = readNum(m_rRatio, o.rRatio);
+    o.gPeak_nm = readNum(m_gPeak, o.gPeak_nm);
+    o.gFwhm_nm = readNum(m_gFwhm, o.gFwhm_nm);
+    o.gRatio   = readNum(m_gRatio, o.gRatio);
+    o.bPeak_nm = readNum(m_bPeak, o.bPeak_nm);
+    o.bFwhm_nm = readNum(m_bFwhm, o.bFwhm_nm);
+    o.bRatio   = readNum(m_bRatio, o.bRatio);
+    o.blackbody_K = readNum(m_blackbody, o.blackbody_K);
+    o.monoPeak_nm = readNum(m_monoPeak, o.monoPeak_nm);
+    o.monoFwhm_nm = readNum(m_monoFwhm, o.monoFwhm_nm);
+
+    o.cctTarget_K = readNum(m_cctTarget, o.cctTarget_K);
+    o.cctTol_K    = readNum(m_cctTol, o.cctTol_K);
+    o.duvTol      = readNum(m_duvTol, o.duvTol);
+
+    m_p->touch();
+}
+
+void IlluminationTab::refresh()
+{
+    m_updating = true;
+    const IlluminationOpts &o = m_p->illumination();
+
+    setSeg(m_app, o.app);
+    setSeg(m_srcModel, o.srcModel);
+    m_rayFile->setText(o.rayFile);
+    m_spectrum->setCurrentIndex(qBound(0, o.spectrum, 3));
+    m_flux->setText(fmt(o.flux_lm, 1));
+    m_rays->setText(QString::number(o.rays, 'g', 9));
+
+    m_reflector->setChecked(o.reflector);
+    m_tirLens->setChecked(o.tirLens);
+    m_diffuser->setChecked(o.diffuser);
+    m_lightGuide->setChecked(o.lightGuide);
+    m_phosphor->setChecked(o.phosphor);
+    setSeg(m_surface, o.surface);
+
+    m_bluePeak->setText(fmt(o.bluePeak_nm, 1));
+    m_blueFwhm->setText(fmt(o.blueFwhm_nm, 1));
+    m_phosPeak->setText(fmt(o.phosPeak_nm, 1));
+    m_phosFwhm->setText(fmt(o.phosFwhm_nm, 1));
+    m_phosRatio->setText(fmt(o.phosRatio, 3));
+    m_rPeak->setText(fmt(o.rPeak_nm, 1));
+    m_rFwhm->setText(fmt(o.rFwhm_nm, 1));
+    m_rRatio->setText(fmt(o.rRatio, 3));
+    m_gPeak->setText(fmt(o.gPeak_nm, 1));
+    m_gFwhm->setText(fmt(o.gFwhm_nm, 1));
+    m_gRatio->setText(fmt(o.gRatio, 3));
+    m_bPeak->setText(fmt(o.bPeak_nm, 1));
+    m_bFwhm->setText(fmt(o.bFwhm_nm, 1));
+    m_bRatio->setText(fmt(o.bRatio, 3));
+    m_blackbody->setText(fmt(o.blackbody_K, 1));
+    m_monoPeak->setText(fmt(o.monoPeak_nm, 1));
+    m_monoFwhm->setText(fmt(o.monoFwhm_nm, 2));
+
+    m_cctTarget->setText(fmt(o.cctTarget_K, 1));
+    m_cctTol->setText(fmt(o.cctTol_K, 1));
+    m_duvTol->setText(fmt(o.duvTol, 4));
+
+    m_updating = false;
+    updateSpectrumPage();
+    recompute();
+}
+
+void IlluminationTab::onEdited()
+{
+    if (m_updating) return;
+    apply();
+    recompute();
+}
+
+void IlluminationTab::updateSpectrumPage()
+{
+    m_spectrumStack->setCurrentIndex(qBound(0, m_spectrum->currentIndex(), 3));
+}
+
+// スペクトルモデル → 測色量。値はすべて optics/Colorimetry の計算結果で、
+// 配光・分光反射率データが要る量は「—」のまま (絶対規則 5)。
+void IlluminationTab::recompute()
+{
+    const IlluminationOpts &o = m_p->illumination();
+    const optics::SourceColor c = optics::evaluateSource(o);
+
+    QVector<PhotoOut> rows;
+
+    // 入力値であることを明示した光源光束 (系の全光束ではない)
+    rows.push_back(computed(I18n::tr("ilm_m_srcflux"),
+                            fmt(o.flux_lm, 1) + QString::fromUtf8(" lm"),
+                            I18n::tr("ilm_b_input")));
+
+    if (c.valid) {
+        // CCT: 目標との突き合わせ (判定バッジは計算値に対してのみ出す)
+        if (c.cct.valid) {
+            PhotoOut cct;
+            cct.item = I18n::tr("ilm_m_cct");
+            cct.value = fmt(c.cct.cct_K, 0) + QString::fromUtf8(" K");
+            cct.target = fmt(o.cctTarget_K, 0) + QString::fromUtf8(" ± ")
+                       + fmt(o.cctTol_K, 0) + QString::fromUtf8(" K");
+            const bool ok = std::fabs(c.cct.cct_K - o.cctTarget_K) <= o.cctTol_K;
+            cct.kind = ok ? "ok" : "warn";
+            cct.judge = I18n::tr(ok ? "ilm_pass" : "ilm_fail");
+            cct.basis = I18n::tr("ilm_b_cct");
+            rows.push_back(cct);
+
+            PhotoOut duv;
+            duv.item = I18n::tr("ilm_m_duv");
+            duv.value = QString::number(c.cct.duv, 'f', 5);
+            duv.target = QString::fromUtf8("|Duv| ≤ ") + fmt(o.duvTol, 4);
+            const bool dok = std::fabs(c.cct.duv) <= o.duvTol;
+            duv.kind = dok ? "ok" : "warn";
+            duv.judge = I18n::tr(dok ? "ilm_pass" : "ilm_fail");
+            duv.basis = I18n::tr("ilm_b_cct");
+            rows.push_back(duv);
+        } else {
+            rows.push_back(uncomputed(I18n::tr("ilm_m_cct"),
+                                      I18n::tr("ilm_cct_undef")));
+            rows.push_back(uncomputed(I18n::tr("ilm_m_duv"),
+                                      I18n::tr("ilm_cct_undef")));
+        }
+
+        rows.push_back(computed(I18n::tr("ilm_m_xy"),
+                                fmt(c.chrom.x, 4) + QString::fromUtf8(", ")
+                                    + fmt(c.chrom.y, 4),
+                                I18n::tr("ilm_b_cie")));
+        rows.push_back(computed(I18n::tr("ilm_m_uv"),
+                                fmt(c.chrom.up, 4) + QString::fromUtf8(", ")
+                                    + fmt(c.chrom.vp, 4),
+                                I18n::tr("ilm_b_cie")));
+        rows.push_back(computed(I18n::tr("ilm_m_ler"),
+                                fmt(c.efficacy_lm_W, 1)
+                                    + QString::fromUtf8(" lm/W"),
+                                I18n::tr("ilm_b_ler")));
+        rows.push_back(computed(I18n::tr("ilm_m_peak"),
+                                fmt(c.peak_nm, 1) + QString::fromUtf8(" nm"),
+                                I18n::tr("ilm_b_cie")));
+    } else {
+        for (const char *key : { "ilm_m_cct", "ilm_m_duv", "ilm_m_xy",
+                                 "ilm_m_uv", "ilm_m_ler", "ilm_m_peak" })
+            rows.push_back(uncomputed(I18n::tr(key), I18n::tr("ilm_b_cie")));
+    }
+
+    // 分光反射率の数表が要る演色性指標 (未実装)
+    rows.push_back(uncomputed(I18n::tr("ilm_m_ra"), I18n::tr("ilm_b_needtcs")));
+    rows.push_back(uncomputed(I18n::tr("ilm_m_tm30"), I18n::tr("ilm_b_needtm30")));
+
+    // レイトレース (配光) が要る量 (未実装)
+    for (const char *key : { "ilm_m_flux", "ilm_m_eff", "ilm_m_beam",
+                             "ilm_m_unif", "ilm_m_uvspread" })
+        rows.push_back(uncomputed(I18n::tr(key), I18n::tr("ilm_b_needray")));
+    rows.push_back(uncomputed(I18n::tr("ilm_m_ugr"), I18n::tr("ilm_b_needugr")));
+
+    m_photoTable->clearContents();
+    m_photoTable->setRowCount(rows.size());
+    for (int r = 0; r < rows.size(); ++r) {
+        const PhotoOut &p = rows[r];
+        m_photoTable->setItem(r, 0, textItem(p.item));
+        m_photoTable->setItem(r, 1, numItem(p.value));
+        m_photoTable->setItem(r, 2, numItem(p.target));
+        m_photoTable->setCellWidget(r, 3, badgeCell(p.judge, p.kind));
+        m_photoTable->setItem(r, 4, textItem(p.basis));
+        // 「根拠」列は左パネルが狭いと隠れるので、行全体のツールチップにも出す
+        for (int c = 0; c < 5; ++c)
+            if (auto *it = m_photoTable->item(r, c)) it->setToolTip(p.basis);
+    }
 }

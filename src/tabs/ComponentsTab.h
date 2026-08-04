@@ -7,6 +7,8 @@
 // MIME は widgets/Viewport3D.h の ComponentDrop。実際の配置 (ジオメトリ /
 // 給電点 / 観測点の追加) はドロップ先の Viewport3D が行う。
 // お気に入り (cl_favorites) はカードの ☆ で開閉するローカル状態のみ (Project 非依存)。
+// 最近使用 (cl_recent) は「3D シーンへ実際に配置した」履歴で、お気に入りと
+// 同じく QSettings に永続化される (どちらも Project 非依存のアプリ設定)。
 #pragma once
 #include <QScrollArea>
 #include <QStringList>
@@ -33,7 +35,8 @@ private slots:
 
 private:
     void rebuildFavorites(); // お気に入りチップ行を再構築
-    void rebuildRecent();    // 最近使用チップをドメイン別サンプルで再構築
+    void rebuildRecent();    // 最近使用チップ行を履歴から再構築
+    void recordRecent(const QString &name);  // 配置されたものを履歴の先頭へ
 
     Project     *m_p;
     QLineEdit   *m_search;
@@ -42,9 +45,10 @@ private:
     QGridLayout *m_grid;
     SectionBox  *m_favSection = nullptr;   // お気に入り
     QHBoxLayout *m_favRow     = nullptr;
-    SectionBox  *m_recentSection = nullptr; // 最近使用 (ドメイン別の固定サンプル)
+    SectionBox  *m_recentSection = nullptr; // 最近使用 (配置履歴)
     QHBoxLayout *m_recentRow     = nullptr;
     QStringList  m_favorites;              // ☆ で登録したコンポーネント名
+    QStringList  m_recent;                 // 配置履歴 (新しい順, 最大 kRecentMax)
     QString      m_cat = "all";
     QVector<QPushButton *> m_catButtons;
 };

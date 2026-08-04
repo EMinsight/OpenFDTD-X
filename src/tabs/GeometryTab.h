@@ -3,14 +3,23 @@
 //
 // モック (tabs.jsx の GeometryTab) の CAD パイプライン節も併せて持つ:
 //   マウス操作 / STEP テセレーション (OCCT) / アセンブリツリー / 配置・変換 /
-//   ジオメトリ修復 / 物性値割当 / 取込プレビュー / 取込済みモデル /
+//   ジオメトリ検査 / 物性値割当 / 取込プレビュー / 取込済みモデル /
 //   ボクセル化 / ボクセル統計 / メッシュ細分化 / 細分化領域
-// これらは Project に対応フィールドが無いためローカル状態 (モック既定値) で
-// 保持し、実際に動く STL 取込 (io/StlImporter) と staircase ボクセル化
-// (io/Voxelizer) の結果だけを表示に反映する。
+//
+// 表示する数値は「実測・実計算した値」だけに限る (モックの固定サンプル値は
+// 出さない):
+//   - アセンブリツリー / 取込プレビュー / 取込済みモデル / ボクセル統計
+//     … 取込 STL (io/StlImporter) と staircase ボクセル化 (io/Voxelizer) の実測値。
+//       未取込・未実行のときは「—」+ 何をすれば埋まるかの導線を出す。
+//   - ジオメトリ検査 … io/MeshDiagnostics が実メッシュから数えた検出数
+//       (自動修復は未実装なので検出のみと明記する)。
+//   - 細分化領域 … Project::refineRegions() (.ofdx に永続化) を編集する表。
+//       セル増は現在の基本格子から数えた見積り (細分化の実行は未実装)。
+// テセレーション/物性値割当など計算に届かない設定は unwiredNote で明示する。
 #pragma once
 #include <QScrollArea>
 #include "../core/Geometry.h"
+#include "../io/MeshDiagnostics.h"
 #include "../io/StlImporter.h"
 
 class QButtonGroup;
@@ -30,6 +39,7 @@ namespace ofd {
 class Project;
 class SectionBox;
 class UnitNav;
+struct RefineRegion;   // core/Project.h — 細分化領域 (.ofdx へ永続化)
 
 class GeometryTab : public QScrollArea {
     Q_OBJECT
@@ -40,6 +50,11 @@ private slots:
     void refresh();
     void importStl();
     void voxelizeImported();
+
+protected:
+    // タブが表示されるたびに細分化領域のセル増見積りを取り直す
+    // (別タブで格子を変えたときに古い見積りを残さない)
+    void showEvent(QShowEvent *e) override;
 
 private:
     void applyTable();
@@ -67,6 +82,15 @@ private:
 
     void refreshImportBadges();   // 取込プレビューを実メッシュで更新
     void refreshVoxelStats();     // ボクセル統計を実結果で更新
+    void refreshAssemblyTree();   // アセンブリツリーを実メッシュで更新
+    void refreshHealing();        // ジオメトリ検査の表を実検出数で更新
+
+    // 細分化領域 (Project::refineRegions() ↔ 表)
+    void refreshRegionTable();    // model → widgets
+    void applyRegionTable();      // widgets → model
+    void updateRefineBadge();     // 領域定義 + 基本格子からセル増を計算
+    // 領域内に中心を持つ基本セル数 (現在の xmesh/ymesh/zmesh から数える)
+    qint64 cellsInRegion(const RefineRegion &r) const;
 
     // 配置・変換 (placement) — 取込 STL への純幾何アフィン変換
     // (スケール → 中心合わせ → 回転 → オフセット)。StlImporter/Voxelizer 不変。
@@ -94,6 +118,9 @@ private:
     ImportedMesh  m_lastMesh;             // 取込 STL (配置・変換の適用後)
     ImportedMesh  m_rawMesh;              // 取込 STL (変換前 — placement の基準)
     bool          m_hasMesh = false;
+    // 取込時に 1 度だけ計算する位相検査結果 (位相はアフィン変換で不変なので
+    // 配置・変換のたびに数え直さない — GUI スレッドでの再計算を避ける)
+    MeshDiagnostics m_diag;
 
     // 3Dモデル取込 (CAD)
     QLineEdit      *m_cadFile = nullptr;
@@ -103,8 +130,9 @@ private:
     QButtonGroup   *m_tessQuality = nullptr;
     QCheckBox      *m_tessParallel = nullptr;
     QCheckBox      *m_tessCurvature = nullptr;
-    // アセンブリツリー
+    // アセンブリツリー (取込済み STL の実測値。未取込なら空 + 導線)
     QTreeWidget    *m_asmTree = nullptr;
+    QLabel         *m_asmNone = nullptr;
     // 配置・変換
     QButtonGroup   *m_placeUnit = nullptr;
     QDoubleSpinBox *m_placeScale = nullptr;
@@ -112,8 +140,9 @@ private:
     QDoubleSpinBox *m_placeRot[3] = { nullptr, nullptr, nullptr };
     QCheckBox      *m_placeCenter = nullptr;
     QCheckBox      *m_placeAutoAxis = nullptr;
-    // ジオメトリ修復
+    // ジオメトリ検査 (検出のみ — 修復は未実装)
     QTableWidget   *m_healTable = nullptr;
+    QLabel         *m_healNone = nullptr;   // 未取込 / 検査省略の説明
     // 物性値割当
     QButtonGroup   *m_mapMethod = nullptr;
     QComboBox      *m_mapDefault = nullptr;
@@ -122,8 +151,11 @@ private:
     QLabel         *m_prevSolid = nullptr;
     QLabel         *m_prevVol = nullptr;
     QLabel         *m_prevBbox = nullptr;
+    // 取込プレビュー: 未取込の説明 (取込後は隠す)
+    QLabel         *m_prevNone = nullptr;
     // 取込済みモデル
     QTableWidget   *m_modelTable = nullptr;
+    QLabel         *m_modelNone = nullptr;
     int             m_liveModelRow = -1;   // 実際に取り込んだ STL の行 (-1 = 無し)
     // ボクセル化
     QWidget        *m_voxSection = nullptr;       // Underwater で非表示

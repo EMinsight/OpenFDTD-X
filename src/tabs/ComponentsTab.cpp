@@ -1,6 +1,5 @@
 // ComponentsTab.cpp
 #include "ComponentsTab.h"
-#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/Viewport3D.h"   // ComponentDrop (3D ビューへの D&D 契約)
@@ -20,6 +19,8 @@
 #include <QSettings>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <functional>
+#include <utility>
 
 using namespace ofd;
 
@@ -51,19 +52,12 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
     ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
-    // 最近使用チップ (ドメイン別の固定サンプル — 履歴機能は未実装)
-    ofd::I18n::reg("cl_rec_em_1", "パッチアンテナ",     "Patch antenna");
-    ofd::I18n::reg("cl_rec_em_2", "ダイポール 0.5λ",    "Dipole 0.5λ");
-    ofd::I18n::reg("cl_rec_em_3", "ホーンアンテナ",     "Horn antenna");
-    ofd::I18n::reg("cl_rec_op_1", "リング共振器 R=5μm", "Ring resonator R=5μm");
-    ofd::I18n::reg("cl_rec_op_2", "DBRミラー 25層",     "DBR mirror, 25 pairs");
-    ofd::I18n::reg("cl_rec_op_3", "格子結合器",         "Grating coupler");
-    ofd::I18n::reg("cl_rec_ac_1", "吸音パネル",         "Absorber panel");
-    ofd::I18n::reg("cl_rec_ac_2", "拡散体 (QRD)",       "Diffuser (QRD)");
-    ofd::I18n::reg("cl_rec_ac_3", "客席ブロック",       "Audience block");
-    ofd::I18n::reg("cl_rec_uw_1", "ソナー音源",         "Sonar source");
-    ofd::I18n::reg("cl_rec_uw_2", "ハイドロホン",       "Hydrophone");
-    ofd::I18n::reg("cl_rec_uw_3", "点モニター (深度別)", "Point monitors (per depth)");
+    // 最近使用 = 実際に 3D シーンへ配置したコンポーネントの履歴 (QSettings)
+    ofd::I18n::reg("cl_rec_hint",
+                   "3D シーンへ配置すると、ここに新しい順で残ります",
+                   "Components you drop onto the 3D scene appear here, newest "
+                   "first");
+    ofd::I18n::reg("cl_rec_clear", "履歴を消去", "Clear history");
     return true;
 }();
 
@@ -203,12 +197,14 @@ const Component *findComponent(const QString &name)
 // 押下位置からしきい値以上動いたら QDrag を開始する。運ぶのは
 // ComponentDrop の MIME (カテゴリ + 名前) だけで、実際に何を作るかは
 // ドロップ先 (Viewport3D) が決める。
-void beginComponentDrag(QWidget *src, const QString &cat, const QString &name,
+// 戻り値 = ドロップ先が受理した (= 実際に配置された) か。履歴の記録に使う
+// ので、掴んだだけ・取り消した場合は false を返す。
+bool beginComponentDrag(QWidget *src, const QString &cat, const QString &name,
                         const QPoint &hotSpot)
 {
-    if (cat.isEmpty() || name.isEmpty()) return;
+    if (cat.isEmpty() || name.isEmpty()) return false;
     // ドロップしても配置できないものは掴めないようにする (空振りを作らない)
-    if (!ofd::ComponentDrop::canPlace(cat, name)) return;
+    if (!ofd::ComponentDrop::canPlace(cat, name)) return false;
 
     auto *mime = new QMimeData();
     mime->setData(ofd::ComponentDrop::mimeType(),
@@ -218,16 +214,20 @@ void beginComponentDrag(QWidget *src, const QString &cat, const QString &name,
     drag->setMimeData(mime);
     drag->setPixmap(src->grab());              // カードの見た目をカーソルに
     drag->setHotSpot(hotSpot);
-    drag->exec(Qt::CopyAction);
+    // Viewport3D::dropEvent が acceptProposedAction() したときだけ CopyAction
+    return drag->exec(Qt::CopyAction) == Qt::CopyAction;
 }
 
 // ドラッグ元になる小さな入れ物 (カード = QFrame / チップ = QLabel)。
 // 子ラベルは WA_TransparentForMouseEvents にしてあるので押下はここへ届く。
+// onPlaced は「配置された」ときだけ呼ばれる (最近使用履歴の記録用)。
 template <class Base>
 class DragSource : public Base {
 public:
-    DragSource(const QString &cat, const QString &name, QWidget *parent)
-        : Base(parent), m_cat(cat), m_name(name) {}
+    using PlacedCb = std::function<void(const QString &name)>;
+    DragSource(const QString &cat, const QString &name, QWidget *parent,
+               PlacedCb onPlaced = PlacedCb())
+        : Base(parent), m_cat(cat), m_name(name), m_placed(std::move(onPlaced)) {}
 
 protected:
     void mousePressEvent(QMouseEvent *e) override
@@ -245,12 +245,18 @@ protected:
         if ((e->position().toPoint() - m_press).manhattanLength()
             < QApplication::startDragDistance())
             return;
-        beginComponentDrag(this, m_cat, m_name, m_press);
+        // ドラッグ中 (ネストしたイベントループ) と配置後のコールバックで
+        // this が消え得るので、必要な値は先にコピーしておく
+        const QString cat = m_cat, name = m_name;
+        PlacedCb cb = m_placed;
+        if (beginComponentDrag(this, cat, name, m_press) && cb)
+            cb(name);
     }
 
 private:
-    QString m_cat, m_name;
-    QPoint  m_press;
+    QString  m_cat, m_name;
+    QPoint   m_press;
+    PlacedCb m_placed;
 };
 
 using DragCard = DragSource<QFrame>;
@@ -274,8 +280,10 @@ void applyDragAffordance(QWidget *w, const QString &cat, const QString &name)
     }
 }
 
-// お気に入りの QSettings 永続化キー (アプリ再起動をまたいで保持する)
+// お気に入り / 最近使用の QSettings 永続化キー (アプリ再起動をまたいで保持)
 const char kFavSettingsKey[] = "components/favorites";
+const char kRecentSettingsKey[] = "components/recent";
+const int  kRecentMax = 8;      // チップ行に収まる件数で打ち切る
 
 void clearGrid(QGridLayout *g)
 {
@@ -322,12 +330,21 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     m_favSection->vbox()->addLayout(m_favRow);
     v->addWidget(m_favSection);
 
-    // 最近使用 — 履歴機能は未実装で、チップはドメイン別の固定サンプル
-    // (rebuildCats → rebuildRecent で再構築)
+    // 最近使用 — 実際に 3D シーンへ配置したコンポーネントの履歴 (QSettings)
     m_recentSection = new SectionBox(I18n::tr("cl_recent"), body);
-    m_recentSection->vbox()->addWidget(tabhelp::sampleNote(m_recentSection));
     m_recentRow = new QHBoxLayout();
     m_recentSection->vbox()->addLayout(m_recentRow);
+    auto *recClear = new QPushButton(I18n::tr("cl_rec_clear"), m_recentSection);
+    recClear->setStyleSheet("font-size:11px; padding:1px 6px;");
+    auto *recBtnRow = new QHBoxLayout();
+    recBtnRow->addWidget(recClear);
+    recBtnRow->addStretch(1);
+    m_recentSection->vbox()->addLayout(recBtnRow);
+    connect(recClear, &QPushButton::clicked, this, [this] {
+        m_recent.clear();
+        QSettings().setValue(QString::fromLatin1(kRecentSettingsKey), m_recent);
+        rebuildRecent();
+    });
     v->addWidget(m_recentSection);
 
     v->addStretch(1);
@@ -342,9 +359,12 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     connect(project, &Project::loaded,
             this, &ComponentsTab::rebuildCats);
 
-    // お気に入りは QSettings に永続化する (以前は再起動で消える揮発状態だった)
+    // お気に入り・最近使用は QSettings に永続化する
+    // (以前は再起動で消える揮発状態 / 固定サンプルだった)
     m_favorites = QSettings().value(QString::fromLatin1(kFavSettingsKey))
                       .toStringList();
+    m_recent = QSettings().value(QString::fromLatin1(kRecentSettingsKey))
+                   .toStringList();
 
     rebuildFavorites();
     rebuildCats();
@@ -366,7 +386,8 @@ void ComponentsTab::rebuildFavorites()
             // カードと同じくドラッグ元になる (カテゴリは名前から引く)
             const Component *c = findComponent(name);
             const QString cat = c ? QString::fromUtf8(c->cat) : QString();
-            auto *chip = new DragChip(cat, name, m_favSection);
+            auto *chip = new DragChip(cat, name, m_favSection,
+                                      [this](const QString &n) { recordRecent(n); });
             chip->setText(QStringLiteral("★ ") + name);
             chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                                 "padding:1px 6px; font-size:11px;");
@@ -412,47 +433,50 @@ void ComponentsTab::rebuildCats()
     rebuildRecent();
 }
 
-// 最近使用チップ行の再構築 — ドメインで意味を持つサンプルのみ表示する
-// (履歴機能は未実装のため固定サンプル。sampleNote 済み)
+// 実際に 3D シーンへ配置されたコンポーネントを履歴の先頭へ入れる。
+// (Viewport3D がドロップを受理したときだけ呼ばれる — DragSource の onPlaced)
+void ComponentsTab::recordRecent(const QString &name)
+{
+    m_recent.removeAll(name);            // 同じものは 1 件に畳んで先頭へ
+    m_recent.prepend(name);
+    while (m_recent.size() > kRecentMax) m_recent.removeLast();
+    QSettings().setValue(QString::fromLatin1(kRecentSettingsKey), m_recent);
+    rebuildRecent();
+}
+
+// 最近使用チップ行の再構築 — 履歴 (QSettings) のうち現ドメインで配置できる
+// ものだけを新しい順に並べる。履歴が無ければ作り方のヒントを出す。
 void ComponentsTab::rebuildRecent()
 {
+    // チップ自身のドラッグ完了から呼ばれることがあるので即 delete しない
+    // (自分のイベントハンドラの内側で消えるとぶら下がりポインタになる)
     while (QLayoutItem *it = m_recentRow->takeAt(0)) {
-        delete it->widget();
+        if (QWidget *w = it->widget()) {
+            w->hide();
+            w->deleteLater();
+        }
         delete it;
     }
-    // チップの表示ラベル (i18n キー) と、対応するコンポーネント
-    // (カード同様 3D ビューへドラッグできるようにする)
-    struct Rec { const char *key, *cat, *name; };
-    static const Rec kRecEm[] = {
-        { "cl_rec_em_1", "antenna", "Patch antenna" },
-        { "cl_rec_em_2", "antenna", "Dipole" },
-        { "cl_rec_em_3", "antenna", "Horn" } };
-    static const Rec kRecOp[] = {
-        { "cl_rec_op_1", "photonic", "Ring resonator" },
-        { "cl_rec_op_2", "photonic", "Bragg grating (DBR)" },
-        { "cl_rec_op_3", "photonic", "Grating coupler" } };
-    static const Rec kRecAc[] = {
-        { "cl_rec_ac_1", "acoustic", "Absorber panel" },
-        { "cl_rec_ac_2", "acoustic", "Diffuser (QRD)" },
-        { "cl_rec_ac_3", "acoustic", "Audience block" } };
-    static const Rec kRecUw[] = {
-        { "cl_rec_uw_1", "source",  "Dipole source" },
-        { "cl_rec_uw_2", "monitor", "Point monitor" },
-        { "cl_rec_uw_3", "monitor", "Point monitor" } };
-    const QString domain = domainKey(m_p->activeDomain());
-    const Rec *recs = kRecEm;
-    if (domain == "optical")         recs = kRecOp;
-    else if (domain == "acoustic")   recs = kRecAc;
-    else if (domain == "underwater") recs = kRecUw;
-    for (int i = 0; i < 3; ++i) {
-        const QString cat  = QString::fromUtf8(recs[i].cat);
-        const QString name = QString::fromUtf8(recs[i].name);
-        auto *b = new DragChip(cat, name, m_recentSection);
-        b->setText(I18n::tr(QLatin1String(recs[i].key)));
+    const QStringList allowed = allowedCats(domainKey(m_p->activeDomain()));
+    int shown = 0;
+    for (const QString &name : m_recent) {
+        const Component *c = findComponent(name);
+        if (!c) continue;                                  // 定義が消えた項目
+        const QString cat = QString::fromUtf8(c->cat);
+        if (!allowed.contains(cat)) continue;              // 別ドメインの履歴
+        auto *b = new DragChip(cat, name, m_recentSection,
+                               [this](const QString &n) { recordRecent(n); });
+        b->setText(QString::fromUtf8(c->icon) + " " + name);
         b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                          "padding:1px 6px; font-size:11px;");
         applyDragAffordance(b, cat, name);
         m_recentRow->addWidget(b);
+        ++shown;
+    }
+    if (shown == 0) {
+        auto *hint = new QLabel(I18n::tr("cl_rec_hint"), m_recentSection);
+        hint->setStyleSheet("font-size:11px; color:gray;");
+        m_recentRow->addWidget(hint);
     }
     m_recentRow->addStretch(1);
 }
@@ -495,7 +519,9 @@ void ComponentsTab::rebuildGrid()
         const Component &c = *filtered[i];
         const QString name = QString::fromUtf8(c.name);
         // 3D シーンへのドラッグ元。掴める見た目にするのは配置できるものだけ。
-        auto *card = new DragCard(QString::fromUtf8(c.cat), name, m_gridSection);
+        // 配置に成功したら最近使用へ記録する
+        auto *card = new DragCard(QString::fromUtf8(c.cat), name, m_gridSection,
+                                  [this](const QString &n) { recordRecent(n); });
         card->setFrameShape(QFrame::StyledPanel);
         applyDragAffordance(card, QString::fromUtf8(c.cat), name);
         auto *cv = new QVBoxLayout(card);

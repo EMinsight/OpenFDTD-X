@@ -13,6 +13,7 @@ class QGridLayout;
 class QLabel;
 class QMouseEvent;
 class QStackedWidget;
+class QTableWidget;
 
 namespace ofd {
 
@@ -56,8 +57,11 @@ private:
     QWidget *buildMomPage();
     QWidget *buildStfPage();
     QWidget *buildTomoPage();
+    // OpenSTF ページの電極一覧を Project の PEC 形状から作り直す
+    void refreshStfElectrodes();
 
     Project        *m_p;
+    QTableWidget   *m_stfElectrodes = nullptr;
     int             m_pick = 0;           // kFamily[] index of the selection
     QGridLayout    *m_cardGrid;
     QVector<FamilyCard*> m_cards;         // visible cards (rebuild on domain)

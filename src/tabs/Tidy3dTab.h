@@ -4,9 +4,11 @@
 //
 // mock (tabs.jsx / Tidy3DTab) のセクション構成:
 //   ☁ tidy3d クラウド計算 / 接続 / 自動変換マッピング / エクスポート設定 /
-//   ジョブ送信 / ジョブ一覧 / ローカル ↔ クラウド比較
+//   ジョブ送信 / 書き出したジョブスクリプト / ローカル ↔ クラウド比較
 // Project へ永続化するのは Tidy3dOpts (projectName / resolution / autoPml) と
-// QSettings 上の APIキーのみ。他は mock の既定値を持つローカル状態。
+// QSettings 上の APIキー・書き出し履歴のみ。他は mock の既定値を持つローカル状態。
+// クラウド API は叩いていないので、ジョブ状態・残高・コストは表示しない
+// (取得していない旨を出す — CLAUDE.md 絶対規則 5)。
 #pragma once
 #include <QScrollArea>
 
@@ -35,6 +37,7 @@ private slots:
 private:
     void apply();
     void updateConnBadge();     // APIキーの有無で接続バッジを更新
+    void rebuildJobs();         // 書き出し履歴 (QSettings) → スクリプト表
 
     Project   *m_p;
     bool       m_updating = false;

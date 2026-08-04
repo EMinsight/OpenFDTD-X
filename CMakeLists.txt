@@ -88,6 +88,17 @@ set(CORE_SOURCES
     src/em/RadioPropagation.cpp
     src/em/RadioPropagation.h
 
+    # EMC 規格の公表限度値 (CISPR 32 / FCC §15.109) とシールド遮蔽効果・
+    # 挿入損失・ESD 電流の古典式 — Qt 非依存。EmcTab の数値の実体で、
+    # selftest から規格値・定義式と照合する
+    src/em/EmcStandards.cpp
+    src/em/EmcStandards.h
+
+    # 集中定数 RLC の |Z(f)| (直列/並列の解析式) — Qt 非依存。
+    # CircuitSolversTab の結果ページの計算実体
+    src/em/LumpedRlc.cpp
+    src/em/LumpedRlc.h
+
     # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
     # Qt 非依存。SolverSelectorTab の数値の計算実体
     src/core/SolverSelection.cpp
@@ -112,6 +123,11 @@ set(CORE_SOURCES
     src/io/EvReader.h
     src/io/StlImporter.cpp
     src/io/StlImporter.h
+    # 取込メッシュの位相・幾何検査 (重複頂点 / 縮退三角形 / 境界・非多様体辺 /
+    # 法線の向き) — Qt Widgets 非依存。GeometryTab「ジオメトリ検査」の検出側の
+    # 実体で、selftest から既知メッシュの厳密な期待値と突き合わせる
+    src/io/MeshDiagnostics.cpp
+    src/io/MeshDiagnostics.h
     src/io/Voxelizer.cpp
     src/io/Voxelizer.h
 
@@ -132,6 +148,25 @@ set(CORE_SOURCES
     # Qt 非依存。MaterialExplorerTab のフィット・診断表の計算実体
     src/optics/DispersionFit.cpp
     src/optics/DispersionFit.h
+
+    # CIE 表色系の測色計算 (等色関数は Wyman et al. 2013 の解析近似) —
+    # Qt 非依存。IlluminationTab の測色表の計算実体
+    src/optics/Colorimetry.cpp
+    src/optics/Colorimetry.h
+
+    # 光源スペクトルモデル (IlluminationOpts → 分光分布 → 測色量)
+    src/optics/SourceSpectrum.cpp
+    src/optics/SourceSpectrum.h
+
+    # ディスプレイ / AR-VR 光学の解析式 (導波路 FOV・射出円錐・環境光CR) —
+    # Qt 非依存。DisplayOpticsTab の評価表の計算実体
+    src/optics/DisplayMetrics.cpp
+    src/optics/DisplayMetrics.h
+
+    # 順次光学系の近軸光線追跡 (y-nu) — Qt 非依存。
+    # LensEditorTab の近軸諸元 / EFFL・PIMH・ISFN オペランドの計算実体
+    src/optics/ParaxialTrace.cpp
+    src/optics/ParaxialTrace.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

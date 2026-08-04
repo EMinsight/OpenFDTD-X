@@ -16,6 +16,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -51,6 +52,18 @@ const bool s_i18n = [] {
     I18n::reg("sch_col_from",    "From",       "From");
     I18n::reg("sch_col_to",      "To",         "To");
     I18n::reg("sch_col_wl",      "波長依存",   "Wavelength dep.");
+    I18n::reg("sch_net_hint",
+              "接続は編集でき、プロジェクト (.ofdx) に保存されます。"
+              "チェックを外した行は無効な接続として保存されます。"
+              "回路図キャンバスからの自動生成と回路シミュレーションは未実装のため、"
+              "この表は接続の記録であり計算には渡されません。",
+              "The connections are editable and saved with the project (.ofdx); "
+              "unchecked rows are stored as disabled. Generating the list from a "
+              "schematic canvas and the circuit simulation itself are not "
+              "implemented, so this table records connectivity only and is not "
+              "passed to any computation.");
+    I18n::reg("sch_net_add",   "＋ 接続を追加", "+ Add connection");
+    I18n::reg("sch_net_del",   "− 選択行を削除", "− Delete selected row");
 
     I18n::reg("sch_noise_section", "ノイズ・温度効果", "Noise & temperature effects");
     I18n::reg("sch_shot",    "ショットノイズ",       "Shot noise");
@@ -94,15 +107,6 @@ const ElemDef kElements[12] = {
     { "◐",  "Modulator (EOM)",    "sch_el_eom_s",    true  },
 };
 
-// mock の netlist 行をそのまま転記
-struct NetDef { const char *from, *to, *wl; };
-const NetDef kNet[5] = {
-    { "LASER1.out", "MZI1.in1",  "1530~1570nm" },
-    { "LASER2.out", "MZI1.in2",  "1530~1570nm" },
-    { "MZI1.out1",  "RING1.in",  "—" },
-    { "RING1.drop", "PD1.in",    "—" },
-    { "RING1.thru", "PD2.in",    "—" },
-};
 } // namespace
 
 SchematicTab::SchematicTab(Project *project, QWidget *parent)
@@ -170,31 +174,48 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     v->addWidget(sLib);
 
     // ── ネットリスト / Connections ─────────────────────────────────────────
+    // 表は Project::photonicNetlist() のビュー。編集は即座にモデルへ書き戻し、
+    // .ofdx ("schematic.netlist") へ保存される (固定サンプルではない)。
     auto *sNet = new SectionBox(I18n::tr("sch_net_section"), body);
-    m_net = new QTableWidget(5, 4, sNet);
+    m_netFont = mono;
+    m_net = new QTableWidget(0, 4, sNet);
     m_net->setHorizontalHeaderLabels({ "#", I18n::tr("sch_col_from"),
                                        I18n::tr("sch_col_to"),
                                        I18n::tr("sch_col_wl") });
     m_net->verticalHeader()->setVisible(false);
-    m_net->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_net->setColumnWidth(0, 32);
+    m_net->setColumnWidth(0, 40);
     m_net->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_net->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     m_net->setMinimumHeight(170);
-    for (int i = 0; i < 5; ++i) {
-        auto *no = new QTableWidgetItem(QString::number(i + 1));
-        no->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_net->setItem(i, 0, no);
-        m_net->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8(kNet[i].from)));
-        m_net->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8(kNet[i].to)));
-        auto *wl = new QTableWidgetItem(QString::fromUtf8(kNet[i].wl));
-        wl->setFont(mono);
-        m_net->setItem(i, 3, wl);
-    }
     sNet->vbox()->addWidget(m_net);
-    // ネットリストは固定のサンプルデータ (編集・回路図との連動は未実装)
-    sNet->vbox()->addWidget(tabhelp::sampleNote(sNet));
+    sNet->vbox()->addWidget(mutedLabel(I18n::tr("sch_net_hint"), sNet));
+
+    auto *netBtns = new QHBoxLayout();
+    auto *addBtn = new QPushButton(I18n::tr("sch_net_add"), sNet);
+    auto *delBtn = new QPushButton(I18n::tr("sch_net_del"), sNet);
+    netBtns->addWidget(addBtn);
+    netBtns->addWidget(delBtn);
+    netBtns->addStretch(1);
+    sNet->vbox()->addLayout(netBtns);
     v->addWidget(sNet);
+
+    connect(addBtn, &QPushButton::clicked, this, [this] {
+        PhotonicNetRow r;
+        r.wavelength = QString::fromUtf8("—");
+        m_p->photonicNetlist().push_back(r);
+        m_p->touch();
+        refreshNetlist();
+        m_net->setCurrentCell(m_net->rowCount() - 1, 1);
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this] {
+        const int row = m_net->currentRow();
+        QVector<PhotonicNetRow> &net = m_p->photonicNetlist();
+        if (row < 0 || row >= net.size()) return;
+        net.remove(row);
+        m_p->touch();
+        refreshNetlist();
+    });
+    connect(m_net, &QTableWidget::itemChanged, this, &SchematicTab::onNetItemChanged);
 
     // ── ノイズ・温度効果 ───────────────────────────────────────────────────
     auto *sNo = new SectionBox(I18n::tr("sch_noise_section"), body);
@@ -234,4 +255,47 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+
+    connect(project, &Project::loaded, this, &SchematicTab::refreshNetlist);
+    refreshNetlist();
+}
+
+// モデル → 表 (m_updating ガード付き。行数が変わるので毎回作り直す)
+void SchematicTab::refreshNetlist()
+{
+    m_updating = true;
+    const QVector<PhotonicNetRow> &net = m_p->photonicNetlist();
+    m_net->setRowCount(net.size());
+    for (int i = 0; i < net.size(); ++i) {
+        const PhotonicNetRow &r = net[i];
+        auto *no = new QTableWidgetItem(QString::number(i + 1));
+        no->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        no->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable |
+                     Qt::ItemIsUserCheckable);
+        no->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
+        m_net->setItem(i, 0, no);
+        m_net->setItem(i, 1, new QTableWidgetItem(r.from));
+        m_net->setItem(i, 2, new QTableWidgetItem(r.to));
+        auto *wl = new QTableWidgetItem(r.wavelength);
+        wl->setFont(m_netFont);
+        m_net->setItem(i, 3, wl);
+    }
+    m_updating = false;
+}
+
+// 表 → モデル (1 セル分)
+void SchematicTab::onNetItemChanged(QTableWidgetItem *item)
+{
+    if (m_updating || !item) return;
+    const int row = item->row();
+    QVector<PhotonicNetRow> &net = m_p->photonicNetlist();
+    if (row < 0 || row >= net.size()) return;
+    switch (item->column()) {
+    case 0: net[row].enabled = (item->checkState() == Qt::Checked); break;
+    case 1: net[row].from = item->text(); break;
+    case 2: net[row].to = item->text(); break;
+    case 3: net[row].wavelength = item->text(); break;
+    default: return;
+    }
+    m_p->touch();
 }

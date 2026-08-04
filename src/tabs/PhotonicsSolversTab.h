@@ -16,6 +16,7 @@ class QLineEdit;
 class QSlider;
 class QSpinBox;
 class QStackedWidget;
+class QTableWidget;
 
 namespace ofd {
 
@@ -48,6 +49,8 @@ private slots:
 private:
     void apply();
     void setMethod(int id);
+    // 層構造テーブル = OpticalOpts::rcwaLayerList (光学タブで編集) のビュー
+    void rebuildLayerTable();
     QWidget *buildFdtdPage();
     QWidget *buildRcwaPage();
     QWidget *buildBpmPage();
@@ -81,6 +84,7 @@ private:
     QSpinBox  *m_fmmM, *m_fmmN;
     QLabel    *m_fmmTotal;
     QCheckBox *m_fmmLi;
+    QTableWidget *m_layerTable = nullptr;   // 層構造 (RCWA 層スタックのビュー)
 };
 
 } // namespace ofd

@@ -23,6 +23,7 @@
 #include "io/OfdIO.h"
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
+#include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
@@ -38,9 +39,15 @@
 #include "optics/PlasmaDispersion.h"
 #include "optics/DispersionFit.h"
 #include "optics/BendWaveguide.h"
+#include "optics/Colorimetry.h"
+#include "optics/SourceSpectrum.h"
+#include "optics/DisplayMetrics.h"
+#include "optics/ParaxialTrace.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
 #include "em/RadioPropagation.h"
+#include "em/EmcStandards.h"
+#include "em/LumpedRlc.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
 
@@ -470,6 +477,107 @@ static void testRoomAcoustics()
         }
     }
 
+    // 受音点リスト (AcousticTab の受音点表): 既定値と受音点数との一致
+    {
+        const AcousticOpts d;
+        check(d.receivers.size() == 1 && d.micCount == 1,
+              "receivers: default row count matches mic count");
+        check(d.receivers[0].enabled && d.receivers[0].type == 0 &&
+              d.receivers[0].name == QString::fromUtf8("P1 中央") &&
+              nearlyEq(d.receivers[0].x, 0.0) &&
+              nearlyEq(d.receivers[0].y, 1.2) &&
+              nearlyEq(d.receivers[0].z, 8.0),
+              "receivers: default row 1 values");
+        const QVector<ReceiverRow> six = defaultReceivers(6);
+        check(six.size() == 6, "receivers: defaultReceivers(6) size");
+        check(six[3].type == 1 && six[3].name == QString::fromUtf8("P4 後方"),
+              "receivers: 4th default is the stereo rear point");
+        check(six[5].name == QStringLiteral("P6") && nearlyEq(six[5].z, 18.0),
+              "receivers: 5th+ defaults continue backwards");
+    }
+
+    // 受音点リスト: .ofdx ラウンドトリップ + 既存キー保全
+    {
+        Project ps;
+        auto &rc = ps.acoustic().receivers;
+        rc = defaultReceivers(3);
+        rc[0].enabled = false;
+        rc[0].x = -1.25; rc[0].y = 1.7; rc[0].z = 6.5;
+        rc[0].type = 2;
+        rc[0].name = QString::fromUtf8("指揮者位置");
+        ps.acoustic().micCount = rc.size();
+
+        QTemporaryFile f4;
+        f4.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_XXXXXX.ofdx");
+        if (f4.open()) {
+            check(OfdxIO::save(f4.fileName(), ps), "receivers ofdx save");
+            Project pl;
+            check(OfdxIO::load(f4.fileName(), pl), "receivers ofdx load");
+            const auto &qs = pl.acoustic().receivers;
+            check(qs.size() == 3, "receivers count round-trip");
+            if (qs.size() == 3) {
+                check(!qs[0].enabled && qs[0].type == 2 &&
+                      qs[0].name == QString::fromUtf8("指揮者位置") &&
+                      nearlyEq(qs[0].x, -1.25) && nearlyEq(qs[0].y, 1.7) &&
+                      nearlyEq(qs[0].z, 6.5),
+                      "receivers row round-trip");
+                check(qs[2].enabled && nearlyEq(qs[2].x, 2.0),
+                      "receivers remaining rows round-trip");
+            }
+            check(pl.acoustic().micCount == 3,
+                  "receivers: mic count follows row count");
+
+            QFile jf(f4.fileName());
+            check(jf.open(QIODevice::ReadOnly), "receivers ofdx reopen");
+            const QJsonObject ac = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("acoustic").toObject();
+            check(ac.value("receivers").toArray().size() == 3,
+                  "receivers json key");
+            check(ac["receivers"].toArray()[0].toObject()
+                      .value("pos_m").toArray().size() == 3,
+                  "receivers json pos array");
+            check(ac.contains("mic_count") && ac.contains("noise_sources") &&
+                  ac.contains("absorption"),
+                  "receivers json keeps existing acoustic keys");
+        }
+    }
+
+    // 旧 .ofdx (receivers 無し): mic_count 個の既定点で埋める / 範囲外はクランプ
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"mic_count\": 4 } }";
+            old.write(legacy);
+            old.flush();
+            Project p4;
+            check(OfdxIO::load(old.fileName(), p4), "legacy rcv ofdx load");
+            const auto &qs = p4.acoustic().receivers;
+            check(qs.size() == 4 && p4.acoustic().micCount == 4,
+                  "legacy ofdx fills receivers from mic_count");
+            check(qs[3].name == QString::fromUtf8("P4 後方"),
+                  "legacy ofdx receiver defaults");
+        }
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"mic_count\": 9,"
+                "    \"receivers\": [ { \"type\": 7, \"name\": \"X\" } ] } }";
+            bad.write(broken);
+            bad.flush();
+            Project p5;
+            check(OfdxIO::load(bad.fileName(), p5), "broken rcv ofdx load");
+            const auto &qs = p5.acoustic().receivers;
+            check(qs.size() == 1 && p5.acoustic().micCount == 1,
+                  "broken ofdx: mic count follows receivers");
+            check(qs[0].type == 2, "broken ofdx: receiver type clamped");
+        }
+    }
+
     // 旧 .ofdx (noise_sources 無し): 既定 4 行のまま (旧ファイル互換)
     {
         QTemporaryFile old;
@@ -539,6 +647,148 @@ static void testRoomAcoustics()
             check(ac.contains("rt60") && ac.contains("mic_count") &&
                   ac.contains("noise_levels"),
                   "actab json keeps existing acoustic keys");
+        }
+    }
+
+    // ── 音源リスト (AcousticSourceTab の音源一覧) ────────────────────────────
+    // 既定値 (新規プロジェクト): 室内 3 本 / 水中 2 本
+    {
+        const AcousticOpts da;
+        const UnderwaterOpts du;
+        check(da.sources.size() == 3, "acoustic sources: default 3 rows");
+        if (da.sources.size() == 3) {
+            check(da.sources[0].enabled &&
+                  da.sources[0].name == QStringLiteral("L_main") &&
+                  da.sources[0].kind == AcousticSourceRow::Cardioid &&
+                  nearlyEq(da.sources[0].x_m, -3.0) &&
+                  nearlyEq(da.sources[0].y_m, 4.5) &&
+                  nearlyEq(da.sources[0].z_m, 5.0) &&
+                  nearlyEq(da.sources[0].level_dB, 94.0),
+                  "acoustic sources: row 1 defaults");
+            // 同梱していない音源ファイル名を既定に入れない (信号欄は空)
+            check(da.sources[0].signal.isEmpty() &&
+                  da.sources[2].name == QStringLiteral("C_voice") &&
+                  nearlyEq(da.sources[2].level_dB, 88.0),
+                  "acoustic sources: no fabricated signal file");
+        }
+        check(du.sources.size() == 2, "sonar sources: default 2 rows");
+        if (du.sources.size() == 2)
+            check(du.sources[0].name == QStringLiteral("TX_sonar") &&
+                  du.sources[0].kind == AcousticSourceRow::Directional &&
+                  nearlyEq(du.sources[0].level_dB, 220.0) &&
+                  !du.sources[1].enabled,
+                  "sonar sources: row defaults");
+    }
+
+    // 音源リスト: .ofdx ラウンドトリップ (室内 / 水中の両方) + 既存キー保全
+    {
+        Project ps;
+        auto &sl = ps.acoustic().sources;
+        sl.clear();
+        AcousticSourceRow r;
+        r.enabled = false;
+        r.name = QString::fromUtf8("舞台上手");
+        r.kind = AcousticSourceRow::Bipolar;
+        r.x_m = 1.25; r.y_m = -2.5; r.z_m = 3.75;
+        r.aim = QString::fromUtf8("-Z 15°");
+        r.signal = QStringLiteral("speech_48k.wav");
+        r.level_dB = 91.5;
+        sl.push_back(r);
+        auto &ul = ps.underwater().sources;
+        ul.clear();
+        AcousticSourceRow u;
+        u.name = QStringLiteral("TX_A");
+        u.kind = AcousticSourceRow::Omni;
+        u.x_m = -10; u.y_m = 20; u.z_m = -30;
+        u.signal = QStringLiteral("chirp 1-2kHz");
+        u.level_dB = 205.0;
+        ul.push_back(u);
+
+        QTemporaryFile fs;
+        fs.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_XXXXXX.ofdx");
+        if (fs.open()) {
+            check(OfdxIO::save(fs.fileName(), ps), "source list ofdx save");
+            Project pl;
+            check(OfdxIO::load(fs.fileName(), pl), "source list ofdx load");
+            const auto &qs = pl.acoustic().sources;
+            check(qs.size() == 1, "source list count round-trip");
+            if (qs.size() == 1)
+                check(!qs[0].enabled &&
+                      qs[0].name == QString::fromUtf8("舞台上手") &&
+                      qs[0].kind == AcousticSourceRow::Bipolar &&
+                      nearlyEq(qs[0].x_m, 1.25) &&
+                      nearlyEq(qs[0].y_m, -2.5) &&
+                      nearlyEq(qs[0].z_m, 3.75) &&
+                      qs[0].aim == QString::fromUtf8("-Z 15°") &&
+                      qs[0].signal == QStringLiteral("speech_48k.wav") &&
+                      nearlyEq(qs[0].level_dB, 91.5),
+                      "source list row round-trip");
+            const auto &us = pl.underwater().sources;
+            check(us.size() == 1, "sonar source list count round-trip");
+            if (us.size() == 1)
+                check(us[0].name == QStringLiteral("TX_A") &&
+                      us[0].kind == AcousticSourceRow::Omni &&
+                      nearlyEq(us[0].z_m, -30.0) &&
+                      us[0].signal == QStringLiteral("chirp 1-2kHz") &&
+                      nearlyEq(us[0].level_dB, 205.0),
+                      "sonar source list row round-trip");
+
+            QFile jf(fs.fileName());
+            check(jf.open(QIODevice::ReadOnly), "source list ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject ac = root.value("acoustic").toObject();
+            const QJsonObject uw = root.value("underwater").toObject();
+            check(ac.value("sources").toArray().size() == 1 &&
+                  uw.value("sources").toArray().size() == 1,
+                  "source list json key");
+            check(ac.contains("noise_sources") && ac.contains("receivers") &&
+                  ac.contains("mic_count") &&
+                  uw.contains("sonar_sl_db") && uw.contains("ssp"),
+                  "source list json keeps existing keys");
+        }
+    }
+
+    // 旧 .ofdx (sources 無し): 既定 3 行 / 2 行のまま (旧ファイル互換)。
+    // 壊れた種別 (範囲外) はクランプされる。
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"room_l\": 25.5 },"
+                "  \"underwater\": { \"sonar_sl_db\": 210.0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p4;
+            check(OfdxIO::load(old.fileName(), p4), "legacy src ofdx load");
+            check(p4.acoustic().sources.size() == 3 &&
+                  p4.acoustic().sources[0].name == QStringLiteral("L_main"),
+                  "legacy ofdx keeps default acoustic sources");
+            check(p4.underwater().sources.size() == 2 &&
+                  p4.underwater().sources[0].name == QStringLiteral("TX_sonar"),
+                  "legacy ofdx keeps default sonar sources");
+        }
+        QTemporaryFile bad2;
+        bad2.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_bad_XXXXXX.ofdx");
+        if (bad2.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"sources\": [ { \"name\": \"X\","
+                "      \"kind\": 9, \"pos_m\": [1,2] } ] } }";
+            bad2.write(broken);
+            bad2.flush();
+            Project p5;
+            check(OfdxIO::load(bad2.fileName(), p5), "broken src ofdx load");
+            const auto &bs = p5.acoustic().sources;
+            check(bs.size() == 1 && bs[0].kind == AcousticSourceRow::Directional,
+                  "source list out-of-range kind clamped");
+            // 要素数の足りない pos_m は既定値のまま (壊れた座標を作らない)
+            if (bs.size() == 1)
+                check(nearlyEq(bs[0].x_m, 0.0) && nearlyEq(bs[0].y_m, 0.0) &&
+                      nearlyEq(bs[0].z_m, 0.0) && bs[0].enabled,
+                      "source list short pos_m keeps defaults");
         }
     }
 
@@ -5921,6 +6171,1432 @@ static void testBendWaveguide()
     }
 }
 
+// ── 取込メッシュの位相・幾何検査 (io/MeshDiagnostics) ───────────────────────
+// GeometryTab「ジオメトリ検査」節の検出値の実体。期待値はコードからではなく
+// 立方体の位相 (頂点 8・辺 18・面 12 三角形) から手で導ける値を使う。
+static void testMeshDiagnostics()
+{
+    g_file = "mesh-diagnostics";
+
+    // 外向き法線で首尾一貫させた閉じた立方体 (12 三角形)。
+    // 面ごとの 4 頂点を外から見て CCW に並べる = 全体で coherent orientation。
+    auto orientedCube = [](double a) {
+        ImportedMesh m;
+        m.name = "cube";
+        const double h = a / 2.0;
+        double p[8][3] = {
+            {-h,-h,-h},{ h,-h,-h},{ h, h,-h},{-h, h,-h},
+            {-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h} };
+        auto quad = [&](int i0, int i1, int i2, int i3) {
+            addTri(m, p[i0][0],p[i0][1],p[i0][2],
+                      p[i1][0],p[i1][1],p[i1][2],
+                      p[i2][0],p[i2][1],p[i2][2]);
+            addTri(m, p[i0][0],p[i0][1],p[i0][2],
+                      p[i2][0],p[i2][1],p[i2][2],
+                      p[i3][0],p[i3][1],p[i3][2]);
+        };
+        quad(0, 3, 2, 1);   // z− 面
+        quad(4, 5, 6, 7);   // z+ 面
+        quad(0, 1, 5, 4);   // y− 面
+        quad(3, 7, 6, 2);   // y+ 面
+        quad(0, 4, 7, 3);   // x− 面
+        quad(1, 2, 6, 5);   // x+ 面
+        m.bbox[0] = m.bbox[1] = m.bbox[2] = -h;
+        m.bbox[3] = m.bbox[4] = m.bbox[5] =  h;
+        return m;
+    };
+
+    // 1) 健全な閉多様体: 穴なし・非多様体なし・向き一致・重複頂点 36−8=28
+    {
+        const ImportedMesh cube = orientedCube(0.02);
+        const MeshDiagnostics d = analyzeMesh(cube);
+        check(d.valid && !d.skippedTooLarge, "meshdiag: cube analyzed");
+        check(d.triangles == 12, "meshdiag: cube triangle count");
+        check(d.rawVertices == 36, "meshdiag: cube raw vertex count");
+        check(d.uniqueVertices == 8, "meshdiag: cube welds to 8 vertices");
+        check(d.duplicateVertices == 28, "meshdiag: cube duplicate vertices");
+        check(d.degenerateTriangles == 0, "meshdiag: cube has no degenerates");
+        check(d.boundaryEdges == 0, "meshdiag: cube has no boundary edges");
+        check(d.nonManifoldEdges == 0, "meshdiag: cube is manifold");
+        check(d.inconsistentEdges == 0, "meshdiag: cube orientation coherent");
+        check(d.watertight(), "meshdiag: cube watertight");
+        check(d.weldTolerance > 0.0, "meshdiag: weld tolerance positive");
+    }
+
+    // 2) 三角形を 1 枚落とす → その 3 辺が境界エッジになり水密でなくなる
+    {
+        ImportedMesh holed = orientedCube(0.02);
+        holed.vertices.resize(holed.vertices.size() - 9);
+        --holed.numTriangles;
+        const MeshDiagnostics d = analyzeMesh(holed);
+        check(d.triangles == 11, "meshdiag: holed triangle count");
+        check(d.boundaryEdges == 3, "meshdiag: hole gives 3 boundary edges");
+        check(d.nonManifoldEdges == 0, "meshdiag: holed still manifold");
+        check(!d.watertight(), "meshdiag: holed not watertight");
+    }
+
+    // 3) 三角形を 1 枚複製 → その 3 辺が 3 枚共有 = 非多様体
+    {
+        ImportedMesh dup = orientedCube(0.02);
+        for (int i = 0; i < 9; ++i) dup.vertices.push_back(dup.vertices[i]);
+        ++dup.numTriangles;
+        const MeshDiagnostics d = analyzeMesh(dup);
+        check(d.nonManifoldEdges == 3, "meshdiag: duplicated face is non-manifold");
+        check(d.boundaryEdges == 0, "meshdiag: duplicated face has no boundary");
+        check(!d.watertight(), "meshdiag: non-manifold is not watertight");
+    }
+
+    // 4) 三角形を 1 枚裏返す → その 3 辺で向きが一致しなくなる
+    {
+        ImportedMesh flip = orientedCube(0.02);
+        for (int k = 0; k < 3; ++k)      // 頂点 1 と 2 を入れ替える
+            std::swap(flip.vertices[3 + k], flip.vertices[6 + k]);
+        const MeshDiagnostics d = analyzeMesh(flip);
+        check(d.inconsistentEdges == 3, "meshdiag: flipped face gives 3 bad edges");
+        check(d.boundaryEdges == 0 && d.nonManifoldEdges == 0,
+              "meshdiag: flipped face keeps the topology closed");
+        // 位相としては閉じている (向きの不一致は watertight の判定に含めない)
+        check(d.watertight(), "meshdiag: flipped face still closed");
+    }
+
+    // 5) 縮退三角形 (3 頂点が同一) は数えられ、辺の位相を汚さない
+    {
+        ImportedMesh deg = orientedCube(0.02);
+        addTri(deg, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001,
+                    0.001, 0.001, 0.001);
+        const MeshDiagnostics d = analyzeMesh(deg);
+        check(d.degenerateTriangles == 1, "meshdiag: degenerate triangle counted");
+        check(d.boundaryEdges == 0 && d.nonManifoldEdges == 0,
+              "meshdiag: degenerate triangle excluded from edge topology");
+    }
+
+    // 6) 空メッシュ / 上限超過は「検査していない」ことを返す (偽の OK を出さない)
+    {
+        const ImportedMesh empty;
+        const MeshDiagnostics d = analyzeMesh(empty);
+        check(!d.valid && !d.watertight(), "meshdiag: empty mesh is not valid");
+
+        const ImportedMesh cube = orientedCube(0.02);
+        const MeshDiagnostics s = analyzeMesh(cube, 4);   // 上限 4 三角形
+        check(!s.valid && s.skippedTooLarge && s.triangles == 12,
+              "meshdiag: oversized mesh is skipped, not silently OK");
+        check(!s.watertight(), "meshdiag: skipped mesh never reports watertight");
+    }
+}
+
+// ── EMC 規格の公表限度値と対策効果の古典式 (em/EmcStandards) ────────────────
+// 期待値はコードと独立な出所 (規格の表 / 手計算) から取る。
+static void testEmcStandards()
+{
+    using namespace ofd::em::emc;
+    g_file = "emc-standards";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 1) 放射妨害波の限度値 (CISPR 32:2015 Table A.3/A.4 の公表値)
+    {
+        LimitSegment seg[kMaxLimitSegments];
+        int n = radiatedLimits(Standard::Cispr32, EmClass::A, seg,
+                               kMaxLimitSegments);
+        check(n == 2, "emc: CISPR 32 Class A has two segments");
+        if (n == 2) {
+            check(approx(seg[0].f1_MHz, 30.0, 0) &&
+                  approx(seg[0].f2_MHz, 230.0, 0) &&
+                  approx(seg[0].limit_dBuVm, 40.0, 0) &&
+                  approx(seg[0].refDist_m, 10.0, 0),
+                  "emc: CISPR 32 Class A 30-230 MHz = 40 dBuV/m @10 m");
+            check(approx(seg[1].limit_dBuVm, 47.0, 0) &&
+                  approx(seg[1].f2_MHz, 1000.0, 0),
+                  "emc: CISPR 32 Class A 230-1000 MHz = 47 dBuV/m");
+        }
+        n = radiatedLimits(Standard::Cispr32, EmClass::B, seg,
+                           kMaxLimitSegments);
+        check(n == 2 && approx(seg[0].limit_dBuVm, 30.0, 0) &&
+              approx(seg[1].limit_dBuVm, 37.0, 0),
+              "emc: CISPR 32 Class B = 30 / 37 dBuV/m @10 m");
+
+        // FCC 47 CFR §15.109: μV/m 規定 → dBμV/m (100 μV/m = 40 dBμV/m)
+        n = radiatedLimits(Standard::Fcc15, EmClass::B, seg, kMaxLimitSegments);
+        check(n == 4, "emc: FCC Part 15 Class B has four segments");
+        if (n == 4) {
+            check(approx(seg[0].limit_dBuVm, 40.0, 1e-9) &&
+                  approx(seg[0].refDist_m, 3.0, 0),
+                  "emc: FCC Class B 30-88 MHz = 100 uV/m (40 dBuV/m) @3 m");
+            check(approx(seg[1].limit_dBuVm, 43.5218, 1e-3) &&
+                  approx(seg[2].limit_dBuVm, 46.0206, 1e-3) &&
+                  approx(seg[3].limit_dBuVm, 53.9794, 1e-3),
+                  "emc: FCC Class B 150/200/500 uV/m in dBuV/m");
+        }
+        n = radiatedLimits(Standard::Fcc15, EmClass::A, seg, kMaxLimitSegments);
+        check(n == 4 && approx(seg[0].limit_dBuVm, 39.0849, 1e-3) &&
+              approx(seg[0].refDist_m, 10.0, 0),
+              "emc: FCC Class A 30-88 MHz = 90 uV/m @10 m");
+
+        // 収載していない規格は 0 件 (推定値を作らない)
+        check(radiatedLimits(Standard::None, EmClass::A, seg,
+                             kMaxLimitSegments) == 0,
+              "emc: unlisted standard yields no limits");
+    }
+
+    // 2) 逆距離則による距離換算と区間検索
+    {
+        LimitSegment seg[kMaxLimitSegments];
+        const int n = radiatedLimits(Standard::Cispr32, EmClass::B, seg,
+                                     kMaxLimitSegments);
+        // 30 dBμV/m @10 m → 3 m では +20log10(10/3) = +10.4576 dB
+        check(approx(limitAtDistance(seg[0], 3.0), 40.4576, 1e-3),
+              "emc: inverse-distance extrapolation 10 m -> 3 m");
+        check(approx(limitAtDistance(seg[0], 10.0), 30.0, 1e-12),
+              "emc: same distance leaves the limit unchanged");
+        check(approx(limitAtDistance(seg[0], 0.0), 30.0, 1e-12),
+              "emc: invalid distance falls back to the reference value");
+        check(limitSegmentIndex(seg, n, 30.0) == 0 &&
+              limitSegmentIndex(seg, n, 230.0) == 0 &&
+              limitSegmentIndex(seg, n, 230.1) == 1 &&
+              limitSegmentIndex(seg, n, 1500.0) == -1,
+              "emc: limit segment lookup honours the band edges");
+    }
+
+    // 3) シールド遮蔽効果 SE = A + R + B (Schelkunoff / Ott)
+    {
+        // 銅 1 mm @500 MHz: δ = 1/√(πfμσ) = 2.955 μm
+        const ShieldSE se = shieldEffectiveness(5.0e8, 1.0e-3, 1.0, 1.0);
+        check(se.valid, "emc: shield SE is valid for a positive thickness");
+        check(approx(se.skinDepth_m * 1e6, 2.9554, 1e-3),
+              "emc: copper skin depth at 500 MHz = 2.955 um");
+        check(approx(se.absorption_dB, 8.686 * 1.0e-3 / se.skinDepth_m, 1e-6),
+              "emc: absorption loss A = 8.686 t/delta");
+        // R = 168 + 10log10(sigma_r/(mu_r f)) = 168 - 86.9897
+        check(approx(se.reflection_dB, 81.0103, 1e-3),
+              "emc: plane-wave reflection loss of copper at 500 MHz");
+        check(approx(se.multiRefl_dB, 0.0, 1e-6),
+              "emc: multiple-reflection term vanishes for a thick shield");
+        check(approx(se.total_dB,
+                     se.absorption_dB + se.reflection_dB + se.multiRefl_dB, 1e-9),
+              "emc: SE is the sum A + R + B");
+        // 鋼は導電率が低く透磁率が高い → 吸収損は増え反射損は減る
+        const ShieldSE st = shieldEffectiveness(5.0e8, 1.0e-3, 0.10, 1000.0);
+        check(st.absorption_dB > se.absorption_dB &&
+              st.reflection_dB < se.reflection_dB,
+              "emc: steel absorbs more and reflects less than copper");
+        // 無効入力では計算しない (0 を返し valid=false)
+        const ShieldSE bad = shieldEffectiveness(5.0e8, 0.0, 1.0, 1.0);
+        check(!bad.valid && bad.total_dB == 0.0,
+              "emc: zero thickness gives no shielding effectiveness");
+        // 材料表 (Ott Table 6-1)
+        check(approx(shieldMaterial(0).sigmaRel, 1.0, 0) &&
+              approx(shieldMaterial(1).sigmaRel, 0.61, 0) &&
+              approx(shieldMaterial(2).muRel, 1000.0, 0),
+              "emc: shield material constants (Cu / Al / steel)");
+    }
+
+    // 4) 開口 (スリット) の遮蔽効果 SE = 20log10(lambda/2L) - 10log10(n)
+    {
+        // 500 MHz: λ = 0.59958 m、L = 50 mm → 20log10(5.9958) = 15.556 dB
+        check(approx(apertureSE_dB(5.0e8, 0.050, 1), 15.5561, 1e-3),
+              "emc: aperture SE of a 50 mm slot at 500 MHz");
+        check(approx(apertureSE_dB(5.0e8, 0.050, 4),
+                     15.5561 - 6.0206, 1e-3),
+              "emc: four apertures lose 10log10(4) dB");
+        check(apertureSE_dB(5.0e8, 0.40, 1) == 0.0,
+              "emc: an aperture at or above lambda/2 gives no shielding");
+        check(apertureSE_dB(5.0e8, 0.0, 1) == 0.0,
+              "emc: invalid aperture input yields 0");
+        // 幅を半分にすると 20log10(2) = 6.02 dB 改善
+        check(approx(apertureShrinkGain_dB(0.5), 6.0206, 1e-3),
+              "emc: halving the slot width gains 6 dB");
+        check(apertureShrinkGain_dB(1.0) == 0.0 &&
+              apertureShrinkGain_dB(0.0) == 0.0,
+              "emc: no gain when the slot is not shrunk");
+    }
+
+    // 5) 挿入損失 / ESD 電流 / 電力密度
+    {
+        // Z = 300 Ω を 150 Ω 回路へ直列挿入 → 20log10(3) = 9.542 dB
+        check(approx(insertionLoss_dB(300.0, 150.0), 9.5424, 1e-3),
+              "emc: insertion loss of a 300 ohm series element in 150 ohm");
+        check(insertionLoss_dB(300.0, 0.0) == 0.0,
+              "emc: insertion loss needs a positive circuit impedance");
+        // 1 μH の理想インダクタ @500 MHz = 3141.6 Ω
+        check(approx(inductiveReactance(5.0e8, 1.0e-6), 3141.5927, 1e-3),
+              "emc: inductive reactance 2*pi*f*L");
+        // IEC 61000-4-2 Table 2: レベル 4 (8 kV) = 30 / 16 / 8 A
+        const EsdContactCurrent c = esdContactCurrent(8.0);
+        check(approx(c.firstPeak_A, 30.0, 1e-9) &&
+              approx(c.at30ns_A, 16.0, 1e-9) &&
+              approx(c.at60ns_A, 8.0, 1e-9),
+              "emc: IEC 61000-4-2 contact discharge currents at 8 kV");
+        check(approx(esdContactCurrent(2.0).firstPeak_A, 7.5, 1e-9),
+              "emc: IEC 61000-4-2 level 1 (2 kV) first peak = 7.5 A");
+        // S = E^2/Z0 (10 V/m → 0.26544 W/m^2)、80% AM の尖頭は 1.8 倍
+        check(approx(powerDensity_Wm2(10.0), 0.2654419, 1e-6),
+              "emc: plane-wave power density S = E^2/Z0");
+        check(approx(amModulatedPeakField(10.0), 18.0, 1e-9),
+              "emc: 80% AM peak envelope = 1.8 x test level");
+    }
+}
+
+// ── 集中定数 RLC の |Z(f)| (em/LumpedRlc) ───────────────────────────────────
+static void testLumpedRlc()
+{
+    using namespace ofd::em;
+    g_file = "lumped-rlc";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    RlcModel m;
+    m.r_ohm = 0.01;
+    m.l_H = 50e-9;
+    m.c_F = 200e-12;
+
+    // 共振周波数 f0 = 1/(2*pi*sqrt(LC)) = 50.329 MHz
+    const double f0 = rlcResonanceHz(m.l_H, m.c_F);
+    check(approx(f0 * 1e-6, 50.3292, 1e-3), "rlc: f0 = 1/(2 pi sqrt(LC))");
+    check(rlcResonanceHz(0.0, 200e-12) == 0.0 &&
+          rlcResonanceHz(50e-9, 0.0) == 0.0,
+          "rlc: no resonance without both L and C");
+
+    // 直列: 1 MHz では容量性 1/(wC) = 795.77 ohm が支配的
+    {
+        const RlcImpedance z = rlcImpedance(m, 1.0e6);
+        check(z.valid, "rlc: series impedance is valid at 1 MHz");
+        check(approx(z.xL_ohm, 0.314159, 1e-6) &&
+              approx(z.xC_ohm, 795.7747, 1e-3),
+              "rlc: reactances wL and 1/wC at 1 MHz");
+        check(approx(z.magnitude_ohm, 795.4606, 1e-3),
+              "rlc: |Z| = sqrt(R^2 + (wL - 1/wC)^2)");
+    }
+    // 直列: 共振で |Z| = R (最小)
+    {
+        const RlcImpedance z = rlcImpedance(m, f0);
+        check(approx(z.magnitude_ohm, m.r_ohm, 1e-9),
+              "rlc: series |Z| falls to R at resonance");
+        check(rlcImpedance(m, f0 * 2.0).magnitude_ohm > m.r_ohm,
+              "rlc: series |Z| rises away from resonance");
+    }
+    // 並列: 共振で |Z| = R (最大)
+    {
+        RlcModel p = m;
+        p.topology = RlcTopology::Parallel;
+        const RlcImpedance z = rlcImpedance(p, f0);
+        check(approx(z.magnitude_ohm, p.r_ohm, 1e-9),
+              "rlc: parallel |Z| peaks at R at resonance");
+        check(rlcImpedance(p, f0 * 2.0).magnitude_ohm < p.r_ohm,
+              "rlc: parallel |Z| falls away from resonance");
+    }
+    // 素子の不在: 直列は短絡 (0 ohm)、並列は開放 (アドミタンス 0)
+    {
+        RlcModel s;
+        s.r_ohm = 3.0;
+        s.l_H = 50e-9;                       // C 無し
+        const RlcImpedance z = rlcImpedance(s, 1.0e8);
+        check(z.xC_ohm == 0.0 &&
+              approx(z.magnitude_ohm,
+                     std::sqrt(9.0 + z.xL_ohm * z.xL_ohm), 1e-9),
+              "rlc: a missing series capacitor is a short");
+        RlcModel p;
+        p.r_ohm = 3.0;
+        p.topology = RlcTopology::Parallel;  // R のみ
+        check(approx(rlcImpedance(p, 1.0e8).magnitude_ohm, 3.0, 1e-9),
+              "rlc: a parallel R alone gives |Z| = R");
+        RlcModel none;
+        check(!rlcImpedance(none, 1.0e8).valid,
+              "rlc: an empty model is not valid");
+        check(!rlcImpedance(m, 0.0).valid, "rlc: f <= 0 is not valid");
+    }
+}
+
+// ── 回路ポート定義 (.ofdx "circuit.ports") ──────────────────────────────────
+static void testCircuitPorts()
+{
+    g_file = "circuit-ports";
+
+    // 1) 既定は 3 行 — .ofd も .ofdx も従来の出力のまま (追加キーを書かない)
+    {
+        Project p;
+        check(p.circuitPorts().size() == 3, "cirport: default has three ports");
+        check(p.circuitPorts()[0].name == "VIN" &&
+              p.circuitPorts()[0].kind == CircuitPortRow::Lumped &&
+              p.circuitPorts()[2].kind == CircuitPortRow::Probe,
+              "cirport: default rows are the documented initial values");
+        const QString base = OfdIO::serialize(p);
+        CircuitPortRow extra;
+        extra.name = QStringLiteral("PORT4");
+        p.circuitPorts().push_back(extra);
+        check(OfdIO::serialize(p) == base,
+              "cirport: ports keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_port_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;   // 既定のまま
+            check(OfdxIO::save(def.fileName(), q), "cirport default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "cirport default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("circuit"),
+                  "cirport: no circuit key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<CircuitPortRow> &ports = p1.circuitPorts();
+        ports[0].name = QStringLiteral("VBUS_IN");
+        ports[0].net = QStringLiteral("NET_A");
+        ports[1].enabled = false;
+        ports[2].kind = CircuitPortRow::Probe;
+        CircuitPortRow added;
+        added.name = QStringLiteral("PORT4");
+        added.kind = CircuitPortRow::Probe;
+        added.net = QStringLiteral("NET_D");
+        added.ref = QStringLiteral("AGND");
+        ports.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_port_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "cirport ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "cirport ofdx load");
+            const QVector<CircuitPortRow> &r = p2.circuitPorts();
+            check(r.size() == 4, "cirport: four ports round-trip");
+            if (r.size() == 4) {
+                check(r[0].name == "VBUS_IN" && r[0].net == "NET_A" &&
+                      r[0].enabled && r[0].ref == "GND",
+                      "cirport: first port fields round-trip");
+                check(!r[1].enabled, "cirport: disabled flag round-trips");
+                check(r[3].name == "PORT4" &&
+                      r[3].kind == CircuitPortRow::Probe &&
+                      r[3].ref == "AGND",
+                      "cirport: appended port round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "cirport ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("circuit").toObject()
+                      .value("ports").toArray().size() == 4,
+                  "cirport: circuit.ports json array length");
+            check(root.contains("optical") && root.contains("acoustic"),
+                  "cirport: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (circuit キー無し): 既定 3 行のまま (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_port_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"em\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "cirport legacy ofdx load");
+            check(p.circuitPorts().size() == 3 &&
+                  p.circuitPorts()[0].name == "VIN",
+                  "cirport: legacy file keeps the default ports");
+        }
+        Project p;
+        p.circuitPorts().clear();
+        p.clear();
+        check(p.circuitPorts().size() == 3,
+              "cirport: clear() restores the default ports");
+    }
+}
+
+// ── フォトニック回路ネットリスト (.ofdx "schematic.netlist") ────────────────
+static void testPhotonicNetlist()
+{
+    g_file = "photonic-netlist";
+
+    // 1) 既定は 5 行 — 追加キーを書かない (旧 .ofdx とバイト一致)
+    {
+        Project p;
+        check(p.photonicNetlist().size() == 5,
+              "phnet: default netlist has five connections");
+        check(p.photonicNetlist()[0].from == "LASER1.out" &&
+              p.photonicNetlist()[0].to == "MZI1.in1",
+              "phnet: default rows are the documented initial values");
+        const QString base = OfdIO::serialize(p);
+        p.photonicNetlist().push_back(PhotonicNetRow{});
+        check(OfdIO::serialize(p) == base,
+              "phnet: netlist keeps .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_net_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;
+            check(OfdxIO::save(def.fileName(), q), "phnet default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "phnet default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("schematic"),
+                  "phnet: no schematic key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<PhotonicNetRow> &net = p1.photonicNetlist();
+        net.remove(4);
+        net[0].to = QStringLiteral("MMI1.in");
+        net[1].enabled = false;
+        PhotonicNetRow added;
+        added.from = QStringLiteral("PD1.out");
+        added.to = QStringLiteral("TIA1.in");
+        added.wavelength = QStringLiteral("DC");
+        net.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_net_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "phnet ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "phnet ofdx load");
+            const QVector<PhotonicNetRow> &r = p2.photonicNetlist();
+            check(r.size() == 5, "phnet: five connections round-trip");
+            if (r.size() == 5) {
+                check(r[0].from == "LASER1.out" && r[0].to == "MMI1.in" &&
+                      r[0].wavelength == "1530~1570nm",
+                      "phnet: first connection round-trips");
+                check(!r[1].enabled, "phnet: disabled flag round-trips");
+                check(r[4].from == "PD1.out" && r[4].to == "TIA1.in" &&
+                      r[4].wavelength == "DC",
+                      "phnet: appended connection round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "phnet ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("schematic").toObject()
+                      .value("netlist").toArray().size() == 5,
+                  "phnet: schematic.netlist json array length");
+        }
+    }
+
+    // 3) 旧 .ofdx (schematic キー無し): 既定 5 行のまま (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_net_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optics\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "phnet legacy ofdx load");
+            check(p.photonicNetlist().size() == 5 &&
+                  p.photonicNetlist()[2].to == "RING1.in",
+                  "phnet: legacy file keeps the default netlist");
+        }
+        Project p;
+        p.photonicNetlist().clear();
+        p.clear();
+        check(p.photonicNetlist().size() == 5,
+              "phnet: clear() restores the default netlist");
+    }
+}
+
+// ── モニター定義 (.ofdx "monitors") ─────────────────────────────────────────
+static void testMonitorList()
+{
+    g_file = "monitors";
+
+    // 1) 既定はドメイン別の初期行 — .ofd も .ofdx も従来の出力のまま
+    {
+        Project p;
+        check(p.monitors().size() == 4, "mon: default EM list has four rows");
+        check(p.monitors()[0].type == "point" &&
+              p.monitors()[0].name == "E_probe" &&
+              !p.monitors()[3].enabled,
+              "mon: default rows are the documented initial values");
+        check(defaultMonitors(Domain::Optical).size() == 5 &&
+              defaultMonitors(Domain::Acoustic).size() == 4,
+              "mon: per-domain defaults have the documented row counts");
+        check(isDefaultMonitorSet(p.monitors()),
+              "mon: an untouched list is recognised as a default set");
+        const QString base = OfdIO::serialize(p);
+        MonitorRow extra;
+        extra.type = QStringLiteral("flux");
+        extra.name = QStringLiteral("P_out");
+        p.monitors().push_back(extra);
+        check(!isDefaultMonitorSet(p.monitors()),
+              "mon: an edited list is no longer a default set");
+        check(OfdIO::serialize(p) == base,
+              "mon: monitors keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_mon_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;   // 既定のまま
+            check(OfdxIO::save(def.fileName(), q), "mon default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("monitors"),
+                  "mon: no monitors key while the list is unedited");
+        }
+        // ドメインを変えても「そのドメインの既定」ならキーを書かない
+        QTemporaryFile defOpt;
+        defOpt.setFileTemplate(QDir::tempPath() + "/ofdx_mon_opt_XXXXXX.ofdx");
+        if (defOpt.open()) {
+            Project q;
+            q.setActiveDomain(Domain::Optical);
+            q.monitors() = defaultMonitors(Domain::Optical);
+            check(OfdxIO::save(defOpt.fileName(), q), "mon optical ofdx save");
+            QFile jf(defOpt.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon optical ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("monitors"),
+                  "mon: no monitors key for the optical default list");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<MonitorRow> &mons = p1.monitors();
+        mons[0].name = QStringLiteral("probe_A");
+        mons[0].region = QStringLiteral("(1, 2, 3)");
+        mons[1].enabled = false;
+        MonitorRow added;
+        added.type = QStringLiteral("spara");
+        added.name = QStringLiteral("S21");
+        added.region = QStringLiteral("port1→port2");
+        added.band = QStringLiteral("2~3 GHz");
+        mons.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_mon_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "mon ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "mon ofdx load");
+            const QVector<MonitorRow> &r = p2.monitors();
+            check(r.size() == 5, "mon: five monitors round-trip");
+            if (r.size() == 5) {
+                check(r[0].name == "probe_A" && r[0].region == "(1, 2, 3)" &&
+                      r[0].type == "point" && r[0].enabled,
+                      "mon: first monitor fields round-trip");
+                check(!r[1].enabled, "mon: disabled flag round-trips");
+                check(r[4].type == "spara" && r[4].name == "S21" &&
+                      r[4].band == "2~3 GHz",
+                      "mon: appended monitor round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("monitors").toArray().size() == 5,
+                  "mon: monitors json array length");
+            check(root.contains("optical") && root.contains("acoustic"),
+                  "mon: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (monitors キー無し): 読み込んだドメインの既定行 (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_mon_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "mon legacy ofdx load");
+            check(p.monitors() == defaultMonitors(p.activeDomain()),
+                  "mon: legacy file falls back to the domain default list");
+            check(p.monitors().size() >= 4 && p.monitors()[0].name == "T_drop",
+                  "mon: legacy optical file gets the optical defaults");
+        }
+    }
+
+    // 4) サイドカーの無い .ofd を開いたら前のプロジェクトの一覧を持ち越さない
+    {
+        Project p;
+        p.monitors()[0].name = QStringLiteral("carried_over");
+        MonitorRow extra;
+        extra.type = QStringLiteral("flux");
+        p.monitors().push_back(extra);
+        p.analysisGroups()[0].name = QStringLiteral("carried_over");
+        QString err;
+        const QString text = OfdIO::serialize(Project());   // 素の .ofd
+        check(OfdIO::parse(text, p, &err), "mon: plain .ofd parse");
+        check(p.monitors() == defaultMonitors(p.activeDomain()),
+              "mon: a sidecar-less .ofd resets the list to the domain default");
+        check(p.analysisGroups() == defaultAnalysisGroups(p.activeDomain()),
+              "aggrp: a sidecar-less .ofd resets the groups to the default");
+    }
+}
+
+// ── 解析グループ (.ofdx "analysis_groups") ──────────────────────────────────
+static void testAnalysisGroups()
+{
+    g_file = "analysis-groups";
+
+    // 1) 既定はドメイン別の初期行 — 出力は従来のまま
+    {
+        Project p;
+        check(p.analysisGroups().size() == 4,
+              "aggrp: default EM list has four groups");
+        check(p.analysisGroups()[0].name == "Antenna patterns" &&
+              p.analysisGroups()[0].enabled &&
+              !p.analysisGroups()[2].enabled,
+              "aggrp: default rows are the documented initial values");
+        check(defaultAnalysisGroups(Domain::Optical).size() == 6 &&
+              defaultAnalysisGroups(Domain::Underwater).size() == 3,
+              "aggrp: per-domain defaults have the documented row counts");
+        const QString base = OfdIO::serialize(p);
+        AnalysisGroupRow extra;
+        extra.name = QStringLiteral("my_analysis");
+        p.analysisGroups().push_back(extra);
+        check(OfdIO::serialize(p) == base,
+              "aggrp: groups keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;
+            check(OfdxIO::save(def.fileName(), q), "aggrp default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "aggrp default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("analysis_groups"),
+                  "aggrp: no analysis_groups key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<AnalysisGroupRow> &grps = p1.analysisGroups();
+        grps[0].name = QStringLiteral("patterns_v2");
+        grps[0].output = QStringLiteral("gain, efficiency");
+        grps[1].enabled = false;
+        AnalysisGroupRow added;
+        added.enabled = true;
+        added.name = QStringLiteral("my_analysis");
+        added.monitors = QStringLiteral("E_probe (point), far_field (ntff)");
+        added.output = QStringLiteral("—");
+        grps.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "aggrp ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "aggrp ofdx load");
+            const QVector<AnalysisGroupRow> &r = p2.analysisGroups();
+            check(r.size() == 5, "aggrp: five groups round-trip");
+            if (r.size() == 5) {
+                check(r[0].name == "patterns_v2" &&
+                      r[0].output == "gain, efficiency" && r[0].enabled,
+                      "aggrp: first group fields round-trip");
+                check(!r[1].enabled, "aggrp: disabled flag round-trips");
+                check(r[4].name == "my_analysis" &&
+                      r[4].monitors == "E_probe (point), far_field (ntff)",
+                      "aggrp: appended group round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "aggrp ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("analysis_groups").toArray().size() == 5,
+                  "aggrp: analysis_groups json array length");
+        }
+    }
+
+    // 3) 旧 .ofdx (analysis_groups キー無し): ドメインの既定行 (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "aggrp legacy ofdx load");
+            check(p.analysisGroups() == defaultAnalysisGroups(p.activeDomain()),
+                  "aggrp: legacy file falls back to the domain default groups");
+            check(p.analysisGroups().size() == 4 &&
+                  p.analysisGroups()[0].name == "RT60 calculator",
+                  "aggrp: legacy acoustic file gets the acoustic defaults");
+        }
+    }
+}
+
+// ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────
+static void testRefineRegions()
+{
+    g_file = "refine-regions";
+
+    auto makeRegion = [](const char *name, double lo, double hi, double ratio) {
+        RefineRegion r;
+        r.name = QString::fromUtf8(name);
+        for (int a = 0; a < 3; ++a) { r.min_m[a] = lo; r.max_m[a] = hi; }
+        r.ratio = ratio;
+        return r;
+    };
+
+    // 1) 既定は空 — .ofd も .ofdx も従来の出力のまま (追加キーを書かない)
+    {
+        Project p;
+        check(p.refineRegions().isEmpty(), "refregion: default list is empty");
+        const QString base = OfdIO::serialize(p);
+        p.refineRegions().push_back(makeRegion("patch", -0.005, 0.005, 3.0));
+        check(OfdIO::serialize(p) == base,
+              "refregion: regions keep .ofd output byte-identical");
+
+        QTemporaryFile empty;
+        empty.setFileTemplate(QDir::tempPath() + "/ofdx_reg_empty_XXXXXX.ofdx");
+        if (empty.open()) {
+            Project q;   // 既定 (領域なし)
+            check(OfdxIO::save(empty.fileName(), q), "refregion empty ofdx save");
+            QFile jf(empty.fileName());
+            check(jf.open(QIODevice::ReadOnly), "refregion empty ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("geometry"),
+                  "refregion: no geometry key when no region is defined");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        RefineRegion a = makeRegion("patch_edge", -0.005, 0.005, 3.0);
+        a.max_m[2] = 0.001;
+        RefineRegion b = makeRegion("far_region", -0.03, 0.03, 0.5);
+        b.enabled = false;
+        p1.refineRegions() = { a, b };
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_reg_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "refregion ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "refregion ofdx load");
+            const QVector<RefineRegion> &r = p2.refineRegions();
+            check(r.size() == 2, "refregion: two regions round-trip");
+            if (r.size() == 2) {
+                check(r[0].enabled && r[0].name == "patch_edge" &&
+                      nearlyEq(r[0].min_m[0], -0.005) &&
+                      nearlyEq(r[0].max_m[0], 0.005) &&
+                      nearlyEq(r[0].max_m[2], 0.001) &&
+                      nearlyEq(r[0].ratio, 3.0),
+                      "refregion: first region fields round-trip");
+                check(!r[1].enabled && r[1].name == "far_region" &&
+                      nearlyEq(r[1].min_m[1], -0.03) &&
+                      nearlyEq(r[1].ratio, 0.5),
+                      "refregion: second region fields round-trip");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "refregion ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject geo = root.value("geometry").toObject();
+            check(geo.contains("refine_regions"),
+                  "refregion: geometry.refine_regions key written");
+            check(geo.value("refine_regions").toArray().size() == 2,
+                  "refregion: json array length");
+            // 既存セクションは従来どおり残っている (追加のみ)
+            check(root.contains("optical") && root.contains("acoustic") &&
+                  root.contains("underwater") && root.contains("tidy3d"),
+                  "refregion: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (geometry キー無し): 既定値 = 領域なし (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_reg_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"em\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            p.refineRegions().push_back(makeRegion("stale", -1, 1, 2));
+            check(OfdxIO::load(old.fileName(), p), "refregion legacy ofdx load");
+            check(p.refineRegions().size() == 1,
+                  "refregion: legacy file leaves the list untouched (no key)");
+        }
+        // clear() したプロジェクトでは空に戻る
+        Project p;
+        p.refineRegions().push_back(makeRegion("stale", -1, 1, 2));
+        p.clear();
+        check(p.refineRegions().isEmpty(), "refregion: clear() empties the list");
+    }
+}
+
+// ── CIE 表色系の測色計算 (optics/Colorimetry) ───────────────────────────────
+// 既知の基準値と突き合わせる:
+//   - ȳ(555 nm) ≈ 1 (V(λ) の定義)
+//   - 等エネルギー白 E の色度 (1/3, 1/3)
+//   - 黒体 2856 K = 標準イルミナント A (x=0.4476, y=0.4074)
+//   - 黒体の CCT は自分自身に戻り Duv = 0
+//   - 単色 555 nm の発光効率 ≈ 683 lm/W、CCT は定義されない
+static void testColorimetry()
+{
+    g_file = "colorimetry";
+    namespace cm = ofd::colorimetry;
+
+    // 1) 等色関数: ȳ のピークは 555 nm 付近で値 ≈ 1
+    check(std::fabs(cm::cieYbar(555.0) - 1.0) < 0.02,
+          "colorimetry: ybar(555) ~ 1");
+    check(cm::cieYbar(555.0) > cm::cieYbar(500.0) &&
+          cm::cieYbar(555.0) > cm::cieYbar(650.0),
+          "colorimetry: ybar peaks near 555 nm");
+    check(cm::cieYbar(300.0) < 1e-3 && cm::cieYbar(900.0) < 1e-3,
+          "colorimetry: ybar vanishes outside the visible range");
+
+    // 2) 等エネルギー白 E → x = y = 1/3
+    {
+        const cm::Chromaticity c =
+            cm::chromaticity(cm::integrate([](double) { return 1.0; }));
+        check(c.valid, "colorimetry: equal-energy white is valid");
+        check(std::fabs(c.x - 1.0 / 3.0) < 0.01 &&
+              std::fabs(c.y - 1.0 / 3.0) < 0.01,
+              "colorimetry: equal-energy white sits at (1/3, 1/3)");
+        // u' = u1960, v' = 1.5 v1960 (CIE 1976 の定義)
+        check(std::fabs(c.up - c.u1960) < 1e-12 &&
+              std::fabs(c.vp - 1.5 * c.v1960) < 1e-12,
+              "colorimetry: u'v' follows the 1960 UCS by definition");
+    }
+
+    // 3) 黒体 2856 K = 標準イルミナント A の色度
+    {
+        const cm::Chromaticity a = cm::chromaticity(
+            cm::integrate([](double l) { return cm::planckSpectrum(l, 2856.0); }));
+        check(std::fabs(a.x - 0.4476) < 0.005 && std::fabs(a.y - 0.4074) < 0.005,
+              "colorimetry: 2856 K blackbody matches illuminant A");
+    }
+
+    // 4) 黒体の CCT は温度そのものに戻り、Duv ≈ 0
+    for (double T : { 2700.0, 5000.0, 6504.0 }) {
+        const cm::Chromaticity c = cm::chromaticity(
+            cm::integrate([T](double l) { return cm::planckSpectrum(l, T); }));
+        const cm::CctResult k = cm::correlatedColorTemperature(c);
+        check(k.valid, "colorimetry: blackbody has a defined CCT");
+        check(std::fabs(k.cct_K - T) < 0.01 * T,
+              "colorimetry: CCT of a blackbody returns its temperature");
+        check(std::fabs(k.duv) < 1e-3, "colorimetry: blackbody Duv ~ 0");
+    }
+
+    // 5) 単色 555 nm: K ≈ 683 lm/W、黒体軌跡から遠いので CCT は未定義
+    {
+        const std::vector<cm::GaussLobe> mono = { { 555.0, 1.0, 1.0 } };
+        auto spd = [&mono](double l) { return cm::lobeSpectrum(mono, l); };
+        check(std::fabs(cm::luminousEfficacyOfRadiation(spd) - 683.0) < 10.0,
+              "colorimetry: 555 nm line has K ~ 683 lm/W");
+        check(std::fabs(cm::peakWavelength(spd) - 555.0) < 1.0,
+              "colorimetry: peak wavelength of a 555 nm line");
+        const cm::CctResult k = cm::correlatedColorTemperature(
+            cm::chromaticity(cm::integrate(spd)));
+        check(!k.valid, "colorimetry: monochromatic light has no defined CCT");
+    }
+
+    // 6) 光源モデル (IlluminationOpts) の既定値は黒体軌跡上の白色
+    {
+        IlluminationOpts o;                       // 既定 = 白色 LED
+        const optics::SourceColor c = optics::evaluateSource(o);
+        check(c.valid, "colorimetry: default white LED evaluates");
+        check(c.cct.valid && std::fabs(c.cct.cct_K - o.cctTarget_K) <= o.cctTol_K,
+              "colorimetry: default white LED meets its CCT target");
+        check(std::fabs(c.cct.duv) <= o.duvTol,
+              "colorimetry: default white LED sits on the Planckian locus");
+        check(c.efficacy_lm_W > 0.0 && c.efficacy_lm_W < 683.0,
+              "colorimetry: efficacy of radiation is within (0, 683]");
+
+        IlluminationOpts rgb = o;  rgb.spectrum = 1;
+        const optics::SourceColor r = optics::evaluateSource(rgb);
+        check(r.cct.valid && std::fabs(r.cct.cct_K - 5000.0) < 150.0,
+              "colorimetry: default RGB mix lands on the 5000 K locus");
+
+        IlluminationOpts bb = o;  bb.spectrum = 2;  bb.blackbody_K = 3000.0;
+        const optics::SourceColor b = optics::evaluateSource(bb);
+        check(b.cct.valid && std::fabs(b.cct.cct_K - 3000.0) < 30.0,
+              "colorimetry: blackbody model returns its own temperature");
+
+        IlluminationOpts mono = o;  mono.spectrum = 3;  mono.monoPeak_nm = 470.0;
+        const optics::SourceColor m = optics::evaluateSource(mono);
+        check(m.valid && std::fabs(m.peak_nm - 470.0) < 1.5,
+              "colorimetry: monochromatic model peaks where asked");
+    }
+}
+
+// ── ディスプレイ / AR-VR 光学の解析式 (optics/DisplayMetrics) ───────────────
+static void testDisplayMetrics()
+{
+    g_file = "display-metrics";
+    namespace dm = ofd::displayoptics;
+
+    // 1) 全反射臨界角: n = 1.5 → 41.81°、n <= 1 は 90°
+    check(std::fabs(dm::criticalAngle_deg(1.5) - 41.8103) < 1e-3,
+          "dispmetrics: critical angle of n = 1.5");
+    check(std::fabs(dm::criticalAngle_deg(1.0) - 90.0) < 1e-9,
+          "dispmetrics: critical angle is 90 deg for n <= 1");
+
+    // 2) 導波路 FOV: 手計算 sinθ = n·sinθg − λ/Λ と一致すること
+    {
+        const double n = 1.8, lam = 550.0, per = 385.0, gmax = 80.0;
+        const dm::WaveguideFov f = dm::waveguideFov(per, lam, n, gmax);
+        check(f.valid, "dispmetrics: SRG waveguide has a guided band");
+        const double lo = std::asin(1.0 - lam / per) * 180.0 / M_PI;
+        const double hi = std::asin(n * std::sin(gmax * M_PI / 180.0) - lam / per)
+                          * 180.0 / M_PI;
+        check(std::fabs(f.fovMin_deg - lo) < 1e-6 &&
+              std::fabs(f.fovMax_deg - hi) < 1e-6,
+              "dispmetrics: FOV limits follow the grating equation");
+        check(std::fabs(f.fov_deg - (hi - lo)) < 1e-9,
+              "dispmetrics: FOV span is the difference of the limits");
+        // サイン空間での帯域幅 sinθmax − sinθmin = n·sinθg,max − 1 は
+        // 周期に依らない (格子ベクトル λ/Λ は帯域を平行移動するだけ)
+        const double sinSpan = n * std::sin(gmax * M_PI / 180.0) - 1.0;
+        for (double period : { 385.0, 500.0, 600.0 }) {
+            const dm::WaveguideFov g = dm::waveguideFov(period, lam, n, gmax);
+            check(g.valid, "dispmetrics: guided band exists for this period");
+            const double span = std::sin(g.fovMax_deg * M_PI / 180.0)
+                              - std::sin(g.fovMin_deg * M_PI / 180.0);
+            check(std::fabs(span - sinSpan) < 1e-9,
+                  "dispmetrics: sine-space band width is period-independent");
+        }
+        // 周期を広げると帯域そのものが大きい角度側へ動く
+        check(dm::waveguideFov(600.0, lam, n, gmax).fovMin_deg > f.fovMin_deg,
+              "dispmetrics: a coarser grating shifts the band to larger angles");
+        // 帯域が存在しない設定は valid=false (推定値を出さない)
+        check(!dm::waveguideFov(200.0, lam, n, gmax).valid,
+              "dispmetrics: no band reported when |sin| > 1");
+        check(!dm::waveguideFov(0.0, lam, n, gmax).valid,
+              "dispmetrics: zero period is rejected");
+    }
+
+    // 3) アイボックス: W = L − 2·ER·tan(FOV/2)、負にならない
+    {
+        const double w = dm::eyeboxWidth_mm(30.0, 18.0, 45.0);
+        const double ref = 30.0 - 2.0 * 18.0 * std::tan(22.5 * M_PI / 180.0);
+        check(std::fabs(w - ref) < 1e-9, "dispmetrics: eyebox formula");
+        check(dm::eyeboxWidth_mm(5.0, 50.0, 60.0) == 0.0,
+              "dispmetrics: eyebox is clamped at zero");
+    }
+
+    // 4) シースルー透過率: n=1 で 1、n=1.8 で 84.9%
+    check(std::fabs(dm::slabTransmittance(1.0) - 1.0) < 1e-12,
+          "dispmetrics: index-matched slab transmits everything");
+    check(std::fabs(dm::slabTransmittance(1.8) - 0.8491) < 1e-3,
+          "dispmetrics: uncoated n = 1.8 slab transmits ~84.9%");
+
+    // 5) 射出円錐 / OLED 取り出し効率の古典近似
+    {
+        const double n = 1.75;
+        const double thc = std::asin(1.0 / n);
+        check(std::fabs(dm::escapeConeFraction(n) - 0.5 * (1.0 - std::cos(thc)))
+                  < 1e-12,
+              "dispmetrics: escape-cone fraction (1-cos)/2");
+        check(std::fabs(dm::oledOutcoupling(n) - 1.0 / (2.0 * n * n)) < 1e-12,
+              "dispmetrics: OLED outcoupling 1/(2n^2)");
+        // 屈折率が上がると取り出し効率は下がる (単調性)
+        check(dm::oledOutcoupling(2.0) < dm::oledOutcoupling(1.5),
+              "dispmetrics: higher index lowers the outcoupling");
+        check(dm::ledExtractionCube(2.45) > dm::ledExtractionTopFace(2.45),
+              "dispmetrics: the 6-face bound exceeds the top-face value");
+    }
+
+    // 6) 側壁再結合: 4Sτ/L のスケーリング (L→∞ で低下なし)
+    {
+        // S = 1e4 cm/s, τ = 10 ns → Sτ = 1 μm, L = 5 μm → η = η0/1.8
+        const double e = dm::sidewallDeratedIqe(0.8, 5.0, 1.0e4, 10.0);
+        check(std::fabs(e - 0.8 / 1.8) < 1e-9,
+              "dispmetrics: sidewall derating matches 1/(1+4S tau/L)");
+        check(dm::sidewallDeratedIqe(0.8, 500.0, 1.0e4, 10.0) >
+              dm::sidewallDeratedIqe(0.8, 5.0, 1.0e4, 10.0),
+              "dispmetrics: bigger chips lose less to the sidewalls");
+        check(std::fabs(dm::sidewallDeratedIqe(0.8, 5.0, 0.0, 10.0) - 0.8) < 1e-12,
+              "dispmetrics: no surface recombination leaves IQE untouched");
+    }
+
+    // 7) 環境光コントラスト: 暗室 (E=0) では暗室 CR に一致、明るいほど低下
+    {
+        const dm::AmbientContrast dark = dm::ambientContrast(500, 5000, 0, 0.045);
+        check(dark.valid && std::fabs(dark.contrast - 5000.0) < 1e-6,
+              "dispmetrics: zero ambient reproduces the darkroom CR");
+        const dm::AmbientContrast lit = dm::ambientContrast(500, 5000, 200, 0.045);
+        const double lamb = 0.045 * 200.0 / M_PI;
+        check(std::fabs(lit.ambientLuminance_cdm2 - lamb) < 1e-9,
+              "dispmetrics: ambient screen luminance R*E/pi");
+        check(std::fabs(lit.contrast - (500.0 + lamb) / (0.1 + lamb)) < 1e-6,
+              "dispmetrics: ambient contrast definition");
+        check(lit.contrast < dark.contrast,
+              "dispmetrics: ambient light lowers the contrast");
+        check(!dm::ambientContrast(0.0, 5000, 200, 0.045).valid,
+              "dispmetrics: invalid luminance is rejected, not guessed");
+    }
+}
+
+// ── 近軸光線追跡 (optics/ParaxialTrace) ─────────────────────────────────────
+static void testParaxialTrace()
+{
+    g_file = "paraxial";
+    namespace px = ofd::paraxial;
+
+    // 1) 薄い両凸レンズ (R = ±50, n = 1.5, 厚み 0):
+    //    レンズメーカーの式 1/f = (n-1)(1/R1 - 1/R2) → f = 50 mm
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 50.0;  s[0].thickness = 0.0;  s[0].nAfter = 1.5;
+        s[1].R = -50.0; s[1].thickness = 50.0; s[1].nAfter = 1.0;
+        const px::SystemData d = px::analyze(s, 50.0, 12.5, 10.0);
+        check(d.valid, "paraxial: thin biconvex solves");
+        check(std::fabs(d.efl - 50.0) < 1e-9, "paraxial: EFL = 50 mm");
+        check(std::fabs(d.bfl - 50.0) < 1e-9,
+              "paraxial: thin lens BFL equals EFL");
+        check(std::fabs(d.backPrincipal) < 1e-9,
+              "paraxial: thin lens rear principal plane is at the vertex");
+        check(std::fabs(d.fnumber - 4.0) < 1e-9, "paraxial: F/# = f'/EPD");
+        check(std::fabs(d.imageHeight - 50.0 * std::tan(10.0 * M_PI / 180.0))
+                  < 1e-9,
+              "paraxial: paraxial image height f'*tan(theta)");
+        check(d.hasImagePlane && std::fabs(d.defocus) < 1e-9,
+              "paraxial: image plane at the paraxial focus gives zero defocus");
+    }
+
+    // 2) 単一屈折面 (平凸, R = 50, n = 1.5): f' = n'R/(n'-n) = 150 mm、
+    //    BFL は像側主点が頂点にあるので f' に等しい
+    {
+        std::vector<px::Surface> s(1);
+        s[0].R = 50.0; s[0].thickness = 0.0; s[0].nAfter = 1.5;
+        const px::SystemData d = px::analyze(s, -1.0, 0.0, 0.0);
+        check(d.valid, "paraxial: single surface solves");
+        // 像空間が n=1.5 のときの後側焦点距離は y/u' で測る (BFL) — 幾何長
+        check(std::fabs(d.bfl - 150.0) < 1e-6,
+              "paraxial: single-surface back focal distance n'R/(n'-n)");
+        check(!d.hasImagePlane, "paraxial: no image plane → no defocus");
+    }
+
+    // 3) 平板 (両面平面) はアフォーカル → valid=false (偽の焦点距離を出さない)
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 0.0; s[0].thickness = 5.0; s[0].nAfter = 1.5;
+        s[1].R = 0.0; s[1].thickness = 0.0; s[1].nAfter = 1.0;
+        check(!px::analyze(s, -1.0, 10.0, 0.0).valid,
+              "paraxial: a plane-parallel plate is afocal");
+        check(!px::analyze({}, -1.0, 10.0, 0.0).valid,
+              "paraxial: an empty system is not solvable");
+    }
+
+    // 4) 2 枚の薄レンズ (f1 = f2 = 100, 間隔 d = 50):
+    //    1/f = 1/f1 + 1/f2 − d/(f1 f2) → f = 66.667 mm
+    //    BFL = f(1 − d/f1) = 33.333 mm
+    {
+        auto thin = [](double f, double t) {
+            // 屈折率 1.5 の薄肉レンズ 2 面 (R1 = -R2) で焦点距離 f を作る
+            std::vector<px::Surface> two(2);
+            const double R = 2.0 * 0.5 * f;      // (n-1)*2/R = 1/f → R = 2(n-1)f
+            two[0].R = R;  two[0].thickness = 0.0; two[0].nAfter = 1.5;
+            two[1].R = -R; two[1].thickness = t;   two[1].nAfter = 1.0;
+            return two;
+        };
+        std::vector<px::Surface> s = thin(100.0, 50.0);
+        const std::vector<px::Surface> b = thin(100.0, 0.0);
+        s.insert(s.end(), b.begin(), b.end());
+        const px::SystemData d = px::analyze(s, -1.0, 20.0, 0.0);
+        check(d.valid, "paraxial: two-lens system solves");
+        check(std::fabs(d.efl - 200.0 / 3.0) < 1e-6,
+              "paraxial: combined focal length of two thin lenses");
+        check(std::fabs(d.bfl - 100.0 / 3.0) < 1e-6,
+              "paraxial: back focal length of two thin lenses");
+        // 対称系なので前側焦点距離は後側と一致する
+        check(std::fabs(d.ffl - d.bfl) < 1e-6,
+              "paraxial: symmetric doublet has FFL = BFL");
+        check(std::fabs(d.totalTrack - 50.0) < 1e-9,
+              "paraxial: total track equals the air gap");
+    }
+}
+
+// ── .ofdx "display_optics" / "illumination" (追加キー) ──────────────────────
+static void testDisplayIlluminationSettings()
+{
+    g_file = "display-illumination";
+
+    auto setNonDefaults = [](Project &p) {
+        DisplayOpticsOpts &d = p.displayOptics();
+        d.device = 2;
+        d.wgType = 3;
+        d.subThick_mm = 1.25;
+        d.subIndex = 2.05;
+        d.gratPeriod_nm = 420.0;
+        d.gratDepth_nm = 180.0;
+        d.gratSlant_deg = 45.0;
+        d.threeGratings = false;
+        d.rcwaOptimize = true;
+        d.designLambda_nm = 520.0;
+        d.guideMaxAngle_deg = 75.0;
+        d.outcouplerLen_mm = 24.0;
+        d.eyeRelief_mm = 15.0;
+        d.fovTarget_deg = 55.0;
+        d.eyeboxTarget_mm = 12.0;
+        d.seeThroughTarget_pct = 90.0;
+        d.bottomEmission = true;
+        d.topEmission = false;
+        d.microcavity = false;
+        d.sepIqe = false;
+        d.sepSpp = false;
+        d.sepWaveguide = false;
+        d.outcouplingStruct = 3;
+        d.oledIndex = 1.62;
+        d.oledIqe = 0.75;
+        d.chipSize_um = 3.5;
+        d.sidewallRecomb = false;
+        d.sidewallDbr = false;
+        d.directional = true;
+        d.mlIndex = 2.6;
+        d.mlIqe = 0.65;
+        d.mlSurfVel_cm_s = 5.0e3;
+        d.mlLifetime_ns = 4.5;
+        d.lcdMode = 1;
+        d.lcAnisotropy = false;
+        d.compFilm = false;
+        d.lcdPeakLum_cdm2 = 700.0;
+        d.lcdDarkroomCr = 1500.0;
+        d.lcdAmbient_lx = 350.0;
+        d.lcdReflectance = 0.02;
+
+        IlluminationOpts &i = p.illumination();
+        i.app = 2;
+        i.srcModel = 0;
+        i.rayFile = QStringLiteral("my_source.ray");
+        i.spectrum = 3;
+        i.flux_lm = 2500.0;
+        i.rays = 1.0e7;
+        i.reflector = false;
+        i.tirLens = true;
+        i.diffuser = false;
+        i.lightGuide = true;
+        i.phosphor = false;
+        i.surface = 3;
+        i.bluePeak_nm = 455.0;
+        i.blueFwhm_nm = 25.0;
+        i.phosPeak_nm = 585.0;
+        i.phosFwhm_nm = 120.0;
+        i.phosRatio = 0.8;
+        i.rPeak_nm = 625.0; i.rFwhm_nm = 18.0; i.rRatio = 1.5;
+        i.gPeak_nm = 530.0; i.gFwhm_nm = 30.0; i.gRatio = 1.2;
+        i.bPeak_nm = 465.0; i.bFwhm_nm = 24.0; i.bRatio = 0.9;
+        i.blackbody_K = 2700.0;
+        i.monoPeak_nm = 632.8;
+        i.monoFwhm_nm = 0.5;
+        i.cctTarget_K = 4000.0;
+        i.cctTol_K = 200.0;
+        i.duvTol = 0.004;
+    };
+
+    // 1) これらの設定は .ofd (カーネル入力) を 1 バイトも変えない
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        setNonDefaults(p);
+        check(OfdIO::serialize(p) == base,
+              "dispillum: settings keep .ofd output byte-identical");
+    }
+
+    // 2) 既定値のままなら .ofdx にキー自体を書かない (旧ファイルとバイト一致)
+    {
+        Project p;
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_def_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p), "dispillum default ofdx save");
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "dispillum default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("display_optics"),
+                  "dispillum: defaults write no display_optics key");
+            check(!root.contains("illumination"),
+                  "dispillum: defaults write no illumination key");
+        }
+    }
+
+    // 3) .ofdx ラウンドトリップ (a: 新キーの往復)
+    {
+        Project p1;
+        setNonDefaults(p1);
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "dispillum ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "dispillum ofdx load");
+            const DisplayOpticsOpts &d = p2.displayOptics();
+            check(d.device == 2 && d.wgType == 3,
+                  "dispillum: device / waveguide type round-trip");
+            check(nearlyEq(d.subThick_mm, 1.25) && nearlyEq(d.subIndex, 2.05) &&
+                  nearlyEq(d.gratPeriod_nm, 420.0) &&
+                  nearlyEq(d.gratDepth_nm, 180.0) &&
+                  nearlyEq(d.gratSlant_deg, 45.0),
+                  "dispillum: substrate / grating round-trip");
+            check(!d.threeGratings && d.rcwaOptimize,
+                  "dispillum: waveguide flags round-trip");
+            check(nearlyEq(d.designLambda_nm, 520.0) &&
+                  nearlyEq(d.guideMaxAngle_deg, 75.0) &&
+                  nearlyEq(d.outcouplerLen_mm, 24.0) &&
+                  nearlyEq(d.eyeRelief_mm, 15.0),
+                  "dispillum: pupil-expansion geometry round-trip");
+            check(nearlyEq(d.fovTarget_deg, 55.0) &&
+                  nearlyEq(d.eyeboxTarget_mm, 12.0) &&
+                  nearlyEq(d.seeThroughTarget_pct, 90.0),
+                  "dispillum: design targets round-trip");
+            check(d.bottomEmission && !d.topEmission && !d.microcavity &&
+                  !d.sepIqe && !d.sepSpp && !d.sepWaveguide &&
+                  d.outcouplingStruct == 3 &&
+                  nearlyEq(d.oledIndex, 1.62) && nearlyEq(d.oledIqe, 0.75),
+                  "dispillum: OLED settings round-trip");
+            check(nearlyEq(d.chipSize_um, 3.5) && !d.sidewallRecomb &&
+                  !d.sidewallDbr && d.directional &&
+                  nearlyEq(d.mlIndex, 2.6) && nearlyEq(d.mlIqe, 0.65) &&
+                  nearlyEq(d.mlSurfVel_cm_s, 5.0e3) &&
+                  nearlyEq(d.mlLifetime_ns, 4.5),
+                  "dispillum: microLED settings round-trip");
+            check(d.lcdMode == 1 && !d.lcAnisotropy && !d.compFilm &&
+                  nearlyEq(d.lcdPeakLum_cdm2, 700.0) &&
+                  nearlyEq(d.lcdDarkroomCr, 1500.0) &&
+                  nearlyEq(d.lcdAmbient_lx, 350.0) &&
+                  nearlyEq(d.lcdReflectance, 0.02),
+                  "dispillum: LCD settings round-trip");
+
+            const IlluminationOpts &i = p2.illumination();
+            check(i.app == 2 && i.srcModel == 0 && i.spectrum == 3 &&
+                  i.rayFile == QStringLiteral("my_source.ray"),
+                  "dispillum: illumination source selectors round-trip");
+            check(nearlyEq(i.flux_lm, 2500.0) && nearlyEq(i.rays, 1.0e7),
+                  "dispillum: flux / ray count round-trip");
+            check(!i.reflector && i.tirLens && !i.diffuser && i.lightGuide &&
+                  !i.phosphor && i.surface == 3,
+                  "dispillum: illumination optics round-trip");
+            check(nearlyEq(i.bluePeak_nm, 455.0) && nearlyEq(i.blueFwhm_nm, 25.0) &&
+                  nearlyEq(i.phosPeak_nm, 585.0) &&
+                  nearlyEq(i.phosFwhm_nm, 120.0) && nearlyEq(i.phosRatio, 0.8),
+                  "dispillum: white-LED lobes round-trip");
+            check(nearlyEq(i.rPeak_nm, 625.0) && nearlyEq(i.gFwhm_nm, 30.0) &&
+                  nearlyEq(i.bRatio, 0.9),
+                  "dispillum: RGB lobes round-trip");
+            check(nearlyEq(i.blackbody_K, 2700.0) &&
+                  nearlyEq(i.monoPeak_nm, 632.8) &&
+                  nearlyEq(i.monoFwhm_nm, 0.5),
+                  "dispillum: blackbody / mono parameters round-trip");
+            check(nearlyEq(i.cctTarget_K, 4000.0) && nearlyEq(i.cctTol_K, 200.0) &&
+                  nearlyEq(i.duvTol, 0.004),
+                  "dispillum: colorimetric targets round-trip");
+
+            // JSON 構造 (追加キーの位置)
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "dispillum ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject dj = root.value("display_optics").toObject();
+            check(dj.contains("waveguide") && dj.contains("targets") &&
+                  dj.contains("oled") && dj.contains("microled") &&
+                  dj.contains("lcd"),
+                  "dispillum: display_optics json sections present");
+            const QJsonObject ij = root.value("illumination").toObject();
+            check(ij.contains("optics") && ij.contains("white_led") &&
+                  ij.contains("rgb") && ij.contains("mono") &&
+                  ij.contains("targets"),
+                  "dispillum: illumination json sections present");
+            // 既存の "optical" セクションは無傷
+            check(root.contains("optical"),
+                  "dispillum: existing optical section is untouched");
+        }
+    }
+
+    // 4) 旧 .ofdx (新キー無し): 既定値のまま (旧ファイル互換, b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "dispillum legacy ofdx load");
+            const DisplayOpticsOpts &d = p.displayOptics();
+            check(d.device == 0 && d.wgType == 0 && d.subThick_mm == 0.7 &&
+                  d.subIndex == 1.80 && d.gratPeriod_nm == 385.0,
+                  "dispillum: legacy file leaves display_optics defaults");
+            check(d.designLambda_nm == 550.0 && d.guideMaxAngle_deg == 80.0 &&
+                  d.outcouplerLen_mm == 30.0 && d.eyeRelief_mm == 18.0,
+                  "dispillum: legacy file leaves pupil defaults");
+            check(d.oledIndex == 1.75 && d.oledIqe == 0.90 &&
+                  d.mlIndex == 2.45 && d.lcdDarkroomCr == 5000.0,
+                  "dispillum: legacy file leaves device-model defaults");
+            const IlluminationOpts &i = p.illumination();
+            check(i.spectrum == 0 && i.flux_lm == 1200.0 &&
+                  i.bluePeak_nm == 450.0 && i.phosPeak_nm == 570.0 &&
+                  i.cctTarget_K == 5000.0,
+                  "dispillum: legacy file leaves illumination defaults");
+        }
+    }
+
+    // 5) 壊れたファイルの範囲外値はコンボ index の範囲へクランプされる
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"display_optics\": { \"device\": 99,"
+                "     \"waveguide\": { \"type\": -4 },"
+                "     \"oled\": { \"structure\": 12 },"
+                "     \"lcd\": { \"mode\": 9 } },"
+                "  \"illumination\": { \"app\": -1, \"source_model\": 7,"
+                "     \"spectrum\": 42, \"optics\": { \"surface\": 9 } } }";
+            bad.write(broken);
+            bad.flush();
+            Project p;
+            check(OfdxIO::load(bad.fileName(), p), "dispillum broken ofdx load");
+            const DisplayOpticsOpts &d = p.displayOptics();
+            check(d.device == 3 && d.wgType == 0 && d.outcouplingStruct == 3 &&
+                  d.lcdMode == 2, "dispillum: broken display indices clamped");
+            const IlluminationOpts &i = p.illumination();
+            check(i.app == 0 && i.srcModel == 2 && i.spectrum == 3 &&
+                  i.surface == 3, "dispillum: broken illumination indices clamped");
+        }
+    }
+
+    // 6) clear() で既定値へ戻る
+    {
+        Project p;
+        setNonDefaults(p);
+        p.clear();
+        check(p.displayOptics().device == 0 && p.displayOptics().subIndex == 1.80,
+              "dispillum: clear() resets display_optics");
+        check(p.illumination().spectrum == 0 && p.illumination().flux_lm == 1200.0,
+              "dispillum: clear() resets illumination");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -6006,6 +7682,18 @@ int main(int argc, char *argv[])
     testRadioPropagation();
     testDispersionFit();
     testBendWaveguide();
+    testMeshDiagnostics();
+    testRefineRegions();
+    testEmcStandards();
+    testLumpedRlc();
+    testCircuitPorts();
+    testPhotonicNetlist();
+    testMonitorList();
+    testAnalysisGroups();
+    testColorimetry();
+    testDisplayMetrics();
+    testParaxialTrace();
+    testDisplayIlluminationSettings();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

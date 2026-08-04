@@ -29,6 +29,20 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mon_col_freq", "周波数/波長", "Frequency / wavelength");
     ofd::I18n::reg("mon_col_band", "周波数帯", "Frequency band");
     ofd::I18n::reg("mon_add_row", "＋ モニターを追加…", "+ Add monitor…");
+    ofd::I18n::reg("mon_add_row_tip",
+                   "この行をクリックすると点モニターを 1 行追加します",
+                   "Click this row to append a point monitor");
+    ofd::I18n::reg("mon_del_row", "− 選択行を削除", "− Delete selected row");
+    ofd::I18n::reg("mon_list_note",
+                   "一覧はプロジェクトのモニター定義です (.ofdx に保存)。"
+                   "名前・位置・周波数の各セルは編集できます。"
+                   "モニター駆動の後処理は未実装のため、この定義は記録であり "
+                   "カーネル入力 (.ofd) には出力されません。",
+                   "The list holds this project's monitor definitions (saved in "
+                   ".ofdx). Name / position / frequency cells are editable. "
+                   "Monitor-driven post-processing is not implemented, so these "
+                   "definitions are a record only and are not written to the "
+                   "kernel input (.ofd).");
     ofd::I18n::reg("mon_add_title", "モニタータイプ追加", "Add monitor");
     ofd::I18n::reg("mon_add_suffix", "(%1種 · %2ドメイン)",
                    "(%1 types · %2 domain)");
@@ -109,66 +123,61 @@ const bool s_i18n = [] {
     return true;
 }();
 
-// ── ドメイン別の既定モニター行 (モックの値をそのまま) ───────────────────────
-struct MonRow { bool ck; const char *name, *kind, *pos, *freq; };
-
-const MonRow kOpticalRows[] = {
-    { true,  "T_drop",      "▭ Plane",  "Z=2.5μm 面",           "1500~1600 nm (201pt)" },
-    { true,  "thru_mode",   "⊛ Mode",   "X=10μm, TE₀",          "1550 nm" },
-    { true,  "E_field_3D",  "▦ Volume", "[-2,2]³ μm",           "1550 nm" },
-    { false, "propagation", "▶ Movie",  "Y=0 面",               "時間 0~50fs" },
-    { false, "far_field",   "⌖ NTFF",   "θ:-90~90° φ:0~360°",   "1550 nm" },
-};
-const MonRow kAcousticRows[] = {
-    { true,  "P1_center",    "⊙ Point", "(0, 1.2, 8)",  "63Hz~16kHz" },
-    { true,  "mic_array",    "━ Line",  "Y=1.2m 線",    "全帯域" },
-    { true,  "IRF_response", "⌛ Time",  "P1, P2, P3",   "時間 0~3s" },
-    { false, "SPL_floor",    "▭ Plane", "Y=1.2m 面",    "1kHz" },
-};
-const MonRow kEmRows[] = {
-    { true,  "E_probe",   "⊙ Point", "(0.02, 0, 0.001)", "2.5 GHz" },
-    { true,  "impedance", "⌛ Time",  "feed #1",          "2~3 GHz" },
-    { true,  "E_surface", "▭ Plane", "Z=1mm 面",         "2.5 GHz" },
-    { false, "far_field", "⌖ NTFF",  "全方向",           "2.5 GHz" },
-};
-
 // ── タイプ追加グリッド (ドメインでフィルタ) ─────────────────────────────────
 enum { D_EM = 1, D_OPT = 2, D_AC = 4, D_UW = 8, D_ALL = 15 };
+// id      : MonitorRow::type に保存する安定 ID (言語に依らない ASCII 語)
+// shortNm : 一覧の「種類」列に出す短縮名 (ID と 1:1)
 // acName / acDesc は音響/水中ドメインでの差し替えキー (nullptr = 共通のまま)
-struct AddType { const char *ic, *name, *desc; unsigned domains;
+struct AddType { const char *id, *ic, *shortNm, *name, *desc; unsigned domains;
                  const char *acName = nullptr, *acDesc = nullptr; };
 
 const AddType kAddTypes[] = {
-    { "⊙",  "mn_field_time",       "mon_d_point",    D_ALL,
+    { "point",  "⊙",  "Point",    "mn_field_time",       "mon_d_point",    D_ALL,
             "mon_ac_field_time",   "mon_ac_d_point" },
-    { "━",  "Line — E/H freq",     "mon_d_line",     D_ALL,
+    { "line",   "━",  "Line",     "Line — E/H freq",     "mon_d_line",     D_ALL,
             "mon_ac_line" },
-    { "▭",  "mn_field_freq",       "mon_d_plane",    D_ALL,
+    { "plane",  "▭",  "Plane",    "mn_field_freq",       "mon_d_plane",    D_ALL,
             "mon_ac_field_freq",   "mon_ac_d_plane" },
-    { "▦",  "Volume — E/H 3D",     "mon_d_volume",   D_ALL,
+    { "volume", "▦",  "Volume",   "Volume — E/H 3D",     "mon_d_volume",   D_ALL,
             "mon_ac_volume" },
-    { "⊛",  "mn_mode_exp",         "mon_d_mode",     D_EM | D_OPT },
-    { "▶",  "mn_movie",            "mon_d_movie",    D_ALL },
-    { "≡",  "mn_flux",             "mon_d_flux",     D_EM | D_OPT },
-    { "⌖",  "mn_far_field",        "mon_d_ntff",     D_EM | D_OPT },
-    { "⊚",  "mn_index",            "mon_d_index",    D_EM | D_OPT },
-    { "⌬",  "mn_qanalysis",        "mon_d_q",        D_EM | D_OPT },
-    { "⌛",  "Global time monitor", "mon_d_global",   D_ALL },
+    { "mode",   "⊛",  "Mode",     "mn_mode_exp",         "mon_d_mode",     D_EM | D_OPT },
+    { "movie",  "▶",  "Movie",    "mn_movie",            "mon_d_movie",    D_ALL },
+    { "flux",   "≡",  "Flux",     "mn_flux",             "mon_d_flux",     D_EM | D_OPT },
+    { "ntff",   "⌖",  "NTFF",     "mn_far_field",        "mon_d_ntff",     D_EM | D_OPT },
+    { "index",  "⊚",  "Index",    "mn_index",            "mon_d_index",    D_EM | D_OPT },
+    { "q",      "⌬",  "Q",        "mn_qanalysis",        "mon_d_q",        D_EM | D_OPT },
+    { "global", "⌛",  "Time",     "Global time monitor", "mon_d_global",   D_ALL },
     // PML は水中音響 (BELLHOP は開境界を自前処理) には存在しないので出さない
-    { "⌟",  "mn_pml",              "mon_d_pml",      D_EM | D_OPT | D_AC },
+    { "pml",    "⌟",  "PML",      "mn_pml",              "mon_d_pml",      D_EM | D_OPT | D_AC },
     // 音響専用
-    { "♪",  "SPL Meter",           "mon_d_spl",      D_AC | D_UW },
-    { "⏱",  "IRF (Impulse resp.)", "mon_d_irf",      D_AC | D_UW },
-    { "🎤", "Binaural Mic",        "mon_d_binaural", D_AC },
-    { "📐", "Mic Array",           "mon_d_micarray", D_AC | D_UW },
-    { "🌊", "TL (Transmission Loss)", "mon_d_tl",    D_UW },
-    { "⚓", "Beampattern (Sonar)", "mon_d_beam",     D_UW },
+    { "spl",    "♪",  "SPL",      "SPL Meter",           "mon_d_spl",      D_AC | D_UW },
+    { "irf",    "⏱",  "IRF",      "IRF (Impulse resp.)", "mon_d_irf",      D_AC | D_UW },
+    { "binaural","🎤","Binaural", "Binaural Mic",        "mon_d_binaural", D_AC },
+    { "micarray","📐","MicArray", "Mic Array",           "mon_d_micarray", D_AC | D_UW },
+    { "tl",     "🌊", "TL",       "TL (Transmission Loss)", "mon_d_tl",    D_UW },
+    { "beam",   "⚓", "Beam",     "Beampattern (Sonar)", "mon_d_beam",     D_UW },
     // EM専用
-    { "📡", "VSWR/Impedance",      "mon_d_vswr",     D_EM },
-    { "📊", "S-parameters",        "mon_d_spara",    D_EM | D_OPT },
-    { "⊕",  "Radiation efficiency","mon_d_radeff",   D_EM },
-    { "⚡", "SAR (Specific AR)",   "mon_d_sar",      D_EM },
+    { "vswr",   "📡", "VSWR",     "VSWR/Impedance",      "mon_d_vswr",     D_EM },
+    { "spara",  "📊", "S-param",  "S-parameters",        "mon_d_spara",    D_EM | D_OPT },
+    { "radeff", "⊕",  "RadEff",   "Radiation efficiency","mon_d_radeff",   D_EM },
+    { "sar",    "⚡", "SAR",      "SAR (Specific AR)",   "mon_d_sar",      D_EM },
 };
+
+// タイプ ID → 定義 (手書きの .ofdx や将来の追加で未知 ID が来たら nullptr)
+const AddType *findAddType(const QString &id)
+{
+    for (const AddType &t : kAddTypes)
+        if (id == QLatin1String(t.id)) return &t;
+    return nullptr;
+}
+
+// 一覧の「種類」列に出す表示名 (アイコン + 短縮名)。未知 ID は ID をそのまま。
+QString kindLabel(const QString &id)
+{
+    const AddType *t = findAddType(id);
+    if (!t) return id;
+    return QString::fromUtf8(t->ic) + " " + QString::fromUtf8(t->shortNm);
+}
 
 unsigned domainBit(Domain d)
 {
@@ -203,8 +212,17 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
     m_list->verticalHeader()->setVisible(false);
     m_list->setMinimumHeight(180);
     sl->vbox()->addWidget(m_list);
-    // 一覧はドメイン別の固定サンプル行 (Project には保存されない)
-    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
+    // 一覧は Project::monitors() のビュー (.ofdx へ保存される実データ)。
+    // 後処理へ渡されないことだけは明示しておく (絶対規則 5)。
+    auto *listNote = new QLabel(I18n::tr("mon_list_note"), sl);
+    listNote->setWordWrap(true);
+    listNote->setStyleSheet("color:#7A7A7A; font-size:11px;");
+    sl->vbox()->addWidget(listNote);
+    auto *listBtns = new QHBoxLayout();
+    m_delRow = new QPushButton(I18n::tr("mon_del_row"), sl);
+    listBtns->addWidget(m_delRow);
+    listBtns->addStretch(1);
+    sl->vbox()->addLayout(listBtns);
     v->addWidget(sl);
 
     // ── モニタータイプ追加 / Add monitor ────────────────────────────────────
@@ -267,10 +285,71 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     connect(m_srate, &QLineEdit::editingFinished, this, [this] { apply(); });
+    // 一覧の編集 (チェック / 名前 / 位置 / 周波数) → モデルへ書き戻す
+    connect(m_list, &QTableWidget::itemChanged, this,
+            [this] { applyList(); });
+    // 末尾の「＋ モニターを追加…」行のクリックで 1 行追加
+    connect(m_list, &QTableWidget::cellClicked, this, [this](int row, int) {
+        if (row == m_p->monitors().size()) addMonitor(QStringLiteral("point"));
+    });
+    connect(m_delRow, &QPushButton::clicked, this, [this] {
+        const int row = m_list->currentRow();
+        QVector<MonitorRow> &mons = m_p->monitors();
+        if (row < 0 || row >= mons.size()) return;
+        mons.remove(row);
+        m_p->touch();
+        rebuildList();
+    });
     connect(project, &Project::domainChanged, this,
             [this] { rebuildDomain(); });
     connect(project, &Project::loaded, this, &MonitorsTab::refresh);
     refresh();
+}
+
+// モニターを 1 行追加する (タイプ追加グリッド / 一覧末尾の追加行から)
+void MonitorsTab::addMonitor(const QString &typeId)
+{
+    QVector<MonitorRow> &mons = m_p->monitors();
+    const AddType *t = findAddType(typeId);
+    const QString stem = t ? QString::fromUtf8(t->shortNm).toLower() : typeId;
+    // 同名を作らないよう連番を振る
+    int n = 1;
+    QString name;
+    bool dup = true;
+    while (dup) {
+        name = QStringLiteral("%1_%2").arg(stem).arg(n++);
+        dup = false;
+        for (const MonitorRow &r : mons)
+            if (r.name == name) { dup = true; break; }
+    }
+    MonitorRow r;
+    r.type = typeId;
+    r.name = name;
+    r.region = QString::fromUtf8("—");   // 位置は利用者が入力する
+    r.band = QString::fromUtf8("—");
+    mons.push_back(r);
+    m_p->touch();
+    rebuildList();
+    m_list->setCurrentCell(mons.size() - 1, 4);
+}
+
+// 一覧 (ウィジェット) → モデル。種類列は読み取り専用なので type は触らない。
+void MonitorsTab::applyList()
+{
+    if (m_updating) return;
+    QVector<MonitorRow> &mons = m_p->monitors();
+    for (int i = 0; i < mons.size() && i < m_list->rowCount(); ++i) {
+        auto cell = [this, i](int c) {
+            QTableWidgetItem *it = m_list->item(i, c);
+            return it ? it->text() : QString();
+        };
+        if (QTableWidgetItem *ck = m_list->item(i, 0))
+            mons[i].enabled = (ck->checkState() == Qt::Checked);
+        mons[i].name   = cell(3);
+        mons[i].region = cell(4);
+        mons[i].band   = cell(5);
+    }
+    m_p->touch();
 }
 
 // サンプリング周波数のみ Project (AcousticOpts) に対応するので永続化
@@ -292,56 +371,63 @@ void MonitorsTab::refresh()
     rebuildDomain();
 }
 
-void MonitorsTab::rebuildDomain()
+// ── 一覧表 (モデル → ウィジェット) ─────────────────────────────────────────
+void MonitorsTab::rebuildList()
 {
     const Domain d = m_p->activeDomain();
     const bool isAcoustic = (d == Domain::Acoustic || d == Domain::Underwater);
-    const bool isEmOpt = (d == Domain::EM || d == Domain::Optical);
-
-    // ── 一覧表 ──────────────────────────────────────────────────────────────
-    const MonRow *rows;
-    int n;
-    if (d == Domain::Optical)  { rows = kOpticalRows;  n = 5; }
-    else if (isAcoustic)       { rows = kAcousticRows; n = 4; }
-    else                       { rows = kEmRows;       n = 4; }
+    const QVector<MonitorRow> &mons = m_p->monitors();
+    const int n = mons.size();
 
     m_updating = true;
     m_list->clearSpans();
     m_list->setRowCount(n + 1);
     m_list->horizontalHeaderItem(5)->setText(
         I18n::tr(isAcoustic ? "mon_col_band" : "mon_col_freq"));
-    auto plain = [](const char *text) {
-        auto *it = new QTableWidgetItem(QString::fromUtf8(text));
+    auto readOnly = [](const QString &text) {
+        auto *it = new QTableWidgetItem(text);
         it->setFlags(it->flags() & ~Qt::ItemIsEditable);
         return it;
     };
     for (int i = 0; i < n; ++i) {
-        const MonRow &r = rows[i];
+        const MonitorRow &r = mons[i];
         auto *ck = new QTableWidgetItem;
-        ck->setCheckState(r.ck ? Qt::Checked : Qt::Unchecked);
+        ck->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
         ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         m_list->setItem(i, 0, ck);
-        auto *num = plain("");
-        num->setText(QString::number(i + 1));
-        m_list->setItem(i, 1, num);
-        m_list->setItem(i, 2, plain(r.kind));
-        m_list->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8(r.name)));
-        m_list->setItem(i, 4, plain(r.pos));
-        m_list->setItem(i, 5, plain(r.freq));
+        m_list->setItem(i, 1, readOnly(QString::number(i + 1)));
+        m_list->setItem(i, 2, readOnly(kindLabel(r.type)));   // 種類は変更不可
+        m_list->setItem(i, 3, new QTableWidgetItem(r.name));
+        m_list->setItem(i, 4, new QTableWidgetItem(r.region));
+        m_list->setItem(i, 5, new QTableWidgetItem(r.band));
     }
-    // ＋ モニターを追加… 行
+    // ＋ モニターを追加… 行 (クリックで 1 行追加)
     auto *addCk = new QTableWidgetItem;
-    addCk->setCheckState(Qt::Unchecked);
-    addCk->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+    addCk->setFlags(Qt::ItemIsEnabled);
     m_list->setItem(n, 0, addCk);
     auto *addIt = new QTableWidgetItem(I18n::tr("mon_add_row"));
     addIt->setFlags(addIt->flags() & ~Qt::ItemIsEditable);
+    addIt->setToolTip(I18n::tr("mon_add_row_tip"));
     QFont f = addIt->font();
     f.setItalic(true);
     addIt->setFont(f);
     m_list->setItem(n, 1, addIt);
     m_list->setSpan(n, 1, 1, 5);
     m_updating = false;
+}
+
+void MonitorsTab::rebuildDomain()
+{
+    const Domain d = m_p->activeDomain();
+    const bool isAcoustic = (d == Domain::Acoustic || d == Domain::Underwater);
+    const bool isEmOpt = (d == Domain::EM || d == Domain::Optical);
+
+    // まだ編集されていない (どれかのドメインの既定そのままの) 一覧なら、
+    // 新しいドメインの既定へ差し替える。編集済みの一覧はそのまま残す。
+    QVector<MonitorRow> &mons = m_p->monitors();
+    if (isDefaultMonitorSet(mons) && mons != defaultMonitors(d))
+        mons = defaultMonitors(d);
+    rebuildList();
 
     // ── タイプ追加グリッド ──────────────────────────────────────────────────
     if (m_addHost->layout()) {
@@ -367,7 +453,10 @@ void MonitorsTab::rebuildDomain()
             + "\n" + I18n::tr(QString::fromUtf8(descKey)), m_addHost);
         b->setStyleSheet("text-align:left; padding:4px 8px;");
         b->setMinimumHeight(36);
-        tabhelp::markNotImplemented(b);   // モニター追加は未配線
+        // クリックでそのタイプのモニターを一覧へ追加する (.ofdx へ保存)
+        const QString typeId = QString::fromUtf8(t.id);
+        connect(b, &QPushButton::clicked, this,
+                [this, typeId] { addMonitor(typeId); });
         grid->addWidget(b, idx / 2, idx % 2);
         ++idx;
     }

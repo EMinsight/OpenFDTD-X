@@ -22,6 +22,7 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <cmath>
 
 using namespace ofd;
 
@@ -184,6 +185,31 @@ const bool s_i18n = [] {
     I18n::reg("psol_air", "空気", "Air");
     I18n::reg("psol_uniform", "一様", "Uniform");
     I18n::reg("psol_pillar", "柱周期 (φ140nm)", "Pillar array (φ140 nm)");
+    // 層構造テーブル = 光学タブの RCWA 層スタック (.ofdx) のビュー
+    I18n::reg("psol_layers_note",
+              "層構造は光学タブ「RCWA 層スタック」の内容です (.ofdx に保存、"
+              "RCWA/FMM 実行時に orcwa へ渡されます)。編集は光学タブで行います。",
+              "The layer stack mirrors the RCWA layer stack from the Optical tab "
+              "(stored in .ofdx and handed to orcwa when RCWA/FMM runs). Edit it "
+              "in the Optical tab.");
+    I18n::reg("psol_layers_empty",
+              "層が未定義です — 光学タブの「RCWA 層スタック」で追加してください",
+              "No layers defined — add them in \"RCWA layer stack\" on the "
+              "Optical tab");
+    I18n::reg("psol_semi_inf", "半無限", "Semi-infinite");
+    I18n::reg("psol_grating_fmt", "格子 (fill=%1, εr %2 / %3)",
+              "Grating (fill=%1, εr %2 / %3)");
+    I18n::reg("psol_uniform_fmt", "一様 (εr %1)", "Uniform (εr %1)");
+    I18n::reg("psol_layer_invalid", "不正な層", "Invalid layer");
+    // ハイブリッド表は手法の対応関係を示す静的な一覧 (実行連携は未実装)
+    I18n::reg("psol_hy_note",
+              "この表は「どのスケールをどの手法で解くか」の静的な対応表です。"
+              "領域を分割して複数ソルバを連携実行する機能は未実装で、"
+              "実行されるのは上で選択した 1 ソルバだけです。",
+              "This table is a static map of which method suits which scale. "
+              "Splitting a model across several solvers and running them "
+              "together is not implemented — only the single solver selected "
+              "above is run.");
     I18n::reg("psol_sweep", "掃引", "Sweep");
     I18n::reg("psol_sweep_lam", "波長 λ", "Wavelength λ");
     I18n::reg("psol_sweep_theta", "入射角 θ", "Incidence angle θ");
@@ -444,8 +470,8 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
         hy->setItem(r, 2, new QTableWidgetItem(kHybrid[r].role));
     }
     sHy->vbox()->addWidget(hy);
-    // ハイブリッド表は固定のサンプル (領域分割の連携は未実装 — 絶対規則 5)
-    sHy->vbox()->addWidget(tabhelp::sampleNote(sHy));
+    // 表は手法の対応関係 (静的な一覧)。連携実行が未実装であることを明示する
+    sHy->vbox()->addWidget(makeMuted(I18n::tr("psol_hy_note"), sHy));
     v->addWidget(sHy);
 
     v->addStretch(1);
@@ -486,6 +512,9 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
     connect(m_fmmLi, &QCheckBox::toggled, this, applyCb);
 
     connect(project, &Project::loaded, this, &PhotonicsSolversTab::refresh);
+    // 光学タブで層スタックを編集したら層構造テーブルも追従させる
+    connect(project, &Project::changed, this,
+            [this] { rebuildLayerTable(); });
     refresh();
 }
 
@@ -718,40 +747,18 @@ QWidget *PhotonicsSolversTab::buildFmmPage()
     liRow->addStretch(1);
     s->form()->addRow(I18n::tr("psol_li"), liRow);
 
-    // 層構造 (mock の表をそのまま)
-    auto *tbl = new QTableWidget(5, 4, s);
-    tbl->setHorizontalHeaderLabels({ "#", I18n::tr("psol_col_mat"),
-                                     I18n::tr("psol_col_thick"),
-                                     I18n::tr("psol_col_pattern") });
-    tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    tbl->verticalHeader()->setVisible(false);
-    tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tbl->setMinimumHeight(175);
-    const struct { const char *mat; const char *thick; const char *pat; } kLayers[5] = {
-        { nullptr,          "∞",   nullptr },                  // 空気
-        { "SiO₂",           "100", nullptr },                  // 一様
-        { "Si",             "220", "psol_pillar" },
-        { "SiO₂",           "200", nullptr },                  // 一様
-        { "Si substrate",   "∞",   nullptr },
-    };
-    for (int r = 0; r < 5; ++r) {
-        auto *num = new QTableWidgetItem(QString::number(r + 1));
-        num->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        tbl->setItem(r, 0, num);
-        tbl->setItem(r, 1, new QTableWidgetItem(
-            kLayers[r].mat ? QString::fromUtf8(kLayers[r].mat)
-                           : I18n::tr("psol_air")));
-        auto *th = new QTableWidgetItem(QString::fromUtf8(kLayers[r].thick));
-        th->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        tbl->setItem(r, 2, th);
-        QString pat = QString::fromUtf8("—");
-        if (kLayers[r].pat)          pat = I18n::tr(kLayers[r].pat);
-        else if (r == 1 || r == 3)   pat = I18n::tr("psol_uniform");
-        tbl->setItem(r, 3, new QTableWidgetItem(pat));
-    }
-    s->form()->addRow(I18n::tr("psol_layers"), tbl);
-    // 層構造テーブルは固定のサンプル (プロジェクト形状とは未連動 — 絶対規則 5)
-    s->form()->addRow(tabhelp::sampleNote(s));
+    // 層構造 = 光学タブで編集する RCWA 層スタック (.ofdx) のビュー
+    m_layerTable = new QTableWidget(0, 4, s);
+    m_layerTable->setHorizontalHeaderLabels({ "#", I18n::tr("psol_col_mat"),
+                                              I18n::tr("psol_col_thick"),
+                                              I18n::tr("psol_col_pattern") });
+    m_layerTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_layerTable->verticalHeader()->setVisible(false);
+    m_layerTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_layerTable->setMinimumHeight(175);
+    s->form()->addRow(I18n::tr("psol_layers"), m_layerTable);
+    s->form()->addRow(makeMuted(I18n::tr("psol_layers_note"), s));
+    rebuildLayerTable();
 
     s->form()->addRow(I18n::tr("psol_sweep"),
                       checkRow({ I18n::tr("psol_sweep_lam"),
@@ -763,6 +770,59 @@ QWidget *PhotonicsSolversTab::buildFmmPage()
                                  I18n::tr("psol_out_band"), I18n::tr("psol_out_cross") },
                                { true, false, false, true }, s));
     return s;
+}
+
+// ── 層構造テーブル (OpticalOpts::rcwaLayerList のビュー) ────────────────────
+// 材質は誘電率から屈折率 n = √εr を出して示す (RCWA 層は材質名を持たない)。
+// 先頭・末尾の層は半無限層として厚みがカーネルで無視される (Project.h)。
+void PhotonicsSolversTab::rebuildLayerTable()
+{
+    if (!m_layerTable) return;
+    const QVector<RcwaLayer> &ls = m_p->optical().rcwaLayerList;
+    m_layerTable->clearContents();
+    m_layerTable->clearSpans();   // 前回の結合セルを解除
+    if (ls.isEmpty()) {
+        m_layerTable->setRowCount(1);
+        m_layerTable->setItem(0, 0,
+            new QTableWidgetItem(I18n::tr("psol_layers_empty")));
+        m_layerTable->setSpan(0, 0, 1, 4);
+        return;
+    }
+    m_layerTable->setRowCount(ls.size());
+    for (int r = 0; r < ls.size(); ++r) {
+        const RcwaLayer &l = ls[r];
+        auto *num = new QTableWidgetItem(QString::number(r + 1));
+        num->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_layerTable->setItem(r, 0, num);
+
+        const bool valid = isValidRcwaLayer(l);
+        const bool grating = (l.eps1 != l.eps2 && l.fill > 0.0 && l.fill < 1.0);
+        // 材質: 一様なら n、格子なら 2 材質の n を併記
+        auto nOf = [](double eps) {
+            return QString::number(eps > 0 ? std::sqrt(eps) : 0.0, 'f', 3);
+        };
+        const QString mat = grating
+            ? QStringLiteral("n = %1 / %2").arg(nOf(l.eps1), nOf(l.eps2))
+            : QStringLiteral("n = %1").arg(nOf(l.eps1));
+        m_layerTable->setItem(r, 1, new QTableWidgetItem(
+            valid ? mat : I18n::tr("psol_layer_invalid")));
+
+        // 厚み: 半無限層 (先頭/末尾) はカーネルが厚みを無視する
+        const bool semiInf = (r == 0 || r == ls.size() - 1);
+        auto *th = new QTableWidgetItem(
+            semiInf ? I18n::tr("psol_semi_inf")
+                    : QString::number(l.thickness_nm, 'g', 6));
+        th->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_layerTable->setItem(r, 2, th);
+
+        m_layerTable->setItem(r, 3, new QTableWidgetItem(
+            grating ? I18n::tr("psol_grating_fmt")
+                          .arg(QString::number(l.fill, 'g', 3),
+                               QString::number(l.eps1, 'g', 4),
+                               QString::number(l.eps2, 'g', 4))
+                    : I18n::tr("psol_uniform_fmt")
+                          .arg(QString::number(l.eps1, 'g', 4))));
+    }
 }
 
 // 選択ソルバ切替 (カードクリック / refresh から)
@@ -823,6 +883,7 @@ void PhotonicsSolversTab::refresh()
     m_harmLabel->setText(harmText(m_nx->value(), m_ny->value()));
     m_fmmTotal->setText(I18n::tr("psol_fmm_total_fmt")
                             .arg(m_fmmM->value() * m_fmmN->value()));
+    rebuildLayerTable();
     setMethod(int(o.solver));      // apply() は m_updating で抑止される
     m_updating = false;
 }

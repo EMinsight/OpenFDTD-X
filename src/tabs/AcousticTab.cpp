@@ -8,7 +8,6 @@
 #include "TabHelpers.h"
 
 #include <QCheckBox>
-#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -70,15 +69,24 @@ const bool s_i18n = [] {
     // 音源 / Source
     I18n::reg("ac2_src_pos", "位置(x,y,z)", "Position (x,y,z)");
     I18n::reg("ac2_src_aim", "向き(θ,φ)", "Aim (θ,φ)");
-    // 受音点 / Mic array 表
+    // 受音点 / Mic array 表 (AcousticOpts::receivers の View)
     I18n::reg("ac2_col_pos", "位置", "Position");
     I18n::reg("ac2_col_type", "タイプ", "Type");
     I18n::reg("ac2_col_name", "名前", "Name");
-    I18n::reg("ac2_mic_p1", "P1 中央", "P1 center");
-    I18n::reg("ac2_mic_p2", "P2 左", "P2 left");
-    I18n::reg("ac2_mic_p3", "P3 右", "P3 right");
-    I18n::reg("ac2_mic_p4", "P4 後方", "P4 rear");
     I18n::reg("ac2_mic_add", "＋ 受音点を追加…", "＋ Add receiver…");
+    I18n::reg("ac2_mic_del", "− 選択行を削除", "− Delete selected");
+    I18n::reg("ac2_rcv_omni", "Omni", "Omni");
+    I18n::reg("ac2_rcv_stereo", "Stereo", "Stereo");
+    I18n::reg("ac2_rcv_binaural", "Binaural", "Binaural");
+    I18n::reg("ac2_mic_note",
+              "▸ 受音点は .ofdx に保存され、行数が「受音点数」と連動します。"
+              "位置は「x, y, z」[m] で編集してください "
+              "(数値以外を入力した行は保存値に戻ります)。"
+              "受音点をソルバーへ渡す処理は未実装です。",
+              "▸ Receivers are stored in the .ofdx sidecar and the row count "
+              "tracks \"# receivers\". Edit a position as \"x, y, z\" [m] "
+              "(a row that fails to parse reverts to the stored value). "
+              "Passing receivers to a solver is not implemented yet.");
     // 周波数帯域 / Band
     I18n::reg("ac2_band_section", "周波数帯域", "Band");
     I18n::reg("ac2_third_octave", "1/3オクターブ", "1/3 octave");
@@ -122,21 +130,30 @@ const bool s_i18n = [] {
     I18n::reg("ac2_out_stereo", "ステレオ", "Stereo");
     I18n::reg("ac2_out_binaural", "バイノーラル (HRTF)", "Binaural (HRTF)");
     I18n::reg("ac2_out_ambi", "Ambisonics", "Ambisonics");
-    // 材質設定 / Surface materials
+    // 材質設定 / Surface materials (AcousticOpts::absorption の View)
     I18n::reg("ac2_mat_section", "材質設定", "Surface materials");
     I18n::reg("ac2_col_face", "面", "Surface");
     I18n::reg("ac2_col_material", "材質", "Material");
     I18n::reg("ac2_col_a125", "α 125Hz", "α 125 Hz");
     I18n::reg("ac2_col_a1k", "α 1kHz", "α 1 kHz");
     I18n::reg("ac2_col_a4k", "α 4kHz", "α 4 kHz");
-    I18n::reg("ac2_face_floor", "床", "Floor");
-    I18n::reg("ac2_face_wall", "壁", "Wall");
-    I18n::reg("ac2_face_ceiling", "天井", "Ceiling");
-    I18n::reg("ac2_face_seats", "客席", "Audience");
-    I18n::reg("ac2_mat_wood", "木質フローリング", "Wood flooring");
-    I18n::reg("ac2_mat_gypsum", "石膏ボード", "Gypsum board");
-    I18n::reg("ac2_mat_panel", "音響パネル", "Acoustic panel");
-    I18n::reg("ac2_mat_audience", "客 (満席)", "Audience (full)");
+    // 面の役割 (AbsorptionRow::Role と同順)
+    I18n::reg("ac2_role_audience", "客席", "Audience");
+    I18n::reg("ac2_role_ceiling", "天井", "Ceiling");
+    I18n::reg("ac2_role_sidewall", "側壁", "Side wall");
+    I18n::reg("ac2_role_rearwall", "後壁", "Rear wall");
+    I18n::reg("ac2_role_floor", "床", "Floor");
+    I18n::reg("ac2_role_air", "空気吸収", "Air absorption");
+    I18n::reg("ac2_role_other", "その他", "Other");
+    I18n::reg("ac2_mat_note",
+              "▸ 「室内音響解析」タブの吸音バジェットと同一データです — "
+              "ここで α を編集すると残響時間 (Sabine/Eyring/Fitzroy) の"
+              "計算にそのまま反映されます。面積・α 250/500/2kHz・"
+              "空気吸収力 A・面の役割は同タブで編集してください。",
+              "▸ Same data as the absorption budget on the \"Room acoustics\" "
+              "tab — editing α here feeds straight into the reverberation "
+              "time (Sabine/Eyring/Fitzroy). Area, α at 250/500/2 kHz, the "
+              "air absorption A and the surface role are edited on that tab.");
     return true;
 }();
 
@@ -159,16 +176,16 @@ QCheckBox *makeCheck(const QString &text, bool on, QWidget *parent)
     return c;
 }
 
-// 読取専用テーブル (q-table 相当)
-QTableWidget *makeStaticTable(QWidget *parent, const QStringList &headers,
-                              int rows)
+// 編集可能テーブル (q-table 相当)。行はモデル (AcousticOpts) から流し込む
+// ので初期行数は 0。visibleRows は高さの目安にのみ使う。
+QTableWidget *makeTable(QWidget *parent, const QStringList &headers,
+                        int visibleRows)
 {
-    auto *t = new QTableWidget(rows, headers.size(), parent);
+    auto *t = new QTableWidget(0, headers.size(), parent);
     t->setHorizontalHeaderLabels(headers);
     t->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     t->verticalHeader()->setVisible(false);
-    t->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    t->setMinimumHeight(rows * 26 + 40);
+    t->setMinimumHeight(visibleRows * 26 + 40);
     return t;
 }
 
@@ -253,6 +270,20 @@ QString fmtAim(double theta, double phi)
                                           QString::number(phi, 'g', 10));
 }
 
+// AbsorptionRow::Role → 「面」列の表示名 (役割は室内音響解析タブで決まる)
+QString roleLabel(int role)
+{
+    switch (role) {
+    case AbsorptionRow::Audience: return I18n::tr("ac2_role_audience");
+    case AbsorptionRow::Ceiling:  return I18n::tr("ac2_role_ceiling");
+    case AbsorptionRow::SideWall: return I18n::tr("ac2_role_sidewall");
+    case AbsorptionRow::RearWall: return I18n::tr("ac2_role_rearwall");
+    case AbsorptionRow::Floor:    return I18n::tr("ac2_role_floor");
+    case AbsorptionRow::Air:      return I18n::tr("ac2_role_air");
+    default:                      return I18n::tr("ac2_role_other");
+    }
+}
+
 } // namespace
 
 AcousticTab::AcousticTab(Project *project, QWidget *parent)
@@ -310,39 +341,46 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_micCount = new QSpinBox(sr);
     m_micCount->setRange(1, 256);
     sr->form()->addRow(I18n::tr("ac_mic_count"), m_micCount);
-    // 受音点表 (mock の literal 行)。最終行は「＋ 受音点を追加…」プレースホルダ。
-    m_micTable = makeStaticTable(sr, { QString(), QStringLiteral("#"),
-                                       I18n::tr("ac2_col_pos"),
-                                       I18n::tr("ac2_col_type"),
-                                       I18n::tr("ac2_col_name") }, 5);
-    struct MicRow { const char *pos; const char *kind; const char *nameKey; };
-    static const MicRow kMics[4] = {
-        { "0.0, 1.2, 8.0",  "Omni",   "ac2_mic_p1" },
-        { "-2.0, 1.2, 8.0", "Omni",   "ac2_mic_p2" },
-        { "2.0, 1.2, 8.0",  "Omni",   "ac2_mic_p3" },
-        { "0.0, 1.2, 14.0", "Stereo", "ac2_mic_p4" }
-    };
-    for (int r = 0; r < 4; ++r) {
-        m_micTable->setItem(r, 0, checkItem(true));
-        m_micTable->setItem(r, 1, numItem(QString::number(r + 1)));
-        m_micTable->setItem(r, 2, monoItem(QString::fromUtf8(kMics[r].pos)));
-        m_micTable->setItem(r, 3,
-            new QTableWidgetItem(QString::fromUtf8(kMics[r].kind)));
-        m_micTable->setItem(r, 4,
-            new QTableWidgetItem(I18n::tr(kMics[r].nameKey)));
-    }
-    m_micTable->setItem(4, 0, checkItem(false));
-    auto *micAdd = new QTableWidgetItem(I18n::tr("ac2_mic_add"));
-    QFont micAddFont = micAdd->font();
-    micAddFont.setItalic(true);
-    micAdd->setFont(micAddFont);
-    micAdd->setForeground(QColor("#888888"));
-    m_micTable->setItem(4, 1, micAdd);
-    m_micTable->setSpan(4, 1, 1, 4);
+    // 受音点表 — AcousticOpts::receivers (.ofdx) の View。
+    // 有効/位置/タイプ/名前を編集でき、行数は受音点数スピンと双方向に同期する。
+    m_micTable = makeTable(sr, { QString(), QStringLiteral("#"),
+                                 I18n::tr("ac2_col_pos"),
+                                 I18n::tr("ac2_col_type"),
+                                 I18n::tr("ac2_col_name") }, 5);
     sr->vbox()->addWidget(m_micTable);
-    // 受音点表は固定サンプル (受音点数スピンとは非連動)
-    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
+    auto *micBtns = new QHBoxLayout();
+    auto *micAdd = new QPushButton(I18n::tr("ac2_mic_add"), sr);
+    auto *micDel = new QPushButton(I18n::tr("ac2_mic_del"), sr);
+    micBtns->addWidget(micAdd);
+    micBtns->addWidget(micDel);
+    micBtns->addStretch(1);
+    sr->vbox()->addLayout(micBtns);
+    sr->vbox()->addWidget(mutedLabel(I18n::tr("ac2_mic_note"), sr));
     v->addWidget(sr);
+
+    connect(m_micTable, &QTableWidget::cellChanged, this, [this] {
+        if (m_updating) return;
+        applyReceivers();
+    });
+    connect(micAdd, &QPushButton::clicked, this, [this] {
+        AcousticOpts &a = m_p->acoustic();
+        if (a.receivers.size() >= m_micCount->maximum()) return;
+        // 追加行の初期値は既定リストの次の 1 点 (Project.h)
+        a.receivers.push_back(defaultReceivers(a.receivers.size() + 1).last());
+        a.micCount = a.receivers.size();
+        refreshReceivers();
+        m_p->touch();
+    });
+    connect(micDel, &QPushButton::clicked, this, [this] {
+        AcousticOpts &a = m_p->acoustic();
+        const int r = m_micTable->currentRow();
+        // 受音点は最低 1 点 (受音点数スピンの下限と揃える)
+        if (a.receivers.size() <= 1 || r < 0 || r >= a.receivers.size()) return;
+        a.receivers.removeAt(r);
+        a.micCount = a.receivers.size();
+        refreshReceivers();
+        m_p->touch();
+    });
 
     // ── 以下、モック (tabs.jsx AcousticTab) にあって未実装だったセクションを
     //    モックの並び順 (ソルバー → 室内音響 → 周波数帯域 → 可聴化 → 材質) で追加。
@@ -458,32 +496,24 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     au->vbox()->addWidget(tabhelp::unwiredNote(au));
     v->addWidget(au);
 
-    // 材質設定 / Surface materials — mock の吸音率表 (125Hz / 1kHz / 4kHz)
+    // 材質設定 / Surface materials — 吸音率表 (125Hz / 1kHz / 4kHz)。
+    // RoomAcousticsTab の吸音バジェットと同一モデル (AcousticOpts::absorption)
+    // をバインドする。同じ α が 2 か所で食い違わないよう、ここでの編集は
+    // 直接 absorption[] へ書き戻し、残響計算にそのまま反映される。
     auto *ms = new SectionBox(I18n::tr("ac2_mat_section"), body);
-    m_surfTable = makeStaticTable(ms, { I18n::tr("ac2_col_face"),
-                                        I18n::tr("ac2_col_material"),
-                                        I18n::tr("ac2_col_a125"),
-                                        I18n::tr("ac2_col_a1k"),
-                                        I18n::tr("ac2_col_a4k") }, 4);
-    struct SurfRow { const char *faceKey; const char *matKey;
-                     const char *a125; const char *a1k; const char *a4k; };
-    static const SurfRow kSurf[4] = {
-        { "ac2_face_floor",   "ac2_mat_wood",     "0.10", "0.07", "0.07" },
-        { "ac2_face_wall",    "ac2_mat_gypsum",   "0.29", "0.05", "0.04" },
-        { "ac2_face_ceiling", "ac2_mat_panel",    "0.30", "0.85", "0.90" },
-        { "ac2_face_seats",   "ac2_mat_audience", "0.39", "0.80", "0.87" }
-    };
-    for (int r = 0; r < 4; ++r) {
-        m_surfTable->setItem(r, 0, new QTableWidgetItem(I18n::tr(kSurf[r].faceKey)));
-        m_surfTable->setItem(r, 1, new QTableWidgetItem(I18n::tr(kSurf[r].matKey)));
-        m_surfTable->setItem(r, 2, numItem(QString::fromLatin1(kSurf[r].a125)));
-        m_surfTable->setItem(r, 3, numItem(QString::fromLatin1(kSurf[r].a1k)));
-        m_surfTable->setItem(r, 4, numItem(QString::fromLatin1(kSurf[r].a4k)));
-    }
+    m_surfTable = makeTable(ms, { I18n::tr("ac2_col_face"),
+                                  I18n::tr("ac2_col_material"),
+                                  I18n::tr("ac2_col_a125"),
+                                  I18n::tr("ac2_col_a1k"),
+                                  I18n::tr("ac2_col_a4k") }, 5);
     ms->vbox()->addWidget(m_surfTable);
-    // 吸音率表は固定サンプル (モデル未接続)
-    ms->vbox()->addWidget(tabhelp::sampleNote(ms));
+    ms->vbox()->addWidget(mutedLabel(I18n::tr("ac2_mat_note"), ms));
     v->addWidget(ms);
+
+    connect(m_surfTable, &QTableWidget::cellChanged, this, [this] {
+        if (m_updating) return;
+        applySurfaces();
+    });
 
     v->addStretch(1);
     setWidget(body);
@@ -497,7 +527,9 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     connect(m_sampleRate, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_directivity, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_spl, &QDoubleSpinBox::valueChanged, this, applyCb);
-    connect(m_micCount, &QSpinBox::valueChanged, this, applyCb);
+    // 受音点数は受音点リストの行数そのもの → 専用経路でリストを伸縮させる
+    connect(m_micCount, &QSpinBox::valueChanged,
+            this, &AcousticTab::applyReceiverCount);
     connect(m_srcPos, &QLineEdit::editingFinished, this, applyCb);
     connect(m_srcAim, &QLineEdit::editingFinished, this, applyCb);
     connect(m_analysisType, &QComboBox::currentIndexChanged, this, applyCb);
@@ -509,6 +541,9 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     updateSolverView();
 
     connect(project, &Project::loaded, this, &AcousticTab::refresh);
+    // 吸音バジェットは室内音響解析タブと共有するモデルなので、
+    // 向こうで編集されたら (changed) こちらの表も追従させる。
+    connect(project, &Project::changed, this, &AcousticTab::refresh);
     refresh();
 }
 
@@ -538,7 +573,9 @@ void AcousticTab::apply()
     static const char *dirs[] = { "omni", "cardioid", "speaker" };
     a.srcDirectivity = dirs[qBound(0, m_directivity->currentIndex(), 2)];
     a.srcSPL_dB = m_spl->value();
-    a.micCount = m_micCount->value();
+    // 受音点数 = 受音点リストの行数 (不変条件)。スピンの値は
+    // applyReceiverCount() がリストを伸縮させてから反映される。
+    a.micCount = a.receivers.size();
     a.lf = m_lf->isChecked();
     // 音源位置 / 向き: パースできた場合だけモデルへ書き込み、不正入力は
     // 表示をモデル値に戻す (UI とモデルの乖離を作らない — .claude/rules/gui.md)
@@ -576,7 +613,6 @@ void AcousticTab::refresh()
                  : (a.srcDirectivity == "speaker")  ? 2 : 0;
     m_directivity->setCurrentIndex(di);
     m_spl->setValue(a.srcSPL_dB);
-    m_micCount->setValue(a.micCount);
     m_lf->setChecked(a.lf);
     m_srcPos->setText(fmtPos(a.srcX_m, a.srcY_m, a.srcZ_m));
     m_srcAim->setText(fmtAim(a.srcAimTheta_deg, a.srcAimPhi_deg));
@@ -584,6 +620,134 @@ void AcousticTab::refresh()
     m_thirdOctave->setChecked(a.thirdOctave);
     m_bandRange->setCurrentIndex(qBound(0, a.bandRange, 2));
     m_updating = false;
+    refreshReceivers();
+    refreshSurfaces();
+}
+
+// ── 受音点リスト (AcousticOpts::receivers) ─────────────────────────────────
+// model → widgets。受音点数スピンも行数へ合わせる (同一データの 2 表示)。
+void AcousticTab::refreshReceivers()
+{
+    m_updating = true;
+    const QVector<ReceiverRow> &rows = m_p->acoustic().receivers;
+    m_micCount->setValue(rows.size());
+    m_micTable->setRowCount(rows.size());
+    for (int r = 0; r < rows.size(); ++r) {
+        const ReceiverRow &row = rows[r];
+        m_micTable->setItem(r, 0, checkItem(row.enabled));
+        auto *idx = numItem(QString::number(r + 1));
+        idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // 行番号は自動
+        m_micTable->setItem(r, 1, idx);
+        m_micTable->setItem(r, 2, monoItem(fmtPos(row.x, row.y, row.z)));
+        // タイプは列挙なのでセル内コンボ (行数が変わらない限り作り直さない)
+        auto *type = qobject_cast<QComboBox *>(m_micTable->cellWidget(r, 3));
+        if (!type) {
+            type = new QComboBox(m_micTable);
+            type->addItems({ I18n::tr("ac2_rcv_omni"),
+                             I18n::tr("ac2_rcv_stereo"),
+                             I18n::tr("ac2_rcv_binaural") });
+            m_micTable->setCellWidget(r, 3, type);
+            connect(type, &QComboBox::currentIndexChanged, this, [this] {
+                if (m_updating) return;
+                applyReceivers();
+            });
+        }
+        type->setCurrentIndex(qBound(0, row.type, 2));
+        m_micTable->setItem(r, 4, new QTableWidgetItem(row.name));
+    }
+    m_updating = false;
+}
+
+// widgets → model。位置が "x, y, z" として読めない行はモデル値へ戻す
+// (UI とモデルの乖離を作らない — .claude/rules/gui.md)。
+void AcousticTab::applyReceivers()
+{
+    AcousticOpts &a = m_p->acoustic();
+    for (int r = 0; r < m_micTable->rowCount() && r < a.receivers.size(); ++r) {
+        ReceiverRow &row = a.receivers[r];
+        if (auto *en = m_micTable->item(r, 0))
+            row.enabled = en->checkState() == Qt::Checked;
+        if (auto *ps = m_micTable->item(r, 2)) {
+            double pos[3];
+            if (parseNumList(ps->text(), 3, pos)) {
+                row.x = pos[0]; row.y = pos[1]; row.z = pos[2];
+            }
+            // 読めない入力は無視 → 直後の refresh() が保存値を書き戻す
+        }
+        if (auto *tp = qobject_cast<QComboBox *>(m_micTable->cellWidget(r, 3)))
+            row.type = qBound(0, tp->currentIndex(), 2);
+        if (auto *nm = m_micTable->item(r, 4))
+            row.name = nm->text();
+    }
+    a.micCount = a.receivers.size();
+    m_p->touch();     // changed → refresh() が表を書き戻す
+}
+
+// 受音点数スピン → リストの伸縮 (増分は既定リストの続き、減分は末尾から)
+void AcousticTab::applyReceiverCount()
+{
+    if (m_updating) return;
+    AcousticOpts &a = m_p->acoustic();
+    const int n = qMax(1, m_micCount->value());
+    if (n == a.receivers.size()) return;
+    while (a.receivers.size() > n) a.receivers.removeLast();
+    while (a.receivers.size() < n)
+        a.receivers.push_back(defaultReceivers(a.receivers.size() + 1).last());
+    a.micCount = a.receivers.size();
+    refreshReceivers();
+    m_p->touch();
+}
+
+// ── 材質設定 (AcousticOpts::absorption = 吸音バジェットと同一モデル) ───────
+void AcousticTab::refreshSurfaces()
+{
+    m_updating = true;
+    const QVector<AbsorptionRow> &rows = m_p->acoustic().absorption;
+    m_surfTable->setRowCount(rows.size());
+    for (int r = 0; r < rows.size(); ++r) {
+        const AbsorptionRow &row = rows[r];
+        // 空気吸収行は面ではないので α を持たない (吸音力 A を直接指定する)
+        const bool air = row.role == AbsorptionRow::Air;
+        m_surfTable->setItem(r, 0, tabhelp::roItem(roleLabel(row.role)));
+        m_surfTable->setItem(r, 1, new QTableWidgetItem(row.name));
+        auto alphaCell = [air](double v) {
+            auto *it = numItem(air ? QStringLiteral("—")
+                                   : QString::number(v, 'g', 4));
+            if (air) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+            return it;
+        };
+        m_surfTable->setItem(r, 2, alphaCell(row.alpha[0]));   // 125 Hz
+        m_surfTable->setItem(r, 3, alphaCell(row.alpha[3]));   // 1 kHz
+        m_surfTable->setItem(r, 4, alphaCell(row.alpha[5]));   // 4 kHz
+    }
+    m_updating = false;
+}
+
+// widgets → model。表示している 3 帯域 (125Hz/1kHz/4kHz) と材質名だけを
+// 書き戻す — 250/500/2kHz は独立した実測値なので勝手に補間しない
+// (室内音響解析タブの吸音バジェットで編集する)。
+void AcousticTab::applySurfaces()
+{
+    AcousticOpts &a = m_p->acoustic();
+    for (int r = 0; r < m_surfTable->rowCount() && r < a.absorption.size(); ++r) {
+        AbsorptionRow &row = a.absorption[r];
+        if (auto *nm = m_surfTable->item(r, 1))
+            row.name = nm->text();
+        if (row.role == AbsorptionRow::Air) continue;   // α 列は "—"
+        auto alpha = [this, r](int col, double cur) {
+            auto *it = m_surfTable->item(r, col);
+            if (!it) return cur;
+            bool ok = false;
+            const double v = it->text().toDouble(&ok);
+            // 負の吸音率は物理的にあり得ない → 0 でクランプ
+            // (refresh() がクランプ後の値を書き戻すので表示と一致する)
+            return ok ? qMax(0.0, v) : cur;
+        };
+        row.alpha[0] = alpha(2, row.alpha[0]);
+        row.alpha[3] = alpha(3, row.alpha[3]);
+        row.alpha[5] = alpha(4, row.alpha[5]);
+    }
+    m_p->touch();     // 残響計算 (室内音響解析タブ) も追従する
 }
 
 // 「⊕ 畳み込み」— 実装済みの可聴化経路 (可聴化タブと同じ
