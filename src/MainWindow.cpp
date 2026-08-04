@@ -8,6 +8,7 @@
 #include "I18n.h"
 
 #include "core/Project.h"
+#include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/H5Writer.h"
@@ -849,12 +850,20 @@ void MainWindow::showGallery()
     if (!m_galleryDialog) {
         m_galleryDialog = new AppGalleryDialog(this);
         connect(m_galleryDialog, &AppGalleryDialog::templatePicked, this,
-                [this](const QString &domain, const QString &name) {
-            // tidy3d グループは光ドメインのクラウドテンプレート
-            if (domain != "tidy3d")
-                m_project->setActiveDomain(domainFromKey(domain));
-            m_project->general().title = name;
-            m_project->touch();
+                [this](const QString &domain, const QString &id,
+                       const QString &name) {
+            // シナリオに応じたメッシュ・物性値・形状・波源・周波数・
+            // ドメイン設定を投入した新規プロジェクトを作成する
+            // (core/ProjectTemplates)。tidy3d グループは光ドメインの
+            // クラウドテンプレートとして扱われる。
+            if (!templates::apply(*m_project, domain, id, name)) {
+                // 未知 ID (レジストリ外) — 従来どおりドメインとタイトルのみ
+                if (domain != "tidy3d")
+                    m_project->setActiveDomain(domainFromKey(domain));
+                m_project->general().title = name;
+            }
+            emit m_project->loaded();
+            emit m_project->changed();
             updateWindowTitle();
         });
         // フッタのボタンを実動作へ接続 (以前は閉じるだけだった)

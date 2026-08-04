@@ -3,8 +3,9 @@
 // 「FDTD で出来ること」をドメイン別に一覧するテンプレート選択モーダル。
 // 5 グループ (電磁/光/室内音響/水中/クラウド) × 全テンプレートカードを
 // スクロール可能なグリッドに並べる。カードをクリックすると
-//   templatePicked(domainKey, name)
-// を発火して閉じる → MainWindow がドメイン切替 + プロジェクト名設定を行う。
+//   templatePicked(domainKey, templateId, name)
+// を発火して閉じる → MainWindow が core/ProjectTemplates::apply で
+// シナリオに応じた新規プロジェクトを構成する。
 #pragma once
 #include <QDialog>
 #include <QFrame>
@@ -40,8 +41,10 @@ public:
     explicit AppGalleryDialog(QWidget *parent = nullptr);
 
 signals:
-    // domainKey は "em" / "optical" / "acoustic" / "underwater" / "tidy3d"
-    void templatePicked(const QString &domainKey, const QString &name);
+    // domainKey は "em" / "optical" / "acoustic" / "underwater" / "tidy3d"。
+    // templateId は core/ProjectTemplates のレジストリ ID
+    void templatePicked(const QString &domainKey, const QString &templateId,
+                        const QString &name);
     // フッタのボタン (以前は閉じるだけだったので実動作を通知する)
     void openFileRequested();   // 📂 ファイルから開く
     void blankRequested();      // 空のプロジェクトで開始

@@ -13,6 +13,7 @@
 
 #include "audio/AudioEditEngine.h"
 #include "core/Project.h"
+#include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/H5Reader.h"
@@ -672,6 +673,88 @@ static void testOperaAcousticSettings()
             check(p5.operaAcoustic().calibrationOffsetDb == 0.0,
                   "missing calibration_offset_db defaults to 0.0");
         }
+    }
+}
+
+// プロジェクトテンプレート (core/ProjectTemplates — 応用ギャラリー)。
+// 全テンプレートが「保存すればカーネルへ渡せる」状態を作ることを検証する:
+// メッシュ妥当・波源あり・周波数正・.ofd 往復一致 + ドメイン設定の抜き取り。
+static void testProjectTemplates()
+{
+    const char *domains[] = { "em", "optical", "acoustic", "underwater",
+                              "tidy3d" };
+    int total = 0;
+    for (const char *d : domains) {
+        g_file = QStringLiteral("templates:%1").arg(QLatin1String(d));
+        const QStringList ids = templates::idsFor(QLatin1String(d));
+        check(!ids.isEmpty(), "domain has templates");
+        for (const QString &id : ids) {
+            ++total;
+            g_file = QStringLiteral("template:%1").arg(id);
+            Project p;
+            check(templates::apply(p, QLatin1String(d), id),
+                  "template applies");
+            bool meshOk = true;
+            for (int a = 0; a < 3; ++a)
+                meshOk = meshOk && p.mesh(a).isValid();
+            check(meshOk, "template mesh valid");
+            check(p.totalCells() > 0, "template has cells");
+            check(!p.general().title.isEmpty(), "template sets title");
+            const GeneralOpts &g = p.general();
+            check(g.f1min <= g.f1max && g.f1div >= 1 && g.f2min > 0,
+                  "template frequencies sane");
+            // 波源: 給電 / 平面波 / RCWA 層スタックのいずれかを必ず持つ
+            check(!p.feeds().isEmpty() || p.planewave().enabled ||
+                  isValidRcwaStack(p.optical().rcwaLayerList),
+                  "template has a source");
+            // 実保存経路の往復 (.ofd + .ofdx — 光ソルバ種別等はサイドカー側)
+            QTemporaryDir dir;
+            if (dir.isValid()) {
+                const QString path = dir.filePath(id + ".ofd");
+                QString err;
+                bool ok = p.save(path, &err);
+                check(ok, "template saves");
+                Project p2;
+                if (ok && p2.load(path, &err)) {
+                    compareProjects(p, p2);
+                } else if (ok) {
+                    ++g_failures;
+                    std::fprintf(stderr, "FAIL %s: reload: %s\n",
+                                 qPrintable(g_file), qPrintable(err));
+                }
+            }
+        }
+    }
+    g_file = "templates";
+    check(total == 37, "37 templates registered");
+
+    // ドメイン設定の抜き取り検証 (シナリオが実際に反映されていること)
+    {
+        Project p;
+        check(templates::apply(p, "acoustic", "ac_raytrace"),
+              "raytrace template applies");
+        check(p.activeDomain() == Domain::Acoustic &&
+              p.operaAcoustic().solverBackend == 4,
+              "raytrace sets ExternalGeometric backend");
+        check(templates::apply(p, "underwater", "uw_sofar"),
+              "sofar template applies");
+        check(p.activeDomain() == Domain::Underwater &&
+              p.underwater().sofar,
+              "sofar template enables SOFAR");
+        check(templates::apply(p, "optical", "opt_nonlinear"),
+              "tpa template applies");
+        check(p.optical().tpaEnabled && p.optical().powerSweepEnabled &&
+              p.optical().solver == OpticalSolver::BPM,
+              "tpa template wires BPM + powersweep");
+        check(templates::apply(p, "tidy3d", "t3_large"),
+              "tidy3d template applies");
+        check(p.activeDomain() == Domain::Optical &&
+              p.tidy3d().resolution == "fine",
+              "tidy3d template targets optical cloud");
+        check(templates::apply(p, "em", "em_rcs"), "rcs template applies");
+        check(p.planewave().enabled, "rcs template uses plane wave");
+        check(!templates::apply(p, "em", "no_such_template"),
+              "unknown template id rejected");
     }
 }
 
@@ -1732,6 +1815,32 @@ static void testOfdIntegration(const QString &sampleDir)
     check(log.open(QIODevice::ReadOnly | QIODevice::Text)
               && QString::fromUtf8(log.readAll()).contains("normal end"),
           "ofd: log reports normal end");
+
+    // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
+    // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)
+    {
+        g_file = "template_e2e:em_antenna";
+        Project tp;
+        check(templates::apply(tp, "em", "em_antenna"), "e2e: apply");
+        // E2E はステップ数を落として短時間で判定する (物理検証は本体の
+        // dipole 回帰が担う — ここでは入力受理と正常終了のみを見る)
+        tp.general().maxiter = 200;
+        QTemporaryDir tdir;
+        check(tdir.isValid(), "e2e: temp dir");
+        QString err;
+        check(tp.save(tdir.filePath("template.ofd"), &err), "e2e: save");
+        QProcess tproc;
+        tproc.setWorkingDirectory(tdir.path());
+        tproc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                           QStringLiteral("template.ofd") });
+        check(tproc.waitForFinished(300000), "e2e: kernel finished in time");
+        check(tproc.exitStatus() == QProcess::NormalExit &&
+              tproc.exitCode() == 0, "e2e: kernel exit code 0");
+        QFile tlog(tdir.filePath("ofd.log"));
+        check(tlog.open(QIODevice::ReadOnly | QIODevice::Text) &&
+              QString::fromUtf8(tlog.readAll()).contains("normal end"),
+              "e2e: log reports normal end");
+    }
 }
 
 // ── オペラ音響の一括レポート (AcousticReportBuilder) ────────────────────────
@@ -1906,6 +2015,7 @@ int main(int argc, char *argv[])
     testGlassCatalog();
     testRoomAcoustics();
     testOperaAcousticSettings();
+    testProjectTemplates();
     testAudioEditEngine();
     testCalibrationOffsetGate();
     testOnnActivation();

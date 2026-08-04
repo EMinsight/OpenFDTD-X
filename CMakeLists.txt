@@ -49,6 +49,8 @@ set(CORE_SOURCES
     src/core/RoomAcoustics.cpp
     src/core/RoomAcoustics.h
     src/core/OperaHalls.h
+    src/core/ProjectTemplates.cpp
+    src/core/ProjectTemplates.h
 
     src/io/OfdIO.cpp
     src/io/OfdIO.h
