@@ -24,6 +24,18 @@ void TabNavigator::addEntry(const Entry &e)
     m_entries.push_back(e);
 }
 
+// rebuild と同じ絞り込み条件で数えるだけ (条件を 2 か所に散らさない)
+int TabNavigator::pageCount(Domain d, bool expert) const
+{
+    int n = 0;
+    for (const Entry &e : m_entries) {
+        if (!e.core && !expert) continue;
+        if (!e.domains.isEmpty() && !e.domains.contains(d)) continue;
+        ++n;
+    }
+    return n;
+}
+
 void TabNavigator::rebuild(Domain d, bool expert)
 {
     const QString keep = currentKey();

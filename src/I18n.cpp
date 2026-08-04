@@ -991,6 +991,18 @@ void I18n::loadTables() {
     add("m_uilevel",        "表示モード",     "UI level");
     add("uilevel_standard", "標準",           "Standard");
     add("uilevel_expert",   "エキスパート (全機能)", "Expert (all features)");
+    // ナビ直下の表示モード切替 (メニューの奥だけだと「項目が少ない」と
+    // 誤解されるため、隠れている項目数を添えて常時見せる)
+    add("nav_expert",        "エキスパート表示", "Expert view");
+    add("nav_expert_hidden", "エキスパート表示 (+%1 項目)",
+                             "Expert view (+%1 more)");
+    add("nav_expert_tip",
+        "標準表示では詳細タブ (全般・メッシュ詳細・検証・最適化・スクリプト "
+        "など) を隠しています。チェックすると全機能を表示します "
+        "(表示メニュー → 表示モード と同じ)。",
+        "Standard view hides the advanced tabs (General, Mesh detail, "
+        "Verification, Optimize, Scripts …). Check this to show every feature "
+        "(same as View → UI level).");
 
     // ツールバー追加分 (Resources / はじめに / ギャラリー)
     add("tb_resources",  "Resources", "Resources");
