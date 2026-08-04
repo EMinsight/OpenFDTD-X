@@ -25,6 +25,7 @@
 class QStackedWidget;
 class QLabel;
 class QProgressBar;
+class QCheckBox;
 class QComboBox;
 class QSpinBox;
 class QAction;
@@ -190,6 +191,9 @@ private:
     QAction   *m_t3ExportAction = nullptr;
     QAction   *m_levelStandard = nullptr;
     QAction   *m_levelExpert = nullptr;
+    // ナビ直下の表示モード切替 (標準では何項目隠れているかも出す)
+    QCheckBox *m_levelCheck = nullptr;
+    void updateLevelHint();
 
     QLabel       *m_sbState = nullptr;
     QLabel       *m_sbCells = nullptr;

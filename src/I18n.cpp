@@ -63,8 +63,12 @@ void I18n::loadTables() {
         "before a run, the source-waveform preview. Kernel-drawn figures "
         "(ev.ev2) open via the ev2d button at the bottom");
     add("tb_plot3d_tip",
-        "3D シーン (形状・メッシュのビューポート) へ切替",
-        "Switch to the 3D scene (geometry / mesh viewport)");
+        "3D シーン (形状・メッシュのビューポート) へ切替 — 結果 HDF5 を"
+        "読み込むとツールバーの「結果断面を重ねる」で計算結果の断面を"
+        "3D 空間に重ねられる",
+        "Switch to the 3D scene (geometry / mesh viewport) — once a result "
+        "HDF5 is loaded, \"Overlay result slice\" in the toolbar draws the "
+        "computed slice in the 3D scene");
     add("tb_stop", "停止", "Stop");
     add("tb_cloud", "クラウド送信", "Cloud");
     add("tb_cloud_optical_only", "クラウド送信 (光のみ)", "Cloud (optical only)");
@@ -991,6 +995,18 @@ void I18n::loadTables() {
     add("m_uilevel",        "表示モード",     "UI level");
     add("uilevel_standard", "標準",           "Standard");
     add("uilevel_expert",   "エキスパート (全機能)", "Expert (all features)");
+    // ナビ直下の表示モード切替 (メニューの奥だけだと「項目が少ない」と
+    // 誤解されるため、隠れている項目数を添えて常時見せる)
+    add("nav_expert",        "エキスパート表示", "Expert view");
+    add("nav_expert_hidden", "エキスパート表示 (+%1 項目)",
+                             "Expert view (+%1 more)");
+    add("nav_expert_tip",
+        "標準表示では詳細タブ (全般・メッシュ詳細・検証・最適化・スクリプト "
+        "など) を隠しています。チェックすると全機能を表示します "
+        "(表示メニュー → 表示モード と同じ)。",
+        "Standard view hides the advanced tabs (General, Mesh detail, "
+        "Verification, Optimize, Scripts …). Check this to show every feature "
+        "(same as View → UI level).");
 
     // ツールバー追加分 (Resources / はじめに / ギャラリー)
     add("tb_resources",  "Resources", "Resources");
@@ -1019,6 +1035,15 @@ void I18n::loadTables() {
         "既存の HDF5 結果を検出し H5アニメタブへセットしました: %1",
         "Found an existing HDF5 result and set it on the H5 Animation "
         "tab: %1");
+    add("log_slice3d",
+        "3D シーンに結果断面を重ねられます "
+        "(「3D シーン」タブ → ツールバーの「結果断面を重ねる」)",
+        "The result slice can now be overlaid on the 3D scene (3D scene tab "
+        "→ \"Overlay result slice\" in the toolbar)");
+    add("log_slice3d_skip",
+        "結果断面は 3D シーンへ重ねられません (2D 断面表示のみ): %1",
+        "The result slice cannot be overlaid on the 3D scene (2D slice view "
+        "only): %1");
     add("log_h5_anime",
         "伝搬の時系列は「H5アニメ」タブで再生できます (実行結果を読込済み)",
         "Play the propagation time series in the H5 Animation tab (this "

@@ -584,6 +584,63 @@ bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
     return true;
 }
 
+bool H5Reader::ofdGridCoords(const QString &path, QVector<double> &xs,
+                             QVector<double> &ys, QVector<double> &zs,
+                             QString *err)
+{
+    xs.clear();
+    ys.clear();
+    zs.clear();
+
+    Ids id;
+    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
+                      H5P_DEFAULT);
+    if (id.file < 0) {
+        setErr(err, QStringLiteral("cannot open %1").arg(path));
+        return false;
+    }
+
+    // 節点座標の置き場所は 2 通り: 新レイアウトは /geometry、旧レイアウトは
+    // /metadata (実ファイルで確認済み: /metadata/Xn {Nx+1} native double)。
+    // 軸ごとに新 → 旧の順で探すので、片方にしか無いファイルでも拾える。
+    static const char *const kGroups[2] = { "/geometry", "/metadata" };
+    static const char *const kNames[3]  = { "Xn", "Yn", "Zn" };
+    QVector<double> *const dst[3] = { &xs, &ys, &zs };
+
+    int found = 0;
+    for (int a = 0; a < 3; ++a) {
+        for (const char *grp : kGroups) {
+            if (H5Lexists(id.file, grp, H5P_DEFAULT) <= 0) continue;
+            const QByteArray name = QByteArray(grp) + '/' + kNames[a];
+            if (H5Lexists(id.file, name.constData(), H5P_DEFAULT) <= 0)
+                continue;
+            const hid_t ds = H5Dopen2(id.file, name.constData(), H5P_DEFAULT);
+            if (ds < 0) continue;
+            const hid_t sp = H5Dget_space(ds);
+            hsize_t d[1] = { 0 };
+            bool ok = false;
+            if (H5Sget_simple_extent_ndims(sp) == 1 &&
+                H5Sget_simple_extent_dims(sp, d, nullptr) == 1 && d[0] > 0) {
+                const int n = int(d[0]);
+                QVector<double> v(n);
+                // 型変換は HDF5 任せ (float32 で書かれていても double で読む)
+                ok = (H5Dread(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                              H5P_DEFAULT, v.data()) >= 0);
+                if (ok) *dst[a] = v;
+            }
+            H5Sclose(sp);
+            H5Dclose(ds);
+            if (ok) { ++found; break; }
+        }
+    }
+    if (found == 0) {
+        setErr(err, QStringLiteral("no grid coordinates "
+                                   "(/geometry or /metadata Xn,Yn,Zn)"));
+        return false;
+    }
+    return true;
+}
+
 #else // !OFD_USE_HDF5 — スタブ (available() = false を見て呼び出し側が抑止)
 
 bool H5Reader::listDatasets(const QString &, QVector<H5DatasetInfo> &out,
@@ -633,6 +690,17 @@ bool H5Reader::readOfdSeriesFrame(const QString &, const QString &, int,
                                   int, int, QVector<double> &, int &, int &,
                                   QString *, QString *err)
 {
+    if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
+    return false;
+}
+
+bool H5Reader::ofdGridCoords(const QString &, QVector<double> &xs,
+                             QVector<double> &ys, QVector<double> &zs,
+                             QString *err)
+{
+    xs.clear();
+    ys.clear();
+    zs.clear();
     if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
     return false;
 }

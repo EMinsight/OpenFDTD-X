@@ -90,6 +90,7 @@
 
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -145,6 +146,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_project, &Project::domainChanged, this, &MainWindow::onDomainChanged);
     connect(m_project, &Project::changed, this, &MainWindow::onProjectChanged);
+
+    // 3D シーンへの結果断面の反映結果をログに出す (ドック生成後に接続)
+    connect(m_center, &CenterPane::result3DSliceStatus, this,
+            [this](bool ok, const QString &detail) {
+        m_rightDock->appendLog(ok ? I18n::tr("log_slice3d")
+                                  : I18n::tr("log_slice3d_skip").arg(detail));
+    });
 
     connect(m_runner, &Runner::progress, this, &MainWindow::onRunnerProgress);
     connect(m_runner, &Runner::logLine, this, &MainWindow::onRunnerLog);
@@ -466,7 +474,22 @@ void MainWindow::buildCentral()
     lh->setContentsMargins(0, 0, 0, 0);
     lh->setSpacing(0);
     buildLeftNav(leftWrap);
-    lh->addWidget(m_nav);
+    // ナビ列 = カテゴリナビ + 表示モード切替。
+    // 標準表示ではエキスパート専用タブ (全般/メッシュ詳細/検証 …) が隠れる。
+    // 切替がメニューの奥だけだと「項目が少ない」と誤解されるため、
+    // 隠れている項目数と一緒にナビ直下へ常時出す。
+    auto *navCol = new QWidget(leftWrap);
+    auto *navV = new QVBoxLayout(navCol);
+    navV->setContentsMargins(0, 0, 0, 0);
+    navV->setSpacing(0);
+    navV->addWidget(m_nav, 1);
+    m_levelCheck = new QCheckBox(I18n::tr("nav_expert"), navCol);
+    m_levelCheck->setChecked(m_expert);   // QSettings から復元した値に合わせる
+    m_levelCheck->setToolTip(I18n::tr("nav_expert_tip"));
+    m_levelCheck->setContentsMargins(6, 3, 6, 4);
+    connect(m_levelCheck, &QCheckBox::toggled, this, &MainWindow::setUiLevel);
+    navV->addWidget(m_levelCheck);
+    lh->addWidget(navCol);
     lh->addWidget(m_pages, 1);
     // ナビ + ページの実用最小幅 (これを下回るとタブ内の表が読めなくなる)
     leftWrap->setMinimumWidth(430);
@@ -756,6 +779,7 @@ void MainWindow::onDomainChanged(Domain d)
     // ドメイン/表示レベルに応じてナビ項目を組み直す
     // (旧実装の removeTab/addTab は TabNavigator::rebuild が担う)
     m_nav->rebuild(d, m_expert);
+    updateLevelHint();    // 隠れている項目数はドメインで変わる
     updateKernelWarn();   // ドメインが変われば必要なカーネルも変わる
 
     // cloud submission is optical-only
@@ -801,7 +825,26 @@ void MainWindow::setUiLevel(bool expert)
     m_expert = expert;
     QSettings().setValue("ui/level", expert ? "expert" : "standard");
     (expert ? m_levelExpert : m_levelStandard)->setChecked(true);
+    if (m_levelCheck && m_levelCheck->isChecked() != expert) {
+        QSignalBlocker block(m_levelCheck);   // 再入防止
+        m_levelCheck->setChecked(expert);
+    }
     m_nav->rebuild(m_project->activeDomain(), m_expert);
+    updateLevelHint();
+}
+
+// 表示モードのラベルを「今どちらか」「標準だと何項目隠れているか」が
+// 分かる形に更新する (ドメインで隠れる数が変わるので都度数え直す)。
+void MainWindow::updateLevelHint()
+{
+    if (!m_levelCheck) return;
+    const Domain d = m_project->activeDomain();
+    const int shown  = m_nav->pageCount(d, m_expert);
+    const int all    = m_nav->pageCount(d, true);
+    const int hidden = all - shown;
+    m_levelCheck->setText(m_expert || hidden <= 0
+        ? I18n::tr("nav_expert")
+        : I18n::tr("nav_expert_hidden").arg(hidden));
 }
 
 void MainWindow::onProjectChanged()
@@ -836,6 +879,8 @@ void MainWindow::updateWindowTitle()
 
 void MainWindow::newProject()
 {
+    // 前の実行の結果 (3D の結果断面など) を新しいプロジェクトへ持ち越さない
+    m_center->clearResultField();
     m_project->clear();
     emit m_project->loaded();
     emit m_project->changed();
@@ -856,6 +901,9 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
+    // 前のプロジェクトの結果を残さない (別プロジェクトの結果断面が
+    // そのまま 3D シーンに残るのを防ぐ — .claude/rules/gui.md)
+    m_center->clearResultField();
     // プロジェクトのディレクトリに既存の HDF5 結果があれば H5 アニメタブへ
     // 自動セットする (どのファイルを見ているかは同タブに常に明示される。
     // 「この実行の結果」とは扱わない — 2D 断面への反映は実行時の mtime
@@ -866,6 +914,10 @@ void MainWindow::openProject(const QString &path)
         if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer))
             viewer->openFile(h5);
         m_rightDock->appendLog(I18n::tr("log_h5_found").arg(h5));
+        // 3D シーンへは重ねられる (どのファイルの結果かは断面の凡例に出る)。
+        // 2D 断面と違い実行ゲートを掛けないのは、H5 アニメタブと同じく
+        // 「開いたファイルの中身」を出所付きで見せるだけだから。
+        m_center->loadResult3DSlice(h5);
     }
     updateWindowTitle();
 }

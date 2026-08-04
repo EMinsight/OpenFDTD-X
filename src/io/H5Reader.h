@@ -87,6 +87,15 @@ public:
                                    int &rows, int &cols,
                                    QString *label = nullptr,
                                    QString *err = nullptr);
+
+    // ofd 系 HDF5 の節点座標 [m]。新 (/geometry/Xn,Yn,Zn) と
+    // 旧 (/metadata/Xn,Yn,Zn) の両方に対応する (軸ごとに新 → 旧の順で探す)。
+    // 断面を 3D 空間の正しい位置・寸法へ置くために使う。
+    // 取得できない軸は空ベクタで返す (呼び出し側が「座標不明」を判断できる
+    // ようにする)。1 軸も取れなければ false。
+    static bool ofdGridCoords(const QString &path,
+                              QVector<double> &xs, QVector<double> &ys,
+                              QVector<double> &zs, QString *err = nullptr);
 };
 
 } // namespace ofd

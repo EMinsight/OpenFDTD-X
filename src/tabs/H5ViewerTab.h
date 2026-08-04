@@ -3,6 +3,7 @@
 //   - データセットツリー (実ファイルの列挙結果, パス階層をグループ化)
 //   - 2D データセットのヒートマップ表示 (jet/viridis/seismic/gray)
 //   - 3D (frames×rows×cols) データセットのフレーム再生 (QTimer)
+//   - 伝搬時系列 (E/H) の 3 面ビュー (XY/XZ/YZ を共通カラースケールで同時表示)
 //   - 表示中フレームの min / max / 平均 の実計算表示
 // を行う。1D / 4D 以上のデータセットは表示未対応 (ofd の /data*/E 等)。
 #pragma once
@@ -101,6 +102,18 @@ private:
     void updateDomainVisibility();    // ドメイン別の出し分け (時間単位 / Schroeder)
     void updateSliceControls();       // 断面 UI の範囲/有効化 (series のみ)
     int  sliceAxis() const;           // planeBox → 0=X/1=Y/2=Z
+
+    // ── 3 面ビュー (XY/XZ/YZ 同時表示) ──
+    bool multiActive() const;         // 3 面ビュー表示中か (伝搬時系列のみ)
+    void updateMultiVisibility();     // 単一断面 ⇄ 3 面ビューの表示切替
+    void loadMultiFrames();           // 3 断面を読み込み、共通スケールで描画
+    void loadSliceCoords();           // /metadata/Xn|Yn|Zn (あれば) を読む
+    QString sliceCaption(int axis) const;   // 軸名 + ノード番号 (+ 座標)
+    // 全フレーム走査 (自動スケール / 書き出し) 用の断面読み出し。
+    // 3 面ビュー時は 3 面を連結した 1 本の配列を返す
+    bool scanFrameValues(int frame, QVector<double> &out);
+    QImage multiImage(int frame, double lo, double hi, bool *ok);  // 3 面連結画像
+    void updateExportNote();          // 3 面ビュー時の書き出し内容の明示
     void exportPngCurrent();          // 現在フレームを PNG 保存
     void exportCsvCurrent();          // 現在フレームの行列を CSV 保存
     // 開いている .h5 の実スキーマから h5py 読込コードを生成して保存する
@@ -159,12 +172,23 @@ private:
     QSlider     *m_secSlider;
     QLabel      *m_secValue;
     QLabel      *m_secNote = nullptr;
+    // 軸ごとの断面位置 (0=X/1=Y/2=Z のノード番号。-1 = 未設定 → 中央)。
+    // 位置スライダは planeBox で選んだ面 (主断面) の軸を編集する
+    int          m_secPos[3] = { -1, -1, -1 };
+    QVector<double> m_coord[3];       // /metadata/Xn|Yn|Zn [m] (無ければ空)
+
+    // 3 面ビュー (XY/XZ/YZ 同時表示)
+    QCheckBox   *m_multiChk = nullptr;
+    QWidget     *m_multiWrap = nullptr;
+    FieldCanvas *m_multiCanvas[3] = { nullptr, nullptr, nullptr };
+    QLabel      *m_multiCaption[3] = { nullptr, nullptr, nullptr };
 
     // エクスポート
     QPushButton *m_expMp4 = nullptr, *m_expGif = nullptr,
                 *m_expPng = nullptr, *m_expPngSeq = nullptr,
                 *m_expCsv = nullptr;
     QLabel      *m_expStatus = nullptr;
+    QLabel      *m_expMultiNote = nullptr;    // 3 面ビュー時の書き出し内容
     bool         m_exporting = false;
 };
 
