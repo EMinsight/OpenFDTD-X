@@ -2,6 +2,7 @@
 #include "MaterialExplorerTab.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
+#include "../optics/MaterialDispersion.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -144,51 +145,14 @@ const DbGroup kDb[] = {
     } },
 };
 
-// ── 実分散データ (公刊 Sellmeier 係数 — 出典を明記) ─────────────────────────
-// n² = A + Σ Bi·λ²/(λ² − Ci) + Σ Di/(λ² − Ei)   (λ は μm, Ci/Ei は μm²)
+// ── 実分散データ ────────────────────────────────────────────────────────────
+// 公刊 Sellmeier 係数のテーブルは src/optics/MaterialDispersion へ抽出済み
+// (Qt 非依存の共有モジュール。モードソルバ FDE 等からも同じ値を使う)。
+// ここでは kDb の id で共有テーブルを引くだけ。
 // 有効範囲外は評価しない (範囲外へ外挿した「それらしい値」を出さない)。
-struct RealDispersion {
-    const char *id;       // kDb の id と一致
-    double A;
-    double B[3], C[3];    // Sellmeier 項
-    double D, E;          // 加算極 (DeVore 型)。D=0 なら未使用
-    double lmin_um, lmax_um;
-};
-const RealDispersion kRealNk[] = {
-    // SiO2 — Malitson (1965)
-    { "SiO2", 1.0, { 0.6961663, 0.4079426, 0.8974794 },
-      { 0.004679148, 0.013512063, 97.934003 }, 0, 0, 0.21, 3.71 },
-    // Si3N4 — Luke (2015)
-    { "Si3N4", 1.0, { 3.0249, 40314.0, 0.0 },
-      { 0.018317068, 1537208.2, 1.0 }, 0, 0, 0.31, 5.5 },
-    // Al2O3 (サファイア常光) — Malitson (1962)
-    { "Al2O3", 1.0, { 1.4313493, 0.65054713, 5.3414021 },
-      { 0.005279925, 0.014238264, 325.01783 }, 0, 0, 0.2, 5.0 },
-    // Si — Salzberg & Villa (1957), 赤外の透明域
-    { "Si", 1.0, { 10.6684293, 0.0030434748, 1.54133408 },
-      { 0.090912190, 1.2876602, 1218816.0 }, 0, 0, 1.36, 11.0 },
-    // TiO2 (ルチル常光) — DeVore (1951): n² = 5.913 + 0.2441/(λ²−0.0803)
-    { "TiO2", 5.913, { 0, 0, 0 }, { 1, 1, 1 }, 0.2441, 0.0803, 0.43, 1.5 },
-    // PMMA — Sultanova ら (2009)
-    { "PMMA", 1.0, { 1.1819, 0, 0 }, { 0.011313, 1.0, 1.0 }, 0, 0,
-      0.44, 1.05 },
-};
-
-const RealDispersion *realNk(const QString &id)
+const optics::MaterialInfo *realNk(const QString &id)
 {
-    for (const RealDispersion &r : kRealNk)
-        if (id == QLatin1String(r.id)) return &r;
-    return nullptr;
-}
-
-double realN(const RealDispersion &r, double lambda_um)
-{
-    const double l2 = lambda_um * lambda_um;
-    double n2 = r.A;
-    for (int i = 0; i < 3; ++i)
-        if (r.B[i] != 0.0) n2 += r.B[i] * l2 / (l2 - r.C[i]);
-    if (r.D != 0.0) n2 += r.D / (l2 - r.E);
-    return (n2 > 0.0) ? std::sqrt(n2) : 0.0;
+    return optics::findMaterial(id.toUtf8().constData());
 }
 
 QLabel *makeBadge(const QString &text, const char *color, QWidget *parent)
@@ -526,9 +490,11 @@ double MaterialExplorerTab::previewN(const Entry &e, double lambda_nm) const
 {
     if (e.glassIndex >= 0 && e.glassIndex < GlassCatalog::all().size())
         return GlassCatalog::all()[e.glassIndex].n(lambda_nm / 1000.0);
-    if (const RealDispersion *r = realNk(e.id)) {
+    if (const optics::MaterialInfo *r = realNk(e.id)) {
         const double um = qBound(r->lmin_um, lambda_nm / 1000.0, r->lmax_um);
-        return realN(*r, um);
+        double n = 0.0;
+        if (optics::refractiveIndex(r->id, um, n)) return n;
+        return 0.0;
     }
     return 0.2 + 2.5 * std::exp(-(lambda_nm - 1200.0) / 900.0)
          + std::sin(lambda_nm / 200.0) * 0.05;
@@ -545,7 +511,7 @@ void MaterialExplorerTab::showEntry(int index)
     m_rangeLabel->setText(I18n::tr("mex_range_fmt").arg(e.range));
 
     // 実分散内蔵材は有効範囲のみ、その他は 400–1580 nm を 60 点で描く
-    const RealDispersion *r = realNk(e.id);
+    const optics::MaterialInfo *r = realNk(e.id);
     double l0 = 400.0, l1 = 1580.0;
     if (r) {
         l0 = std::max(l0, r->lmin_um * 1000.0);
