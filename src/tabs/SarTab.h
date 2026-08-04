@@ -28,11 +28,13 @@ public:
 private slots:
     void refresh();
     void onModelChanged();         // 人体モデル → 追加行の出し入れ
+    void updatePointSar();         // σ/ρ/|E| → 点 SAR (src/em/SarMetrics)
 
 private:
     QWidget *buildVoxelPane(QWidget *parent);
     QWidget *buildHeadPane(QWidget *parent);
-    void fillMetricsTable();
+    QWidget *buildPointSarSection(QWidget *parent);
+    void fillMetricsTable();       // 周波数・曝露区分 → 規格の指針値を引き直す
 
     Project *m_p;
     bool     m_updating = false;
@@ -53,6 +55,15 @@ private:
     QLineEdit *m_freq = nullptr;
     QCheckBox *m_multiBand = nullptr;
     QLineEdit *m_txPower = nullptr;
+    QComboBox *m_category = nullptr;    // 一般環境 / 職業 (指針値の選択に使う)
+
+    // 点 SAR 換算 / point SAR (定義式の実計算)
+    QLineEdit *m_ptSigma = nullptr;
+    QLineEdit *m_ptRho = nullptr;
+    QLineEdit *m_ptField = nullptr;
+    QLineEdit *m_ptCp = nullptr;
+    QLineEdit *m_ptTime = nullptr;
+    QLabel    *m_ptResult = nullptr;
 
     // 評価指標 / metrics
     QTableWidget *m_metrics = nullptr;

@@ -18,9 +18,11 @@
 #include <QScrollArea>
 #include "../core/RoomAcoustics.h"
 
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QTableWidget;
 class QTabWidget;
@@ -29,6 +31,30 @@ namespace ofd {
 
 class Project;
 class MiniPlot;
+
+// ── 拡声スピーカー (ホール寸法から自動配置する既定構成) ─────────────────────
+// 機種ライブラリ (GLL) を持たないため指向性は無指向近似。位置・エイミングは
+// 室寸法から決めるので、利用者が室モデルを変えれば追従する。
+struct PaSpeaker {
+    QString id;            // L / R / C / F / T
+    QString kindKey;       // 種別の I18n キー
+    double  pos[3] = { 0, 0, 0 };
+    double  gainDb = 0;    // 相対ゲイン (既定 0 dB — 個別調整は未対応)
+    bool    on = false;
+    int     designRcv = 0; // 設計受音点 (P1..P4 のインデックス)
+};
+
+// 実測 IR 解析から取り出した 1 帯域 1 指標分の値 (ok=false は評価不能)
+struct MeasuredValue {
+    double v = 0;
+    bool   ok = false;
+};
+// 実測 IR (WAV) の帯域別指標 125/250/500/1k/2k/4k Hz
+struct MeasuredIrBands {
+    MeasuredValue edt[6], t20[6], t30[6], c80[6], d50[6], ts[6];
+    bool    loaded = false;   // 解析が成功して値が入っているか
+    QString status;           // 状態表示 (ファイル名 / エラー内容)
+};
 
 // 扇形ホールの客席分布マップ (Barron 推定値をセル色で表示)
 class CoverageMap : public QWidget {
@@ -49,6 +75,27 @@ private:
     int m_band = 3;      // 0..5 帯域 / 6=平均
     QVector<double> m_values;   // 計算済みセル値 (描画とセットで更新)
     double m_mean = 0, m_std = 0;
+};
+
+// 拡声系の STI 分布マップ。客席面のグリッド各点で、有効なスピーカーまでの
+// 距離から Barron + MTF の STI を実計算する (無指向近似・無騒音仮定)。
+class StiMapWidget : public QWidget {
+    Q_OBJECT
+public:
+    explicit StiMapWidget(Project *project, QWidget *parent = nullptr);
+    void setSpeakers(const QVector<PaSpeaker> &sp);   // 再計算も行う
+    void recompute();
+    double mean() const   { return m_mean; }
+    double stddev() const { return m_std; }
+    bool   valid() const  { return m_valid; }
+protected:
+    void paintEvent(QPaintEvent *) override;
+private:
+    Project *m_p;
+    QVector<PaSpeaker> m_sp;
+    QVector<double> m_values;
+    double m_mean = 0, m_std = 0;
+    bool   m_valid = false;
 };
 
 class RoomAcousticsTab : public QScrollArea {
@@ -76,6 +123,11 @@ private:
     QWidget *buildDefectsPage();
     void applyBudgetTable();
     void refreshBudgetDerived();
+    void refreshIrPage();        // IR解析: 帯域別指標 / 減衰曲線 / 検証表
+    void refreshSpatialPage();   // 空間印象: LF/LFC (幾何) / G_late / 未計算欄
+    void refreshReinforcePage(); // 電気音響: 配置 / ディレイ / STI / GBF
+    void runMeasuredIr();        // 実測 IR (WAV) を解析して m_measIr を更新
+    QVector<PaSpeaker> speakerLayout() const;   // 室寸法からの自動配置
     void applyNoiseSources();     // 騒音源内訳: widgets → model
     void refreshNoiseSources();   // 騒音源内訳: model → widgets
     void applyHallPreset();      // プリセットの V を AcousticOpts へ反映
@@ -112,9 +164,23 @@ private:
     // IR解析 (Schroeder)
     MiniPlot     *m_schroederPlot;
     QTableWidget *m_irBandTable, *m_irValTable;
+    QComboBox    *m_irSrcBox;      // 0=統計推定 1=実測WAV
+    QLineEdit    *m_irFileEdit;    // 実測 WAV (opera_analysis の rirPath と共有)
+    QPushButton  *m_irRunBtn;
+    QLabel       *m_irMethodNote, *m_irStatus, *m_irValNote, *m_irT2030Note;
+    MeasuredIrBands m_measIr;      // 実測解析の結果 (未解析なら loaded=false)
+    QVector<QPointF> m_measDecay;  // 実測 Schroeder 減衰曲線 (x=秒, y=dB)
 
     // 空間印象 IACC/LF
     QTableWidget *m_spatialTable;
+    QLabel       *m_spatialNote;
+
+    // 電気音響設計
+    QTableWidget *m_spTable, *m_delayTable, *m_gbfTable;
+    QCheckBox    *m_haasCheck;
+    StiMapWidget *m_stiMap;
+    QLabel       *m_stiBadge, *m_stiUniBadge, *m_splNote;
+    QLabel       *m_gbfBadge, *m_micPos, *m_spNote, *m_delayNote, *m_gbfNote;
 
     // ステージ/可変音響
     QLabel *m_stageRtBadge;

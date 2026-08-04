@@ -130,26 +130,25 @@ double rt60(const AcousticOpts &a, int band)
 // ── Barron 修正理論 ─────────────────────────────────────────────────────────
 // d = 100/r², e+l = (31200·T/V)·e^(−0.04r/T) を t=80ms (C80) / 50ms (C50)
 // で分割。G = 10log₁₀(d+e+l)。
-SeatMetrics seatMetrics(double r, double T, double V)
+// 直接音エネルギー d と残響全エネルギー rev から各指標を組み立てる共通部。
+static SeatMetrics metricsFromEnergies(double d, double rev, double T)
 {
     SeatMetrics m;
-    r = std::max(1.0, r);
-    T = std::max(0.1, T);
-    V = std::max(1.0, V);
-
-    const double d = 100.0 / (r * r);
-    const double rev = (31200.0 * T / V) * std::exp(-0.04 * r / T);
     auto split = [&](double tMs) {   // 0..t の初期エネルギー割合
         return 1.0 - std::exp(-13.8 * (tMs / 1000.0) / T);
     };
     const double e80 = rev * split(80), l80 = rev - e80;
     const double e50 = rev * split(50), l50 = rev - e50;
 
-    m.G = 10.0 * std::log10(d + rev);
+    m.G = 10.0 * std::log10(std::max(1e-12, d + rev));
     m.C80 = 10.0 * std::log10((d + e80) / std::max(1e-12, l80));
     m.C50 = 10.0 * std::log10((d + e50) / std::max(1e-12, l50));
-    m.D50 = (d + e50) / (d + rev);
+    m.D50 = (d + e50) / std::max(1e-12, d + rev);
     m.RT = T;
+    m.Glate = 10.0 * std::log10(std::max(1e-12, l80));
+    // 重心時間 Ts = ∫t·w dt / ∫w dt。直接音は t=0 なので分子に寄与しない。
+    // 残響 w(t) = W₀·e^(−13.8t/T) に対し ∫t·w dt = rev·(T/13.8)。
+    m.Ts = 1000.0 * rev * (T / 13.8) / std::max(1e-12, d + rev);
 
     // STI 推定 (Houtgast–Steeneken): 直接音 + 指数残響の MTF。
     //   m(F) = |D + R/(1+jx)| / (D+R),  x = 2πF·T/13.8
@@ -170,6 +169,91 @@ SeatMetrics seatMetrics(double r, double T, double V)
     }
     m.STI = n ? tiSum / n : 0;
     return m;
+}
+
+SeatMetrics seatMetrics(double r, double T, double V)
+{
+    r = std::max(1.0, r);
+    T = std::max(0.1, T);
+    V = std::max(1.0, V);
+
+    const double d = 100.0 / (r * r);
+    const double rev = (31200.0 * T / V) * std::exp(-0.04 * r / T);
+    return metricsFromEnergies(d, rev, T);
+}
+
+SeatMetrics seatMetrics(const double *r, const double *gainDb, int n,
+                        double T, double V)
+{
+    T = std::max(0.1, T);
+    V = std::max(1.0, V);
+    double d = 0, rev = 0;
+    for (int i = 0; i < n; ++i) {
+        const double ri = std::max(1.0, r[i]);
+        const double w = std::pow(10.0, (gainDb ? gainDb[i] : 0.0) / 10.0);
+        d += w * 100.0 / (ri * ri);
+        rev += w * (31200.0 * T / V) * std::exp(-0.04 * ri / T);
+    }
+    if (n <= 0 || (d <= 0 && rev <= 0)) return SeatMetrics();
+    return metricsFromEnergies(d, rev, T);
+}
+
+// ── Schroeder 減衰曲線 / 減衰時間 ───────────────────────────────────────────
+QVector<QPointF> schroederCurve(double r, double T, double V,
+                                double tMax, int nPoints)
+{
+    QVector<QPointF> out;
+    r = std::max(1.0, r);
+    T = std::max(0.1, T);
+    V = std::max(1.0, V);
+    tMax = std::max(1e-3, tMax);
+    nPoints = std::max(2, nPoints);
+
+    const double d = 100.0 / (r * r);
+    const double rev = (31200.0 * T / V) * std::exp(-0.04 * r / T);
+    const double e0 = d + rev;
+    out.reserve(nPoints);
+    out.push_back({ 0.0, 0.0 });                 // 直接音を含む t=0
+    for (int i = 1; i < nPoints; ++i) {
+        const double t = tMax * i / double(nPoints - 1);
+        const double e = rev * std::exp(-13.8 * t / T);
+        out.push_back({ t, 10.0 * std::log10(std::max(1e-30, e / e0)) });
+    }
+    return out;
+}
+
+double decayTimeFromCurve(const QVector<QPointF> &curve,
+                          double fromDb, double toDb)
+{
+    if (curve.size() < 3 || fromDb <= toDb) return 0;
+    if (curve.back().y() > toDb) return 0;       // toDb まで減衰していない
+
+    // 評価区間 fromDb ≥ y ≥ toDb の点で最小二乗直線 y = a + b·t を求める。
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    int n = 0;
+    for (const QPointF &p : curve) {
+        const double y = p.y();
+        if (y > fromDb || y < toDb) continue;
+        sx += p.x(); sy += y;
+        sxx += p.x() * p.x(); sxy += p.x() * y;
+        ++n;
+    }
+    if (n < 3) return 0;
+    const double den = n * sxx - sx * sx;
+    if (std::fabs(den) < 1e-18) return 0;
+    const double b = (n * sxy - sx * sy) / den;  // 傾き [dB/s]
+    if (b >= -1e-9) return 0;                    // 減衰していない
+    return -60.0 / b;                            // 60 dB 減衰への外挿
+}
+
+DecayTimes decayTimes(const QVector<QPointF> &curve)
+{
+    DecayTimes d;
+    d.EDT = decayTimeFromCurve(curve,  0.0, -10.0);
+    d.T20 = decayTimeFromCurve(curve, -5.0, -25.0);
+    d.T30 = decayTimeFromCurve(curve, -5.0, -35.0);
+    d.valid = d.EDT > 0 && d.T20 > 0 && d.T30 > 0;
+    return d;
 }
 
 // ── エコーグラム (1次鏡像法) ────────────────────────────────────────────────
@@ -200,7 +284,10 @@ QVector<Reflection> echogram(const AcousticOpts &a,
     const double rd = std::max(0.1, dist(src, rcv));
 
     QVector<Reflection> out;
-    out.push_back({ 0.0, 0.0, QString(), true });   // 直接音
+    Reflection dirSnd;                              // 直接音
+    dirSnd.early = true;
+    for (int k = 0; k < 3; ++k) dirSnd.dir[k] = (rcv[k] - src[k]) / rd;
+    out.push_back(dirSnd);
 
     struct Face { int axis; double plane; const char *name; int role; };
     const Face faces[6] = {
@@ -214,7 +301,8 @@ QVector<Reflection> echogram(const AcousticOpts &a,
     for (const Face &f : faces) {
         double img[3] = { src[0], src[1], src[2] };
         img[f.axis] = 2.0 * f.plane - img[f.axis];
-        const double ri = std::max(rd + 1e-6, dist(img, rcv));
+        const double riRaw = std::max(1e-6, dist(img, rcv));
+        const double ri = std::max(rd + 1e-6, riRaw);
         const double alpha = faceAlpha1k(a, f.role);
         Reflection r;
         r.timeMs = (ri - rd) / c0 * 1000.0;
@@ -222,6 +310,8 @@ QVector<Reflection> echogram(const AcousticOpts &a,
                   + 10.0 * std::log10(std::max(1e-6, 1.0 - alpha));
         r.surface = QString::fromUtf8(f.name);
         r.early = r.timeMs <= 80.0;
+        // 到来方向 = 鏡像音源 → 受音点 (反射経路の最終区間の向き)
+        for (int k = 0; k < 3; ++k) r.dir[k] = (rcv[k] - img[k]) / riRaw;
         out.push_back(r);
     }
     std::sort(out.begin(), out.end(),
@@ -229,6 +319,71 @@ QVector<Reflection> echogram(const AcousticOpts &a,
                   return x.timeMs < y.timeMs;
               });
     return out;
+}
+
+// ── 初期側方エネルギー比 LF / LFC (ISO 3382-1:2009 A.2.6) ──────────────────
+// 8 字マイクの軸 = 音源→受音点の水平方向に直交する水平軸。
+// エネルギー E_i は直接音を 1 とした相対値 (levelDb から復元)。
+// 分子は 5–80 ms の1次反射、分母は 0–80 ms の直接音 + 1次反射。
+LateralEnergy lateralEnergy(const AcousticOpts &a,
+                            const double src[3], const double rcv[3])
+{
+    LateralEnergy out;
+    const double hx = rcv[0] - src[0], hy = rcv[1] - src[1];
+    const double hl = std::sqrt(hx * hx + hy * hy);
+    if (hl < 1e-6) return out;          // 音源直上 → 側方軸が定義できない
+    const double lat[3] = { -hy / hl, hx / hl, 0.0 };   // 水平面内の直交軸
+
+    const QVector<Reflection> refl = echogram(a, src, rcv);
+    double num = 0, numC = 0, den = 0;
+    for (const Reflection &r : refl) {
+        if (r.timeMs > 80.0) continue;
+        const double e = std::pow(10.0, r.levelDb / 10.0);
+        den += e;
+        if (r.surface.isEmpty() || r.timeMs < 5.0) continue;   // 直接音を除く
+        const double c = r.dir[0] * lat[0] + r.dir[1] * lat[1]
+                       + r.dir[2] * lat[2];
+        num += e * c * c;
+        numC += e * std::fabs(c);
+        ++out.nEarly;
+    }
+    if (den <= 0) return out;
+    out.LF = num / den;
+    out.LFC = numC / den;
+    out.valid = true;
+    return out;
+}
+
+// ── 拡声系 ──────────────────────────────────────────────────────────────────
+double soundSpeed(double tempC)
+{
+    // c = 331.3·√(1 + t/273.15)  (乾燥空気, ISO 9613-1:1993)
+    return 331.3 * std::sqrt(std::max(0.0, 1.0 + tempC / 273.15));
+}
+
+double alignmentDelayMs(double dFar, double dNear, double tempC)
+{
+    const double c = soundSpeed(tempC);
+    if (c <= 0) return 0;
+    return std::max(0.0, (dFar - dNear) / c * 1000.0);
+}
+
+GainBeforeFeedback pagNag(double D0, double D1, double D2, double Ds,
+                          int NOM, double EAD, double FSM)
+{
+    GainBeforeFeedback g;
+    g.D0 = D0; g.D1 = D1; g.D2 = D2; g.Ds = Ds;
+    g.EAD = EAD; g.NOM = std::max(1, NOM); g.FSM = FSM;
+    if (D0 <= 0 || D1 <= 0 || D2 <= 0 || Ds <= 0 || EAD <= 0) return g;
+
+    // Davis & Patronis, "Sound System Engineering" 3rd ed. の音響利得式
+    g.NAG = 20.0 * std::log10(D0 / EAD);
+    g.PAG = 20.0 * std::log10(D0) + 20.0 * std::log10(Ds)
+          - 20.0 * std::log10(D1) - 20.0 * std::log10(D2)
+          - 10.0 * std::log10(double(g.NOM)) - FSM;
+    g.margin = g.PAG - g.NAG;
+    g.valid = true;
+    return g;
 }
 
 double itdgMs(const QVector<Reflection> &refl)

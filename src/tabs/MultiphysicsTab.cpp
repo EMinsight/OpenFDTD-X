@@ -1,6 +1,7 @@
 // MultiphysicsTab.cpp
 #include "MultiphysicsTab.h"
 #include "../core/Project.h"
+#include "../optics/PlasmaDispersion.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -62,6 +63,48 @@ const bool s_i18n = [] {
     I18n::reg("mph_soref", "Soref-Bennettモデル", "Soref-Bennett model");
     I18n::reg("mph_electron", "電子濃度依存", "Electron density dependence");
     I18n::reg("mph_hole", "正孔濃度依存", "Hole density dependence");
+    // プラズマ効果 — 実計算 (src/optics/PlasmaDispersion) 用の語彙
+    I18n::reg("mph_pl_model", "モデル", "Model");
+    I18n::reg("mph_pl_sb", "Soref-Bennett 実測フィット (c-Si)",
+              "Soref-Bennett empirical fit (c-Si)");
+    I18n::reg("mph_pl_drude", "Drude (一般材料)", "Drude (general material)");
+    I18n::reg("mph_pl_dn", "電子密度 ΔN", "Electron density ΔN");
+    I18n::reg("mph_pl_dp", "正孔密度 ΔP", "Hole density ΔP");
+    I18n::reg("mph_pl_lambda", "波長 λ", "Wavelength λ");
+    I18n::reg("mph_pl_index", "背景屈折率 n", "Background index n");
+    I18n::reg("mph_pl_carrier", "考慮するキャリア", "Carriers included");
+    I18n::reg("mph_pl_result", "算出値", "Computed");
+    I18n::reg("mph_pl_formula", "使用式", "Formula");
+    I18n::reg("mph_pl_f_sb",
+              "Δn = −[a·ΔN + b·ΔP^0.8],  Δα = c·ΔN + d·ΔP  "
+              "(Soref & Bennett, IEEE JQE-23, 123 (1987))",
+              "Δn = −[a·ΔN + b·ΔP^0.8],  Δα = c·ΔN + d·ΔP  "
+              "(Soref & Bennett, IEEE JQE-23, 123 (1987))");
+    I18n::reg("mph_pl_f_drude",
+              "Δn = −ω_p²/(2nω²),  ω_p² = ΔN·e²/(ε₀m*)  (Drude)",
+              "Δn = −ω_p²/(2nω²),  ω_p² = ΔN·e²/(ε₀m*)  (Drude)");
+    I18n::reg("mph_pl_note",
+              "▸ 上記は入力値に対する材料モデルの評価値 (実計算) です。"
+              "FDTD ↔ CHARGE の連成計算の結果ではありません。",
+              "▸ The values above are this material model evaluated for the "
+              "inputs (a real calculation) — not the result of an FDTD ↔ CHARGE "
+              "co-simulation.");
+    I18n::reg("mph_pl_scope",
+              "▸ 算出した Δn・Δα はカーネル入力へは渡していません (連成は未実装)。",
+              "▸ The computed Δn / Δα are not passed to the solver kernel "
+              "(coupling is not implemented).");
+    I18n::reg("mph_pl_extrap",
+              "⚠ λ が実測フィットの帯 (1.31 / 1.55 μm ±5 %) の外です — 外挿値",
+              "⚠ λ is outside the fitted bands (1.31 / 1.55 μm ±5 %) — "
+              "extrapolated");
+    I18n::reg("mph_pl_drude_note",
+              "※ Drude の Δα は直流移動度を使うため実測より小さく出ます "
+              "(Si・1.3〜1.55 μm で約 1/20)。Si では実測フィットを使ってください。",
+              "Note: the Drude Δα uses the DC mobility and therefore "
+              "under-predicts the measured value (about 1/20 for Si at "
+              "1.3-1.55 μm). Prefer the empirical fit for silicon.");
+    I18n::reg("mph_pl_bad", "⚠ 入力が不正です (λ > 0, n > 0, ΔN・ΔP ≥ 0)",
+              "⚠ Invalid input (λ > 0, n > 0, ΔN, ΔP ≥ 0)");
 
     // EM: SAR / Bioheat
     I18n::reg("mph_sar", "SAR/Bioheat 連成", "SAR → Temperature");
@@ -249,19 +292,75 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
     }
     v->addWidget(m_secThermo);
 
-    // ── 光: プラズマ効果 (Drude) ───────────────────────────────────────────
+    // ── 光: プラズマ効果 (Drude / Soref-Bennett) ───────────────────────────
+    // 固定表示だった Δn の式を、入力値を代入した実計算に置き換える
+    // (計算実体は src/optics/PlasmaDispersion — selftest で解析解と照合)。
     m_secPlasma = new SectionBox(I18n::tr("mph_plasma"), body);
     {
-        m_secPlasma->form()->addRow(QString::fromUtf8("Δn ~ -8.8e-22 × ΔN"),
-                                    new QLabel(I18n::tr("mph_soref"), m_secPlasma));
+        m_plModel = new QComboBox(m_secPlasma);
+        m_plModel->addItem(I18n::tr("mph_pl_sb"));       // 0 = Soref-Bennett
+        m_plModel->addItem(I18n::tr("mph_pl_drude"));    // 1 = Drude
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_model"), m_plModel);
+
+        m_plDeltaN = numEdit("1e18", 110, m_secPlasma);
+        auto *nRow = new QHBoxLayout();
+        nRow->addWidget(m_plDeltaN);
+        nRow->addWidget(new QLabel(QString::fromUtf8("cm⁻³"), m_secPlasma));
+        nRow->addStretch(1);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_dn"), nRow);
+
+        m_plDeltaP = numEdit("1e18", 110, m_secPlasma);
+        auto *pRow = new QHBoxLayout();
+        pRow->addWidget(m_plDeltaP);
+        pRow->addWidget(new QLabel(QString::fromUtf8("cm⁻³"), m_secPlasma));
+        pRow->addStretch(1);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_dp"), pRow);
+
+        // λ の既定はプロジェクトの光波長帯の中心 (refreshPlasma で読み直す)
+        m_plLambda = numEdit("1550", 90, m_secPlasma);
+        auto *lRow = new QHBoxLayout();
+        lRow->addWidget(m_plLambda);
+        lRow->addWidget(new QLabel("nm", m_secPlasma));
+        lRow->addStretch(1);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_lambda"), lRow);
+
+        m_plIndex = numEdit("3.48", 90, m_secPlasma);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_index"), m_plIndex);
+
+        m_plElectron = check(I18n::tr("mph_electron"), true, m_secPlasma);
+        m_plHole     = check(I18n::tr("mph_hole"), true, m_secPlasma);
         auto *row = new QHBoxLayout();
-        row->addWidget(check(I18n::tr("mph_electron"), true, m_secPlasma));
-        row->addWidget(check(I18n::tr("mph_hole"), true, m_secPlasma));
+        row->addWidget(m_plElectron);
+        row->addWidget(m_plHole);
         row->addStretch(1);
-        m_secPlasma->form()->addRow(row);
-        // Δn の式は固定表示のサンプル (計算結果ではない)
-        m_secPlasma->form()->addRow(tabhelp::sampleNote(m_secPlasma));
-        m_secPlasma->form()->addRow(tabhelp::unwiredNote(m_secPlasma));
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_carrier"), row);
+
+        m_plResult = new QLabel(m_secPlasma);
+        m_plResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_result"), m_plResult);
+
+        m_plFormula = hintLabel(QString(), m_secPlasma);
+        m_secPlasma->form()->addRow(I18n::tr("mph_pl_formula"), m_plFormula);
+
+        m_plWarn = hintLabel(QString(), m_secPlasma);
+        m_plWarn->setStyleSheet("color:#B45309;");
+        m_secPlasma->form()->addRow(m_plWarn);
+
+        auto *note = hintLabel(I18n::tr("mph_pl_note"), m_secPlasma);
+        note->setStyleSheet("font-size:11px; color:palette(mid);");
+        m_secPlasma->form()->addRow(note);
+        auto *scope = hintLabel(I18n::tr("mph_pl_scope"), m_secPlasma);
+        scope->setStyleSheet("font-size:11px; color:palette(mid);");
+        m_secPlasma->form()->addRow(scope);
+
+        for (QLineEdit *e : { m_plDeltaN, m_plDeltaP, m_plLambda, m_plIndex })
+            connect(e, &QLineEdit::textChanged, this,
+                    &MultiphysicsTab::updatePlasma);
+        connect(m_plModel, &QComboBox::currentIndexChanged, this,
+                [this](int) { updatePlasma(); });
+        for (QCheckBox *c : { m_plElectron, m_plHole })
+            connect(c, &QCheckBox::toggled, this,
+                    [this](bool) { updatePlasma(); });
     }
     v->addWidget(m_secPlasma);
 
@@ -334,7 +433,73 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
 
     connect(project, &Project::domainChanged, this,
             &MultiphysicsTab::rebuildDomain);
+    connect(project, &Project::loaded, this, &MultiphysicsTab::refreshPlasma);
     rebuildDomain();
+    refreshPlasma();
+}
+
+// ── プラズマ効果: プロジェクトの光波長を既定値として読み直す ────────────────
+void MultiphysicsTab::refreshPlasma()
+{
+    m_updating = true;
+    const OpticalOpts &o = m_p->optical();
+    const double lambda = 0.5 * (o.lambdaMin + o.lambdaMax);   // nm
+    if (lambda > 0.0)
+        m_plLambda->setText(QString::number(lambda, 'g', 6));
+    m_updating = false;
+    updatePlasma();
+}
+
+// ── プラズマ効果: 入力値 → Δn / Δα (実計算) ────────────────────────────────
+void MultiphysicsTab::updatePlasma()
+{
+    if (m_updating) return;
+
+    bool okN = false, okP = false, okL = false, okI = false;
+    const double dN = m_plDeltaN->text().trimmed().toDouble(&okN);
+    const double dP = m_plDeltaP->text().trimmed().toDouble(&okP);
+    const double lambda = m_plLambda->text().trimmed().toDouble(&okL);
+    const double nbg = m_plIndex->text().trimmed().toDouble(&okI);
+
+    // チェックの入っていないキャリアは寄与ゼロとして扱う (設定が結果に効く)
+    const double useN = m_plElectron->isChecked() ? dN : 0.0;
+    const double useP = m_plHole->isChecked() ? dP : 0.0;
+
+    const bool drude = (m_plModel->currentIndex() == 1);
+    m_plFormula->setText(I18n::tr(drude ? "mph_pl_f_drude" : "mph_pl_f_sb"));
+
+    if (!okN || !okP || !okL || !okI || lambda <= 0.0 || nbg <= 0.0
+        || useN < 0.0 || useP < 0.0) {
+        m_plResult->setText(QString::fromUtf8("—"));
+        m_plWarn->setText(I18n::tr("mph_pl_bad"));
+        return;
+    }
+
+    optics::PlasmaResult r;
+    QString warn;
+    if (drude) {
+        optics::CarrierState cs;
+        cs.deltaN_cm3 = useN;
+        cs.deltaP_cm3 = useP;
+        r = optics::drudeFreeCarrier(lambda, nbg, cs);
+        warn = I18n::tr("mph_pl_drude_note");
+    } else {
+        r = optics::sorefBennettSilicon(lambda, useN, useP);
+        if (!optics::sorefBennettApplicable(lambda))
+            warn = I18n::tr("mph_pl_extrap");
+    }
+
+    if (!r.valid) {
+        m_plResult->setText(QString::fromUtf8("—"));
+        m_plWarn->setText(I18n::tr("mph_pl_bad"));
+        return;
+    }
+    m_plResult->setText(
+        QString::fromUtf8("Δn = %1    Δα = %2 cm⁻¹ (%3 dB/cm)")
+            .arg(QString::number(r.deltaN_index, 'e', 3))
+            .arg(QString::number(r.deltaAlpha_per_cm, 'e', 3))
+            .arg(QString::number(r.deltaAlpha_dB_per_cm, 'f', 2)));
+    m_plWarn->setText(warn);
 }
 
 void MultiphysicsTab::rebuildDomain()

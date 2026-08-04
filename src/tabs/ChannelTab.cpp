@@ -2,8 +2,11 @@
 #include "ChannelTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../em/RadioPropagation.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+
+#include <cmath>
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -77,28 +80,85 @@ const bool s_i18n = [] {
     I18n::reg("chn_rx_route", "経路 (移動体)", "Route (mobile)");
     I18n::reg("chn_rx_points", "指定点", "Specified points");
 
+    // ── リンク条件 (計算入力) ──
+    I18n::reg("chn_link_section", "リンク条件 / Link budget inputs",
+              "Link budget inputs");
+    I18n::reg("chn_link_hint",
+              "▸ 下のチャネル特性は、この条件を見通し内 (LOS) の伝搬モデルに"
+              "入れて実計算します。周波数は選択した周波数帯の代表値を入れて"
+              "ありますが、直接編集できます。",
+              "▸ The channel metrics below are computed from these inputs with "
+              "line-of-sight propagation models. The frequency is prefilled "
+              "with a representative value for the selected band and can be "
+              "edited directly.");
+    I18n::reg("chn_freq", "中心周波数", "Centre frequency");
+    I18n::reg("chn_dist", "送受信距離 d", "TX-RX distance d");
+    I18n::reg("chn_htx", "送信アンテナ高", "TX antenna height");
+    I18n::reg("chn_hrx", "受信アンテナ高", "RX antenna height");
+    I18n::reg("chn_eirp", "送信 EIRP", "TX EIRP");
+    I18n::reg("chn_grx", "受信アンテナ利得", "RX antenna gain");
+    I18n::reg("chn_bw", "帯域幅", "Bandwidth");
+    I18n::reg("chn_nf", "受信機雑音指数 NF", "RX noise figure NF");
+    I18n::reg("chn_refl", "大地反射係数 |Γ|", "Ground reflection |Γ|");
+    I18n::reg("chn_bad_input",
+              "⚠ 入力に数値でない値、または範囲外の値があります — 計算できません",
+              "⚠ Some inputs are not numbers or are out of range — cannot "
+              "compute");
+
     // チャネル特性
     I18n::reg("chn_metrics_section", "チャネル特性 / Channel metrics",
               "Channel metrics");
     I18n::reg("chn_col_metric", "指標", "Metric");
     I18n::reg("chn_col_value", "値", "Value");
     I18n::reg("chn_col_note", "備考", "Notes");
-    I18n::reg("chn_m_rx", "受信電力 (中央値)", "Received power (median)");
-    I18n::reg("chn_m_rx_note", "カバレッジ 96.2% (>-90dBm)",
-              "Coverage 96.2% (>-90 dBm)");
+    I18n::reg("chn_notcalc", "未計算", "not computed");
+    I18n::reg("chn_m_fspl", "自由空間損失 (Friis)", "Free-space loss (Friis)");
+    I18n::reg("chn_m_fspl_note", "L = 20log10(4πd/λ), λ = %1 · ITU-R P.525",
+              "L = 20log10(4πd/λ), λ = %1 · ITU-R P.525");
+    I18n::reg("chn_m_2ray", "経路損失 (2波モデル)",
+              "Path loss (two-ray model)");
+    I18n::reg("chn_m_2ray_note",
+              "直接波 + 大地反射 (Γ = −%1) の干渉。建物透過・散乱は含まない",
+              "interference of the direct and ground-reflected rays "
+              "(Γ = −%1); no building penetration or scattering");
+    I18n::reg("chn_m_bp", "ブレークポイント距離", "Breakpoint distance");
+    I18n::reg("chn_m_bp_note", "d_bp = 4·h_t·h_r/λ — これより遠方は n ≈ 4",
+              "d_bp = 4·h_t·h_r/λ — beyond this the exponent tends to 4");
+    I18n::reg("chn_m_rx", "受信電力", "Received power");
+    I18n::reg("chn_m_rx_note", "EIRP − 経路損失(2波) + 受信利得",
+              "EIRP − two-ray path loss + RX gain");
     I18n::reg("chn_m_ds", "遅延スプレッド (RMS)", "Delay spread (RMS)");
-    I18n::reg("chn_m_ds_note", "OFDM シンボル設計に使用",
-              "Used for OFDM symbol design");
+    I18n::reg("chn_m_ds_note",
+              "多重波の分布が要るためレイトレース / FDTD の実行が必要 "
+              "(2波だけの遅延差は上の「遅延差 τ (2波)」の行)",
+              "needs the multipath distribution, i.e. a ray-tracing or FDTD "
+              "run (the two-ray-only delay difference is in the “excess delay "
+              "τ” row above)");
+    I18n::reg("chn_m_tau", "遅延差 τ (2波)", "Excess delay τ (two-ray)");
+    I18n::reg("chn_m_tau_note", "τ = (d_ref − d_los)/c",
+              "τ = (d_ref − d_los)/c");
     I18n::reg("chn_m_as", "角度スプレッド (方位)", "Angular spread (azimuth)");
-    I18n::reg("chn_m_as_note", "MIMO ランク推定", "MIMO rank estimation");
-    I18n::reg("chn_m_k", "K-factor (ライシアン)", "K-factor (Rician)");
-    I18n::reg("chn_m_k_note", "見通し成分の強さ",
-              "Strength of the line-of-sight component");
+    I18n::reg("chn_m_as_note",
+              "到来角分布が要るためレイトレース / FDTD の実行が必要",
+              "needs the angle-of-arrival distribution, i.e. a ray-tracing or "
+              "FDTD run");
+    I18n::reg("chn_m_k", "K-factor (2波モデル)", "K-factor (two-ray)");
+    I18n::reg("chn_m_k_note", "直接波/反射波の電力比 = (d_ref/(d_los·|Γ|))²",
+              "direct-to-reflected power ratio = (d_ref/(d_los·|Γ|))²");
     I18n::reg("chn_m_n", "経路損失指数 n", "Path-loss exponent n");
-    I18n::reg("chn_m_n_note", "自由空間 n=2", "Free space n = 2");
-    I18n::reg("chn_m_cap", "チャネル容量", "Channel capacity");
-    I18n::reg("chn_m_cap_note", "100MHz帯域, 4×4 MIMO",
-              "100 MHz bandwidth, 4×4 MIMO");
+    I18n::reg("chn_m_n_note", "2波モデルの d〜2d 局所勾配 (自由空間 n = 2)",
+              "local slope of the two-ray model between d and 2d "
+              "(free space n = 2)");
+    I18n::reg("chn_m_noise", "雑音電力 / SNR", "Noise power / SNR");
+    I18n::reg("chn_m_noise_note", "N = kT0B + NF (T0 = 290 K), SNR = Prx − N",
+              "N = kT0B + NF (T0 = 290 K), SNR = Prx − N");
+    I18n::reg("chn_m_cap", "チャネル容量 (SISO Shannon)",
+              "Channel capacity (SISO Shannon)");
+    I18n::reg("chn_m_cap_note",
+              "C = B·log2(1+SNR)。MIMO 4×4 の多重利得はチャネル行列が要るため"
+              "未計算",
+              "C = B·log2(1+SNR). The 4×4 MIMO multiplexing gain needs the "
+              "channel matrix and is not computed");
     I18n::reg("chn_btn_heat", "🗺 カバレッジヒートマップ", "🗺 Coverage heat map");
     I18n::reg("chn_btn_pdp", "📊 電力遅延プロファイル",
               "📊 Power-delay profile");
@@ -108,6 +168,22 @@ const bool s_i18n = [] {
               "▸ 3GPP TR 38.901 形式のチャネルモデル係数の書出は未実装です。",
               "▸ Export as 3GPP TR 38.901 channel-model coefficients is not "
               "implemented yet.");
+    I18n::reg("chn_model_note",
+              "▸ 値は「平面大地・完全反射の 2 波モデル (見通し内)」と Friis の"
+              "自由空間損失による実計算です (式と出典は src/em/RadioPropagation.h)。"
+              "建物・壁の透過損失、家具や人体の散乱、多重反射は含みません — "
+              "それらを含む指標 (RMS 遅延スプレッド・角度スプレッド) は"
+              "レイトレース / FDTD の実行が必要で「未計算」と表示します。"
+              "上の環境モデル・解析手法の選択は計算に反映されません。",
+              "▸ The values are computed with the flat-earth perfectly-"
+              "reflecting two-ray model (line of sight) and the Friis "
+              "free-space loss (formulas and sources in "
+              "src/em/RadioPropagation.h). Building or wall penetration, "
+              "scattering from furniture and people and higher-order "
+              "reflections are not included — metrics that need them (RMS "
+              "delay spread, angular spread) require a ray-tracing or FDTD run "
+              "and are shown as “not computed”. The environment and method "
+              "selections above do not enter the calculation.");
     return true;
 }();
 
@@ -197,16 +273,44 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
     return t;
 }
 
-// チャネル特性表 (モックの <tbody> をそのまま。&gt; は > に戻す)
-struct ChRow { const char *nameKey, *value, *noteKey; };
-const ChRow kMetrics[6] = {
-    { "chn_m_rx",  "-68.4 dBm",  "chn_m_rx_note"  },
-    { "chn_m_ds",  "42 ns",      "chn_m_ds_note"  },
-    { "chn_m_as",  "28°",        "chn_m_as_note"  },
-    { "chn_m_k",   "6.8 dB",     "chn_m_k_note"   },
-    { "chn_m_n",   "2.9",        "chn_m_n_note"   },
-    { "chn_m_cap", "412 Mbps",   "chn_m_cap_note" },
+// チャネル特性表の行 (値は fillMetricsTable が実計算で埋める)。
+// note が計算値を含む行は書式引数を持つので、行ごとに fillMetricsTable で作る。
+enum MetricRow {
+    RowFspl = 0, RowTwoRay, RowBreak, RowRx, RowN, RowK, RowTau,
+    RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity, RowCount
 };
+const char *kMetricNameKey[RowCount] = {
+    "chn_m_fspl", "chn_m_2ray", "chn_m_bp", "chn_m_rx", "chn_m_n", "chn_m_k",
+    "chn_m_tau", "chn_m_ds", "chn_m_as", "chn_m_noise", "chn_m_cap",
+};
+
+// 選択した周波数帯の代表中心周波数 [GHz] (モックの帯域区分に対応)。
+// 帯域を切り替えたときの既定値であって、利用者が直接編集できる。
+double bandCenterGHz(int band)
+{
+    switch (band) {
+    case 0:  return 0.9;      // < 1 GHz
+    case 1:  return 3.5;      // Sub-6
+    case 2:  return 28.0;     // ミリ波
+    default: return 140.0;    // サブ THz
+    }
+}
+
+// 距離の書式 (m / km)
+QString fmtDistance(double m)
+{
+    if (!(m > 0.0) || !std::isfinite(m)) return QStringLiteral("—");
+    if (m >= 1000.0) return QStringLiteral("%1 km").arg(m / 1000.0, 0, 'f', 2);
+    return QStringLiteral("%1 m").arg(m, 0, 'f', 1);
+}
+
+// 波長の書式 (mm / m)
+QString fmtWavelength(double m)
+{
+    if (!(m > 0.0) || !std::isfinite(m)) return QStringLiteral("—");
+    if (m < 1.0) return QStringLiteral("%1 mm").arg(m * 1000.0, 0, 'f', 2);
+    return QStringLiteral("%1 m").arg(m, 0, 'f', 3);
+}
 } // namespace
 
 // ── ChannelTab ──────────────────────────────────────────────────────────────
@@ -288,13 +392,53 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     sx->vbox()->addWidget(tabhelp::unwiredNote(sx));
     v->addWidget(sx);
 
-    // ── チャネル特性 / Channel metrics — モック由来の固定サンプル値 ─────────
+    // ── リンク条件 / Link budget inputs (チャネル特性の計算入力) ────────────
+    auto *sl = new SectionBox(I18n::tr("chn_link_section"), body);
+    sl->vbox()->addWidget(makeHint(I18n::tr("chn_link_hint"), sl));
+    m_freqGHz = numEdit(QString::number(bandCenterGHz(1)), sl);
+    m_dist    = numEdit(QStringLiteral("100"), sl);
+    m_hTx     = numEdit(QStringLiteral("10"), sl);
+    m_hRx     = numEdit(QStringLiteral("1.5"), sl);
+    m_eirp    = numEdit(QStringLiteral("30"), sl);
+    m_gRx     = numEdit(QStringLiteral("0"), sl);
+    m_bw      = numEdit(QStringLiteral("100"), sl);
+    m_nf      = numEdit(QStringLiteral("7"), sl);
+    m_refl    = numEdit(QStringLiteral("1.0"), sl);
+    const struct { const char *key; QLineEdit *edit; const char *unit; }
+    kLinkRows[] = {
+        { "chn_freq", m_freqGHz, "GHz"  },
+        { "chn_dist", m_dist,    "m"    },
+        { "chn_htx",  m_hTx,     "m"    },
+        { "chn_hrx",  m_hRx,     "m"    },
+        { "chn_eirp", m_eirp,    "dBm"  },
+        { "chn_grx",  m_gRx,     "dBi"  },
+        { "chn_bw",   m_bw,      "MHz"  },
+        { "chn_nf",   m_nf,      "dB"   },
+        { "chn_refl", m_refl,    ""     },
+    };
+    for (const auto &r : kLinkRows) {
+        auto *row = new QHBoxLayout();
+        row->addWidget(r.edit);
+        if (*r.unit) row->addWidget(new QLabel(QString::fromUtf8(r.unit), sl));
+        row->addStretch(1);
+        sl->form()->addRow(I18n::tr(r.key), row);
+        connect(r.edit, &QLineEdit::textChanged,
+                this, &ChannelTab::recompute);
+    }
+    m_inputError = new QLabel(sl);
+    m_inputError->setWordWrap(true);
+    m_inputError->setStyleSheet("color:#C0392B; font-size:11px;");
+    m_inputError->setVisible(false);
+    sl->vbox()->addWidget(m_inputError);
+    v->addWidget(sl);
+
+    // ── チャネル特性 / Channel metrics — 上のリンク条件からの実計算 ─────────
     auto *sm = new SectionBox(I18n::tr("chn_metrics_section"), body);
-    sm->vbox()->addWidget(tabhelp::sampleNote(sm));
     m_metrics = makeTable({ I18n::tr("chn_col_metric"), I18n::tr("chn_col_value"),
-                            I18n::tr("chn_col_note") }, 6, sm, 190);
+                            I18n::tr("chn_col_note") }, RowCount, sm,
+                          26 * RowCount + 30);   // 全行を折り返さず見せる
     sm->vbox()->addWidget(m_metrics);
-    fillMetricsTable();
+    sm->vbox()->addWidget(makeHint(I18n::tr("chn_model_note"), sm));
 
     // ヒートマップ / PDP / 書出のボタンはいずれも未配線 (絶対規則 5)
     auto *bb = new QHBoxLayout();
@@ -321,6 +465,11 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
         m_envIdx = id;
         onEnvChanged();
     });
+    // 周波数帯を切り替えたら中心周波数の既定値を入れ直す (編集は自由)
+    connect(m_band, &QButtonGroup::idClicked, this, [this](int id) {
+        if (m_updating) return;
+        m_freqGHz->setText(QString::number(bandCenterGHz(id)));
+    });
     connect(project, &Project::loaded, this, &ChannelTab::refresh);
     refresh();
 }
@@ -331,6 +480,7 @@ void ChannelTab::refresh()
     if (auto *b = m_env->button(m_envIdx)) b->setChecked(true);
     m_updating = false;
     onEnvChanged();
+    recompute();
 }
 
 // mock: defaultValue={env==="indoor" ? "office_floor3.ifc" : "city_shibuya.osm"}
@@ -340,12 +490,82 @@ void ChannelTab::onEnvChanged()
                                                        : kEnvFileOther));
 }
 
-void ChannelTab::fillMetricsTable()
+// リンク条件 → チャネル特性 (見通し内の伝搬モデルによる実計算)。
+// 計算できない指標 (多重波が要るもの・入力不正) は「未計算」+ 理由を出す。
+void ChannelTab::recompute()
 {
-    for (int r = 0; r < 6; ++r) {
-        const ChRow &row = kMetrics[r];
-        m_metrics->setItem(r, 0, textItem(I18n::tr(row.nameKey)));
-        m_metrics->setItem(r, 1, numItem(QString::fromUtf8(row.value)));
-        m_metrics->setItem(r, 2, textItem(I18n::tr(row.noteKey)));
+    namespace prop = ofd::em::propagation;
+    const QString nc = I18n::tr("chn_notcalc");
+
+    auto value = [](QLineEdit *e, bool &ok) {
+        const double v = e->text().trimmed().toDouble(&ok);
+        if (!std::isfinite(v)) ok = false;
+        return v;
+    };
+    bool ok = true, all = true;
+    const double fGHz = value(m_freqGHz, ok); all = all && ok;
+    const double d    = value(m_dist, ok);    all = all && ok;
+    const double ht   = value(m_hTx, ok);     all = all && ok;
+    const double hr   = value(m_hRx, ok);     all = all && ok;
+    const double eirp = value(m_eirp, ok);    all = all && ok;
+    const double grx  = value(m_gRx, ok);     all = all && ok;
+    const double bwM  = value(m_bw, ok);      all = all && ok;
+    const double nf   = value(m_nf, ok);      all = all && ok;
+    const double refl = value(m_refl, ok);    all = all && ok;
+    // 物理的に意味のある範囲か (負の距離・負の高さ・|Γ| > 1 は受け付けない)
+    const bool valid = all && fGHz > 0.0 && d > 0.0 && ht >= 0.0 && hr >= 0.0
+                       && bwM > 0.0 && refl >= 0.0 && refl <= 1.0;
+    m_inputError->setText(I18n::tr("chn_bad_input"));
+    m_inputError->setVisible(!valid);
+
+    // 行の見出しは常に埋める (値だけ差し替える)
+    for (int r = 0; r < RowCount; ++r)
+        m_metrics->setItem(r, 0, textItem(I18n::tr(kMetricNameKey[r])));
+
+    auto setRow = [this](int r, const QString &val, const QString &note) {
+        m_metrics->setItem(r, 1, numItem(val));
+        m_metrics->setItem(r, 2, textItem(note));
+    };
+
+    if (!valid) {
+        for (int r = 0; r < RowCount; ++r)
+            setRow(r, nc, I18n::tr("chn_bad_input"));
+        return;
     }
+
+    const double f = fGHz * 1e9;
+    const double lam = prop::wavelength(f);
+    const double fspl = prop::freeSpacePathLossDb(d, f);
+    const double l2ray = prop::twoRayPathLossDb(d, ht, hr, f, refl);
+    const double dbp = prop::breakpointDistance(ht, hr, f);
+    const double prx = prop::receivedPowerDbm(eirp, l2ray, grx);
+    const double n = prop::pathLossExponent(
+        l2ray, d, prop::twoRayPathLossDb(2.0 * d, ht, hr, f, refl), 2.0 * d);
+    const double kdb = prop::twoRayKFactorDb(d, ht, hr, refl);
+    const double tau = prop::twoRayExcessDelay(d, ht, hr);
+    const double bw = bwM * 1e6;
+    const double noise = prop::thermalNoiseDbm(bw, nf);
+    const double snr = prx - noise;
+    const double cap = prop::shannonCapacity(bw, snr);
+
+    setRow(RowFspl, QStringLiteral("%1 dB").arg(fspl, 0, 'f', 2),
+           I18n::tr("chn_m_fspl_note").arg(fmtWavelength(lam)));
+    setRow(RowTwoRay, QStringLiteral("%1 dB").arg(l2ray, 0, 'f', 2),
+           I18n::tr("chn_m_2ray_note").arg(refl, 0, 'f', 2));
+    setRow(RowBreak, fmtDistance(dbp), I18n::tr("chn_m_bp_note"));
+    setRow(RowRx, QStringLiteral("%1 dBm").arg(prx, 0, 'f', 2),
+           I18n::tr("chn_m_rx_note"));
+    setRow(RowN, QString::number(n, 'f', 2), I18n::tr("chn_m_n_note"));
+    setRow(RowK, QStringLiteral("%1 dB").arg(kdb, 0, 'f', 2),
+           I18n::tr("chn_m_k_note"));
+    setRow(RowTau, QStringLiteral("%1 ns").arg(tau * 1e9, 0, 'f', 2),
+           I18n::tr("chn_m_tau_note"));
+    // 多重波の統計が要る指標は実行しないと出せない (偽の値を出さない)
+    setRow(RowDelaySpread, nc, I18n::tr("chn_m_ds_note"));
+    setRow(RowAngleSpread, nc, I18n::tr("chn_m_as_note"));
+    setRow(RowNoise, QStringLiteral("%1 dBm / SNR %2 dB")
+                         .arg(noise, 0, 'f', 2).arg(snr, 0, 'f', 2),
+           I18n::tr("chn_m_noise_note"));
+    setRow(RowCapacity, QStringLiteral("%1 Mbps").arg(cap / 1e6, 0, 'f', 1),
+           I18n::tr("chn_m_cap_note"));
 }

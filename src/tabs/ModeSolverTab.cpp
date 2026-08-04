@@ -1,5 +1,6 @@
 // ModeSolverTab.cpp
 #include "ModeSolverTab.h"
+#include "../optics/BendWaveguide.h"
 #include "../optics/FdeModeSolver.h"
 #include "../optics/MaterialDispersion.h"
 #include "../widgets/FieldHeatmap.h"
@@ -41,12 +42,13 @@ const bool s_i18n = [] {
         "by the built-in FDE solver.");
     I18n::reg("mds_solver_note",
         "屈折率は公刊 Sellmeier 係数による n(λ,T) — 材料・波長・温度が計算に反映"
-        "されます。実屈折率のみを扱うため伝搬損失 (散乱・吸収) と曲げ損失は"
-        "対象外です。",
+        "されます。実屈折率のみを扱うため伝搬損失 (散乱・吸収) と曲げの放射損失"
+        "は対象外です (曲げは接続のモード不整合損とカウスティック位置のみ算出)。",
         "Refractive indices come from published Sellmeier data as n(λ,T), so "
         "material, wavelength and temperature all enter the computation. Only "
         "real indices are handled, so propagation loss (scattering/absorption) "
-        "and bend loss are out of scope.");
+        "and bend radiation loss are out of scope (for bends only the junction "
+        "mismatch loss and the caustic position are computed).");
     I18n::reg("mds_shape", "断面形状", "Cross-section");
     I18n::reg("mds_shape_strip", "ストリップ", "Strip");
     I18n::reg("mds_shape_rib", "リブ (スラブ付)", "Rib (with slab)");
@@ -174,27 +176,61 @@ const bool s_i18n = [] {
               "▸ 掃引点のうち %1 点は材料の λ 有効範囲外または非導波のため除外。",
               "▸ %1 sweep point(s) were dropped (outside the material λ range "
               "or not guided).");
-    I18n::reg("mds_sec_bend", "曲げ損失 / Bend loss", "Bend loss");
+    I18n::reg("mds_sec_bend", "曲げ導波路 / Bent waveguide", "Bent waveguide");
     I18n::reg("mds_col_radius", "曲げ半径", "Bend radius");
     I18n::reg("mds_col_rad_loss", "放射損失 [dB/90°]", "Radiation loss [dB/90°]");
     I18n::reg("mds_col_mismatch", "モード不整合 [dB/接続]",
               "Mode mismatch [dB/junction]");
-    I18n::reg("mds_col_verdict", "判定", "Verdict");
-    I18n::reg("mds_bend_dense", "高密度用", "For dense layout");
-    I18n::reg("mds_bend_rec", "推奨", "Recommended");
-    I18n::reg("mds_bend_low", "低損失", "Low loss");
+    I18n::reg("mds_col_caustic", "放射カウスティック x_c [µm]",
+              "Radiation caustic x_c [µm]");
+    I18n::reg("mds_bend_hint",
+        "共形変換 n_eq(x) = n(x)·(1+x/R) (Heiblum-Harris 1975) で曲げ導波路を"
+        "等価直線導波路に置き換え、その断面を FDE で解いて直線モードとの"
+        "重なり積分から「直線⇄曲げ接続のモード不整合損」を実計算します。"
+        "カウスティック位置 x_c = R·(neff/n_clad − 1) も同じ変換から求めます。",
+        "The bend is replaced by an equivalent straight guide through the "
+        "conformal transformation n_eq(x) = n(x)·(1+x/R) (Heiblum-Harris "
+        "1975). Solving that cross-section with the FDE and overlapping it "
+        "with the straight mode gives the straight-to-bend mode mismatch "
+        "loss. The caustic position x_c = R·(neff/n_clad − 1) comes from the "
+        "same transformation.");
+    I18n::reg("mds_bend_run", "▶ 曲げ計算", "▶ Compute bends");
+    I18n::reg("mds_bend_idle",
+        "▸ 未計算 — 「▶ 曲げ計算」で直線モード + 4 半径の等価断面を解きます "
+        "(計 5 回のソルブ)。",
+        "▸ Not computed — press “▶ Compute bends” to solve the straight mode "
+        "plus the equivalent cross-sections of four radii (five solves).");
+    I18n::reg("mds_bend_status", "曲げ計算完了 (%1 秒)",
+              "Bend analysis finished (%1 s)");
     I18n::reg("mds_bend_note",
-        "▸ 曲げ損失は曲がり導波路の漏れモード (複素 neff) 解析が必要で、直線断面を"
-        "解く内蔵 FDE ソルバの対象外 — 下表は固定サンプル値であり、上の入力を"
-        "変えても変化しません。",
-        "▸ Bend loss requires a leaky-mode (complex neff) analysis of a curved "
-        "waveguide, which the built-in straight-cross-section FDE solver does "
-        "not provide — the table below is a fixed sample and does not react to "
-        "the inputs above.");
+        "▸ 放射損失そのものは求まりません: 等価屈折率は外周側で単調に増えるため"
+        "曲げモードは本質的に漏れモード (複素 neff) で、実対称・Dirichlet 窓の"
+        "FDE では虚部が出ないためです (透過境界での漏れモード解析が別途必要)。"
+        "列は「未計算」のままにします。",
+        "▸ The radiation loss itself is not obtained: the equivalent index "
+        "grows monotonically outwards, so the bend mode is inherently leaky "
+        "(complex neff) and a real-symmetric FDE with Dirichlet walls cannot "
+        "produce the imaginary part (a leaky-mode solve with transparent "
+        "boundaries is required). That column stays “not computed”.");
+    I18n::reg("mds_bend_ratio",
+        "▸ 窓端での |x|/R は最小半径の行で %1 (半径が大きいほど小さい) — "
+        "共形変換の 1 次近似は |x| ≪ R が前提なので、0.1 を超える行は"
+        "近似誤差を含む目安として読んでください。",
+        "▸ |x|/R at the window edge is %1 for the smallest radius (it shrinks "
+        "as R grows). The first-order conformal transformation assumes "
+        "|x| ≪ R, so rows above 0.1 carry approximation error and should be "
+        "read as indicative.");
+    I18n::reg("mds_bend_nomode",
+        "この半径では等価断面の導波モードが求まりませんでした (窓外へ漏れる)",
+        "no guided mode of the equivalent cross-section at this radius (it "
+        "leaks out of the window)");
     I18n::reg("mds_euler",
-        "オイラー曲線 (クロソイド) で不整合損を低減 → GDS Layout の最小曲率DRCと連動",
-        "Euler (clothoid) bends reduce mismatch loss → linked to GDS minimum "
-        "curvature DRC");
+        "▸ 一定曲率の曲げのみを扱います。オイラー曲線 (クロソイド) は曲率が"
+        "連続なので接続部の不整合損を下げられますが、その形状は本タブでは"
+        "解いていません。",
+        "▸ Only constant-curvature bends are handled. Euler (clothoid) bends "
+        "have continuous curvature and lower junction mismatch loss, but that "
+        "shape is not solved in this tab.");
     I18n::reg("mds_sec_corner", "プロセスコーナー / Corner analysis",
               "Corner analysis");
     I18n::reg("mds_corner_hint",
@@ -535,6 +571,66 @@ void computeCorners(const Setup &s, CornerJob &job, std::atomic<int> *prog)
     job.secs = nowSec() - t0;
 }
 
+// ── 曲げ導波路 (共形変換 + 重なり積分) ──────────────────────────────────────
+struct BendJob {
+    QVector<ofd::mds::BendRow> rows;
+    bool   haveStraight = false;
+    double ratio = 0.0;        // 窓端での |x|/R (最小半径での値 = 最悪値)
+    double secs = 0.0;
+};
+
+// 評価する曲げ半径 [µm] (シリコンフォトニクスで実用される範囲)
+const double kBendRadii[] = { 3.0, 5.0, 10.0, 20.0 };
+const int kNBend = static_cast<int>(sizeof(kBendRadii) / sizeof(kBendRadii[0]));
+
+// 直線モードを 1 回、各半径の等価断面を 1 回ずつ解く (計 1 + kNBend 回)
+void computeBend(const Setup &s, BendJob &job, std::atomic<int> *prog)
+{
+    const double t0 = nowSec();
+    double nClad = 0.0;
+    bool ta = false;
+    opt::refractiveIndexAt(s.cladId.c_str(), s.lambda_um, s.temp_C, nClad, ta);
+
+    opt::CrossSection cs;
+    const std::vector<opt::ModeResult> straight =
+        solveAt(s, s.w_um, s.h_um, s.lambda_um, s.temp_C, s.te, 1, &cs);
+    ++(*prog);
+    if (straight.empty() || cs.nx <= 0) {
+        prog->store(1 + kNBend);
+        job.secs = nowSec() - t0;
+        return;
+    }
+    job.haveStraight = true;
+
+    opt::SolveOptions o;
+    o.pol = s.te ? opt::Polarization::SemiVecTE : opt::Polarization::SemiVecTM;
+    o.modes = 1;
+    for (int i = 0; i < kNBend; ++i) {
+        ofd::mds::BendRow row;
+        row.R_um = kBendRadii[i];
+        row.ratio = opt::conformalRatio(cs, row.R_um);
+        job.ratio = std::max(job.ratio, row.ratio);
+        // 放射カウスティック x_c = R(neff/n_clad − 1) は直線モードの neff から
+        row.caustic_um = opt::radiationCaustic(row.R_um, straight[0].neff, nClad);
+        row.hasCaustic = (row.caustic_um > 0.0);
+
+        const opt::CrossSection bent = opt::bendEquivalent(cs, row.R_um);
+        const std::vector<opt::ModeResult> bm = opt::solveModes(bent, s.lambda_um, o);
+        ++(*prog);
+        if (!bm.empty()) {
+            const double eta = opt::overlapEfficiency(straight[0].field,
+                                                      bm[0].field);
+            if (eta > 0.0) {
+                row.ok = true;
+                row.neffBend = bm[0].neff;
+                row.mismatchDb = opt::mismatchLossDb(eta);
+            }
+        }
+        job.rows.append(row);
+    }
+    job.secs = nowSec() - t0;
+}
+
 } // namespace
 
 // ── construction ────────────────────────────────────────────────────────────
@@ -741,37 +837,32 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     s3->vbox()->addWidget(m_dispNote);
     v->addWidget(s3);
 
-    // ── 曲げ損失 (本ソルバの範囲外 — 固定サンプル値) ────────────────────────
+    // ── 曲げ導波路 (共形変換 + 重なり積分による実計算) ──────────────────────
     auto *s4 = new SectionBox(I18n::tr("mds_sec_bend"), body);
-    auto *bendNote = new QLabel(I18n::tr("mds_bend_note"), s4);
-    bendNote->setWordWrap(true);
-    bendNote->setStyleSheet("font-size:11px; color:#B8860B;");
-    s4->vbox()->addWidget(bendNote);
-    auto *bendTable = makeTable(s4, { I18n::tr("mds_col_radius"),
-        I18n::tr("mds_col_rad_loss"), I18n::tr("mds_col_mismatch"),
-        I18n::tr("mds_col_verdict") });
-    const struct { const char *r, *rad, *mis; const char *verdictKey; }
-    kBend[] = {
-        { "3 μm",  "0.082",  "0.041", "mds_bend_dense" },
-        { "5 μm",  "0.011",  "0.018", "mds_bend_rec" },
-        { "10 μm", "0.001",  "0.006", "mds_bend_low" },
-        { "20 μm", "<0.001", "0.002", nullptr },
-    };
-    for (const auto &row : kBend) {
-        const int r = bendTable->rowCount();
-        bendTable->insertRow(r);
-        bendTable->setItem(r, 0, roItem(QString::fromUtf8(row.r)));
-        bendTable->setItem(r, 1, roItem(QString::fromUtf8(row.rad)));
-        bendTable->setItem(r, 2, roItem(QString::fromUtf8(row.mis)));
-        bendTable->setItem(r, 3, roItem(row.verdictKey
-            ? I18n::tr(row.verdictKey) : QStringLiteral("—")));
-    }
-    fitTable(bendTable);
-    s4->vbox()->addWidget(bendTable);
+    auto *bendHint = new QLabel(I18n::tr("mds_bend_hint"), s4);
+    bendHint->setWordWrap(true);
+    s4->vbox()->addWidget(bendHint);
+    auto *bendRow = new QHBoxLayout();
+    m_btnBend = new QPushButton(I18n::tr("mds_bend_run"), s4);
+    bendRow->addWidget(m_btnBend);
+    bendRow->addStretch(1);
+    s4->vbox()->addLayout(bendRow);
+    m_bendTable = makeTable(s4, { I18n::tr("mds_col_radius"),
+        I18n::tr("mds_col_mismatch"), I18n::tr("mds_col_caustic"),
+        I18n::tr("mds_col_rad_loss") });
+    s4->vbox()->addWidget(m_bendTable);
+    m_bendNote = new QLabel(I18n::tr("mds_bend_idle"), s4);
+    m_bendNote->setWordWrap(true);
+    s4->vbox()->addWidget(m_bendNote);
+    // 放射損失が求まらない理由は常に表示する (「未計算」の根拠)
+    auto *bendLimit = new QLabel(I18n::tr("mds_bend_note"), s4);
+    bendLimit->setWordWrap(true);
+    bendLimit->setStyleSheet("font-size:11px; color:#B8860B;");
+    s4->vbox()->addWidget(bendLimit);
     auto *euler = new QLabel(I18n::tr("mds_euler"), s4);
     euler->setWordWrap(true);
+    euler->setStyleSheet("font-size:11px; color:palette(mid);");
     s4->vbox()->addWidget(euler);
-    s4->vbox()->addWidget(sampleNote(s4));   // 実行結果ではない (絶対規則 5)
     v->addWidget(s4);
 
     // ── プロセスコーナー ────────────────────────────────────────────────────
@@ -817,6 +908,7 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     connect(m_btnRun,    &QPushButton::clicked, this, &ModeSolverTab::runModes);
     connect(m_btnSweep,  &QPushButton::clicked, this, &ModeSolverTab::runSweep);
     connect(m_btnCorner, &QPushButton::clicked, this, &ModeSolverTab::runCorners);
+    connect(m_btnBend,   &QPushButton::clicked, this, &ModeSolverTab::runBend);
     connect(m_btnField, &QPushButton::clicked, this, [this] {
         const bool show = !m_field->isVisible();
         m_field->setVisible(show);
@@ -887,6 +979,7 @@ void ModeSolverTab::updateIndexLabel()
     m_btnRun->setEnabled(ok && !m_busy);
     m_btnSweep->setEnabled(ok && !m_busy);
     m_btnCorner->setEnabled(ok && !m_busy);
+    m_btnBend->setEnabled(ok && !m_busy);
     if (!ok) {
         m_indexLabel->setText(err);
         m_indexLabel->setStyleSheet("color:#C62828; font-size:11px;");
@@ -933,6 +1026,10 @@ void ModeSolverTab::clearResults()
     m_cornerTable->setRowCount(0);
     fitTable(m_cornerTable);
     m_cornerNote->setText(I18n::tr("mds_corner_idle"));
+    m_bends.clear();
+    m_bendTable->setRowCount(0);
+    fitTable(m_bendTable);
+    m_bendNote->setText(I18n::tr("mds_bend_idle"));
     m_status->setText(I18n::tr("mds_status_idle"));
     m_status->setStyleSheet(QString());
 }
@@ -953,6 +1050,7 @@ void ModeSolverTab::setBusy(bool busy, int totalSteps, const QString &status)
     m_btnRun->setEnabled(!busy);
     m_btnSweep->setEnabled(!busy);
     m_btnCorner->setEnabled(!busy);
+    m_btnBend->setEnabled(!busy);
     for (QWidget *w : m_inputs) w->setEnabled(!busy);
     if (!busy) m_slab->setEnabled(m_shape->currentIndex() == 1);
 }
@@ -1167,4 +1265,65 @@ void ModeSolverTab::showCorners()
     m_cornerNote->setText(anyDl
         ? I18n::tr("mds_corner_spread").arg(dlMax - dlMin, 0, 'f', 2)
         : I18n::tr("mds_corner_idle"));
+}
+
+// ── 曲げ導波路 ──────────────────────────────────────────────────────────────
+void ModeSolverTab::runBend()
+{
+    if (m_busy) return;
+    mds::Setup s;
+    QString err;
+    if (!buildSetup(s, err)) return;
+    m_bends.clear();
+    m_bendTable->setRowCount(0);
+    fitTable(m_bendTable);
+    setBusy(true, 1 + kNBend, I18n::tr("mds_status_run"));
+
+    auto out = std::make_shared<BendJob>();
+    auto prog = m_progress;
+    QThread *th = QThread::create([s, out, prog] {
+        computeBend(s, *out, prog.get());
+    });
+    connect(th, &QThread::finished, this, [this, th, out] {
+        th->deleteLater();
+        setBusy(false, 0, QString());
+        m_bends = out->rows;
+        m_bendRatio = out->ratio;
+        showBend();
+        if (out->haveStraight) {
+            m_status->setText(I18n::tr("mds_bend_status")
+                                  .arg(out->secs, 0, 'f', 1));
+        } else {
+            // 直線モードが無ければ曲げの比較対象が無い (行を作らない)
+            m_status->setText(I18n::tr("mds_status_none"));
+            m_status->setStyleSheet("color:#B58900;");
+            m_bendNote->setText(I18n::tr("mds_status_none"));
+        }
+    });
+    th->start();
+}
+
+void ModeSolverTab::showBend()
+{
+    m_bendTable->setRowCount(0);
+    const QString dash = QStringLiteral("—");
+    for (const mds::BendRow &b : m_bends) {
+        const int r = m_bendTable->rowCount();
+        m_bendTable->insertRow(r);
+        m_bendTable->setItem(r, 0, roItem(QStringLiteral("%1 µm")
+                                              .arg(b.R_um, 0, 'f', 0)));
+        m_bendTable->setItem(r, 1, roItem(b.ok
+            ? QString::number(b.mismatchDb, 'f', 4)
+            : I18n::tr("mds_bend_nomode")));
+        m_bendTable->setItem(r, 2, roItem(b.hasCaustic
+            ? QString::number(b.caustic_um, 'f', 3) : dash));
+        // 放射損失は漏れモード解析が要るので常に未計算 (mds_bend_note で明示)
+        m_bendTable->setItem(r, 3, roItem(I18n::tr("mds_notcalc")));
+    }
+    fitTable(m_bendTable);
+    if (m_bends.isEmpty())
+        m_bendNote->setText(I18n::tr("mds_bend_idle"));
+    else
+        m_bendNote->setText(I18n::tr("mds_bend_ratio")
+                                .arg(m_bendRatio, 0, 'f', 3));
 }

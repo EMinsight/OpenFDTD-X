@@ -52,9 +52,46 @@ set(CORE_SOURCES
     src/core/ProjectTemplates.cpp
     src/core/ProjectTemplates.h
 
+    # FDTD 設定の検証計算 (メッシュ解像度計画 / 吸収境界の設計反射率 /
+    # 収束履歴の解析 / 安定条件・分解能の判定) — Qt 非依存。
+    # VerificationTab の計算実体で、selftest から解析解と直接突き合わせる
+    src/core/FdtdVerification.cpp
+    src/core/FdtdVerification.h
+
+    # 製造ばらつきの入力分布 (正規/一様/レイリーの解析形) — Qt 非依存。
+    # ToleranceTab の計算実体で、selftest からモーメント・被覆確率を検証する
+    src/core/ToleranceStats.cpp
+    src/core/ToleranceStats.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h
+
+    # 多層薄膜の特性行列法 (Abeles) — Qt 非依存。ThinFilmTab の計算実体で、
+    # selftest から解析解 (フレネル / 単層無反射 / 四分の一波長積層) と照合する
+    src/optics/ThinFilmStack.cpp
+    src/optics/ThinFilmStack.h
+
+    # 自由キャリア (Drude / Soref-Bennett) の Δn・Δα — Qt 非依存。
+    # MultiphysicsTab のプラズマ効果節の計算実体 (selftest から極限値と照合)
+    src/optics/PlasmaDispersion.cpp
+    src/optics/PlasmaDispersion.h
+
+    # SAR の定義式と電波防護指針の指針値 (ICNIRP 2020 / IEEE C95.1 / FCC) —
+    # Qt 非依存。SarTab の計算・規格値の実体 (selftest から手計算値と照合)
+    src/em/SarMetrics.cpp
+    src/em/SarMetrics.h
+
+    # 見通し内リンクの電波伝搬モデル (Friis / 2 波 / 熱雑音 / Shannon) —
+    # Qt 非依存。ChannelTab のチャネル特性表の計算実体で、selftest から
+    # ITU-R P.525 の式・自由空間極限と照合する
+    src/em/RadioPropagation.cpp
+    src/em/RadioPropagation.h
+
+    # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
+    # Qt 非依存。SolverSelectorTab の数値の計算実体
+    src/core/SolverSelection.cpp
+    src/core/SolverSelection.h
 
     src/io/OfdIO.cpp
     src/io/OfdIO.h
@@ -85,6 +122,16 @@ set(CORE_SOURCES
     # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる
     src/optics/FdeModeSolver.cpp
     src/optics/FdeModeSolver.h
+
+    # 曲がり導波路の共形変換と重なり積分 (Heiblum-Harris / Marcuse) —
+    # Qt 非依存。ModeSolverTab の曲げ節の計算実体
+    src/optics/BendWaveguide.cpp
+    src/optics/BendWaveguide.h
+
+    # 分散モデルの最小二乗フィットと診断 (残差 / 因果律 / 受動性) —
+    # Qt 非依存。MaterialExplorerTab のフィット・診断表の計算実体
+    src/optics/DispersionFit.cpp
+    src/optics/DispersionFit.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
@@ -350,6 +397,17 @@ add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/ReflectionDetector.cpp
     src/acoustics/core/RirAnalyzer.cpp
     src/acoustics/core/SchroederDecay.cpp
+    # 建築遮音 (質量則/コインシデンス, ISO 717, ASTM E413, ASHRAE, STI) —
+    # SoundproofTab の計算実体。selftest から規格の不変量と直接突き合わせる
+    src/acoustics/core/SoundInsulation.cpp
+    # 直方体室の音響固有モード (Rayleigh の閉形式) — CabinAcousticsTab の実体
+    src/acoustics/core/RoomModes.cpp
+    # 屋外騒音伝搬 (ISO 9613-2 幾何拡散 / 前川チャート / 環境基準) —
+    # OutdoorNoiseTab の計算実体
+    src/acoustics/core/EnvironmentalNoise.cpp
+    # 集束超音波の軸上音場 (O'Neil 1949 の閉形式) と MI / Gol'dberg 数 —
+    # UltrasoundTab の焦点音圧計算の実体
+    src/acoustics/core/FocusedField.cpp
     src/acoustics/io/WavReader.cpp
     src/acoustics/io/WavWriter.cpp
 )
