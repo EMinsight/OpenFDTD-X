@@ -52,6 +52,10 @@ set(CORE_SOURCES
     src/core/ProjectTemplates.cpp
     src/core/ProjectTemplates.h
 
+    # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
+    src/optics/MaterialDispersion.cpp
+    src/optics/MaterialDispersion.h
+
     src/io/OfdIO.cpp
     src/io/OfdIO.h
     src/io/ActivationCurve.cpp
@@ -76,6 +80,11 @@ set(CORE_SOURCES
 
     src/kernel/Runner.cpp
     src/kernel/Runner.h
+
+    # 光導波路の断面固有モード (FDE) ソルバ — Qt 非依存。
+    # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる
+    src/optics/FdeModeSolver.cpp
+    src/optics/FdeModeSolver.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

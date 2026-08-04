@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -19,10 +20,12 @@
 #include "io/H5Reader.h"
 #include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
+#include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
+#include "optics/MaterialDispersion.h"
 #include "core/RoomAcoustics.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
@@ -1656,6 +1659,150 @@ static void testRcwaCore()
 // 光解析モード別設定 (BPF 設計目標 / Ring ポート / 導波路 / MZI /
 // メタサーフェス / PhC / NF2FF / S パラメータ) の .ofdx 永続化。
 // これらは .ofd (カーネル入力) には出力しない — 出力バイト不変を併せて検証。
+// ── 実材料分散 (src/optics/MaterialDispersion) ──────────────────────────────
+// 公刊 Sellmeier 係数が既知の実測値を再現すること、有効範囲外を評価しないこと、
+// 熱光学補正が線形であること、MaterialExplorerTab からの抽出前後で
+// 同じ λ に対し同じ n を返すことを検証する。
+static void testOpticsMaterials()
+{
+    using namespace ofd::optics;
+    g_file = "optics-dispersion";
+
+    // 抽出前 (MaterialExplorerTab の file-local テーブル) と同じ評価式を
+    // テスト側に独立に書き、同一 λ で一致することを確認する
+    struct OldEntry {
+        const char *id;
+        double A, B[3], C[3], D, E;
+    };
+    const OldEntry kOld[] = {
+        { "SiO2", 1.0, { 0.6961663, 0.4079426, 0.8974794 },
+          { 0.004679148, 0.013512063, 97.934003 }, 0, 0 },
+        { "Si3N4", 1.0, { 3.0249, 40314.0, 0.0 },
+          { 0.018317068, 1537208.2, 1.0 }, 0, 0 },
+        { "Al2O3", 1.0, { 1.4313493, 0.65054713, 5.3414021 },
+          { 0.005279925, 0.014238264, 325.01783 }, 0, 0 },
+        { "Si", 1.0, { 10.6684293, 0.0030434748, 1.54133408 },
+          { 0.090912190, 1.2876602, 1218816.0 }, 0, 0 },
+        { "TiO2", 5.913, { 0, 0, 0 }, { 1, 1, 1 }, 0.2441, 0.0803 },
+        { "PMMA", 1.0, { 1.1819, 0, 0 }, { 0.011313, 1.0, 1.0 }, 0, 0 },
+    };
+    auto oldN = [](const OldEntry &e, double um) {
+        const double l2 = um * um;
+        double n2 = e.A;
+        for (int i = 0; i < 3; ++i)
+            if (e.B[i] != 0.0) n2 += e.B[i] * l2 / (l2 - e.C[i]);
+        if (e.D != 0.0) n2 += e.D / (l2 - e.E);
+        return (n2 > 0.0) ? std::sqrt(n2) : 0.0;
+    };
+
+    check(materials().size() >= 7, "material table populated");
+    check(findMaterial("SiO2") != nullptr, "findMaterial(SiO2)");
+    check(findMaterial("NoSuchMaterial") == nullptr, "findMaterial(unknown)");
+    check(findMaterial(nullptr) == nullptr, "findMaterial(nullptr)");
+
+    // ── 既知の実測値との一致 ────────────────────────────────────────────
+    double n = 0.0;
+    // SiO2 (合成石英) d線 587.56 nm: 文献値 n = 1.45846 (Malitson 1965)
+    check(refractiveIndex("SiO2", 0.58756, n), "SiO2 in range");
+    check(std::fabs(n - 1.45846) < 2e-4, "SiO2 n=1.4585 @589nm");
+    // Si 1550 nm: Salzberg-Villa の式は n = 3.4777
+    check(refractiveIndex("Si", 1.55, n), "Si in range");
+    check(std::fabs(n - 3.4777) < 2e-3, "Si n=3.478 @1550nm");
+    // Si3N4 1550 nm: Luke (2015) の式は n = 1.9963
+    check(refractiveIndex("Si3N4", 1.55, n), "Si3N4 in range");
+    check(std::fabs(n - 1.9963) < 1e-3, "Si3N4 n=1.996 @1550nm");
+    // Al2O3 (サファイア常光) 587.56 nm: 文献値 n = 1.7682
+    check(refractiveIndex("Al2O3", 0.58756, n), "Al2O3 in range");
+    check(std::fabs(n - 1.7682) < 5e-4, "Al2O3 n=1.768 @589nm");
+    // PMMA d線: 文献値 nd = 1.4906
+    check(refractiveIndex("PMMA", 0.58756, n), "PMMA in range");
+    check(std::fabs(n - 1.4906) < 5e-4, "PMMA nd=1.4906");
+    // LiNbO3 異常光線 1550 nm: Zelmon (1997) の式は ne = 2.1376
+    // (文献の実測 ne ≈ 2.138 と 3 桁目まで一致)
+    check(refractiveIndex("LiNbO3_e", 1.55, n), "LiNbO3_e in range");
+    check(std::fabs(n - 2.1376) < 5e-4, "LiNbO3 ne=2.138 @1550nm");
+    // 空気は n = 1 (無分散)
+    double nAir1 = 0.0, nAir2 = 0.0;
+    check(refractiveIndex("Air", 0.5, nAir1) && refractiveIndex("Air", 5.0, nAir2),
+          "Air in range");
+    check(nAir1 == 1.0 && nAir2 == 1.0, "Air n=1 (no dispersion)");
+    // 正常分散 (短波長ほど n が大きい)
+    double na = 0.0, nb = 0.0;
+    check(refractiveIndex("SiO2", 0.4, na) && refractiveIndex("SiO2", 1.5, nb)
+          && na > nb, "SiO2 normal dispersion");
+
+    // ── 有効範囲外は false を返し、渡した変数を書き換えない ──────────────
+    const double kSentinel = -12345.0;
+    double v = kSentinel;
+    check(!refractiveIndex("SiO2", 0.1, v), "SiO2 below range -> false");
+    check(v == kSentinel, "value untouched below range");
+    check(!refractiveIndex("SiO2", 5.0, v), "SiO2 above range -> false");
+    check(v == kSentinel, "value untouched above range");
+    check(!refractiveIndex("Si", 1.0, v), "Si below range -> false");
+    check(v == kSentinel, "value untouched (Si)");
+    check(!refractiveIndex("NoSuchMaterial", 1.55, v), "unknown id -> false");
+    check(v == kSentinel, "value untouched (unknown id)");
+    bool applied = true;
+    check(!refractiveIndexAt("SiO2", 0.1, 25.0, v, applied),
+          "refractiveIndexAt out of range -> false");
+    check(v == kSentinel && applied, "value/flag untouched out of range");
+
+    // ── 温度補正: n(T) − n(T_ref) = dn/dT·(T − T_ref) ────────────────────
+    for (const MaterialInfo &m : materials()) {
+        if (!m.hasDnDt) continue;
+        const double lam = 0.5 * (std::max(m.lmin_um, 0.3)
+                                  + std::min(m.lmax_um, 2.0));
+        double n0 = 0.0, nT = 0.0;
+        bool a0 = false, aT = false;
+        const bool ok0 = refractiveIndexAt(m.id, lam, m.tRef_C, n0, a0);
+        const bool okT = refractiveIndexAt(m.id, lam, m.tRef_C + 40.0, nT, aT);
+        check(ok0 && okT && a0 && aT, "dn/dT material: tempApplied");
+        double nRef = 0.0;
+        check(refractiveIndex(m.id, lam, nRef) && std::fabs(n0 - nRef) < 1e-15,
+              "n(T_ref) == n(λ)");
+        check(std::fabs((nT - n0) - m.dnDt_perK * 40.0) < 1e-12,
+              "linear thermo-optic shift");
+    }
+    // Si: dn/dT = 1.86e-4 /K (Cocorullo & Rendina 1992)
+    const MaterialInfo *si = findMaterial("Si");
+    check(si && si->hasDnDt && std::fabs(si->dnDt_perK - 1.86e-4) < 1e-12,
+          "Si dn/dT = 1.86e-4 /K");
+    double nSi25 = 0.0, nSi75 = 0.0;
+    bool aSi = false;
+    check(refractiveIndexAt("Si", 1.55, si->tRef_C, nSi25, aSi)
+          && refractiveIndexAt("Si", 1.55, si->tRef_C + 50.0, nSi75, aSi),
+          "Si temp eval");
+    check(std::fabs((nSi75 - nSi25) - 50.0 * 1.86e-4) < 1e-12, "Si Δn @+50K");
+
+    // ── dn/dT 未定義の材料は温度を反映しない (0 で埋めない) ───────────────
+    const MaterialInfo *tio2 = findMaterial("TiO2");
+    check(tio2 && !tio2->hasDnDt, "TiO2 dn/dT undefined");
+    double nT0 = 0.0, nT1 = 0.0;
+    bool aT0 = true, aT1 = true;
+    check(refractiveIndexAt("TiO2", 0.8, 25.0, nT0, aT0)
+          && refractiveIndexAt("TiO2", 0.8, 125.0, nT1, aT1),
+          "TiO2 eval with temperature");
+    check(!aT0 && !aT1, "TiO2 tempApplied=false");
+    check(nT0 == nT1, "TiO2 n unchanged by temperature");
+    const MaterialInfo *air = findMaterial("Air");
+    check(air && !air->hasDnDt, "Air dn/dT undefined");
+
+    // ── 抽出前後の一致 (同じ λ で同じ n) ─────────────────────────────────
+    for (const OldEntry &o : kOld) {
+        const MaterialInfo *m = findMaterial(o.id);
+        check(m != nullptr, "extracted material present");
+        if (!m) continue;
+        for (int i = 0; i < 5; ++i) {
+            const double lam = m->lmin_um
+                + (m->lmax_um - m->lmin_um) * (i + 0.5) / 5.0;
+            double got = 0.0;
+            const bool ok = refractiveIndex(o.id, lam, got);
+            check(ok && std::fabs(got - oldN(o, lam)) < 1e-12,
+                  "extraction preserves n(λ)");
+        }
+    }
+}
+
 static void testOpticalModeSettings()
 {
     g_file = "optical-modes";
@@ -2605,6 +2752,352 @@ static void testAcousticReport()
           "report: csv vocal F0 row");
 }
 
+// ── 光導波路 断面 FDE ソルバ (src/optics/FdeModeSolver) ─────────────────────
+//
+// 検証の出所をソルバー本体から独立させる: 対称 3 層スラブ導波路は超越方程式
+// という厳密解を持つので、それをここで二分法により解いて基準にする。
+// ソルバー側の式・関数は一切再利用しない。
+//
+// 2D ソルバーを 1D スラブへ帰着させるやり方:
+//   屈折率を y にだけ依存させると離散問題は x と y に厳密に分離する。
+//   x 方向は Dirichlet 窓の離散ラプラシアン (閉形式の固有値 μ_x) なので、
+//   β²_2D = μ_x + β²_1D から β²_1D を厳密に取り出せる。この引き算をすると
+//   残る差は y 方向の離散化誤差だけになり、格子細分化で 2 次収束するかどうかで
+//   「離散化誤差」と「差分スキームのバグ」を区別できる。
+
+namespace fdetest {
+
+const double kPi = 3.14159265358979323846;
+
+// 対称スラブ導波路の厳密 neff。分散方程式は
+//     κ t = m π + 2 atan(ρ γ / κ),  κ = √(k0²n1² − β²), γ = √(β² − k0²n2²)
+//     ρ = 1 (TE: E は界面に平行) / (n1/n2)² (TM: E は界面に垂直)
+// 左辺 − 右辺は neff について単調減少なので二分法で解ける。
+// V = k0 t √(n1²−n2²) > mπ のときだけ m 次モードが存在する (無ければ -1)。
+double slabExact(double n1, double n2, double t, double lam, int m, bool tm)
+{
+    const double k0 = 2.0 * kPi / lam;
+    const double rho = tm ? (n1 * n1) / (n2 * n2) : 1.0;
+    auto f = [&](double ne) {
+        const double b2 = k0 * k0 * ne * ne;
+        const double kap = std::sqrt(std::max(k0 * k0 * n1 * n1 - b2, 0.0));
+        const double gam = std::sqrt(std::max(b2 - k0 * k0 * n2 * n2, 0.0));
+        return kap * t - m * kPi
+             - 2.0 * std::atan(rho * gam / std::max(kap, 1e-300));
+    };
+    double lo = n2 + 1e-12, hi = n1 - 1e-12;
+    if (f(lo) < 0.0) return -1.0;             // このモードは存在しない
+    for (int i = 0; i < 200; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (f(mid) > 0.0) lo = mid; else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
+// 節点 nn 個・間隔 h の 1 次元 Dirichlet 離散ラプラシアンの m 次固有値
+// (m = 1..nn)。−(4/h²) sin²(mπ / (2(nn+1)))。
+double discLapEig(int nn, double h, int m)
+{
+    const double s = std::sin(m * kPi / (2.0 * (nn + 1)));
+    return -(4.0 / (h * h)) * s * s;
+}
+
+// y 方向にだけ層構造を持つ (x には一様な) 断面
+ofd::optics::CrossSection slabSection(double n1, double n2, double t, double dy,
+                                      double clad, int nx, double dx)
+{
+    const int nct = int(std::lround(t / dy));
+    const int ncl = int(std::lround(clad / dy));
+    const int ny = nct + 2 * ncl;
+    ofd::optics::CrossSection cs;
+    cs.nx = nx; cs.ny = ny; cs.dx_um = dx; cs.dy_um = dy;
+    cs.n.assign(size_t(nx) * ny, n2);
+    cs.core.assign(size_t(nx) * ny, 0);
+    for (int iy = 0; iy < ny; ++iy) {
+        const bool inCore = (iy >= ncl && iy < ncl + nct);
+        for (int ix = 0; ix < nx; ++ix) {
+            cs.n[size_t(iy) * nx + ix] = inCore ? n1 : n2;
+            cs.core[size_t(iy) * nx + ix] = inCore ? 1 : 0;
+        }
+    }
+    return cs;
+}
+
+} // namespace fdetest
+
+static void testFdeModeSolver()
+{
+    using namespace ofd::optics;
+    using fdetest::slabExact;
+    using fdetest::discLapEig;
+    using fdetest::slabSection;
+    g_file = "fde";
+
+    const double lam = 1.55;                       // λ = 1.55 um
+    const double k0 = 2.0 * fdetest::kPi / lam;
+    const double nSi = 3.476, nOx = 1.444;         // Si / SiO2 @1550nm
+    const int    nx = 24;                          // x 窓 1.2 um
+    const double dx = 0.05;
+    const double muX = discLapEig(nx, dx, 1);      // x 方向の離散量子化分
+
+    // ── (1) 対称スラブ TE0/TM0 が厳密解と一致すること
+    //        + (2) 格子細分化で誤差が 1/4 になること (= 2 次の離散化誤差)
+    //
+    // 実測 (t=0.22um, Si/SiO2, λ=1.55um):
+    //     TE0 : dy=10nm → +1.0214e-3, dy=5nm → +2.5555e-4  (比 0.250)
+    //     TM0 : dy=10nm → +1.8604e-3, dy=5nm → +4.6484e-4  (比 0.250)
+    // 許容差は実測値の約 1.4 倍に置く (厳密解 2.8477822434 / 2.0533196788)。
+    // 比が 4 に乗ることが「差分スキームのバグではなく離散化誤差」の証拠。
+    for (int tm = 0; tm < 2; ++tm) {
+        const double exact = slabExact(nSi, nOx, 0.22, lam, 0, tm != 0);
+        check(exact > nOx && exact < nSi, tm ? "fde: TM0 exact in range"
+                                             : "fde: TE0 exact in range");
+        double err[2] = { 0.0, 0.0 };
+        const double dys[2] = { 0.01, 0.005 };
+        for (int s = 0; s < 2; ++s) {
+            CrossSection cs = slabSection(nSi, nOx, 0.22, dys[s], 1.5, nx, dx);
+            SolveOptions o;
+            o.modes = 1;
+            o.pol = tm ? Polarization::SemiVecTM : Polarization::SemiVecTE;
+            const std::vector<ModeResult> r = solveModes(cs, lam, o);
+            if (r.size() != 1) {
+                check(false, tm ? "fde: TM0 slab solved" : "fde: TE0 slab solved");
+                continue;
+            }
+            check(r[0].guided, tm ? "fde: TM0 guided" : "fde: TE0 guided");
+            // β²_1D = β²_2D − μ_x (x 方向の離散量子化を厳密に除去)
+            const double b2 = k0 * k0 * r[0].neff * r[0].neff;
+            const double neff1d = std::sqrt(b2 - muX) / k0;
+            err[s] = std::fabs(neff1d - exact);
+
+            // 閉込め係数と実効断面積の妥当域
+            check(r[0].gamma > 0.0 && r[0].gamma < 1.0,
+                  tm ? "fde: TM0 gamma in (0,1)" : "fde: TE0 gamma in (0,1)");
+            check(r[0].aeff_um2 > 0.0, tm ? "fde: TM0 aeff positive"
+                                          : "fde: TE0 aeff positive");
+            // 場の離散 L2 ノルムは 1、強度の最大値は 1
+            double nn = 0.0, imax = 0.0;
+            for (size_t i = 0; i < r[0].field.size(); ++i) {
+                nn += r[0].field[i] * r[0].field[i];
+                imax = std::max(imax, r[0].intensity[i]);
+            }
+            check(std::fabs(nn - 1.0) < 1e-9,
+                  tm ? "fde: TM0 field normalised" : "fde: TE0 field normalised");
+            check(std::fabs(imax - 1.0) < 1e-12,
+                  tm ? "fde: TM0 intensity peak 1" : "fde: TE0 intensity peak 1");
+
+            // 半ベクトルの不連続扱いが効く向きの確認:
+            // 界面に平行な TE のほうがコアへよく閉じ込められる (Γ_TE > Γ_TM)
+            if (s == 0) {
+                check(tm ? (r[0].gamma < 0.30) : (r[0].gamma > 0.70),
+                      tm ? "fde: TM0 weakly confined" : "fde: TE0 strongly confined");
+            }
+        }
+        check(err[0] < (tm ? 2.5e-3 : 1.5e-3),
+              tm ? "fde: TM0 matches exact slab (dy=10nm)"
+                 : "fde: TE0 matches exact slab (dy=10nm)");
+        check(err[1] < (tm ? 7.0e-4 : 4.0e-4),
+              tm ? "fde: TM0 matches exact slab (dy=5nm)"
+                 : "fde: TE0 matches exact slab (dy=5nm)");
+        // 2 次収束 (実測 0.250)。0.30 を切れば 1 次以下ではないと言える。
+        check(err[1] < 0.30 * err[0],
+              tm ? "fde: TM0 error is 2nd-order discretisation"
+                 : "fde: TE0 error is 2nd-order discretisation");
+    }
+
+    // ── (1b) 屈折率が x に一様なら半ベクトル TE はスカラーに厳密一致する
+    //         (調和平均の係数が通常の 2 階中心差分へ縮退することの検査)
+    //         実測差 1.8e-15。
+    {
+        CrossSection cs = slabSection(nSi, nOx, 0.22, 0.01, 1.5, nx, dx);
+        SolveOptions o; o.modes = 1;
+        o.pol = Polarization::SemiVecTE;
+        const std::vector<ModeResult> a = solveModes(cs, lam, o);
+        o.pol = Polarization::Scalar;
+        const std::vector<ModeResult> b = solveModes(cs, lam, o);
+        check(a.size() == 1 && b.size() == 1, "fde: scalar/TE both solved");
+        if (a.size() == 1 && b.size() == 1)
+            check(std::fabs(a[0].neff - b[0].neff) < 1e-12,
+                  "fde: semi-vector TE degenerates to scalar when n(x) is flat");
+    }
+
+    // ── (3) 高次モード: V 数から決まる本数だけ立ち、neff は降順
+    //        + (4) モード同士が離散内積で直交すること
+    //
+    // t=1.0um の対称スラブは V/π = 4.08 → TE0..TE4 の 5 本 (y 方向の次数)。
+    // 断面は x に一様なので離散問題は厳密に分離し、固有値は全組合せ
+    //     β²(m,p) = μ_x(m) + k0² neff_slab(p)²    (m = x の次数, p = y の次数)
+    // になる。x 窓を 0.5um と狭くしてあるので μ_x(m) の間隔が大きく、導波条件
+    // (neff > クラッド) を満たすのは (1,0)(1,1)(1,2)(1,3)(2,0) の 5 個だけ。
+    // 6 本要求してもこの 5 本しか返らないことと、値・順序が一致することを見る。
+    // 実測: 最大差 2.006e-3 (dy=10nm)、モード間内積の最大 5.4e-16。
+    {
+        const int mx = 25;
+        const double mdx = 0.02, mdy = 0.01, t = 1.0;
+        // スラブ次数の本数は V 数で決まる: V = k0 t √(n1²−n2²) = 12.82,
+        // ⌈V/π⌉ = 5 → TE0..TE4 の 5 本。
+        std::vector<double> slabNe;
+        for (int p = 0; p < 12; ++p) {
+            const double ne = slabExact(nSi, nOx, t, lam, p, false);
+            if (ne < 0.0) break;
+            slabNe.push_back(ne);
+        }
+        const double V = k0 * t * std::sqrt(nSi * nSi - nOx * nOx);
+        check(int(slabNe.size()) == int(std::ceil(V / fdetest::kPi)),
+              "fde: slab order count follows V-number");
+        check(slabNe.size() == 5, "fde: 1.0um Si slab has 5 TE orders");
+
+        // 期待スペクトルは分離解の全組合せ β²(m,p) = μ_x(m) + k0² neff_slab(p)²
+        // のうち導波条件 (neff > クラッド屈折率) を満たすもの。降順に並べる。
+        std::vector<double> pred;
+        for (int m = 1; m <= 4; ++m)
+            for (size_t p = 0; p < slabNe.size(); ++p) {
+                const double b2 = discLapEig(mx, mdx, m)
+                                + k0 * k0 * slabNe[p] * slabNe[p];
+                if (b2 <= 0.0) continue;
+                const double ne = std::sqrt(b2) / k0;
+                if (ne > nOx) pred.push_back(ne);
+            }
+        std::sort(pred.begin(), pred.end(),
+                  [](double a, double b) { return a > b; });
+        check(pred.size() == 5, "fde: separable spectrum predicts 5 guided states");
+
+        CrossSection cs = slabSection(nSi, nOx, t, mdy, 1.0, mx, mdx);
+        SolveOptions o; o.modes = 6; o.pol = Polarization::Scalar;
+        const std::vector<ModeResult> r = solveModes(cs, lam, o);
+        // 6 本要求しても存在するのは 5 本 — 無いモードを作らないことの検査
+        check(r.size() == pred.size(),
+              "fde: solver returns exactly the predicted guided states");
+        double worst = 0.0;
+        bool desc = true;
+        for (size_t i = 0; i < r.size() && i < pred.size(); ++i) {
+            worst = std::max(worst, std::fabs(r[i].neff - pred[i]));
+            if (i > 0 && !(r[i].neff < r[i - 1].neff)) desc = false;
+        }
+        check(desc, "fde: modes sorted by descending neff");
+        check(worst < 3.0e-3, "fde: higher-order neff match separable spectrum");
+
+        double ortho = 0.0;
+        for (size_t i = 0; i < r.size(); ++i)
+            for (size_t j = i + 1; j < r.size(); ++j) {
+                double s = 0.0;
+                for (size_t q = 0; q < r[i].field.size(); ++q)
+                    s += r[i].field[q] * r[j].field[q];
+                ortho = std::max(ortho, std::fabs(s));
+            }
+        check(ortho < 1e-10, "fde: modes mutually orthogonal");
+
+        // Γ は 0..1。先頭 4 本は同じ x 次数で y の次数だけが上がる列なので、
+        // 高次ほどコアからしみ出す = Γ は単調減少になる
+        // (実測 0.9938 → 0.9738 → 0.9339 → 0.8508)。
+        // 5 本目は x 次数が上がったもので y 分布は基本モードと同じため、
+        // Γ もほぼ同じ値に戻る — ここに単調性を期待してはいけない。
+        for (size_t i = 0; i < r.size(); ++i)
+            check(r[i].gamma >= 0.0 && r[i].gamma <= 1.0, "fde: gamma in [0,1]");
+        for (size_t i = 1; i < r.size() && i < 4; ++i)
+            check(r[i].gamma < r[i - 1].gamma,
+                  "fde: higher y-order leaks out of the core more");
+    }
+
+    // ── (5) 2D 矩形コア: 実効屈折率法 (EIM) と突き合わせ + 場の左右対称性
+    //
+    // EIM は独立な準解析基準 (y 方向スラブ → その neff をコアとする x 方向
+    // スラブ。x へ移ると界面に対する電界の向きが入れ替わるので偏波も入れ替える)。
+    // Si 導波路では数 % の近似なので、一致は「桁と傾向」の検査として使う。
+    // 実測差: 450x220 TE −0.0010 / TM +0.0016、900x220 TE +0.0039。
+    {
+        const struct { double w; bool tm; int nGuided; } kCase[] = {
+            { 0.45, false, 1 }, { 0.45, true, 1 }, { 0.90, false, 2 }
+        };
+        for (const auto &cse : kCase) {
+            CrossSection cs = makeRectangularCore(cse.w, 0.22, 0.0,
+                                                  nSi, nOx, nOx, 0.02, 1.0);
+            check(cs.nx > 0 && cs.ny > 0 && int(cs.n.size()) == cs.nx * cs.ny,
+                  "fde: makeRectangularCore builds a consistent grid");
+            SolveOptions o; o.modes = 4;
+            o.pol = cse.tm ? Polarization::SemiVecTM : Polarization::SemiVecTE;
+            const std::vector<ModeResult> r = solveModes(cs, lam, o);
+            check(int(r.size()) == cse.nGuided,
+                  "fde: rectangular core guided-mode count");
+            if (r.empty()) continue;
+
+            const double nSlab = slabExact(nSi, nOx, 0.22, lam, 0, cse.tm);
+            const double eim = slabExact(nSlab, nOx, cse.w, lam, 0, !cse.tm);
+            check(eim > 0.0, "fde: EIM reference exists");
+            check(std::fabs(r[0].neff - eim) < 0.01,
+                  "fde: 2D neff agrees with effective-index method");
+            check(r[0].neff > nOx && r[0].neff < nSi,
+                  "fde: 2D neff between cladding and core index");
+            check(r[0].guided, "fde: fundamental 2D mode is guided");
+
+            // 左右対称な断面 → 強度分布も左右対称 (実測 ≤ 4.5e-5)
+            double sym = 0.0;
+            for (int iy = 0; iy < cs.ny; ++iy)
+                for (int ix = 0; ix < cs.nx; ++ix)
+                    sym = std::max(sym, std::fabs(
+                        r[0].intensity[size_t(iy) * cs.nx + ix]
+                      - r[0].intensity[size_t(iy) * cs.nx + (cs.nx - 1 - ix)]));
+            check(sym < 2e-3, "fde: intensity is left-right symmetric");
+        }
+    }
+
+    // ── リブ (スラブ付き) 断面も解けること。コアより neff が下がり、
+    //    ストリップより閉込めが弱くなる。
+    {
+        CrossSection strip = makeRectangularCore(0.50, 0.22, 0.00,
+                                                 nSi, nOx, nOx, 0.02, 1.0);
+        CrossSection rib   = makeRectangularCore(0.50, 0.22, 0.09,
+                                                 nSi, nOx, nOx, 0.02, 1.0);
+        SolveOptions o; o.modes = 2; o.pol = Polarization::SemiVecTE;
+        const std::vector<ModeResult> a = solveModes(strip, lam, o);
+        const std::vector<ModeResult> b = solveModes(rib, lam, o);
+        check(!a.empty() && !b.empty(), "fde: strip and rib both solved");
+        if (!a.empty() && !b.empty()) {
+            // スラブが付くと側方のクラッドが Si に置き換わるので neff は上がる
+            check(b[0].neff > a[0].neff, "fde: rib raises neff over strip");
+            check(b[0].gamma > 0.0 && b[0].gamma < 1.0, "fde: rib gamma in (0,1)");
+        }
+    }
+
+    // ── (6) 決定性: 同じ入力を 2 回解いて完全一致 (乱数を使っていないこと)
+    {
+        CrossSection cs = makeRectangularCore(0.45, 0.22, 0.0,
+                                              nSi, nOx, nOx, 0.02, 1.0);
+        SolveOptions o; o.modes = 2; o.pol = Polarization::SemiVecTE;
+        const std::vector<ModeResult> a = solveModes(cs, lam, o);
+        const std::vector<ModeResult> b = solveModes(cs, lam, o);
+        bool same = (a.size() == b.size());
+        for (size_t i = 0; same && i < a.size(); ++i) {
+            same = same && a[i].neff == b[i].neff
+                        && a[i].gamma == b[i].gamma
+                        && a[i].aeff_um2 == b[i].aeff_um2
+                        && a[i].guided == b[i].guided
+                        && a[i].field.size() == b[i].field.size();
+            for (size_t q = 0; same && q < a[i].field.size(); ++q)
+                same = same && a[i].field[q] == b[i].field[q]
+                            && a[i].intensity[q] == b[i].intensity[q];
+        }
+        check(!a.empty() && same, "fde: solver is bit-for-bit deterministic");
+    }
+
+    // ── 異常入力: 解けないものは «作らない» (空を返す)
+    {
+        CrossSection empty;
+        check(solveModes(empty, lam, SolveOptions()).empty(),
+              "fde: empty cross-section yields no modes");
+        CrossSection cs = makeRectangularCore(0.45, 0.22, 0.0,
+                                              nSi, nOx, nOx, 0.02, 1.0);
+        SolveOptions o; o.modes = 0;
+        check(solveModes(cs, lam, o).empty(), "fde: modes=0 yields no modes");
+        o.modes = 2;
+        check(solveModes(cs, -1.0, o).empty(),
+              "fde: non-positive wavelength yields no modes");
+        check(makeRectangularCore(0.0, 0.22, 0.0, nSi, nOx, nOx, 0.02, 1.0)
+                  .nx == 0,
+              "fde: degenerate core size yields empty section");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -2668,12 +3161,14 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();
+    testOpticsMaterials();
     testOpticalModeSettings();
     testBellhop();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();
+    testFdeModeSolver();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

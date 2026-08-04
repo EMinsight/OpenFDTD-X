@@ -187,6 +187,13 @@ src/
 │   ├── GlassCatalog.{h,cpp}   光学ガラスDB + Sellmeier + AGF/CSV取込
 │   └── RoomAcoustics.{h,cpp}  Sabine/Eyring + Barron統計 + 鏡像法 + NC評価
 │
+├── optics/                   光導波路の数値コア (Qt非依存 C++17。selftest から直接検証)
+│   ├── FdeModeSolver.{h,cpp}  断面2D の有限差分固有モード解析 (虚軸伝搬 + ADI/Thomas)。
+│   │                          スカラー/半ベクトル TE・TM → neff / |E|² / Γ / Aeff
+│   └── MaterialDispersion.{h,cpp}
+│                              公刊 Sellmeier 係数 + 熱光学係数 dn/dT (出典明記)。
+│                              材料Explorer とモードソルバが共用
+│
 ├── io/
 │   ├── OfdIO.{h,cpp}          .ofd テキスト読み書き (本家完全互換) + .ofdx JSON サイドカー
 │   ├── Touchstone.{h,cpp}     S パラメータ .s1p/.s2p 出力
@@ -222,7 +229,8 @@ src/
     ├── Tidy3dTab     tidy3d クラウド連携             ※光ドメイン時のみ
     ├── GlassCatalogTab 🔷 ガラスカタログ (Sellmeier/アッベ図/AGF取込) ※光
     ├── RoomAcousticsTab 🏛 ホール解析 (カバレッジ/エコーグラム/Sabine/NC/障害診断) ※音響
-    ├── ModeSolverTab 〓 モードソルバ FDE (簡易近似 — 実FDE連携は未実装) ※光
+    ├── ModeSolverTab 〓 モードソルバ FDE (内蔵 FDE で neff/ng/Γ/|E|²/分散/コーナーを
+    │                  実計算。曲げ損失は対象外) ※光
     ├── AudioEditorTab 🎚 音響編集・解析 (波形/スペクトログラム編集・信号生成・
     │                  エフェクト・LUFS/RT解析。DSP は src/audio/AudioEditEngine) ※音響/水中
     └── AcousticSolverTab 🔌 音響ソルバ連携 (AcousticRunner — ADR-0007 出力契約) ※音響

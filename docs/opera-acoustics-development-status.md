@@ -54,7 +54,7 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **4724 checks,
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **4888 checks,
   0 failures** (2026-08-04 更新。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
@@ -81,6 +81,29 @@ GUI 全体の `markNotImplemented` / `sampleNote` / `unwiredNote` 全 304 箇所
 光・音響・水中設定の `.ofdx` 永続化) は実装済み。残り (中・大規模 —
 音源リストのモデル化、RoomAcoustics の IR 実解析配線、ThinFilm の
 スタック計算等) は棚卸し結果を優先度整理のうえ別課題として継続する。
+
+### 光導波路モードソルバ FDE (2026-08-04)
+
+`src/optics/FdeModeSolver` (Qt 非依存 C++17) を新設し、モードソルバ FDE タブの
+表示を簡易近似式から実計算へ置き換えた。手法は断面 2D の 5 点差分 + 虚軸伝搬
+(シフト逆べき乗) + ADI/Thomas 三重対角解 + Gram-Schmidt デフレーション、
+スカラー / 半ベクトル TE・TM 対応。出力は neff / |E|² 分布 / 閉込め係数 Γ /
+実効断面積で、ng・群速度分散 D・複屈折 Δn・dneff/dT・dneff/dw・プロセスコーナーは
+λ・寸法・温度を変えた複数ソルブの差分から実算出する。材料は
+`src/optics/MaterialDispersion` (公刊 Sellmeier + 熱光学係数 dn/dT、出典明記) を
+材料Explorer と共用する。
+
+検証は対称 3 層スラブの厳密解 (超越方程式を selftest 側で二分法により独立に解く)
+との比較で、dy = 10/5/2.5 nm の誤差比が 3 点とも 0.250 = **2 次収束**を確認
+(離散化誤差でありスキームのバグでないことの証明)。実効屈折率法との交差検証、
+モード直交性、決定性、Γ の範囲も検査 (計 76 checks)。
+既定条件 (Si 450×220 nm / SiO₂ / 1550 nm / TE) で **0.6 秒**、実 GUI での
+実測は計算 1.2 秒・掃引 4.3 秒・コーナー 3.6 秒。
+
+**曲げ損失は対象外** (曲がり導波路の漏れモード = 複素 neff 解析が必要) で
+固定サンプル + `sampleNote` を維持。伝搬損失 [dB/cm] も実屈折率のみの FDE では
+求まらないため「—」表示。モード波源・モード展開モニター・Schematic への
+受け渡しは受け側モデルが未実装のため `markNotImplemented` を維持。
 
 ## 5. 次の作業 (優先順)
 
