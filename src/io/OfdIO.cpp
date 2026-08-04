@@ -670,6 +670,14 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"src_directivity", a.srcDirectivity},
             {"src_spl_db", a.srcSPL_dB},
             {"mic_count", a.micCount},
+            // AcousticTab 追加設定 (LF 指標 / 音源位置・向き / 解析タイプ /
+            // 周波数帯域) — 追加キーのみ。改名・削除・型変更は禁止。
+            {"lf", a.lf},
+            {"src_pos_m", QJsonArray{ a.srcX_m, a.srcY_m, a.srcZ_m }},
+            {"src_aim_deg", QJsonArray{ a.srcAimTheta_deg, a.srcAimPhi_deg }},
+            {"analysis_type", a.analysisType},
+            {"third_octave", a.thirdOctave},
+            {"band_range", a.bandRange},
             {"room_l", a.roomL}, {"room_w", a.roomW}, {"room_h", a.roomH},
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
@@ -723,6 +731,9 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"bottom_type", u.bottomType},
             {"bottom_c_mps", u.bottomC_mps},
             {"bottom_rho_kgm3", u.bottomRho_kgm3},
+            // 底質吸収係数 α [dB/λ] — 追加キーのみ。欠落時は 0.5 (旧ファイル
+            // 互換 = 従来 BellhopIO がハードコードしていた値)。
+            {"bottom_alpha_db_lambda", u.bottomAlpha_dBlambda},
             {"sonar_freq_khz", u.sonarFreq_kHz},
             {"sonar_sl_db", u.sonarSL_dB},
             {"range_max_km", u.rangeMax_km} };
@@ -876,6 +887,25 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.srcDirectivity = ac.value("src_directivity").toString(a.srcDirectivity);
         a.srcSPL_dB = ac.value("src_spl_db").toDouble(a.srcSPL_dB);
         a.micCount = ac.value("mic_count").toInt(a.micCount);
+        // AcousticTab 追加設定 — 欠落キーは既定値のまま (旧ファイル互換)。
+        // コンボの index になる int は範囲外値で不正な選択を作らないよう
+        // クランプする (metaShape / solverBackend と同じ流儀)。
+        a.lf = ac.value("lf").toBool(a.lf);
+        const QJsonArray srcPos = ac["src_pos_m"].toArray();
+        if (srcPos.size() >= 3) {
+            a.srcX_m = srcPos[0].toDouble(a.srcX_m);
+            a.srcY_m = srcPos[1].toDouble(a.srcY_m);
+            a.srcZ_m = srcPos[2].toDouble(a.srcZ_m);
+        }
+        const QJsonArray srcAim = ac["src_aim_deg"].toArray();
+        if (srcAim.size() >= 2) {
+            a.srcAimTheta_deg = srcAim[0].toDouble(a.srcAimTheta_deg);
+            a.srcAimPhi_deg   = srcAim[1].toDouble(a.srcAimPhi_deg);
+        }
+        a.analysisType =
+            qBound(0, ac.value("analysis_type").toInt(a.analysisType), 2);
+        a.thirdOctave = ac.value("third_octave").toBool(a.thirdOctave);
+        a.bandRange = qBound(0, ac.value("band_range").toInt(a.bandRange), 2);
         a.roomL = ac.value("room_l").toDouble(a.roomL);
         a.roomW = ac.value("room_w").toDouble(a.roomW);
         a.roomH = ac.value("room_h").toDouble(a.roomH);
@@ -978,6 +1008,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         u.bottomType = uw.value("bottom_type").toString(u.bottomType);
         u.bottomC_mps = uw.value("bottom_c_mps").toDouble(u.bottomC_mps);
         u.bottomRho_kgm3 = uw.value("bottom_rho_kgm3").toDouble(u.bottomRho_kgm3);
+        u.bottomAlpha_dBlambda =
+            uw.value("bottom_alpha_db_lambda").toDouble(u.bottomAlpha_dBlambda);
         u.sonarFreq_kHz = uw.value("sonar_freq_khz").toDouble(u.sonarFreq_kHz);
         u.sonarSL_dB = uw.value("sonar_sl_db").toDouble(u.sonarSL_dB);
         u.rangeMax_km = uw.value("range_max_km").toDouble(u.rangeMax_km);

@@ -192,6 +192,18 @@ struct AcousticOpts {
     double  srcSPL_dB = 94.0;
     int     micCount = 1;
 
+    // ── AcousticTab 追加設定 (.ofdx "acoustic" への追加キー。既定値は
+    //    mock tabs.jsx AcousticTab のまま — 旧ファイル互換) ──
+    bool    lf = false;              // LF (側方音エネルギー) 指標
+    double  srcX_m = -3.0;           // 音源位置 x [m]
+    double  srcY_m = 1.6;            // 音源位置 y [m]
+    double  srcZ_m = 5.0;            // 音源位置 z [m]
+    double  srcAimTheta_deg = 90.0;  // 音源の向き θ [deg]
+    double  srcAimPhi_deg   = 0.0;   // 音源の向き φ [deg]
+    int     analysisType = 0;        // 解析タイプ 0=IRF 1=RT60 2=STI
+    bool    thirdOctave = true;      // 1/3 オクターブ帯域
+    int     bandRange = 2;           // 対象帯域 0=125Hz~ 1=500Hz~2k 2=125Hz~16k
+
     // ── ホール解析 (RoomAcousticsTab) ──
     double  roomL = 30.0, roomW = 20.0, roomH = 12.0;  // シューボックス [m]
     double  volume = 12000.0;       // 室容積 V [m³] (寸法と独立に編集可)
@@ -254,6 +266,11 @@ struct UnderwaterOpts {
     QString bottomType = "sand";
     double  bottomC_mps = 1650.0;
     double  bottomRho_kgm3 = 1900.0;
+    // 底質の吸収係数 α [dB/λ] — BELLHOP ハーフスペース行の減衰
+    // (SSPOPT 'W' = dB/wavelength と整合)。既定 0.5 は従来 BellhopIO に
+    // ハードコードされていた砂〜シルト底の代表値 (既定のままなら .env は
+    // 従来とバイト一致)。
+    double  bottomAlpha_dBlambda = 0.5;
     double  sonarFreq_kHz = 3.5;
     double  sonarSL_dB = 220.0;
     double  rangeMax_km = 50.0;

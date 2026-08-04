@@ -22,6 +22,7 @@ public:
 
 private slots:
     void refresh();
+    void runConvolve();        // 可聴化経路 (ConvolutionEngine) へ委譲
 
 private:
     void apply();
@@ -37,9 +38,10 @@ private:
     QSpinBox  *m_micCount;
 
     // ── モック (tabs.jsx AcousticTab) 追加分 ──────────────────────────────
-    // Project に対応フィールドが無いのでローカル状態 (既定値はモックのまま)。
+    // LF / 位置・向き / 解析タイプ / 帯域は AcousticOpts (.ofdx) に永続化。
+    // 受音点表・ソルバー・可聴化ソース/出力形式は引き続きローカル状態。
     QCheckBox *m_lf;                    // LF (側方音エネルギー)
-    QLineEdit *m_srcPos, *m_srcAim;     // 位置(x,y,z) / 向き(θ,φ)
+    QLineEdit *m_srcPos, *m_srcAim;     // 位置(x,y,z) [m] / 向き(θ,φ) [deg]
     QTableWidget *m_micTable;           // 受音点 / マイクアレイ表
 
     QComboBox *m_solver;                // FDTD / Ray / Image-Source / Hybrid

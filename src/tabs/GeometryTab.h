@@ -68,6 +68,12 @@ private:
     void refreshImportBadges();   // 取込プレビューを実メッシュで更新
     void refreshVoxelStats();     // ボクセル統計を実結果で更新
 
+    // 配置・変換 (placement) — 取込 STL への純幾何アフィン変換
+    // (スケール → 中心合わせ → 回転 → オフセット)。StlImporter/Voxelizer 不変。
+    ImportedMesh applyPlacement(const ImportedMesh &src) const;
+    void reapplyPlacement();      // 配置設定の変更 → 変換をかけ直して表示更新
+    void showMeasureDialog();     // 寸法測定ダイアログ (取込メッシュの計測)
+
     Project      *m_p;
     bool          m_updating = false;
     QTableWidget *m_table;
@@ -85,7 +91,8 @@ private:
     int        m_dragUnit = -1;   // ドラッグ対象 (-1 = ドラッグ中でない)
     QSpinBox     *m_voxMat = nullptr;     // material id assigned to voxels
     QPushButton  *m_voxBtn = nullptr;
-    ImportedMesh  m_lastMesh;             // most recently imported STL
+    ImportedMesh  m_lastMesh;             // 取込 STL (配置・変換の適用後)
+    ImportedMesh  m_rawMesh;              // 取込 STL (変換前 — placement の基準)
     bool          m_hasMesh = false;
 
     // 3Dモデル取込 (CAD)

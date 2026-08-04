@@ -54,8 +54,8 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **2003 checks,
-  0 failures** (減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **4724 checks,
+  0 failures** (2026-08-04 更新。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
   一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
@@ -67,6 +67,20 @@
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
+
+### 未実装マーカー棚卸し (2026-08-04)
+
+GUI 全体の `markNotImplemented` / `sampleNote` / `unwiredNote` 全 304 箇所を
+棚卸しした結果: **実態と乖離した表示 (stale) は 0 件** (マーカーは全て正確)、
+実装可能 128 件、外部依存・カーネル契約未定義等で未実装表示のままが妥当
+196 件。実装可能のうち既存インフラの再利用で完結する小規模項目
+(防音 Sabine RT60 実計算 / 音源ポーラ図の指向性実計算 / WAV 実読込
+プレビュー・外部プレイヤー試聴 / ソルバ領域のモック固定値→実計算置換 /
+検証タブの PML 対策ボタン / H5 ループ切替・h5py/Jupyter 生成 / スクリプト
+読込・保存 / 散乱の平面波配線 / ツール連携の手動パス / 形状の配置変換・計測 /
+光・音響・水中設定の `.ofdx` 永続化) は実装済み。残り (中・大規模 —
+音源リストのモデル化、RoomAcoustics の IR 実解析配線、ThinFilm の
+スタック計算等) は棚卸し結果を優先度整理のうえ別課題として継続する。
 
 ## 5. 次の作業 (優先順)
 

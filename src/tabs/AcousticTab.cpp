@@ -1,6 +1,7 @@
 // AcousticTab.cpp
 #include "AcousticTab.h"
 #include "../core/Project.h"
+#include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -10,12 +11,14 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFileDialog>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStringList>
@@ -93,6 +96,22 @@ const bool s_i18n = [] {
     I18n::reg("ac2_play", "📻 再生", "📻 Play");
     I18n::reg("ac2_record", "⏺ 録音", "⏺ Record");
     I18n::reg("ac2_convolve", "⊕ 畳み込み", "⊕ Convolve");
+    I18n::reg("ac2_convolve_tip",
+              "ドライ音源と実測 RIR を畳み込みます (可聴化タブと同じエンジン)",
+              "Convolve the dry source with the measured RIR "
+              "(same engine as the Auralization tab)");
+    I18n::reg("ac2_convolve_need_input",
+              "ドライ音源 WAV と RIR WAV が未設定です。"
+              "「%1」タブで指定してから実行してください。",
+              "Dry-source WAV and RIR WAV are not set. "
+              "Choose them on the \"%1\" tab first.");
+    I18n::reg("ac2_convolve_done",
+              "畳み込みが完了しました:\n%1\n"
+              "ピーク: %2 dBFS / 推奨ゲイン: %3 dB\n"
+              "A/B 波形の比較・詳細は「%4」タブで確認できます。",
+              "Convolution finished:\n%1\n"
+              "Peak: %2 dBFS / suggested gain: %3 dB\n"
+              "See the \"%4\" tab for A/B waveforms and details.");
     I18n::reg("ac2_aural_src", "ソース音源", "Source signal");
     I18n::reg("ac2_src_click", "クリック / Click", "Click");
     I18n::reg("ac2_src_speech", "音声サンプル", "Speech sample");
@@ -203,6 +222,37 @@ QSpinBox *makeSpin(QWidget *parent, int lo, int hi, int value,
     return w;
 }
 
+// "a, b, c" 形式の数値列をパース ("°" は読み飛ばす)。
+// 要素数が n で全要素が数値のときだけ out に書いて true を返す。
+bool parseNumList(const QString &text, int n, double *out)
+{
+    QString s = text;
+    s.remove(QStringLiteral("°"));
+    const QStringList parts = s.split(',', Qt::SkipEmptyParts);
+    if (parts.size() != n) return false;
+    for (int i = 0; i < n; ++i) {
+        bool ok = false;
+        out[i] = parts[i].trimmed().toDouble(&ok);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// 音源位置 / 向きの表示書式 (mock の "−3.0, 1.6, 5.0" / "90°, 0°" 相当)。
+// 精度は OfdIO の num() と同じ 'g' 10 桁 (表示で値を丸めない)。
+QString fmtPos(double x, double y, double z)
+{
+    return QStringLiteral("%1, %2, %3").arg(QString::number(x, 'g', 10),
+                                            QString::number(y, 'g', 10),
+                                            QString::number(z, 'g', 10));
+}
+
+QString fmtAim(double theta, double phi)
+{
+    return QStringLiteral("%1°, %2°").arg(QString::number(theta, 'g', 10),
+                                          QString::number(phi, 'g', 10));
+}
+
 } // namespace
 
 AcousticTab::AcousticTab(Project *project, QWidget *parent)
@@ -227,11 +277,9 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_aural = new QCheckBox(I18n::tr("ac_aurora"), sm);
     for (auto *c : { m_rt60, m_c80, m_d50, m_sti, m_edt, m_irf, m_aural })
         sm->vbox()->addWidget(c);
-    // mock の Metrics 行にある LF (側方音エネルギー)。Project に該当フィールドが
-    // 無いのでローカル状態 (既定 off) — どこにも読まれないことを注記。
+    // mock の Metrics 行にある LF (側方音エネルギー)。AcousticOpts::lf に永続化。
     m_lf = makeCheck(I18n::tr("ac2_lf"), false, sm);
     sm->vbox()->addWidget(m_lf);
-    sm->vbox()->addWidget(tabhelp::unwiredNote(sm));
     m_sampleRate = new QComboBox(sm);
     m_sampleRate->addItems({ "44100", "48000", "96000" });
     sm->form()->addRow(I18n::tr("ac_sample_rate"), m_sampleRate);
@@ -247,16 +295,15 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_spl->setSuffix(" dB");
     ss->form()->addRow(I18n::tr("ac_directivity"), m_directivity);
     ss->form()->addRow(I18n::tr("ac_spl"), m_spl);
-    // mock の 位置(x,y,z) / 向き(θ,φ) 行 (ローカル状態、既定値はモックのまま)。
+    // mock の 位置(x,y,z) [m] / 向き(θ,φ) [deg] 行 — AcousticOpts::src*_m /
+    // srcAim*_deg に永続化 (テキストは refresh() が書き込む)。
     // 指向性行の前後に差し込んでモックの並び順にする。
-    m_srcPos = new QLineEdit(QStringLiteral("-3.0, 1.6, 5.0"), ss);
+    m_srcPos = new QLineEdit(ss);
     m_srcPos->setStyleSheet(Theme::monoQss());
     ss->form()->insertRow(0, I18n::tr("ac2_src_pos"), m_srcPos);
-    m_srcAim = new QLineEdit(QStringLiteral("90°, 0°"), ss);
+    m_srcAim = new QLineEdit(ss);
     m_srcAim->setStyleSheet(Theme::monoQss());
     ss->form()->insertRow(2, I18n::tr("ac2_src_aim"), m_srcAim);
-    // 位置・向きはローカル状態のみ (指向性・SPL は Project に反映される)
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     auto *sr = new SectionBox(I18n::tr("ac_mics"), body);
@@ -299,7 +346,9 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
 
     // ── 以下、モック (tabs.jsx AcousticTab) にあって未実装だったセクションを
     //    モックの並び順 (ソルバー → 室内音響 → 周波数帯域 → 可聴化 → 材質) で追加。
-    //    Project に対応フィールドが無いのでいずれもローカル状態。
+    //    解析タイプ・周波数帯域は AcousticOpts (.ofdx) に永続化。ソルバー・
+    //    可聴化ソース/出力形式・材質表は Project に対応フィールドが無いので
+    //    引き続きローカル状態。
 
     // ソルバー / Solver — 選択に応じた説明文 + 条件付きパラメータ
     auto *sv = new SectionBox(I18n::tr("ac2_solver_section"), body);
@@ -355,15 +404,14 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     sv->vbox()->addWidget(tabhelp::unwiredNote(sv));
     v->addWidget(sv);
 
-    // 室内音響 / Room acoustics — 解析タイプ
+    // 室内音響 / Room acoustics — 解析タイプ (AcousticOpts::analysisType)
     auto *ra = new SectionBox(I18n::tr("ac2_room_section"), body);
     m_analysisType = makeSeg(ra, { I18n::tr("ac_irf"), I18n::tr("ac_rt60"),
                                    I18n::tr("ac2_sti") }, 0);
     ra->form()->addRow(I18n::tr("ac2_analysis_type"), m_analysisType);
-    ra->vbox()->addWidget(tabhelp::unwiredNote(ra));
     v->addWidget(ra);
 
-    // 周波数帯域 / Band
+    // 周波数帯域 / Band (AcousticOpts::thirdOctave / bandRange)
     auto *fb = new SectionBox(I18n::tr("ac2_band_section"), body);
     m_thirdOctave = makeCheck(I18n::tr("ac2_third_octave"), true, fb);
     fb->vbox()->addWidget(m_thirdOctave);
@@ -374,17 +422,23 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     bandRow->addWidget(m_bandRange);
     bandRow->addStretch(1);
     fb->vbox()->addLayout(bandRow);
-    fb->vbox()->addWidget(tabhelp::unwiredNote(fb));
     v->addWidget(fb);
 
     // 可聴化 / Auralization
     auto *au = new SectionBox(I18n::tr("ac2_aural_section"), body);
     auto *auralBtns = new QHBoxLayout();
-    for (const char *k : { "ac2_play", "ac2_record", "ac2_convolve" }) {
+    for (const char *k : { "ac2_play", "ac2_record" }) {
         auto *b = new QPushButton(I18n::tr(k), au);
-        tabhelp::markNotImplemented(b);   // 再生/録音/畳み込みは未実装
+        tabhelp::markNotImplemented(b);   // 再生/録音は未実装 (QtMultimedia 禁止)
         auralBtns->addWidget(b);
     }
+    // 畳み込みは実装済みの可聴化経路 (可聴化タブと同じ
+    // QtAcousticAdapter::convolveFiles) へ委譲する
+    auto *convolveBtn = new QPushButton(I18n::tr("ac2_convolve"), au);
+    convolveBtn->setToolTip(I18n::tr("ac2_convolve_tip"));
+    connect(convolveBtn, &QPushButton::clicked,
+            this, &AcousticTab::runConvolve);
+    auralBtns->addWidget(convolveBtn);
     auralBtns->addStretch(1);
     au->vbox()->addLayout(auralBtns);
     m_auralSource = makeSeg(au, { I18n::tr("ac2_src_click"),
@@ -437,12 +491,17 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     auto applyCb = [this] { apply(); };
-    for (auto *c : { m_rt60, m_c80, m_d50, m_sti, m_edt, m_irf, m_aural })
+    for (auto *c : { m_rt60, m_c80, m_d50, m_sti, m_edt, m_irf, m_aural,
+                     m_lf, m_thirdOctave })
         connect(c, &QCheckBox::toggled, this, applyCb);
     connect(m_sampleRate, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_directivity, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_spl, &QDoubleSpinBox::valueChanged, this, applyCb);
     connect(m_micCount, &QSpinBox::valueChanged, this, applyCb);
+    connect(m_srcPos, &QLineEdit::editingFinished, this, applyCb);
+    connect(m_srcAim, &QLineEdit::editingFinished, this, applyCb);
+    connect(m_analysisType, &QComboBox::currentIndexChanged, this, applyCb);
+    connect(m_bandRange, &QComboBox::currentIndexChanged, this, applyCb);
 
     // ソルバー選択はローカル状態 (Project 非永続) → apply() は呼ばない
     connect(m_solver, &QComboBox::currentIndexChanged,
@@ -480,6 +539,24 @@ void AcousticTab::apply()
     a.srcDirectivity = dirs[qBound(0, m_directivity->currentIndex(), 2)];
     a.srcSPL_dB = m_spl->value();
     a.micCount = m_micCount->value();
+    a.lf = m_lf->isChecked();
+    // 音源位置 / 向き: パースできた場合だけモデルへ書き込み、不正入力は
+    // 表示をモデル値に戻す (UI とモデルの乖離を作らない — .claude/rules/gui.md)
+    double pos[3];
+    if (parseNumList(m_srcPos->text(), 3, pos)) {
+        a.srcX_m = pos[0]; a.srcY_m = pos[1]; a.srcZ_m = pos[2];
+    } else {
+        m_srcPos->setText(fmtPos(a.srcX_m, a.srcY_m, a.srcZ_m));
+    }
+    double aim[2];
+    if (parseNumList(m_srcAim->text(), 2, aim)) {
+        a.srcAimTheta_deg = aim[0]; a.srcAimPhi_deg = aim[1];
+    } else {
+        m_srcAim->setText(fmtAim(a.srcAimTheta_deg, a.srcAimPhi_deg));
+    }
+    a.analysisType = qBound(0, m_analysisType->currentIndex(), 2);
+    a.thirdOctave = m_thirdOctave->isChecked();
+    a.bandRange = qBound(0, m_bandRange->currentIndex(), 2);
     m_p->touch();
 }
 
@@ -500,5 +577,62 @@ void AcousticTab::refresh()
     m_directivity->setCurrentIndex(di);
     m_spl->setValue(a.srcSPL_dB);
     m_micCount->setValue(a.micCount);
+    m_lf->setChecked(a.lf);
+    m_srcPos->setText(fmtPos(a.srcX_m, a.srcY_m, a.srcZ_m));
+    m_srcAim->setText(fmtAim(a.srcAimTheta_deg, a.srcAimPhi_deg));
+    m_analysisType->setCurrentIndex(qBound(0, a.analysisType, 2));
+    m_thirdOctave->setChecked(a.thirdOctave);
+    m_bandRange->setCurrentIndex(qBound(0, a.bandRange, 2));
     m_updating = false;
+}
+
+// 「⊕ 畳み込み」— 実装済みの可聴化経路 (可聴化タブと同じ
+// QtAcousticAdapter::convolveFiles、同期実行も同タブと同じ契約) へ委譲する。
+// 入力は可聴化タブと共通の OperaAcousticSettings (ドライ WAV / RIR WAV /
+// 出力先 / ゲインモード)。未設定なら実行せず可聴化タブへ案内する
+// (未設定のまま「完了」を装う虚偽表示をしない — CLAUDE.md 絶対規則 5)。
+void AcousticTab::runConvolve()
+{
+    using namespace ofd::acoustics;
+    OperaAcousticSettings &s = m_p->operaAcoustic();
+    if (s.auralizationDryFile.trimmed().isEmpty() ||
+        s.rirPath.trimmed().isEmpty()) {
+        QMessageBox::information(this, I18n::tr("ac2_convolve"),
+            I18n::tr("ac2_convolve_need_input")
+                .arg(I18n::tr("t_auralization")));
+        return;
+    }
+    // 出力先が未指定なら実行時に選択させる (可聴化タブと同じ流儀)。
+    // 選択結果はモデルへ書き戻し、可聴化タブとも共有する。
+    QString outPath = s.auralizationOutputFile;
+    if (outPath.trimmed().isEmpty()) {
+        outPath = QFileDialog::getSaveFileName(
+            this, I18n::tr("ac2_convolve"), QStringLiteral("auralized.wav"),
+            I18n::tr("rir_wav_filter"));
+        if (outPath.isEmpty()) return;
+        s.auralizationOutputFile = outPath;
+        m_p->touch();
+    }
+    const AcousticResult<ConvolutionInfo> res =
+        QtAcousticAdapter::convolveFiles(s.auralizationDryFile, s.rirPath,
+                                         outPath, s.auralizationGainMode);
+    if (!res.success()) {
+        // fs 不一致はリサンプリングしない旨も明示 (可聴化タブと同じ文言)
+        QString msg = I18n::tr("aur_status_error")
+                          .arg(QString::fromUtf8(
+                                   acousticErrorCodeName(res.errorCode())),
+                               QString::fromStdString(res.message()));
+        if (res.errorCode() == kSampleRateMismatch)
+            msg += QStringLiteral("\n") + I18n::tr("aur_no_resample_note");
+        QMessageBox::warning(this, I18n::tr("ac2_convolve"), msg);
+        return;
+    }
+    // 結果は書き出した WAV のサンプルで測った実測値 (アダプター契約)。
+    const ConvolutionInfo &info = res.value();
+    QMessageBox::information(this, I18n::tr("ac2_convolve"),
+        I18n::tr("ac2_convolve_done")
+            .arg(outPath,
+                 QString::number(info.outputPeakDbfs, 'f', 1),
+                 QString::number(info.suggestedGainDb, 'f', 1),
+                 I18n::tr("t_auralization")));
 }

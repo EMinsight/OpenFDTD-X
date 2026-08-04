@@ -377,11 +377,10 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     sb->form()->addRow(I18n::tr("uw_bottom_type"), m_bottomType);
     sb->form()->addRow(I18n::tr("uw_bottom_c"), m_bottomC);
     sb->form()->addRow(I18n::tr("uw_bottom_rho"), m_bottomRho);
-    // 底質の吸収係数 α [dB/λ] — .ofdx に無いのでローカル状態。
-    // 直下の unwiredNote は α のみが対象 (種類・音速・密度は apply() 済み)。
-    m_bottomAlpha = makeSpin(sb, 0.0, 20.0, 0.8, 2);
+    // 底質の吸収係数 α [dB/λ] — .ofdx "bottom_alpha_db_lambda" へ永続化し、
+    // BellhopIO が底質ハーフスペース行の減衰として .env へ出力する (配線済み)。
+    m_bottomAlpha = makeSpin(sb, 0.0, 20.0, 0.5, 2);
     sb->form()->addRow(I18n::tr("uwx_bottom_alpha"), m_bottomAlpha);
-    sb->form()->addRow(tabhelp::unwiredNote(sb));
     v->addWidget(sb);
 
     // 海面 / Sea surface (mock 追加分) — すべてローカル状態
@@ -456,7 +455,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     auto applyCb = [this] { apply(); };
-    for (auto *s : { m_temp, m_salinity, m_bottomC, m_bottomRho,
+    for (auto *s : { m_temp, m_salinity, m_bottomC, m_bottomRho, m_bottomAlpha,
                      m_sonarFreq, m_sonarSL, m_rangeMax })
         connect(s, &QDoubleSpinBox::valueChanged, this, applyCb);
     connect(m_sofar, &QCheckBox::toggled, this, applyCb);
@@ -509,6 +508,7 @@ void UnderwaterTab::apply()
     u.bottomType = m_bottomType->currentData().toString();   // 表示名ではなくコード
     u.bottomC_mps = m_bottomC->value();
     u.bottomRho_kgm3 = m_bottomRho->value();
+    u.bottomAlpha_dBlambda = m_bottomAlpha->value();
     u.sonarFreq_kHz = m_sonarFreq->value();
     u.sonarSL_dB = m_sonarSL->value();
     u.rangeMax_km = m_rangeMax->value();
@@ -581,6 +581,7 @@ void UnderwaterTab::refresh()
     m_bottomType->setCurrentIndex(bi < 0 ? 0 : bi);
     m_bottomC->setValue(u.bottomC_mps);
     m_bottomRho->setValue(u.bottomRho_kgm3);
+    m_bottomAlpha->setValue(u.bottomAlpha_dBlambda);
     m_sonarFreq->setValue(u.sonarFreq_kHz);
     m_sonarSL->setValue(u.sonarSL_dB);
     m_rangeMax->setValue(u.rangeMax_km);

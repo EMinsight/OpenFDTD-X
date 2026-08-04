@@ -469,6 +469,78 @@ static void testRoomAcoustics()
             check(qs.size() == 4 &&
                   qs[0].name == QString::fromUtf8("空調吹出口"),
                   "legacy ofdx keeps default noise sources");
+            // AcousticTab 追加設定: キー無しの旧ファイルは既定値のまま
+            const AcousticOpts &la = p3.acoustic();
+            check(!la.lf && la.analysisType == 0 &&
+                  la.thirdOctave && la.bandRange == 2,
+                  "legacy ofdx keeps AcousticTab defaults");
+            check(nearlyEq(la.srcX_m, -3.0) && nearlyEq(la.srcY_m, 1.6) &&
+                  nearlyEq(la.srcZ_m, 5.0) &&
+                  nearlyEq(la.srcAimTheta_deg, 90.0) &&
+                  nearlyEq(la.srcAimPhi_deg, 0.0),
+                  "legacy ofdx keeps default source pos/aim");
+        }
+    }
+
+    // AcousticTab 追加設定 (LF / 音源位置・向き / 解析タイプ / 帯域):
+    // .ofdx ラウンドトリップ + 既存キー保全
+    {
+        Project ps;
+        AcousticOpts &a = ps.acoustic();
+        a.lf = true;
+        a.srcX_m = 1.5; a.srcY_m = 2.5; a.srcZ_m = -3.5;
+        a.srcAimTheta_deg = 45.0; a.srcAimPhi_deg = 30.0;
+        a.analysisType = 2;
+        a.thirdOctave = false;
+        a.bandRange = 1;
+        QTemporaryFile f3;
+        f3.setFileTemplate(QDir::tempPath() + "/ofdx_actab_XXXXXX.ofdx");
+        if (f3.open()) {
+            check(OfdxIO::save(f3.fileName(), ps), "actab ofdx save");
+            Project pl;
+            check(OfdxIO::load(f3.fileName(), pl), "actab ofdx load");
+            const AcousticOpts &q = pl.acoustic();
+            check(q.lf, "actab lf round-trip");
+            check(nearlyEq(q.srcX_m, 1.5) && nearlyEq(q.srcY_m, 2.5) &&
+                  nearlyEq(q.srcZ_m, -3.5), "actab src pos round-trip");
+            check(nearlyEq(q.srcAimTheta_deg, 45.0) &&
+                  nearlyEq(q.srcAimPhi_deg, 30.0), "actab src aim round-trip");
+            check(q.analysisType == 2, "actab analysis type round-trip");
+            check(!q.thirdOctave && q.bandRange == 1, "actab band round-trip");
+
+            // 保存 JSON に新キーが在り、既存 acoustic キーも保全されること
+            QFile jf(f3.fileName());
+            check(jf.open(QIODevice::ReadOnly), "actab ofdx reopen");
+            const QJsonObject ac = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("acoustic").toObject();
+            check(ac.contains("lf") && ac.contains("analysis_type") &&
+                  ac.contains("third_octave") && ac.contains("band_range"),
+                  "actab json keys present");
+            check(ac.value("src_pos_m").toArray().size() == 3 &&
+                  ac.value("src_aim_deg").toArray().size() == 2,
+                  "actab json src pos/aim arrays");
+            check(ac.contains("rt60") && ac.contains("mic_count") &&
+                  ac.contains("noise_levels"),
+                  "actab json keeps existing acoustic keys");
+        }
+    }
+
+    // 壊れた .ofdx の範囲外 int はクランプされ不正な選択を作らない
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_actab_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"analysis_type\": 9,"
+                "                  \"band_range\": -2 } }";
+            bad.write(broken);
+            bad.flush();
+            Project pb;
+            check(OfdxIO::load(bad.fileName(), pb), "actab broken ofdx load");
+            check(pb.acoustic().analysisType == 2 &&
+                  pb.acoustic().bandRange == 0,
+                  "actab out-of-range ints clamped");
         }
     }
 }
@@ -1932,6 +2004,67 @@ static void testBellhop()
         const QString e2 = BellhopIO::envText(q);
         check(e2.contains("\n0 1500 /\n") && e2.contains("\n100 1500 /\n"),
               "bellhop: default iso-velocity profile when SSP missing");
+    }
+
+    // (c2) 底質吸収係数 α [dB/λ] (bottomAlpha_dBlambda):
+    //   既定値 0.5 (従来のハードコード値) のままなら .env は従来とバイト一致、
+    //   指定時はハーフスペース行の減衰へ反映される。
+    {
+        Project q0;                          // 既定 (α キーに一切触らない)
+        q0.setActiveDomain(Domain::Underwater);
+        Project q1;                          // 既定値 0.5 を明示指定
+        q1.setActiveDomain(Domain::Underwater);
+        q1.underwater().bottomAlpha_dBlambda = 0.5;
+        check(BellhopIO::envText(q0) == BellhopIO::envText(q1),
+              "bellhop: default alpha keeps .env byte-identical");
+        // 既定プロジェクト (既定 SSP は 5000 m まで、c 1650, rho 1900) の
+        // ハーフスペース行
+        check(BellhopIO::envText(q0).contains("\n5000 1650 0.0 1.9 0.5 /\n"),
+              "bellhop: default halfspace line unchanged (0.5 dB/lambda)");
+        q1.underwater().bottomAlpha_dBlambda = 1.25;
+        check(BellhopIO::envText(q1).contains("\n5000 1650 0.0 1.9 1.25 /\n"),
+              "bellhop: alpha propagates to halfspace attenuation");
+    }
+
+    // (c3) .ofdx 永続化: bottom_alpha_db_lambda のラウンドトリップと
+    //      旧ファイル (キー無し) の既定値 0.5 (旧ファイル互換)。
+    {
+        Project ps;
+        ps.setActiveDomain(Domain::Underwater);
+        ps.underwater().bottomAlpha_dBlambda = 1.25;
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_uw_alpha_XXXXXX.ofdx");
+        if (f.open()) {
+            check(OfdxIO::save(f.fileName(), ps), "uw alpha ofdx save");
+            Project pl;
+            check(OfdxIO::load(f.fileName(), pl), "uw alpha ofdx load");
+            check(nearlyEq(pl.underwater().bottomAlpha_dBlambda, 1.25),
+                  "uw alpha ofdx round-trip");
+            check(nearlyEq(pl.underwater().bottomRho_kgm3, 1900.0),
+                  "uw alpha ofdx keeps sibling keys");
+            // JSON にキー名どおり書かれていること (改名検知)
+            QFile jf(f.fileName());
+            check(jf.open(QIODevice::ReadOnly), "uw alpha ofdx reopen");
+            const QJsonObject uw = QJsonDocument::fromJson(jf.readAll())
+                                       .object()["underwater"].toObject();
+            check(nearlyEq(uw.value("bottom_alpha_db_lambda").toDouble(), 1.25),
+                  "uw alpha ofdx key name");
+        }
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_uw_alpha_old_XXXXXX.ofdx");
+        if (old.open()) {
+            old.write(QByteArray(
+                "{ \"domain\": \"underwater\",\n"
+                "  \"underwater\": { \"bottom_type\": \"mud\",\n"
+                "                    \"bottom_c_mps\": 1520 } }\n"));
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3), "uw alpha legacy ofdx load");
+            check(nearlyEq(p3.underwater().bottomAlpha_dBlambda, 0.5),
+                  "uw alpha legacy ofdx keeps default 0.5");
+            check(p3.underwater().bottomType == "mud",
+                  "uw alpha legacy ofdx reads sibling keys");
+        }
     }
 
     // (d) 統合: 実カーネルがあれば .env を実行して .shd 生成まで確認

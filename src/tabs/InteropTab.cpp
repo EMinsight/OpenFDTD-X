@@ -21,6 +21,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QSet>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -42,16 +43,18 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_h_found", "検出", "Detected");
     ofd::I18n::reg("iop_h_alt", "未検出時の代替", "Fallback when not detected");
     ofd::I18n::reg("iop_found", "✓ 検出", "✓ Detected");
+    ofd::I18n::reg("iop_found_manual", "✓ 検出 (手動)", "✓ Detected (manual)");
     ofd::I18n::reg("iop_notfound", "未検出", "Not found");
     ofd::I18n::reg("iop_notimpl", "未実装", "Not implemented");
     ofd::I18n::reg("iop_watch_ph", "監視フォルダを選択…",
                    "Choose a folder to watch…");
     ofd::I18n::reg("iop_probe_tip",
         "PATH 上の実行ファイルと Python モジュール (importlib) で検出します。"
-        "GUI 専用の商用ツールは自動検出できないため常に「未検出」表示です",
+        "GUI 専用の商用ツールは自動検出できないため、実行体を手動設定 (📁) "
+        "しない限り「未検出」表示です",
         "Detected via executables on PATH and Python modules (importlib). "
-        "GUI-only commercial tools cannot be auto-detected and always show "
-        "\"Not found\"");
+        "GUI-only commercial tools cannot be auto-detected and show "
+        "\"Not found\" unless their executable is set manually (📁)");
     ofd::I18n::reg("iop_kind_oss", "OSS", "OSS");
     ofd::I18n::reg("iop_kind_free", "無償", "Freeware");
     ofd::I18n::reg("iop_kind_comm", "商用", "Commercial");
@@ -59,6 +62,21 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_rescan", "↻ 再スキャン", "↻ Rescan");
     ofd::I18n::reg("iop_setpath", "📁 ツールパスを手動設定…",
                    "📁 Set tool paths manually…");
+    ofd::I18n::reg("iop_setpath_tip",
+        "表で選択したツールの実行ファイルを直接指定します "
+        "(自動検出より優先、QSettings に保存)",
+        "Pick the executable for the tool selected in the table "
+        "(takes precedence over auto-detection; stored in QSettings)");
+    ofd::I18n::reg("iop_clearpath", "✕ 手動パスを解除", "✕ Clear manual path");
+    ofd::I18n::reg("iop_clearpath_tip",
+        "選択したツールの手動パス指定を解除します",
+        "Remove the manual path override for the selected tool");
+    ofd::I18n::reg("iop_pick_exe", "%1 の実行ファイルを選択",
+                   "Choose the executable for %1");
+    ofd::I18n::reg("iop_manual_at", "手動設定: %1", "Manually set: %1");
+    ofd::I18n::reg("iop_manual_missing",
+        "手動設定パスが見つかりません: %1",
+        "Manually set path not found: %1");
     ofd::I18n::reg("iop_policy",
         "▸ 方針: 商用ツールがなくても全ワークフローが内蔵ソルバで完結する設計。"
         "外部ツールは「あれば相互検証に使う」位置づけ。"
@@ -366,16 +384,39 @@ bool exeFound(const char *candidates)
     return false;
 }
 
-bool toolFound(const ToolRow &t)
+// ── ユーザ指定パス (手動設定) ───────────────────────────────────────────────
+// GUI 専用ツールや PATH 外のインストールは自動検出できないため、実行体を
+// QFileDialog で選ばせて QSettings に永続化する。キーはツール名から作る
+// (ドメイン間で名前は重複しないので名前が安定 ID になる)。
+QString toolPathKey(const char *name)
 {
+    // '/' は QSettings のグループ区切りになるため潰す (現状の名前には無い)
+    return QStringLiteral("interop/toolpath/")
+         + QString::fromUtf8(name).replace(QLatin1Char('/'), QLatin1Char('_'));
+}
+
+QString manualToolPath(const char *name)
+{
+    return QSettings().value(toolPathKey(name)).toString();
+}
+
+// 検出結果: 未検出 / 自動検出 (PATH・python) / 手動設定パス
+enum class Detect { NotFound, Auto, Manual };
+
+Detect toolDetect(const ToolRow &t)
+{
+    // ユーザが手動設定したパスを最優先 (実在すれば検出扱い)。
+    // 消えている場合は無視して自動検出へフォールバックする。
+    const QString mp = manualToolPath(t.name);
+    if (!mp.isEmpty() && QFileInfo(mp).isFile()) return Detect::Manual;
     if (!g_toolScan.scanned) {
         scanPythonModules();
         g_toolScan.scanned = true;
     }
-    if (t.exe && exeFound(t.exe)) return true;
+    if (t.exe && exeFound(t.exe)) return Detect::Auto;
     if (t.pymod && g_toolScan.pymods.contains(QString::fromLatin1(t.pymod)))
-        return true;
-    return false;
+        return Detect::Auto;
+    return Detect::NotFound;
 }
 
 // ドメイン → データ束 (mock の DATA[domain] || DATA.em 相当)
@@ -451,6 +492,9 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
     m_detected->verticalHeader()->setVisible(false);
     m_detected->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_detected->setWordWrap(false);
+    // 手動パス設定の対象ツールを行選択で指定する
+    m_detected->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_detected->setSelectionMode(QAbstractItemView::SingleSelection);
     sd->vbox()->addWidget(m_detected);
     auto *drow = new QHBoxLayout();
     auto *rescan = new QPushButton(I18n::tr("iop_rescan"), sd);
@@ -459,11 +503,19 @@ InteropTab::InteropTab(Project *project, QWidget *parent)
         rebuildDetected();
     });
     drow->addWidget(rescan);
-    // パス手動指定は未実装 — 押せる見た目にしない (絶対規則 5)
-    auto *setpath = new QPushButton(I18n::tr("iop_setpath"), sd);
-    setpath->setEnabled(false);
-    setpath->setToolTip(I18n::tr("iop_notimpl"));
-    drow->addWidget(setpath);
+    // ツールパスの手動設定: 表で選んだツールの実行体を QFileDialog で指定し
+    // QSettings ("interop/toolpath/<ツール名>") に保存する。解除ボタンで戻せる。
+    m_setPath = new QPushButton(I18n::tr("iop_setpath"), sd);
+    m_setPath->setToolTip(I18n::tr("iop_setpath_tip"));
+    connect(m_setPath, &QPushButton::clicked, this, &InteropTab::setManualPath);
+    drow->addWidget(m_setPath);
+    m_clearPath = new QPushButton(I18n::tr("iop_clearpath"), sd);
+    m_clearPath->setToolTip(I18n::tr("iop_clearpath_tip"));
+    connect(m_clearPath, &QPushButton::clicked,
+            this, &InteropTab::clearManualPath);
+    drow->addWidget(m_clearPath);
+    connect(m_detected, &QTableWidget::itemSelectionChanged,
+            this, &InteropTab::updatePathButtons);
     drow->addStretch(1);
     sd->vbox()->addLayout(drow);
     sd->vbox()->addWidget(hintLabel(I18n::tr("iop_policy"), sd));
@@ -591,13 +643,71 @@ void InteropTab::rebuildDetected()
         m_detected->setItem(r, 0, new QTableWidgetItem(QString::fromUtf8(t.name)));
         m_detected->setCellWidget(r, 1,
             badgeCell(I18n::tr(t.kindKey), kindIsFree(t.kindKey) ? "ok" : ""));
-        m_detected->setCellWidget(r, 2,
-            toolFound(t) ? badgeCell(I18n::tr("iop_found"), "ok")
-                         : badgeCell(I18n::tr("iop_notfound"), "warn"));
+        // 検出バッジ: 手動設定パスを最優先。ツールチップに実パスを出し、
+        // 設定済みなのにファイルが消えている場合はその旨も明示する。
+        const QString mp = manualToolPath(t.name);
+        QWidget *cell = nullptr;
+        switch (toolDetect(t)) {
+        case Detect::Manual:
+            cell = badgeCell(I18n::tr("iop_found_manual"), "ok");
+            cell->setToolTip(I18n::tr("iop_manual_at").arg(mp));
+            break;
+        case Detect::Auto:
+            cell = badgeCell(I18n::tr("iop_found"), "ok");
+            if (!mp.isEmpty())
+                cell->setToolTip(I18n::tr("iop_manual_missing").arg(mp));
+            break;
+        default:
+            cell = badgeCell(I18n::tr("iop_notfound"), "warn");
+            if (!mp.isEmpty())
+                cell->setToolTip(I18n::tr("iop_manual_missing").arg(mp));
+            break;
+        }
+        m_detected->setCellWidget(r, 2, cell);
         m_detected->setItem(r, 3, mutedItem(QString::fromUtf8(t.alt)));
     }
     m_detected->resizeRowsToContents();
     m_detected->setMinimumHeight(30 * d.nTools + 38);
+    updatePathButtons();    // 再構築で選択が消えるためボタン状態も追従させる
+}
+
+// 手動パス設定ボタンの有効化 (表の行選択に追従)
+void InteropTab::updatePathButtons()
+{
+    const DomainData d = dataFor(m_p->activeDomain());
+    const int r = m_detected->currentRow();
+    const bool sel = (r >= 0 && r < d.nTools);
+    m_setPath->setEnabled(sel);
+    m_clearPath->setEnabled(sel && !manualToolPath(d.tools[r].name).isEmpty());
+}
+
+// 選択ツールの実行体を QFileDialog で指定して QSettings に保存する
+void InteropTab::setManualPath()
+{
+    const DomainData d = dataFor(m_p->activeDomain());
+    const int r = m_detected->currentRow();
+    if (r < 0 || r >= d.nTools) return;
+    const ToolRow &t = d.tools[r];
+    const QString cur = manualToolPath(t.name);
+    const QString start = cur.isEmpty() ? QString()
+                                        : QFileInfo(cur).absolutePath();
+    const QString f = QFileDialog::getOpenFileName(
+        this, I18n::tr("iop_pick_exe").arg(QString::fromUtf8(t.name)), start);
+    if (f.isEmpty()) return;    // キャンセル
+    QSettings().setValue(toolPathKey(t.name), f);
+    rebuildDetected();
+    m_detected->setCurrentCell(r, 0);   // 再構築で消えた選択を戻す
+}
+
+// 選択ツールの手動パス指定を解除して自動検出へ戻す
+void InteropTab::clearManualPath()
+{
+    const DomainData d = dataFor(m_p->activeDomain());
+    const int r = m_detected->currentRow();
+    if (r < 0 || r >= d.nTools) return;
+    QSettings().remove(toolPathKey(d.tools[r].name));
+    rebuildDetected();
+    m_detected->setCurrentCell(r, 0);
 }
 
 // 🔗 インポート / エクスポート形式 (dir トグルで rows を差し替え)

@@ -809,7 +809,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     echecks->addWidget(new QCheckBox(I18n::tr("h5_embed_geom"), se));
     echecks->addStretch(1);
     se->form()->addRow(echecks);
-    // 動画設定・埋込オプションはエクスポート未実装のため反映先が無い
+    // 動画設定 (FPS/解像度/コーデック) と埋込オプションは ffmpeg 呼び出しに
+    // 反映されない (fps は速度コンボから決まる) — 未配線として明示する
     se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
     v->addWidget(se);
 

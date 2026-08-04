@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -121,9 +122,16 @@ const Tr kTr[] = {
     { "geoc_place_scale", "× スケール", "× scale" },
     { "geoc_place_offset", "オフセット (x,y,z)", "Offset (x,y,z)" },
     { "geoc_place_rot", "回転 (XYZ)", "Rotation (XYZ)" },
-    { "geoc_place_center", "モデル原点を計算領域中心に整列",
-      "Align the model origin with the domain centre" },
+    { "geoc_place_center", "モデル bbox 中心を原点に整列",
+      "Align the model bbox centre with the origin" },
     { "geoc_place_autoaxis", "主軸を自動検出", "Auto-detect principal axes" },
+    { "geoc_place_hint",
+      "取込 STL の頂点に スケール (単位換算 ×係数) → 中心合わせ → 回転 "
+      "(X→Y→Z, 原点基準) → オフセット [m] の順で適用され、プレビュー・計測・"
+      "ボクセル化に反映されます。",
+      "Applied to the imported STL vertices as scale (unit conversion × "
+      "factor) → centring → rotation (X→Y→Z about the origin) → offset [m]; "
+      "reflected in the preview, measurement and voxelization." },
 
     // ── ジオメトリ修復 / Healing ────────────────────────────────────────────
     { "geoc_heal_section", "ジオメトリ修復 / Healing (CAD cleanup)",
@@ -192,6 +200,27 @@ const Tr kTr[] = {
     { "geoc_prev_import", "📥 取込実行", "📥 Run import" },
     { "geoc_prev_3d", "👁 3Dプレビュー", "👁 3D preview" },
     { "geoc_prev_measure", "📐 寸法測定", "📐 Measure" },
+
+    // ── 寸法測定 / Measure (取込メッシュの実測値ダイアログ) ─────────────────
+    { "geoc_meas_title", "寸法測定", "Measure" },
+    { "geoc_meas_none",
+      "取込済みのモデルがありません。先に「取込実行」で STL を取り込んで"
+      "ください。",
+      "No imported model yet — load an STL with \"Run import\" first." },
+    { "geoc_meas_model", "モデル", "Model" },
+    { "geoc_meas_tri", "三角形数", "Triangles" },
+    { "geoc_meas_bbox", "bbox 寸法", "Bbox size" },
+    { "geoc_meas_range", "bbox 範囲 [m]", "Bbox extent [m]" },
+    { "geoc_meas_area", "表面積", "Surface area" },
+    { "geoc_meas_vol", "体積 (閉メッシュ前提)",
+      "Volume (assumes a closed mesh)" },
+    { "geoc_meas_placed",
+      "※ 配置・変換 (スケール/回転/オフセット) 適用後の値です。",
+      "Values are after placement (scale / rotation / offset)." },
+    { "geoc_meas_pick",
+      "▸ 2点間クリック計測は 3D ピッキング未実装のため未対応です。",
+      "▸ Point-to-point click measurement is not available (3D picking is "
+      "not implemented)." },
 
     // ── 取込済みモデル / Imported models ────────────────────────────────────
     { "geoc_models_section", "取込済みモデル / Imported models",
@@ -521,6 +550,46 @@ double meshVolume(const ImportedMesh &m)
               + z1 * (x2 * y3 - y2 * x3)) / 6.0;
     }
     return std::fabs(vol);
+}
+
+// 変換後のメッシュの bbox / 表面積を頂点から取り直す (StlImporter が取込時に
+// 求めるのと同じ定義: bbox = 全頂点の min/max、面積 = Σ|外積|/2)。
+void recomputeMeshStats(ImportedMesh &m)
+{
+    const int n = qMin(m.numTriangles, int(m.vertices.size() / 9));
+    if (n <= 0) return;
+    double lo[3] = { m.vertices[0], m.vertices[1], m.vertices[2] };
+    double hi[3] = { lo[0], lo[1], lo[2] };
+    double area = 0.0;
+    for (int t = 0; t < n; ++t) {
+        const float *p = m.vertices.constData() + t * 9;
+        for (int k = 0; k < 3; ++k)
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], double(p[k * 3 + a]));
+                hi[a] = std::max(hi[a], double(p[k * 3 + a]));
+            }
+        const double ux = p[3] - p[0], uy = p[4] - p[1], uz = p[5] - p[2];
+        const double vx = p[6] - p[0], vy = p[7] - p[1], vz = p[8] - p[2];
+        const double cx = uy * vz - uz * vy;
+        const double cy = uz * vx - ux * vz;
+        const double cz = ux * vy - uy * vx;
+        area += 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+    }
+    for (int a = 0; a < 3; ++a) {
+        m.bbox[a]     = lo[a];
+        m.bbox[3 + a] = hi[a];
+    }
+    m.surfaceArea = area;
+}
+
+// 頂点 p[3] を軸 axis まわりに回転 (原点基準・右手系 — rotateGeometry と同じ
+// 巡回規約: 軸 a の回転面は (u,v) = ((a+1)%3, (a+2)%3))。
+void rotateVertex(float *p, int axis, double cs, double sn)
+{
+    const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+    const double pu = p[u], pv = p[v];
+    p[u] = float(pu * cs - pv * sn);
+    p[v] = float(pu * sn + pv * cs);
 }
 
 // ── ユニット編集の座標変換 (Geometry::coordIndices = sol/ingeometry.c 準拠) ──
@@ -1131,16 +1200,21 @@ QWidget *GeometryTab::buildAssemblySection()
 }
 
 // ── 配置・変換 / Placement ─────────────────────────────────────────────────
+// 取込 STL へのアフィン変換 (applyPlacement) として実配線済み。既定値は
+// 恒等変換 (単位 m・×1・回転/オフセット 0・中心合わせ OFF) にして、設定を
+// 触らない限り従来の取込動作 (STL 座標を m とみなす) と完全一致させる。
 QWidget *GeometryTab::buildPlacementSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_place_section"));
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_place_hint"), s));
 
     auto *unitRowW = new QWidget(s);
     auto *uh = new QHBoxLayout(unitRowW);
     uh->setContentsMargins(0, 0, 0, 0);
     uh->setSpacing(6);
+    // 既定は m (index 1) — 従来どおり STL 座標をそのまま m として扱う
     uh->addWidget(segRow(unitRowW, &m_placeUnit,
-                         { "mm", "m", "μm", "nm", "inch" }, 0));
+                         { "mm", "m", "μm", "nm", "inch" }, 1));
     uh->addWidget(makeHint(I18n::tr("geoc_place_scale"), unitRowW));
     m_placeScale = makeSpin(unitRowW, 1e-6, 1e6, 3, 1.0, 0.1);
     uh->addWidget(m_placeScale);
@@ -1172,13 +1246,28 @@ QWidget *GeometryTab::buildPlacementSection()
     s->form()->addRow(I18n::tr("geoc_place_rot"), rotRow);
 
     auto *cr = new QHBoxLayout();
-    m_placeCenter = makeCheck(I18n::tr("geoc_place_center"), true, s);
+    // 既定 OFF — ON にすると取込時に bbox 中心を原点へ移動する (実配線)
+    m_placeCenter = makeCheck(I18n::tr("geoc_place_center"), false, s);
     m_placeAutoAxis = makeCheck(I18n::tr("geoc_place_autoaxis"), false, s);
+    tabhelp::markNotImplemented(m_placeAutoAxis);   // 主軸検出のみ未実装
     cr->addWidget(m_placeCenter);
     cr->addWidget(m_placeAutoAxis);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // 取込/ボクセル化とも未接続
+
+    // 設定変更 → 取込済みメッシュへ即時反映 (取込前は何もしない)
+    connect(m_placeUnit, &QButtonGroup::idClicked, this,
+            [this](int) { reapplyPlacement(); });
+    connect(m_placeScale, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { reapplyPlacement(); });
+    for (int i = 0; i < 3; ++i) {
+        connect(m_placeOffset[i], &QDoubleSpinBox::valueChanged, this,
+                [this](double) { reapplyPlacement(); });
+        connect(m_placeRot[i], &QDoubleSpinBox::valueChanged, this,
+                [this](double) { reapplyPlacement(); });
+    }
+    connect(m_placeCenter, &QCheckBox::toggled, this,
+            [this](bool) { reapplyPlacement(); });
     return s;
 }
 
@@ -1262,7 +1351,6 @@ QWidget *GeometryTab::buildPreviewSection()
     auto *prev3dBtn = new QPushButton(I18n::tr("geoc_prev_3d"), s);
     auto *measureBtn = new QPushButton(I18n::tr("geoc_prev_measure"), s);
     tabhelp::markNotImplemented(prev3dBtn);
-    tabhelp::markNotImplemented(measureBtn);
     hr->addWidget(prev3dBtn);
     hr->addWidget(measureBtn);
     hr->addStretch(1);
@@ -1270,6 +1358,9 @@ QWidget *GeometryTab::buildPreviewSection()
 
     // 取込実行 = 実際の STL 取込 (io/StlImporter)
     connect(runImport, &QPushButton::clicked, this, &GeometryTab::importStl);
+    // 寸法測定 = 取込メッシュの実測値ダイアログ
+    connect(measureBtn, &QPushButton::clicked, this,
+            &GeometryTab::showMeasureDialog);
     return s;
 }
 
@@ -1527,22 +1618,144 @@ void GeometryTab::importStl()
         return;
     }
 
-    // Keep the mesh so the user can voxelize it onto the Yee grid.
-    m_lastMesh = mesh;
+    // 変換前の生メッシュを保持し、配置・変換 (placement) を適用したものを
+    // プレビュー・計測・ボクセル化に使う (恒等変換なら取込そのまま)。
+    m_rawMesh = mesh;
+    m_lastMesh = applyPlacement(mesh);
     m_hasMesh = true;
     m_voxBtn->setEnabled(true);
     if (m_cadFile) m_cadFile->setText(path);
 
+    const ImportedMesh &shown = m_lastMesh;   // 配置・変換適用後の実測値
     m_importInfo->setText(QStringLiteral(
         "%1 — %2 triangles, area %3 m², bbox [%4, %5]×[%6, %7]×[%8, %9]\n%10")
-        .arg(mesh.name).arg(mesh.numTriangles)
-        .arg(QString::number(mesh.surfaceArea, 'g', 4))
-        .arg(QString::number(mesh.bbox[0], 'g', 4), QString::number(mesh.bbox[3], 'g', 4),
-             QString::number(mesh.bbox[1], 'g', 4), QString::number(mesh.bbox[4], 'g', 4),
-             QString::number(mesh.bbox[2], 'g', 4), QString::number(mesh.bbox[5], 'g', 4))
+        .arg(shown.name).arg(shown.numTriangles)
+        .arg(QString::number(shown.surfaceArea, 'g', 4))
+        .arg(QString::number(shown.bbox[0], 'g', 4), QString::number(shown.bbox[3], 'g', 4),
+             QString::number(shown.bbox[1], 'g', 4), QString::number(shown.bbox[4], 'g', 4),
+             QString::number(shown.bbox[2], 'g', 4), QString::number(shown.bbox[5], 'g', 4))
         .arg(I18n::tr("ge_voxelize_hint")));
 
     refreshImportBadges();
+}
+
+// ── 配置・変換 (placement) の適用 ──────────────────────────────────────────
+// 取込 STL の頂点へ スケール (単位換算 ×係数) → 中心合わせ (bbox 中心を
+// 原点へ) → 回転 (X→Y→Z, 原点基準) → オフセット [m] の順にアフィン変換を
+// かけ、bbox / 表面積を頂点から取り直す。恒等変換ならメッシュをそのまま返す
+// (既定値では従来の取込動作と完全一致)。純幾何処理 — StlImporter / Voxelizer
+// は変更しない。
+ImportedMesh GeometryTab::applyPlacement(const ImportedMesh &src) const
+{
+    // 単位ボタン (mm / m / μm / nm / inch) → m 換算係数
+    static const double kUnit[5] = { 1e-3, 1.0, 1e-6, 1e-9, 0.0254 };
+    int ui = m_placeUnit ? m_placeUnit->checkedId() : 1;
+    if (ui < 0 || ui >= 5) ui = 1;
+    const double s = kUnit[ui] * (m_placeScale ? m_placeScale->value() : 1.0);
+
+    double off[3], rot[3];
+    bool hasOff = false, hasRot = false;
+    for (int a = 0; a < 3; ++a) {
+        off[a] = m_placeOffset[a] ? m_placeOffset[a]->value() : 0.0;
+        rot[a] = m_placeRot[a]    ? m_placeRot[a]->value()    : 0.0;
+        hasOff = hasOff || off[a] != 0.0;
+        hasRot = hasRot || rot[a] != 0.0;
+    }
+    const bool center = m_placeCenter && m_placeCenter->isChecked();
+    if (s == 1.0 && !center && !hasRot && !hasOff)
+        return src;   // 恒等変換 — 従来どおり無変換
+
+    ImportedMesh m = src;
+    const int nv = m.vertices.size() / 3;   // 頂点数 (3 float / 頂点)
+    float *vp = m.vertices.data();
+
+    // 1) スケール (単位換算 × 任意係数)
+    if (s != 1.0)
+        for (int i = 0; i < nv * 3; ++i)
+            vp[i] = float(double(vp[i]) * s);
+
+    // 2) 中心合わせ: スケール後の bbox 中心を原点へ
+    if (center) {
+        recomputeMeshStats(m);
+        const double c[3] = { (m.bbox[0] + m.bbox[3]) / 2.0,
+                              (m.bbox[1] + m.bbox[4]) / 2.0,
+                              (m.bbox[2] + m.bbox[5]) / 2.0 };
+        for (int i = 0; i < nv; ++i)
+            for (int a = 0; a < 3; ++a)
+                vp[i * 3 + a] = float(double(vp[i * 3 + a]) - c[a]);
+    }
+
+    // 3) 回転 X → Y → Z (原点基準 — 中心合わせ ON なら bbox 中心基準になる)
+    if (hasRot)
+        for (int axis = 0; axis < 3; ++axis) {
+            if (rot[axis] == 0.0) continue;
+            const double th = rot[axis] * M_PI / 180.0;
+            const double cs = std::cos(th), sn = std::sin(th);
+            for (int i = 0; i < nv; ++i)
+                rotateVertex(vp + i * 3, axis, cs, sn);
+        }
+
+    // 4) オフセット [m]
+    if (hasOff)
+        for (int i = 0; i < nv; ++i)
+            for (int a = 0; a < 3; ++a)
+                vp[i * 3 + a] = float(double(vp[i * 3 + a]) + off[a]);
+
+    recomputeMeshStats(m);
+    return m;
+}
+
+// 配置・変換の設定変更 → 取込済みメッシュへ変換をかけ直して表示を更新。
+// ボクセル化は m_lastMesh を読むので、次回実行から自動的に反映される。
+void GeometryTab::reapplyPlacement()
+{
+    if (!m_hasMesh) return;
+    m_lastMesh = applyPlacement(m_rawMesh);
+    refreshImportBadges();
+}
+
+// ── 寸法測定 / Measure ─────────────────────────────────────────────────────
+// 取込メッシュ (配置・変換適用後) の bbox 寸法・表面積 (StlImporter と同じ
+// 定義で再計算) と meshVolume() の体積 (発散定理 — 閉メッシュ前提) をまとめて
+// 表示する。2点間クリック計測は 3D ピッキング未実装のため対象外 (明記)。
+void GeometryTab::showMeasureDialog()
+{
+    if (!m_hasMesh) {
+        QMessageBox::information(this, I18n::tr("geoc_meas_title"),
+                                 I18n::tr("geoc_meas_none"));
+        return;
+    }
+    const ImportedMesh &m = m_lastMesh;
+    const double sx = (m.bbox[3] - m.bbox[0]) * 1e3;   // m → mm
+    const double sy = (m.bbox[4] - m.bbox[1]) * 1e3;
+    const double sz = (m.bbox[5] - m.bbox[2]) * 1e3;
+    const double volCm3 = meshVolume(m) * 1e6;         // m³ → cm³
+
+    auto line = [](const QString &label, const QString &value) {
+        return label + QStringLiteral(": ") + value;
+    };
+    const QString range =
+        QString::fromUtf8("X [%1, %2] · Y [%3, %4] · Z [%5, %6]")
+            .arg(QString::number(m.bbox[0], 'g', 4), QString::number(m.bbox[3], 'g', 4),
+                 QString::number(m.bbox[1], 'g', 4), QString::number(m.bbox[4], 'g', 4),
+                 QString::number(m.bbox[2], 'g', 4), QString::number(m.bbox[5], 'g', 4));
+    const QString body =
+        line(I18n::tr("geoc_meas_model"), m.name) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_tri"), groupNum(m.numTriangles)) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_bbox"),
+             QString::fromUtf8("%1 × %2 × %3 mm")
+                 .arg(QString::number(sx, 'f', 1), QString::number(sy, 'f', 1),
+                      QString::number(sz, 'f', 1))) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_range"), range) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_area"),
+             QString::number(m.surfaceArea, 'g', 4)
+                 + QString::fromUtf8(" m²")) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_vol"),
+             QString::number(volCm3, 'f', 2) + QString::fromUtf8(" cm³"))
+      + QStringLiteral("\n\n")
+      + I18n::tr("geoc_meas_placed") + QLatin1Char('\n')
+      + I18n::tr("geoc_meas_pick");
+    QMessageBox::information(this, I18n::tr("geoc_meas_title"), body);
 }
 
 void GeometryTab::voxelizeImported()

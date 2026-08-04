@@ -54,6 +54,8 @@ private:
     QCheckBox      *m_sofar;
     QComboBox      *m_bottomType;
     QDoubleSpinBox *m_bottomC, *m_bottomRho;
+    QDoubleSpinBox *m_bottomAlpha;        // 吸収係数 α [dB/λ] (.ofdx
+                                          // bottom_alpha_db_lambda → BellhopIO)
     QDoubleSpinBox *m_sonarFreq, *m_sonarSL, *m_rangeMax;
 
     // ── モック (tabs.jsx UnderwaterTab) 追加分 ────────────────────────────
@@ -71,8 +73,6 @@ private:
     QLabel         *m_c0;                 // 基準音速 c₀ (計算値)
     QLabel         *m_sofarHint;          // → SOFARチャネル深度 ~1200m
     UwSspPlot      *m_sspPlot;
-
-    QDoubleSpinBox *m_bottomAlpha;        // 吸収係数 α [dB/λ]
 
     QDoubleSpinBox *m_waveHeight;         // 波高 [m]
     QCheckBox      *m_surfSpecular, *m_surfBragg;
