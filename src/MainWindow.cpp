@@ -821,6 +821,17 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
+    // プロジェクトのディレクトリに既存の HDF5 結果があれば H5 アニメタブへ
+    // 自動セットする (どのファイルを見ているかは同タブに常に明示される。
+    // 「この実行の結果」とは扱わない — 2D 断面への反映は実行時の mtime
+    // ゲート付き経路のみが行う)
+    const QString h5 = QFileInfo(p).dir()
+                           .filePath(QStringLiteral("time_series_data.h5"));
+    if (QFileInfo::exists(h5)) {
+        if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer))
+            viewer->openFile(h5);
+        m_rightDock->appendLog(I18n::tr("log_h5_found").arg(h5));
+    }
     updateWindowTitle();
 }
 

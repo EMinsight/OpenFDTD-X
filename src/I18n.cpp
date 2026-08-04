@@ -1015,6 +1015,10 @@ void I18n::loadTables() {
         "far1d.log の遠方界パターン (%1 面) を結果プロットに反映しました",
         "Loaded the far-field pattern from far1d.log (%1 cuts) into the "
         "result plot");
+    add("log_h5_found",
+        "既存の HDF5 結果を検出し H5アニメタブへセットしました: %1",
+        "Found an existing HDF5 result and set it on the H5 Animation "
+        "tab: %1");
     add("log_h5_anime",
         "伝搬の時系列は「H5アニメ」タブで再生できます (実行結果を読込済み)",
         "Play the propagation time series in the H5 Animation tab (this "
