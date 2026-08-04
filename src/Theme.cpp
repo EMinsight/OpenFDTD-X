@@ -7,9 +7,11 @@
 // 配色を上書きする (scientific 自体が暗色なので dark 適用後も破綻しない)。
 #include "Theme.h"
 
+#include <QApplication>
 #include <QColor>
 #include <QFontDatabase>
 #include <QStringList>
+#include <QStyleHints>
 
 namespace ofd {
 
@@ -911,6 +913,62 @@ QString buildQss(const Palette &p)
 QString Theme::qss(UiStyle style, UiTheme theme, Density density, Domain domain)
 {
     return buildQss(makePalette(style, theme, density, domain));
+}
+
+// QSS と同じ配色を QPalette へ写す。
+// QSS でカバーできない描画 (スタイルが自前で描く枠・フォーカスリング・
+// プレースホルダ・無効表示など) が OS の外観を拾って暗色テーマに白い箱が
+// 混ざる事故を防ぐ (macOS のライト/ダーク切替で実際に起きる)。
+QPalette Theme::palette(UiStyle style, UiTheme theme, Domain domain)
+{
+    // 密度は配色に影響しないので Normal 固定でよい
+    const Palette p = makePalette(style, theme, Density::Normal, domain);
+    const QColor bgApp(p.bgApp), bgInput(p.bgInput), bgPanel(p.bgPanel);
+    const QColor fgApp(p.fgApp), fgMuted(p.fgMuted), fgDim(p.fgDim);
+    const QColor accent(p.accent), accentFg(p.accentFg);
+
+    QPalette q;
+    q.setColor(QPalette::Window,          bgApp);
+    q.setColor(QPalette::WindowText,      fgApp);
+    q.setColor(QPalette::Base,            bgInput);
+    q.setColor(QPalette::AlternateBase,   QColor(p.bgRowAlt));
+    q.setColor(QPalette::Text,            fgApp);
+    q.setColor(QPalette::PlaceholderText, fgMuted);
+    q.setColor(QPalette::Button,          QColor(p.bgButton));
+    q.setColor(QPalette::ButtonText,      fgApp);
+    q.setColor(QPalette::ToolTipBase,     bgPanel);
+    q.setColor(QPalette::ToolTipText,     fgApp);
+    q.setColor(QPalette::Highlight,       accent);
+    q.setColor(QPalette::HighlightedText, accentFg);
+    q.setColor(QPalette::Link,            accent);
+    q.setColor(QPalette::LinkVisited,     QColor(p.accentPressed));
+    q.setColor(QPalette::Mid,             QColor(p.border));
+    q.setColor(QPalette::Dark,            QColor(p.borderStrong));
+    q.setColor(QPalette::Light,           QColor(p.borderSoft));
+    q.setColor(QPalette::Shadow,          QColor(p.borderStrong));
+    // 無効表示は個別に落とす (既定の自動計算は OS 外観に引きずられる)
+    for (QPalette::ColorRole r : { QPalette::WindowText, QPalette::Text,
+                                   QPalette::ButtonText })
+        q.setColor(QPalette::Disabled, r, fgDim);
+    q.setColor(QPalette::Disabled, QPalette::Base,       bgApp);
+    q.setColor(QPalette::Disabled, QPalette::Highlight,  QColor(p.bgSelected));
+    return q;
+}
+
+void Theme::apply(UiStyle style, UiTheme theme, Density density, Domain domain)
+{
+    const bool dark = isDarkPalette(style, theme);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    // Qt 6.8+ はスタイルが自前で描く部分に OS のカラースキームを使う。
+    // 明示しないと「暗色テーマなのに OS がライト」で配色が混ざる。
+    if (auto *hints = QGuiApplication::styleHints())
+        hints->setColorScheme(dark ? Qt::ColorScheme::Dark
+                                   : Qt::ColorScheme::Light);
+#endif
+    // パレット → QSS の順 (QSS が最終的に上書きする)
+    qApp->setPalette(palette(style, theme, domain));
+    qApp->setStyleSheet(qss(style, theme, density, domain));
+    Q_UNUSED(dark);
 }
 
 // styles.css の --ff-ui / --ff-mono の並び順をそのまま優先順位として解決する。
