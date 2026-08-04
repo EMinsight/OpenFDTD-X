@@ -57,6 +57,14 @@ public:
     // 探索順どおりに実在するバイナリの絶対パスを返す。見つからなければ空。
     static QString resolveSolver(const AcousticRunConfig &cfg);
 
+    // 外部音響ソルバーの既定パス (GUI の「カーネルパスの設定」で保存する
+    // グローバル設定)。プロジェクト側 (.ofdx solver.executable) が空のときに
+    // 使う — 他のカーネル (Runner::kernelDirSetting) と同じ位置づけ。
+    // ディレクトリではなく実行ファイルのパスを保持する (探索名が
+    // バックエンドで変わるため)。
+    static QString solverPathSetting();
+    static void    setSolverPathSetting(const QString &path);
+
 signals:
     void started();
     void logLine(const QString &line);     // forwarded stdout/stderr

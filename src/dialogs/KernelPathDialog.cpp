@@ -1,6 +1,7 @@
 // KernelPathDialog.cpp
 #include "KernelPathDialog.h"
 #include "../I18n.h"
+#include "../kernel/AcousticRunner.h"
 
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -38,6 +39,27 @@ const bool s_i18n = [] {
     ofd::I18n::reg("kp_found",    "✓ %1",                   "✓ %1");
     ofd::I18n::reg("kp_notfound", "未検出 (環境変数・PATH でも見つかりません)",
                    "Not found (also missing from env vars and PATH)");
+    // ドメイン見出し (行がどのドメインで使われるかを示す)
+    ofd::I18n::reg("kp_grp_em",       "電磁波", "Electromagnetic");
+    ofd::I18n::reg("kp_grp_optical",  "光",     "Optical");
+    ofd::I18n::reg("kp_grp_acoustic", "室内音響", "Room acoustics");
+    ofd::I18n::reg("kp_grp_uw",       "水中音響", "Underwater acoustics");
+    ofd::I18n::reg("kp_grp_active",   " (現在のドメイン)", " (current domain)");
+    // 室内音響: 外部ソルバーは実行ファイル指定 + プロジェクト個別指定が優先
+    ofd::I18n::reg("kp_acoustic", "外部音響ソルバー", "External acoustic solver");
+    ofd::I18n::reg("kp_acoustic_ph", "$OFDX_ACOUSTIC_SOLVER",
+                   "$OFDX_ACOUSTIC_SOLVER");
+    ofd::I18n::reg("kp_acoustic_note",
+        "▸ 室内音響だけはディレクトリではなく実行ファイルを指定します "
+        "(探索名がバックエンドで変わるため)。ここは全プロジェクト共通の既定で、"
+        "プロジェクト個別の指定 (音響ソルバ連携タブ) があればそちらが優先されます。"
+        "外部ソルバー本体は別リポジトリで開発中です。",
+        "Room acoustics takes an executable, not a directory (the binary name "
+        "depends on the backend). This is the default shared by every project; "
+        "a per-project path (Acoustic solver tab) takes precedence. The "
+        "external solver itself is developed in a separate repository.");
+    ofd::I18n::reg("kp_browse_file", "実行ファイルを選択",
+                   "Choose solver executable");
     return true;
 }();
 
@@ -52,19 +74,42 @@ const char *rowLabelKey(Kernel k)
     }
     return "kp_em";
 }
+
+const char *groupLabelKey(Domain d)
+{
+    switch (d) {
+        case Domain::EM:         return "kp_grp_em";
+        case Domain::Optical:    return "kp_grp_optical";
+        case Domain::Acoustic:   return "kp_grp_acoustic";
+        case Domain::Underwater: return "kp_grp_uw";
+    }
+    return "kp_grp_em";
+}
 } // namespace
 
-KernelPathDialog::KernelPathDialog(QWidget *parent)
+KernelPathDialog::KernelPathDialog(QWidget *parent, Domain activeDomain,
+                                   bool markActiveDomain)
     : QDialog(parent)
 {
     setWindowTitle(I18n::tr("kp_title"));
     setModal(true);
-    setMinimumWidth(640);
+    setMinimumWidth(660);
 
-    m_rows[0].kernel = Kernel::FDTD;
-    m_rows[1].kernel = Kernel::RCWA;
-    m_rows[2].kernel = Kernel::BPM;
-    m_rows[3].kernel = Kernel::Bellhop;
+    // ドメイン順に並べる (電磁 → 光 2 本 → 室内音響 → 水中音響)
+    const struct { Domain domain; bool acoustic; Kernel kernel; } kDefs[] = {
+        { Domain::EM,         false, Kernel::FDTD    },
+        { Domain::Optical,    false, Kernel::RCWA    },
+        { Domain::Optical,    false, Kernel::BPM     },
+        { Domain::Acoustic,   true,  Kernel::FDTD    },   // kernel は未使用
+        { Domain::Underwater, false, Kernel::Bellhop },
+    };
+    for (const auto &d : kDefs) {
+        Row r;
+        r.domain = d.domain;
+        r.acoustic = d.acoustic;
+        r.kernel = d.kernel;
+        m_rows.push_back(r);
+    }
 
     auto *v = new QVBoxLayout(this);
     auto *hint = new QLabel(I18n::tr("kp_hint"), this);
@@ -76,30 +121,68 @@ KernelPathDialog::KernelPathDialog(QWidget *parent)
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     v->addLayout(form);
 
-    for (int i = 0; i < 4; ++i) {
+    Domain lastGroup = Domain::EM;
+    bool haveGroup = false;
+    for (int i = 0; i < m_rows.size(); ++i) {
         Row &row = m_rows[i];
+
+        // ドメインが変わったら見出しを挟む (タブで隠さず 1 画面に並べる)
+        if (!haveGroup || row.domain != lastGroup) {
+            QString text = I18n::tr(groupLabelKey(row.domain));
+            if (markActiveDomain && row.domain == activeDomain)
+                text += I18n::tr("kp_grp_active");
+            auto *head = new QLabel(text, this);
+            QFont f = head->font();
+            f.setBold(true);
+            head->setFont(f);
+            const bool active = markActiveDomain && row.domain == activeDomain;
+            head->setStyleSheet(active
+                ? QStringLiteral("color:%1; margin-top:6px;").arg(accentColor(row.domain))
+                : QStringLiteral("margin-top:6px;"));
+            form->addRow(head);
+            lastGroup = row.domain;
+            haveGroup = true;
+        }
+
         auto *cell = new QVBoxLayout();
         auto *h = new QHBoxLayout();
-        row.dir = new QLineEdit(Runner::kernelDirSetting(row.kernel), this);
+        row.dir = new QLineEdit(
+            row.acoustic ? AcousticRunner::solverPathSetting()
+                         : Runner::kernelDirSetting(row.kernel), this);
         row.dir->setPlaceholderText(
-            QLatin1String(Runner::homeVarFor(row.kernel)));
+            row.acoustic ? I18n::tr("kp_acoustic_ph")
+                         : QLatin1String(Runner::homeVarFor(row.kernel)));
         h->addWidget(row.dir, 1);
         auto *browse = new QPushButton(I18n::tr("kp_browse"), this);
         connect(browse, &QPushButton::clicked, this, [this, i] {
-            const QString d = QFileDialog::getExistingDirectory(
-                this, I18n::tr("kp_title"), m_rows[i].dir->text());
-            if (!d.isEmpty()) m_rows[i].dir->setText(d);
+            Row &r = m_rows[i];
+            // 室内音響は実行ファイル、他はディレクトリを選ばせる
+            const QString picked = r.acoustic
+                ? QFileDialog::getOpenFileName(this,
+                      I18n::tr("kp_browse_file"), r.dir->text())
+                : QFileDialog::getExistingDirectory(this,
+                      I18n::tr("kp_title"), r.dir->text());
+            if (!picked.isEmpty()) r.dir->setText(picked);
         });
         h->addWidget(browse);
         cell->addLayout(h);
         row.status = new QLabel(this);
         row.status->setStyleSheet("font-size:11px;");
         cell->addWidget(row.status);
-        form->addRow(I18n::tr(rowLabelKey(row.kernel)), cell);
+        form->addRow(row.acoustic ? I18n::tr("kp_acoustic")
+                                  : I18n::tr(rowLabelKey(row.kernel)), cell);
 
         connect(row.dir, &QLineEdit::textChanged, this,
                 [this, i] { updateStatus(i); });
         updateStatus(i);
+
+        // 室内音響の但し書き (指定の粒度と優先順位が他と違うため)
+        if (row.acoustic) {
+            auto *note = new QLabel(I18n::tr("kp_acoustic_note"), this);
+            note->setWordWrap(true);
+            note->setStyleSheet("font-size:11px; color:palette(mid);");
+            form->addRow(note);
+        }
     }
 
     auto *buttons = new QDialogButtonBox(
@@ -118,12 +201,20 @@ KernelPathDialog::KernelPathDialog(QWidget *parent)
 void KernelPathDialog::updateStatus(int i)
 {
     Row &row = m_rows[i];
-    RunConfig cfg;
-    cfg.kernel = row.kernel;
-    cfg.binaryDir = row.dir->text().trimmed();
-    const QString bin = Runner::resolvedSolverPath(cfg);
-    const bool found = !bin.isEmpty();
-    if (found) {
+    QString bin;
+    if (row.acoustic) {
+        // 入力欄の値を「明示指定」として解決する (保存前でも結果が見える)。
+        // 空欄なら現在の設定・環境変数・kernel/・PATH の探索結果を出す。
+        AcousticRunConfig cfg;
+        cfg.executable = row.dir->text().trimmed();
+        bin = AcousticRunner::resolveSolver(cfg);
+    } else {
+        RunConfig cfg;
+        cfg.kernel = row.kernel;
+        cfg.binaryDir = row.dir->text().trimmed();
+        bin = Runner::resolvedSolverPath(cfg);
+    }
+    if (!bin.isEmpty()) {
         row.status->setText(I18n::tr("kp_found").arg(bin));
         row.status->setStyleSheet("font-size:11px; color:#0F7B0F;");
     } else {
@@ -134,6 +225,9 @@ void KernelPathDialog::updateStatus(int i)
 
 void KernelPathDialog::saveAll()
 {
-    for (const Row &row : m_rows)
-        Runner::setKernelDirSetting(row.kernel, row.dir->text().trimmed());
+    for (const Row &row : m_rows) {
+        const QString value = row.dir->text().trimmed();
+        if (row.acoustic) AcousticRunner::setSolverPathSetting(value);
+        else              Runner::setKernelDirSetting(row.kernel, value);
+    }
 }

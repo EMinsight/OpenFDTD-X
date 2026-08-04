@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 
 using namespace ofd;
@@ -25,6 +26,23 @@ static QString solverBaseName(AcousticBackend backend) {
                : QStringLiteral("ofdx_acoustic_fdtd");
 }
 
+// 外部音響ソルバーの既定パス (グローバル設定)。他カーネルの
+// Runner::kernelDirSetting と同じ QSettings 領域に置く。
+QString AcousticRunner::solverPathSetting()
+{
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    return s.value(QStringLiteral("OFDX_ACOUSTIC_SOLVER")).toString();
+}
+
+void AcousticRunner::setSolverPathSetting(const QString &path)
+{
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    if (path.isEmpty()) s.remove(QStringLiteral("OFDX_ACOUSTIC_SOLVER"));
+    else                s.setValue(QStringLiteral("OFDX_ACOUSTIC_SOLVER"), path);
+}
+
 QString AcousticRunner::resolveSolver(const AcousticRunConfig &cfg)
 {
     // ⓪ 明示指定 (`.ofdx` solver.executable / UI 入力) は探索より優先。
@@ -32,6 +50,13 @@ QString AcousticRunner::resolveSolver(const AcousticRunConfig &cfg)
     //    バイナリを黙って使わないため)。
     if (!cfg.executable.isEmpty())
         return QFileInfo::exists(cfg.executable) ? cfg.executable : QString();
+
+    // ①' GUI の「カーネルパスの設定」で指定した既定パス。
+    //     他のカーネル (Runner: binaryDir → GUI 設定 → 環境変数 → PATH) と
+    //     並びを揃える。既定は空なので、未設定なら従来の探索と完全に同じ。
+    const QString uiSolver = solverPathSetting();
+    if (!uiSolver.isEmpty())
+        return QFileInfo::exists(uiSolver) ? uiSolver : QString();
 
     // ① $OFDX_ACOUSTIC_SOLVER: 絶対パス直接指定 (CI/開発オーバーライド)
     const QString envSolver = qEnvironmentVariable("OFDX_ACOUSTIC_SOLVER");

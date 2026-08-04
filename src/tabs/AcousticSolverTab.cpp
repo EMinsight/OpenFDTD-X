@@ -67,7 +67,12 @@ const bool s_i18n = [] {
     I18n::reg("acs_col_use", "用途", "Purpose");
     I18n::reg("acs_o1", "cfg.executable (明示指定)",
               "cfg.executable (explicit path)");
-    I18n::reg("acs_o1_use", "最優先", "Highest priority");
+    I18n::reg("acs_o1_use", "最優先 (このプロジェクト限り)",
+              "Highest priority (this project only)");
+    I18n::reg("acs_o1b", "ツール → カーネルパスの設定 (室内音響)",
+              "Tools → Kernel paths (room acoustics)");
+    I18n::reg("acs_o1b_use", "全プロジェクト共通の既定パス",
+              "Default path shared by every project");
     I18n::reg("acs_o2_use", "絶対パス直接指定 (CI/開発オーバーライド)",
               "Direct absolute path (CI / dev override)");
     I18n::reg("acs_o3", "$OPENFDTD_ACOUSTICS_HOME 配下",
@@ -248,10 +253,11 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     const struct { const char *n; const char *where; bool whereIsKey;
                    const char *useKey; } kOrder[] = {
         { "1", "acs_o1", true, "acs_o1_use" },
-        { "2", "$OFDX_ACOUSTIC_SOLVER", false, "acs_o2_use" },
-        { "3", "acs_o3", true, "acs_o3_use" },
-        { "4", "acs_o4", true, "acs_o4_use" },
-        { "5", "PATH", false, "acs_o5_use" },
+        { "2", "acs_o1b", true, "acs_o1b_use" },
+        { "3", "$OFDX_ACOUSTIC_SOLVER", false, "acs_o2_use" },
+        { "4", "acs_o3", true, "acs_o3_use" },
+        { "5", "acs_o4", true, "acs_o4_use" },
+        { "6", "PATH", false, "acs_o5_use" },
     };
     for (const auto &row : kOrder) {
         const int r = resTable->rowCount();
