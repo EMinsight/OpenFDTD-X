@@ -469,6 +469,78 @@ static void testRoomAcoustics()
             check(qs.size() == 4 &&
                   qs[0].name == QString::fromUtf8("空調吹出口"),
                   "legacy ofdx keeps default noise sources");
+            // AcousticTab 追加設定: キー無しの旧ファイルは既定値のまま
+            const AcousticOpts &la = p3.acoustic();
+            check(!la.lf && la.analysisType == 0 &&
+                  la.thirdOctave && la.bandRange == 2,
+                  "legacy ofdx keeps AcousticTab defaults");
+            check(nearlyEq(la.srcX_m, -3.0) && nearlyEq(la.srcY_m, 1.6) &&
+                  nearlyEq(la.srcZ_m, 5.0) &&
+                  nearlyEq(la.srcAimTheta_deg, 90.0) &&
+                  nearlyEq(la.srcAimPhi_deg, 0.0),
+                  "legacy ofdx keeps default source pos/aim");
+        }
+    }
+
+    // AcousticTab 追加設定 (LF / 音源位置・向き / 解析タイプ / 帯域):
+    // .ofdx ラウンドトリップ + 既存キー保全
+    {
+        Project ps;
+        AcousticOpts &a = ps.acoustic();
+        a.lf = true;
+        a.srcX_m = 1.5; a.srcY_m = 2.5; a.srcZ_m = -3.5;
+        a.srcAimTheta_deg = 45.0; a.srcAimPhi_deg = 30.0;
+        a.analysisType = 2;
+        a.thirdOctave = false;
+        a.bandRange = 1;
+        QTemporaryFile f3;
+        f3.setFileTemplate(QDir::tempPath() + "/ofdx_actab_XXXXXX.ofdx");
+        if (f3.open()) {
+            check(OfdxIO::save(f3.fileName(), ps), "actab ofdx save");
+            Project pl;
+            check(OfdxIO::load(f3.fileName(), pl), "actab ofdx load");
+            const AcousticOpts &q = pl.acoustic();
+            check(q.lf, "actab lf round-trip");
+            check(nearlyEq(q.srcX_m, 1.5) && nearlyEq(q.srcY_m, 2.5) &&
+                  nearlyEq(q.srcZ_m, -3.5), "actab src pos round-trip");
+            check(nearlyEq(q.srcAimTheta_deg, 45.0) &&
+                  nearlyEq(q.srcAimPhi_deg, 30.0), "actab src aim round-trip");
+            check(q.analysisType == 2, "actab analysis type round-trip");
+            check(!q.thirdOctave && q.bandRange == 1, "actab band round-trip");
+
+            // 保存 JSON に新キーが在り、既存 acoustic キーも保全されること
+            QFile jf(f3.fileName());
+            check(jf.open(QIODevice::ReadOnly), "actab ofdx reopen");
+            const QJsonObject ac = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("acoustic").toObject();
+            check(ac.contains("lf") && ac.contains("analysis_type") &&
+                  ac.contains("third_octave") && ac.contains("band_range"),
+                  "actab json keys present");
+            check(ac.value("src_pos_m").toArray().size() == 3 &&
+                  ac.value("src_aim_deg").toArray().size() == 2,
+                  "actab json src pos/aim arrays");
+            check(ac.contains("rt60") && ac.contains("mic_count") &&
+                  ac.contains("noise_levels"),
+                  "actab json keeps existing acoustic keys");
+        }
+    }
+
+    // 壊れた .ofdx の範囲外 int はクランプされ不正な選択を作らない
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_actab_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"analysis_type\": 9,"
+                "                  \"band_range\": -2 } }";
+            bad.write(broken);
+            bad.flush();
+            Project pb;
+            check(OfdxIO::load(bad.fileName(), pb), "actab broken ofdx load");
+            check(pb.acoustic().analysisType == 2 &&
+                  pb.acoustic().bandRange == 0,
+                  "actab out-of-range ints clamped");
         }
     }
 }
@@ -1581,6 +1653,181 @@ static void testRcwaCore()
     }
 }
 
+// 光解析モード別設定 (BPF 設計目標 / Ring ポート / 導波路 / MZI /
+// メタサーフェス / PhC / NF2FF / S パラメータ) の .ofdx 永続化。
+// これらは .ofd (カーネル入力) には出力しない — 出力バイト不変を併せて検証。
+static void testOpticalModeSettings()
+{
+    g_file = "optical-modes";
+
+    // 全フィールドを非既定値にした Project を作るヘルパー
+    auto setNonDefaults = [](Project &p) {
+        OpticalOpts &o = p.optical();
+        o.bpfIL_dB = 1.5;
+        o.bpfStop_dB = 55.0;
+        o.ringThruPort = false;
+        o.ringDropPort = false;
+        o.wgTE0 = false; o.wgTE1 = true;
+        o.wgTM0 = true;  o.wgTM1 = true;
+        o.wgLoss_dBcm = 1.2;
+        o.mziDeltaL_um = 75.5;
+        o.mziThermo = false;
+        o.mziElectro = true;
+        o.metaPeriod_nm = 520.0;
+        o.metaShape = 2;
+        o.metaPhase = 1;
+        o.phcLattice = 1;
+        o.phcA_nm = 390.0;
+        o.phcRoverA = 0.25;
+        o.phcBand = false;
+        o.phcDefect = true;
+        o.nfffSurface = 1;
+        o.nfffDistance_lambda = 250.0;
+        o.spPorts = 4;
+        o.spPortIn = 2;
+        o.spPortOut = 4;
+        o.spS11 = false;
+        o.spS21 = false;
+        o.spPhase = false;
+        o.spGroupDelay = true;
+    };
+
+    // 1) これらの設定は .ofd (カーネル入力) を 1 バイトも変えない
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        setNonDefaults(p);
+        check(OfdIO::serialize(p) == base,
+              "optmode: settings keep .ofd output byte-identical");
+    }
+
+    // 2) .ofdx ラウンドトリップ (a: 新キーの往復)
+    {
+        Project p1;
+        setNonDefaults(p1);
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "optmode ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "optmode ofdx load");
+            const OpticalOpts &q = p2.optical();
+            check(nearlyEq(q.bpfIL_dB, 1.5) && nearlyEq(q.bpfStop_dB, 55.0),
+                  "optmode bpf il/stop round-trip");
+            check(!q.ringThruPort && !q.ringDropPort,
+                  "optmode ring ports round-trip");
+            check(!q.wgTE0 && q.wgTE1 && q.wgTM0 && q.wgTM1 &&
+                  nearlyEq(q.wgLoss_dBcm, 1.2),
+                  "optmode waveguide round-trip");
+            check(nearlyEq(q.mziDeltaL_um, 75.5) && !q.mziThermo &&
+                  q.mziElectro, "optmode mzi round-trip");
+            check(nearlyEq(q.metaPeriod_nm, 520.0) && q.metaShape == 2 &&
+                  q.metaPhase == 1, "optmode metasurface round-trip");
+            check(q.phcLattice == 1 && nearlyEq(q.phcA_nm, 390.0) &&
+                  nearlyEq(q.phcRoverA, 0.25) && !q.phcBand && q.phcDefect,
+                  "optmode phc round-trip");
+            check(q.nfffSurface == 1 &&
+                  nearlyEq(q.nfffDistance_lambda, 250.0),
+                  "optmode nf2ff round-trip");
+            check(q.spPorts == 4 && q.spPortIn == 2 && q.spPortOut == 4 &&
+                  !q.spS11 && !q.spS21 && !q.spPhase && q.spGroupDelay,
+                  "optmode sparam round-trip");
+
+            // JSON: 既存キーが残り、新キーが追加されていること
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "optmode ofdx reopen");
+            const QJsonObject opt = QJsonDocument::fromJson(jf.readAll())
+                                        .object().value("optical").toObject();
+            const QJsonObject bpf = opt.value("bpf").toObject();
+            check(bpf.contains("band_nm") && bpf.contains("Q"),
+                  "optmode json keeps existing bpf keys");
+            check(bpf.contains("il_db") && bpf.contains("stop_db"),
+                  "optmode json bpf il/stop keys");
+            const QJsonObject ring = opt.value("ring").toObject();
+            check(ring.contains("radius_um") && ring.contains("gap_nm"),
+                  "optmode json keeps existing ring keys");
+            check(ring.contains("thru_port") && ring.contains("drop_port"),
+                  "optmode json ring port keys");
+            check(opt.contains("waveguide") && opt.contains("mzi") &&
+                  opt.contains("metasurface") && opt.contains("phc") &&
+                  opt.contains("nf2ff") && opt.contains("sparam"),
+                  "optmode json mode-section keys present");
+        }
+    }
+
+    // 3) 旧 .ofdx (新キー無し): 既定値のまま (旧ファイル互換, b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0,"
+                "     \"bpf\": { \"band_nm\": [1530, 1570], \"Q\": 5000 },"
+                "     \"ring\": { \"radius_um\": 8, \"gap_nm\": 150 } } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "optmode legacy ofdx load");
+            const OpticalOpts &q = p.optical();
+            // 既存キーは読み込まれる
+            check(nearlyEq(q.bpfBandMin, 1530.0) &&
+                  nearlyEq(q.bpfBandMax, 1570.0) && nearlyEq(q.bpfQ, 5000.0),
+                  "optmode legacy bpf keys still load");
+            check(nearlyEq(q.ringRadius_um, 8.0) &&
+                  nearlyEq(q.ringGap_nm, 150.0),
+                  "optmode legacy ring keys still load");
+            // 新キーは既定値のまま
+            check(q.bpfIL_dB == 0.5 && q.bpfStop_dB == 40.0,
+                  "optmode legacy leaves bpf il/stop defaults");
+            check(q.ringThruPort && q.ringDropPort,
+                  "optmode legacy leaves ring port defaults");
+            check(q.wgTE0 && !q.wgTE1 && !q.wgTM0 && !q.wgTM1 &&
+                  q.wgLoss_dBcm == 0.3,
+                  "optmode legacy leaves waveguide defaults");
+            check(q.mziDeltaL_um == 50.0 && q.mziThermo && !q.mziElectro,
+                  "optmode legacy leaves mzi defaults");
+            check(q.metaPeriod_nm == 400.0 && q.metaShape == 0 &&
+                  q.metaPhase == 0,
+                  "optmode legacy leaves metasurface defaults");
+            check(q.phcLattice == 0 && q.phcA_nm == 430.0 &&
+                  q.phcRoverA == 0.30 && q.phcBand && !q.phcDefect,
+                  "optmode legacy leaves phc defaults");
+            check(q.nfffSurface == 0 && q.nfffDistance_lambda == 1000.0,
+                  "optmode legacy leaves nf2ff defaults");
+            check(q.spPorts == 2 && q.spPortIn == 1 && q.spPortOut == 2 &&
+                  q.spS11 && q.spS21 && q.spPhase && !q.spGroupDelay,
+                  "optmode legacy leaves sparam defaults");
+        }
+    }
+
+    // 4) 壊れたファイルの範囲外値はコンボ index の範囲へクランプされる
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": {"
+                "     \"metasurface\": { \"shape\": 99, \"phase\": -3 },"
+                "     \"phc\": { \"lattice\": 7 },"
+                "     \"nf2ff\": { \"surface\": 5 },"
+                "     \"sparam\": { \"ports\": 0, \"port_in\": 99 } } }";
+            bad.write(broken);
+            bad.flush();
+            Project p;
+            check(OfdxIO::load(bad.fileName(), p), "optmode broken ofdx load");
+            const OpticalOpts &q = p.optical();
+            check(q.metaShape == 2 && q.metaPhase == 0,
+                  "optmode broken metasurface clamped");
+            check(q.phcLattice == 2, "optmode broken phc lattice clamped");
+            check(q.nfffSurface == 1, "optmode broken nf2ff surface clamped");
+            check(q.spPorts == 1 && q.spPortIn == 1,
+                  "optmode broken sparam clamped");
+        }
+    }
+}
+
 // 実行結果の表示ゲート: ONN 活性化カーブは「その実行が生成したもの」だけ。
 static void testRunGating()
 {
@@ -1757,6 +2004,67 @@ static void testBellhop()
         const QString e2 = BellhopIO::envText(q);
         check(e2.contains("\n0 1500 /\n") && e2.contains("\n100 1500 /\n"),
               "bellhop: default iso-velocity profile when SSP missing");
+    }
+
+    // (c2) 底質吸収係数 α [dB/λ] (bottomAlpha_dBlambda):
+    //   既定値 0.5 (従来のハードコード値) のままなら .env は従来とバイト一致、
+    //   指定時はハーフスペース行の減衰へ反映される。
+    {
+        Project q0;                          // 既定 (α キーに一切触らない)
+        q0.setActiveDomain(Domain::Underwater);
+        Project q1;                          // 既定値 0.5 を明示指定
+        q1.setActiveDomain(Domain::Underwater);
+        q1.underwater().bottomAlpha_dBlambda = 0.5;
+        check(BellhopIO::envText(q0) == BellhopIO::envText(q1),
+              "bellhop: default alpha keeps .env byte-identical");
+        // 既定プロジェクト (既定 SSP は 5000 m まで、c 1650, rho 1900) の
+        // ハーフスペース行
+        check(BellhopIO::envText(q0).contains("\n5000 1650 0.0 1.9 0.5 /\n"),
+              "bellhop: default halfspace line unchanged (0.5 dB/lambda)");
+        q1.underwater().bottomAlpha_dBlambda = 1.25;
+        check(BellhopIO::envText(q1).contains("\n5000 1650 0.0 1.9 1.25 /\n"),
+              "bellhop: alpha propagates to halfspace attenuation");
+    }
+
+    // (c3) .ofdx 永続化: bottom_alpha_db_lambda のラウンドトリップと
+    //      旧ファイル (キー無し) の既定値 0.5 (旧ファイル互換)。
+    {
+        Project ps;
+        ps.setActiveDomain(Domain::Underwater);
+        ps.underwater().bottomAlpha_dBlambda = 1.25;
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_uw_alpha_XXXXXX.ofdx");
+        if (f.open()) {
+            check(OfdxIO::save(f.fileName(), ps), "uw alpha ofdx save");
+            Project pl;
+            check(OfdxIO::load(f.fileName(), pl), "uw alpha ofdx load");
+            check(nearlyEq(pl.underwater().bottomAlpha_dBlambda, 1.25),
+                  "uw alpha ofdx round-trip");
+            check(nearlyEq(pl.underwater().bottomRho_kgm3, 1900.0),
+                  "uw alpha ofdx keeps sibling keys");
+            // JSON にキー名どおり書かれていること (改名検知)
+            QFile jf(f.fileName());
+            check(jf.open(QIODevice::ReadOnly), "uw alpha ofdx reopen");
+            const QJsonObject uw = QJsonDocument::fromJson(jf.readAll())
+                                       .object()["underwater"].toObject();
+            check(nearlyEq(uw.value("bottom_alpha_db_lambda").toDouble(), 1.25),
+                  "uw alpha ofdx key name");
+        }
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_uw_alpha_old_XXXXXX.ofdx");
+        if (old.open()) {
+            old.write(QByteArray(
+                "{ \"domain\": \"underwater\",\n"
+                "  \"underwater\": { \"bottom_type\": \"mud\",\n"
+                "                    \"bottom_c_mps\": 1520 } }\n"));
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3), "uw alpha legacy ofdx load");
+            check(nearlyEq(p3.underwater().bottomAlpha_dBlambda, 0.5),
+                  "uw alpha legacy ofdx keeps default 0.5");
+            check(p3.underwater().bottomType == "mud",
+                  "uw alpha legacy ofdx reads sibling keys");
+        }
     }
 
     // (d) 統合: 実カーネルがあれば .env を実行して .shd 生成まで確認
@@ -2360,6 +2668,7 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();
+    testOpticalModeSettings();
     testBellhop();
     testH5Reader();
     testOfdIntegration(dir);

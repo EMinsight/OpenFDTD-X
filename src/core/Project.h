@@ -87,10 +87,46 @@ struct OpticalOpts {
     // BPF
     double  bpfBandMin = 1540.0, bpfBandMax = 1560.0;  // nm
     double  bpfQ = 10000.0;
+    // BPF 設計目標 (挿入損失 / 阻止域減衰) — .ofdx "bpf" への追加キー
+    double  bpfIL_dB = 0.5;          // 挿入損失 IL [dB]
+    double  bpfStop_dB = 40.0;       // 阻止域減衰 [dB]
 
     // Ring
     double  ringRadius_um = 5.0;
     double  ringGap_nm = 200.0;
+    bool    ringThruPort = true;     // スルーポート出力
+    bool    ringDropPort = true;     // ドロップポート出力
+
+    // ── 光解析モード別設定 (.ofdx "optical" への追加キー。カーネル入力
+    //    (.ofd) には出力しない — 設計目標 / 解析対象の記録として保存する) ──
+    // 導波路モード解析 (解くモードの選択と目標損失)
+    bool    wgTE0 = true, wgTE1 = false;   // TE モード
+    bool    wgTM0 = false, wgTM1 = false;  // TM モード
+    double  wgLoss_dBcm = 0.3;             // 損失 [dB/cm]
+    // MZI 干渉計
+    double  mziDeltaL_um = 50.0;     // アーム長差 ΔL [μm]
+    bool    mziThermo = true;        // 位相シフタ: 熱光学
+    bool    mziElectro = false;      // 位相シフタ: 電気光学
+    // メタサーフェス
+    double  metaPeriod_nm = 400.0;   // 格子周期 [nm]
+    int     metaShape = 0;           // 0=Pillar 1=Hole 2=Cross
+    int     metaPhase = 0;           // 0=等位相 (flat lens) 1=偏向 2=渦光 (OAM)
+    // フォトニック結晶
+    int     phcLattice = 0;          // 0=三角格子 1=正方格子 2=ハニカム
+    double  phcA_nm = 430.0;         // 格子定数 a [nm]
+    double  phcRoverA = 0.30;        // 穴半径 r/a (無次元)
+    bool    phcBand = true;          // バンド構造解析
+    bool    phcDefect = false;       // 欠陥モード
+    // 近接場/遠方場変換 (ofd_post 連携は未実装 — 設定の保存のみ)
+    int     nfffSurface = 0;               // 変換面 0=直方体 1=球面
+    double  nfffDistance_lambda = 1000.0;  // 観測距離 [λ]
+    // S パラメータ抽出 (Touchstone 出力は未実装 — 設定の保存のみ)
+    int     spPorts = 2;             // ポート数
+    int     spPortIn = 1;            // S21 の入力ポート番号 (1 始まり)
+    int     spPortOut = 2;           // S21 の出力ポート番号 (1 始まり)
+    bool    spS11 = true, spS21 = true;    // 抽出する成分
+    bool    spPhase = true;          // 位相情報を含む
+    bool    spGroupDelay = false;    // 群遅延
 
     // ── 非線形 (TPA) / ONN 光活性化関数 ──
     // Honda, Shoji, Amemiya, "Optical activation function using a metamaterial
@@ -156,6 +192,18 @@ struct AcousticOpts {
     double  srcSPL_dB = 94.0;
     int     micCount = 1;
 
+    // ── AcousticTab 追加設定 (.ofdx "acoustic" への追加キー。既定値は
+    //    mock tabs.jsx AcousticTab のまま — 旧ファイル互換) ──
+    bool    lf = false;              // LF (側方音エネルギー) 指標
+    double  srcX_m = -3.0;           // 音源位置 x [m]
+    double  srcY_m = 1.6;            // 音源位置 y [m]
+    double  srcZ_m = 5.0;            // 音源位置 z [m]
+    double  srcAimTheta_deg = 90.0;  // 音源の向き θ [deg]
+    double  srcAimPhi_deg   = 0.0;   // 音源の向き φ [deg]
+    int     analysisType = 0;        // 解析タイプ 0=IRF 1=RT60 2=STI
+    bool    thirdOctave = true;      // 1/3 オクターブ帯域
+    int     bandRange = 2;           // 対象帯域 0=125Hz~ 1=500Hz~2k 2=125Hz~16k
+
     // ── ホール解析 (RoomAcousticsTab) ──
     double  roomL = 30.0, roomW = 20.0, roomH = 12.0;  // シューボックス [m]
     double  volume = 12000.0;       // 室容積 V [m³] (寸法と独立に編集可)
@@ -218,6 +266,11 @@ struct UnderwaterOpts {
     QString bottomType = "sand";
     double  bottomC_mps = 1650.0;
     double  bottomRho_kgm3 = 1900.0;
+    // 底質の吸収係数 α [dB/λ] — BELLHOP ハーフスペース行の減衰
+    // (SSPOPT 'W' = dB/wavelength と整合)。既定 0.5 は従来 BellhopIO に
+    // ハードコードされていた砂〜シルト底の代表値 (既定のままなら .env は
+    // 従来とバイト一致)。
+    double  bottomAlpha_dBlambda = 0.5;
     double  sonarFreq_kHz = 3.5;
     double  sonarSL_dB = 220.0;
     double  rangeMax_km = 50.0;

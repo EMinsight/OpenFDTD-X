@@ -6,6 +6,8 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include "../core/RoomAcoustics.h"
+
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,7 +16,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -94,7 +99,25 @@ const bool s_i18n = [] {
     I18n::reg("sp_add_layer", "＋ 層を追加…", "+ Add layer…");
     I18n::reg("sp_preset_btn", "📚 標準工法プリセット", "📚 Standard build presets");
     I18n::reg("sp_dxf_btn", "📁 .dxf 取込", "📁 Import .dxf");
-    I18n::reg("sp_rw_est", "推定 Rw ~ 50 dB", "Estimated Rw ~ 50 dB");
+    I18n::reg("sp_rc", "コンクリート (RC)", "Concrete (RC)");
+    I18n::reg("sp_alc", "ALC パネル", "ALC panel");
+    I18n::reg("sp_ps_gb2gw",
+              "乾式二重壁: 石膏ボード12.5×2 + GW50 + 石膏ボード12.5×2 (Rw≈50)",
+              "Drywall double leaf: gypsum 12.5×2 + GW50 + gypsum 12.5×2 "
+              "(Rw≈50)");
+    I18n::reg("sp_ps_gb1",
+              "軽鉄間仕切 (最小構成): 石膏ボード12.5 + 空気層65 + 石膏ボード12.5 "
+              "(Rw≈33)",
+              "Steel-stud partition (minimal): gypsum 12.5 + air 65 + "
+              "gypsum 12.5 (Rw≈33)");
+    I18n::reg("sp_ps_rc150", "RC 造壁 150mm (Rw≈53)", "RC wall 150 mm (Rw≈53)");
+    I18n::reg("sp_ps_rc200", "RC 造壁 200mm (Rw≈56)", "RC wall 200 mm (Rw≈56)");
+    I18n::reg("sp_ps_alc100", "ALC パネル 100mm 素板 (Rw≈40)",
+              "Bare ALC panel 100 mm (Rw≈40)");
+    I18n::reg("sp_rw_est_fmt", "推定 Rw ≈ %1 dB (同種構造の公表値の目安)",
+              "Estimated Rw ≈ %1 dB (typical published value)");
+    I18n::reg("sp_rw_unknown", "推定 Rw — (層構成からの計算は未実装)",
+              "Estimated Rw — (not computed from the layer stack)");
     I18n::reg("sp_detail_section", "ディテール", "Construction details");
     I18n::reg("sp_det_double", "二重壁構造 (空気層分離)",
               "Double-leaf wall (separated air gap)");
@@ -221,9 +244,15 @@ const bool s_i18n = [] {
     I18n::reg("sp_d_df", "壁→床→壁", "Wall→floor→wall");
     I18n::reg("sp_d_fd", "天井→天井", "Ceiling→ceiling");
     I18n::reg("sp_d_col", "柱経由", "Via columns");
-    I18n::reg("sp_flank_total", "合成 R'w = 47 dB", "Combined R'w = 47 dB");
-    I18n::reg("sp_flank_note", "(直接 52dB から 5dB 悪化)",
-              "(5 dB worse than direct 52 dB)");
+    I18n::reg("sp_flank_total_fmt", "合成 R'w = %1 dB", "Combined R'w = %1 dB");
+    I18n::reg("sp_flank_note_fmt", "(直接 %1 dB から %2 dB 悪化)",
+              "(%2 dB worse than direct %1 dB)");
+    I18n::reg("sp_flank_pred_note",
+              "経路別 R [dB] は入力値 (チェック・編集可) — EN 12354-1 (Kij) に"
+              "よる経路別 R の予測は未実装。合成 R'w のみ入力から計算します。",
+              "Per-path R [dB] values are editable inputs — per-path "
+              "prediction to EN 12354-1 (Kij) is not implemented; only the "
+              "combined R'w is computed from the inputs.");
     I18n::reg("sp_improve_section", "改善案", "Improvements");
     I18n::reg("sp_impr_float", "床:浮き床 (vibration break) で Ff 改善 (+8 dB)",
               "Floor: floating floor (vibration break), Ff +8 dB");
@@ -286,8 +315,8 @@ const bool s_i18n = [] {
     I18n::reg("sp_room_class", "教室", "Classroom");
     I18n::reg("sp_room_rest", "レストラン", "Restaurant");
     I18n::reg("sp_rev_size", "サイズ", "Size");
-    I18n::reg("sp_rev_size_def", "20 × 15 × 3.5 m (体積 1050 m³)",
-              "20 × 15 × 3.5 m (volume 1050 m³)");
+    I18n::reg("sp_rev_size_def", "20 × 15 × 3.5 m", "20 × 15 × 3.5 m");
+    I18n::reg("sp_rev_vol_fmt", "(体積 %1 m³)", "(volume %1 m³)");
     I18n::reg("sp_rev_target", "目標 RT60", "Target RT60");
     I18n::reg("sp_rev_target_u", "s (オフィス推奨)", "s (office recommendation)");
     I18n::reg("sp_abs_section", "吸音材配置", "Absorber placement");
@@ -304,10 +333,13 @@ const bool s_i18n = [] {
     I18n::reg("sp_mat_carpet", "カーペット", "Carpet");
     I18n::reg("sp_rev_result", "評価", "Result");
     I18n::reg("sp_rev_ok", "目標達成", "Target met");
-    I18n::reg("sp_rev_note",
-              "Sabine: RT = 0.161 × V / A_total — A_total = 168 m²·Sabin (吸音面積)",
-              "Sabine: RT = 0.161 × V / A_total — A_total = 168 m²·Sabin "
-              "(absorption area)");
+    I18n::reg("sp_rev_ng", "目標未達", "Target not met");
+    I18n::reg("sp_rev_rt_fmt", "RT60 = %1 s @ 1kHz", "RT60 = %1 s @ 1kHz");
+    I18n::reg("sp_rev_note_fmt",
+              "Sabine: RT = 0.161 × V / A — V = %1 m³, A = %2 m²·Sabin "
+              "(チェック ON 行の Σ 面積 × α@1kHz)",
+              "Sabine: RT = 0.161 × V / A — V = %1 m³, A = %2 m²·Sabin "
+              "(Σ area × α@1kHz over checked rows)");
     // 会話プライバシー
     I18n::reg("sp_speech_section", "会話プライバシー", "Speech privacy");
     I18n::reg("sp_speech_hint",
@@ -353,14 +385,20 @@ const char kOk[]   = "#2E8B57";   // badge ok
 const char kWarn[] = "#B45309";   // badge warn
 const char kAccAcoustic[] = "#2E8B57";   // var(--acc-acoustic)
 
-QLabel *makeBadge(const QString &text, const char *color, QWidget *parent,
-                  bool big = false)
+// バッジの枠色スタイルを適用する (判定バッジの OK/警告 色替えにも使う)
+void styleBadge(QLabel *l, const char *color, bool big = false)
 {
-    auto *l = new QLabel(text, parent);
     l->setStyleSheet(QString("color:%1; border:1px solid %1; border-radius:3px;"
                              " padding:%2; font-weight:600;%3")
                          .arg(color, big ? "3px 10px" : "1px 6px",
                               big ? " font-size:13px;" : ""));
+}
+
+QLabel *makeBadge(const QString &text, const char *color, QWidget *parent,
+                  bool big = false)
+{
+    auto *l = new QLabel(text, parent);
+    styleBadge(l, color, big);
     return l;
 }
 
@@ -422,6 +460,126 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
     t->setEditTriggers(QAbstractItemView::NoEditTriggers);
     t->setMinimumHeight(minH);
     return t;
+}
+
+// 入力テーブルの編集を有効化する (編集させたくないセルは lockItem で落とす)
+void enableTableEdit(QTableWidget *t)
+{
+    t->setEditTriggers(QAbstractItemView::DoubleClicked |
+                       QAbstractItemView::SelectedClicked |
+                       QAbstractItemView::EditKeyPressed);
+}
+
+// セルを編集不可にする (textItem/numItem の既定フラグは編集可)
+QTableWidgetItem *lockItem(QTableWidgetItem *it)
+{
+    it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+    return it;
+}
+
+// セルの数値を取り出す ("—" や空欄・未設定は ok=false)
+double cellNum(const QTableWidget *t, int row, int col, bool *ok)
+{
+    const QTableWidgetItem *it = t->item(row, col);
+    if (!it) { *ok = false; return 0; }
+    return it->text().toDouble(ok);
+}
+
+// ── 標準工法プリセット (間仕切壁の層構成) ───────────────────────────────────
+// 層データ (材質 / 厚さ mm / 密度 kg/m³) は建築音響で一般に公表されている値:
+//   石膏ボード GB-R 12.5mm = 面密度 約 9.0 kg/m² (JIS A 6901) → 720 kg/m³、
+//   グラスウール 32K = 32 kg/m³、普通コンクリート (RC) = 2400 kg/m³ (JASS 5)、
+//   ALC パネル = 約 600 kg/m³ (JIS A 5416)。
+// メニュー名と選択後ラベルの Rw は日本建築学会「建築物の遮音性能基準と
+// 設計指針」等で公表されている同種構造の代表値 (目安)。層テーブルへは
+// 層構成のみを書き込み、合計厚・合計面密度はテーブルから算術更新する
+// (層構成からの Rw 計算そのものは未実装のまま)。
+struct PresetLayer { const char *mat; double th; double rho; };  // rho<=0 → 空気層
+struct WallPreset  { const char *name; int rw; int n; PresetLayer layers[6]; };
+
+const WallPreset kWallPresets[] = {
+    { "sp_ps_gb2gw", 50, 6,
+      { { "sp_gypsum", 12.5, 720 }, { "sp_gypsum", 12.5, 720 },
+        { "sp_glasswool", 50, 32 }, { "sp_airgap", 15, 0 },
+        { "sp_gypsum", 12.5, 720 }, { "sp_gypsum", 12.5, 720 } } },
+    { "sp_ps_gb1", 33, 3,
+      { { "sp_gypsum", 12.5, 720 }, { "sp_airgap", 65, 0 },
+        { "sp_gypsum", 12.5, 720 } } },
+    { "sp_ps_rc150", 53, 1, { { "sp_rc", 150, 2400 } } },
+    { "sp_ps_rc200", 56, 1, { { "sp_rc", 200, 2400 } } },
+    { "sp_ps_alc100", 40, 1, { { "sp_alc", 100, 600 } } },
+};
+
+// 既定の層構成 (mock soundproof.jsx の初期値と同一)
+const PresetLayer kDefaultLayers[5] = {
+    { "sp_gypsum", 12.5, 720 }, { "sp_glasswool", 50, 32 },
+    { "sp_airgap", 25, 0 },     { "sp_glasswool", 50, 32 },
+    { "sp_gypsum", 12.5, 720 },
+};
+
+// 層テーブルの合計行 (下から 2 行目) を算術更新する。面密度列は
+// 厚さ × 密度から再計算する (密度が数値でない層 = 空気層は質量 0)。
+// 合計はチェック ON の層のみ。
+void recomputeLayerTotals(QTableWidget *t)
+{
+    QSignalBlocker block(t);   // 計算セルの書込で itemChanged を再発火させない
+    const int nLayers = t->rowCount() - 2;   // 末尾 2 行 = 合計・「＋層を追加…」
+    double sumTh = 0, sumSd = 0;
+    for (int r = 0; r < nLayers; ++r) {
+        bool okTh = false, okRho = false;
+        const double th  = cellNum(t, r, 3, &okTh);
+        const double rho = cellNum(t, r, 4, &okRho);
+        const bool hasSd = okTh && okRho;
+        const double sd = hasSd ? th / 1000.0 * rho : 0;
+        if (auto *it = t->item(r, 5))
+            it->setText(hasSd ? QString::number(sd, 'f', 1) : QString("—"));
+        const QTableWidgetItem *chk = t->item(r, 0);
+        if (!chk || chk->checkState() != Qt::Checked) continue;
+        if (okTh) sumTh += th;
+        sumSd += sd;
+    }
+    if (auto *it = t->item(nLayers, 3))
+        it->setText(QString::number(sumTh, 'g', 6));
+    if (auto *it = t->item(nLayers, 5))
+        it->setText(QString::number(sumSd, 'f', 1));
+}
+
+// 層テーブルを層構成で埋め直し、末尾に合計行と「＋層を追加…」行を再構築する
+void populateLayerTable(QTableWidget *t, const PresetLayer *layers, int n)
+{
+    QSignalBlocker block(t);
+    t->clearSpans();
+    t->clearContents();
+    t->setRowCount(n + 2);
+    for (int i = 0; i < n; ++i) {
+        t->setItem(i, 0, checkItem(true));
+        t->setItem(i, 1, lockItem(numItem(QString::number(i + 1))));
+        t->setItem(i, 2, textItem(I18n::tr(layers[i].mat)));
+        t->setItem(i, 3, numItem(QString::number(layers[i].th, 'g', 6)));
+        t->setItem(i, 4, layers[i].rho > 0
+                             ? numItem(QString::number(layers[i].rho, 'g', 6))
+                             : numItem("—"));
+        t->setItem(i, 5, lockItem(numItem("")));   // 面密度 = 厚さ×密度 (計算列)
+    }
+    // 合計行 (太字, recomputeLayerTotals が算術更新)
+    t->setSpan(n, 0, 1, 3);
+    auto *tot = lockItem(textItem(I18n::tr("sp_total")));
+    QFont bf = tot->font();
+    bf.setBold(true);
+    tot->setFont(bf);
+    t->setItem(n, 0, tot);
+    auto *tth = lockItem(numItem("")); tth->setFont(bf); t->setItem(n, 3, tth);
+    t->setItem(n, 4, lockItem(textItem("—")));
+    auto *tsd = lockItem(numItem("")); tsd->setFont(bf); t->setItem(n, 5, tsd);
+    // ＋ 層を追加… (行追加は未実装のまま — 層構成の変更はプリセット/編集で)
+    t->setItem(n + 1, 0, checkItem(false));
+    t->setSpan(n + 1, 1, 1, 5);
+    auto *add = lockItem(textItem(I18n::tr("sp_add_layer")));
+    QFont itf = add->font();
+    itf.setItalic(true);
+    add->setFont(itf);
+    t->setItem(n + 1, 1, add);
+    recomputeLayerTotals(t);
 }
 } // namespace
 
@@ -545,54 +703,38 @@ QWidget *SoundproofTab::buildPartitionPage()
     auto *t = makeTable({ "", "#", I18n::tr("sp_h_material"),
                           I18n::tr("sp_h_thick"), I18n::tr("sp_h_density"),
                           I18n::tr("sp_h_surfdens") }, 7, sb, 230);
-    struct Layer { const char *mat; const char *th; const char *rho;
-                   const char *sd; };
-    static const Layer kLayers[5] = {
-        { "sp_gypsum",    "12.5", "720", "9.0" },
-        { "sp_glasswool", "50",   "32",  "1.6" },
-        { "sp_airgap",    "25",   "—",   "—"   },
-        { "sp_glasswool", "50",   "32",  "1.6" },
-        { "sp_gypsum",    "12.5", "720", "9.0" },
-    };
-    for (int i = 0; i < 5; ++i) {
-        t->setItem(i, 0, checkItem(true));
-        t->setItem(i, 1, numItem(QString::number(i + 1)));
-        t->setItem(i, 2, textItem(I18n::tr(kLayers[i].mat)));
-        t->setItem(i, 3, numItem(kLayers[i].th));
-        t->setItem(i, 4, numItem(kLayers[i].rho));
-        t->setItem(i, 5, numItem(kLayers[i].sd));
-    }
-    // 合計行 (太字)
-    t->setSpan(5, 0, 1, 3);
-    auto *tot = textItem(I18n::tr("sp_total"));
-    QFont bf = tot->font();
-    bf.setBold(true);
-    tot->setFont(bf);
-    t->setItem(5, 0, tot);
-    auto *tth = numItem("150"); tth->setFont(bf); t->setItem(5, 3, tth);
-    t->setItem(5, 4, textItem("—"));
-    auto *tsd = numItem("21.2"); tsd->setFont(bf); t->setItem(5, 5, tsd);
-    // ＋ 層を追加…
-    t->setItem(6, 0, checkItem(false));
-    t->setSpan(6, 1, 1, 5);
-    auto *add = textItem(I18n::tr("sp_add_layer"));
-    QFont itf = add->font();
-    itf.setItalic(true);
-    add->setFont(itf);
-    t->setItem(6, 1, add);
+    enableTableEdit(t);   // 材質/厚さ/密度は編集可 (面密度・合計は計算列)
+    populateLayerTable(t, kDefaultLayers, 5);
     sb->vbox()->addWidget(t);
     auto *hb = new QHBoxLayout();
     auto *presetBtn = new QPushButton(I18n::tr("sp_preset_btn"), sb);
-    tabhelp::markNotImplemented(presetBtn);   // プリセット読込は未実装
     hb->addWidget(presetBtn);
     auto *dxfBtn = new QPushButton(I18n::tr("sp_dxf_btn"), sb);
     tabhelp::markNotImplemented(dxfBtn);      // .dxf 取込は未実装
     hb->addWidget(dxfBtn);
     hb->addStretch(1);
-    hb->addWidget(new QLabel(I18n::tr("sp_rw_est"), sb));
+    // Rw は層構成から計算しない (未実装)。プリセット選択時のみ
+    // 同種構造の公表値 (目安) を表示し、手動編集で「未計算」へ戻す。
+    auto *rwLabel = new QLabel(I18n::tr("sp_rw_unknown"), sb);
+    hb->addWidget(rwLabel);
     sb->vbox()->addLayout(hb);
-    // 層テーブル・「推定 Rw」は固定のサンプル値 (層構成を変えても計算されない)
-    sb->vbox()->addWidget(tabhelp::sampleNote(sb));
+    // 標準工法プリセット: 選択で層テーブルへ層構成を書込 (データ出所は
+    // kWallPresets のコメント参照)。合計はテーブルから算術更新される。
+    auto *presetMenu = new QMenu(presetBtn);
+    for (const WallPreset &preset : kWallPresets) {
+        const WallPreset *p = &preset;   // 静的配列要素 → ポインタで値キャプチャ
+        presetMenu->addAction(I18n::tr(p->name), this, [t, rwLabel, p]() {
+            populateLayerTable(t, p->layers, p->n);
+            rwLabel->setText(I18n::tr("sp_rw_est_fmt").arg(p->rw));
+        });
+    }
+    presetBtn->setMenu(presetMenu);
+    // 手動編集 (値・チェック) → 合計を再計算し、公表 Rw 表示を無効化
+    connect(t, &QTableWidget::itemChanged, this,
+            [t, rwLabel](QTableWidgetItem *) {
+                recomputeLayerTotals(t);
+                rwLabel->setText(I18n::tr("sp_rw_unknown"));
+            });
     v->addWidget(sb);
 
     // ディテール
@@ -814,22 +956,60 @@ QWidget *SoundproofTab::buildFlankingPage()
         { "sp_p_fd_ceil",  true, "sp_d_fd",  "60" },
         { "sp_p_ff_col",   true, "sp_d_col", "65" },
     };
+    enableTableEdit(t);   // R [dB] 列のみ編集可の入力テーブル
     for (int i = 0; i < 5; ++i) {
         t->setItem(i, 0, checkItem(true));
-        t->setItem(i, 1, textItem(kPaths[i].trPath
+        t->setItem(i, 1, lockItem(textItem(kPaths[i].trPath
                                       ? I18n::tr(kPaths[i].path)
-                                      : QString::fromUtf8(kPaths[i].path)));
-        t->setItem(i, 2, textItem(I18n::tr(kPaths[i].desc)));
+                                      : QString::fromUtf8(kPaths[i].path))));
+        t->setItem(i, 2, lockItem(textItem(I18n::tr(kPaths[i].desc))));
         t->setItem(i, 3, numItem(kPaths[i].r));
     }
     sp->vbox()->addWidget(t);
     auto *hb = new QHBoxLayout();
-    hb->addWidget(makeBadge(I18n::tr("sp_flank_total"), kAcc, sp, true));
-    hb->addWidget(new QLabel(I18n::tr("sp_flank_note"), sp));
+    auto *totalBadge = makeBadge(QString(), kAcc, sp, true);
+    hb->addWidget(totalBadge);
+    auto *noteLbl = new QLabel(sp);
+    hb->addWidget(noteLbl);
     hb->addStretch(1);
     sp->vbox()->addLayout(hb);
-    // 経路別 R と合成 R'w は固定のサンプル値 (側路伝搬計算は未実装)
-    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
+    // 合成 R'w = −10·log10(Σ 10^(−R_i/10)) を、チェック ON の経路の入力 R
+    // からエネルギー合成で計算する (EN 12354-1 の経路合成式)。
+    // 経路別 R そのものの予測 (Kij) は未実装 — 下の注記で明示する。
+    auto recompute = [t, totalBadge, noteLbl]() {
+        double sum = 0;
+        int n = 0;
+        double direct = 0;
+        bool haveDirect = false;
+        for (int r = 0; r < t->rowCount(); ++r) {
+            const QTableWidgetItem *chk = t->item(r, 0);
+            if (!chk || chk->checkState() != Qt::Checked) continue;
+            bool ok = false;
+            const double R = cellNum(t, r, 3, &ok);
+            if (!ok) continue;   // 数値でない R の行は合成に含めない
+            sum += std::pow(10.0, -R / 10.0);
+            ++n;
+            if (r == 0) { direct = R; haveDirect = true; }   // Dd (直接) 行
+        }
+        if (n == 0 || sum <= 0) {
+            totalBadge->setText(I18n::tr("sp_flank_total_fmt").arg("—"));
+            noteLbl->clear();
+            return;
+        }
+        const double Rw = -10.0 * std::log10(sum);
+        totalBadge->setText(I18n::tr("sp_flank_total_fmt")
+                                .arg(QString::number(Rw, 'f', 1)));
+        // 直接透過のみとの比較 (Dd がチェック ON で側路もあるときのみ)
+        noteLbl->setText(haveDirect && n > 1
+                             ? I18n::tr("sp_flank_note_fmt")
+                                   .arg(QString::number(direct, 'g', 4),
+                                        QString::number(direct - Rw, 'f', 1))
+                             : QString());
+    };
+    connect(t, &QTableWidget::itemChanged, this,
+            [recompute](QTableWidgetItem *) { recompute(); });
+    recompute();
+    sp->vbox()->addWidget(makeHint(I18n::tr("sp_flank_pred_note"), sp));
     v->addWidget(sp);
 
     auto *si = new SectionBox(I18n::tr("sp_improve_section"), page);
@@ -968,11 +1148,15 @@ QWidget *SoundproofTab::buildReverbPage()
                      I18n::tr("sp_room_cafe"), I18n::tr("sp_room_class"),
                      I18n::tr("sp_room_rest") });
     sr->form()->addRow(I18n::tr("sp_rev_room"), room);
-    sr->form()->addRow(I18n::tr("sp_rev_size"),
-                       new QLineEdit(I18n::tr("sp_rev_size_def"), sr));
+    auto *sizeEdit = new QLineEdit(I18n::tr("sp_rev_size_def"), sr);
+    auto *volLabel = new QLabel(sr);   // 寸法から計算した体積を表示
+    auto *hSize = new QHBoxLayout();
+    hSize->addWidget(sizeEdit, 1);
+    hSize->addWidget(volLabel);
+    sr->form()->addRow(I18n::tr("sp_rev_size"), hSize);
+    auto *targetEdit = numEdit("0.8", sr);
     sr->form()->addRow(I18n::tr("sp_rev_target"),
-                       unitRow(numEdit("0.8", sr), I18n::tr("sp_rev_target_u"),
-                               sr));
+                       unitRow(targetEdit, I18n::tr("sp_rev_target_u"), sr));
     v->addWidget(sr);
 
     auto *sa = new SectionBox(I18n::tr("sp_abs_section"), page);
@@ -986,27 +1170,99 @@ QWidget *SoundproofTab::buildReverbPage()
         { false, "sp_s_wall_low", "122", "sp_mat_wood",   "0.20", "0.15" },
         { true,  "sp_s_floor",    "300", "sp_mat_carpet", "0.35", "0.30" },
     };
+    enableTableEdit(t);   // 面積・α@1kHz は編集可の入力 (RT60 計算に使う)
     for (int i = 0; i < 4; ++i) {
         t->setItem(i, 0, checkItem(kAbs[i].on));
-        t->setItem(i, 1, textItem(I18n::tr(kAbs[i].surf)));
+        t->setItem(i, 1, lockItem(textItem(I18n::tr(kAbs[i].surf))));
         t->setItem(i, 2, numItem(kAbs[i].area));
-        t->setItem(i, 3, textItem(I18n::tr(kAbs[i].mat)));
+        t->setItem(i, 3, lockItem(textItem(I18n::tr(kAbs[i].mat))));
         t->setItem(i, 4, numItem(kAbs[i].alpha));
-        t->setItem(i, 5, numItem(kAbs[i].nrc));
+        t->setItem(i, 5, lockItem(numItem(kAbs[i].nrc)));
     }
     sa->vbox()->addWidget(t);
     v->addWidget(sa);
 
     auto *se = new SectionBox(I18n::tr("sp_rev_result"), page);
     auto *hb = new QHBoxLayout();
-    hb->addWidget(makeBadge("RT60 = 0.74 s @ 1kHz", kAcc, se, true));
-    hb->addWidget(makeBadge(I18n::tr("sp_rev_ok"), kOk, se));
+    auto *rtBadge = makeBadge(QString(), kAcc, se, true);
+    hb->addWidget(rtBadge);
+    auto *okBadge = makeBadge(QString(), kOk, se);
+    hb->addWidget(okBadge);
     hb->addStretch(1);
     se->vbox()->addLayout(hb);
-    se->vbox()->addWidget(makeHint(I18n::tr("sp_rev_note"), se));
-    // RT60 と判定バッジは固定のサンプル値 (Sabine 計算は未実装)
-    se->vbox()->addWidget(tabhelp::sampleNote(se));
+    auto *noteLbl = makeHint(QString(), se);
+    se->vbox()->addWidget(noteLbl);
     v->addWidget(se);
+
+    // RT60 を core/RoomAcoustics の Sabine 式 (rt60, formula=0) で実計算する。
+    // 吸音力 A はテーブルのチェック ON 行の 面積 × α@1kHz (帯域 1kHz)、
+    // 体積 V は寸法入力 (L × W × H) から取る。
+    auto recompute = [sizeEdit, volLabel, targetEdit, t, rtBadge, okBadge,
+                      noteLbl]() {
+        // 寸法テキスト中の最初の 3 つの数値を L × W × H [m] とみなす
+        static const QRegularExpression kNumRe(
+            QStringLiteral("[0-9]+(?:[.][0-9]+)?"));
+        double dim[3] = { 0, 0, 0 };
+        int nd = 0;
+        auto mi = kNumRe.globalMatch(sizeEdit->text());
+        while (mi.hasNext() && nd < 3)
+            dim[nd++] = mi.next().captured().toDouble();
+        const bool dimsOk = (nd == 3) && dim[0] > 0 && dim[1] > 0 && dim[2] > 0;
+        const double V = dimsOk ? dim[0] * dim[1] * dim[2] : 0;
+        const double S = dimsOk ? 2 * (dim[0] * dim[1] + dim[0] * dim[2]
+                                       + dim[1] * dim[2]) : 0;
+        volLabel->setText(dimsOk ? I18n::tr("sp_rev_vol_fmt")
+                                       .arg(QString::number(V, 'g', 6))
+                                 : QString("—"));
+
+        // 吸音バジェット → AcousticOpts (role=Other, α は 1kHz 値)
+        AcousticOpts opts;
+        opts.volume = V;
+        opts.surface = S;
+        opts.absorption.clear();
+        for (int r = 0; r < t->rowCount(); ++r) {
+            const QTableWidgetItem *chk = t->item(r, 0);
+            if (!chk || chk->checkState() != Qt::Checked) continue;
+            bool okA = false, okAl = false;
+            const double area  = cellNum(t, r, 2, &okA);
+            const double alpha = cellNum(t, r, 4, &okAl);
+            if (!okA || !okAl || area <= 0) continue;
+            AbsorptionRow row;
+            row.role = AbsorptionRow::Other;
+            row.area = area;
+            for (double &al : row.alpha) al = alpha;   // 帯域は 1kHz のみ使用
+            opts.absorption.push_back(row);
+        }
+        const double A = roomac::totalAbsorption(opts, 3);   // band 3 = 1kHz
+        const double T = dimsOk ? roomac::rt60(opts, 3, 0) : 0;   // 0 = Sabine
+        if (!dimsOk || T <= 0) {
+            // 寸法が読めない / 吸音力ゼロ → 値と判定を出さない
+            rtBadge->setText(I18n::tr("sp_rev_rt_fmt").arg("—"));
+            okBadge->setVisible(false);
+            noteLbl->setText(I18n::tr("sp_rev_note_fmt").arg("—", "—"));
+            return;
+        }
+        rtBadge->setText(I18n::tr("sp_rev_rt_fmt")
+                             .arg(QString::number(T, 'f', 2)));
+        bool okTgt = false;
+        const double target = targetEdit->text().toDouble(&okTgt);
+        okBadge->setVisible(okTgt && target > 0);
+        if (okTgt && target > 0) {
+            const bool met = T <= target;
+            okBadge->setText(I18n::tr(met ? "sp_rev_ok" : "sp_rev_ng"));
+            styleBadge(okBadge, met ? kOk : kWarn);
+        }
+        noteLbl->setText(I18n::tr("sp_rev_note_fmt")
+                             .arg(QString::number(V, 'g', 6),
+                                  QString::number(A, 'f', 1)));
+    };
+    connect(t, &QTableWidget::itemChanged, this,
+            [recompute](QTableWidgetItem *) { recompute(); });
+    connect(sizeEdit, &QLineEdit::textChanged, this,
+            [recompute](const QString &) { recompute(); });
+    connect(targetEdit, &QLineEdit::textChanged, this,
+            [recompute](const QString &) { recompute(); });
+    recompute();
 
     v->addStretch(1);
     return page;

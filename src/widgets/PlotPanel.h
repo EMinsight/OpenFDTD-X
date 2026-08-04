@@ -28,7 +28,9 @@ class PlotPanel : public QWidget {
 public:
     explicit PlotPanel(Project *project, QWidget *parent = nullptr);
 
-    void setDomain(Domain d) { m_domain = d; update(); }
+    // ドメイン切替 (CenterPane / domainChanged から)。ドメインで意味を持たない
+    // モードボタンの出し分けもここで行う
+    void setDomain(Domain d);
 
     // 実行結果の反映 (onRunnerFinished から)。空ならそのモードは無効のまま
     void setRunResults(const QVector<FeedSweep> &sweeps,
@@ -60,6 +62,8 @@ private:
     enum Mode { Waveform, Convergence, FreqChar, Pattern };
 
     void setMode(Mode m);
+    bool modeAllowed(Mode m) const;   // 現在のドメインで意味を持つモードか
+    void updateDomainVisibility();    // モードボタンの出し分け + フォールバック
     void updateModeButtons();
     void saveCsvDialog();   // 右上 CSV ボタン → exportCsv
     void savePngDialog();   // 右上 PNG ボタン → grab() (ボタンは一時非表示)

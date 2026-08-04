@@ -116,7 +116,8 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
     auto *sv = new SectionBox(I18n::tr("ds_derived"), body);
     m_name = new QLineEdit("peak_T", sv);
     sv->form()->addRow(I18n::tr("ds_name"), m_name);
-    m_expr = new QLineEdit("max(T_drop.transmission, dim=lambda)", sv);
+    // 式の既定例はドメイン別のプレースホルダで示す (updateDomainVisibility)
+    m_expr = new QLineEdit(sv);
     sv->form()->addRow(I18n::tr("ds_expr"), m_expr);
     m_unit = new QLineEdit(QString::fromUtf8("—"), sv);
     m_unit->setMaximumWidth(100);
@@ -138,8 +139,7 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
     auto *se = new SectionBox(I18n::tr("ds_export"), body);
     auto *erow = new QHBoxLayout();
     const char *kExpLabels[] = { "📊 PNG/SVG", "📄 CSV", nullptr,
-                                 "📑 Auto-report (HTML)", "📑 PDF",
-                                 "📁 Touchstone .s2p" };
+                                 "📑 Auto-report (HTML)", "📑 PDF" };
     for (const char *label : kExpLabels) {
         auto *b = new QPushButton(
             label ? QString::fromUtf8(label) : I18n::tr("ds_exp_h5"), se);
@@ -147,6 +147,12 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
         b->setToolTip(I18n::tr("ds_notimpl"));
         erow->addWidget(b);
     }
+    // Touchstone .s2p は S 行列 (EM/光) のみ意味を持つ → ドメイン別に非表示
+    m_expTouchstone = new QPushButton(
+        QString::fromUtf8("📁 Touchstone .s2p"), se);
+    m_expTouchstone->setEnabled(false);
+    m_expTouchstone->setToolTip(I18n::tr("ds_notimpl"));
+    erow->addWidget(m_expTouchstone);
     erow->addStretch(1);
     se->vbox()->addLayout(erow);
     v->addWidget(se);
@@ -158,7 +164,35 @@ DatasetsTab::DatasetsTab(Project *project, QWidget *parent)
 
     // プロジェクトの読み込み/保存でパスが変わったら一覧を取り直す
     connect(m_p, &Project::loaded, this, &DatasetsTab::rebuildTree);
+    // ドメイン別の出し分け (式の既定例プレースホルダ / Touchstone ボタン)
+    connect(m_p, &Project::domainChanged, this,
+            &DatasetsTab::updateDomainVisibility);
+    connect(m_p, &Project::loaded, this,
+            &DatasetsTab::updateDomainVisibility);
     rebuildTree();
+    updateDomainVisibility();
+}
+
+// ドメインに応じた出し分け:
+//   - 派生量の式の既定例 (プレースホルダ) をドメインで意味を持つ量に替える
+//   - Touchstone .s2p は S 行列出力 — 音響/水中では意味を持たないため隠す
+// (フォームは未実装のためモデル・保存内容には一切影響しない)
+void DatasetsTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const char *example = "min(S11.dB, dim=freq)";                     // EM
+    switch (d) {
+    case Domain::Optical:
+        example = "max(T_drop.transmission, dim=lambda)"; break;
+    case Domain::Acoustic:
+        example = "mean(RT60.octave, dim=band)"; break;
+    case Domain::Underwater:
+        example = "min(TL.field, dim=range)"; break;
+    default: break;
+    }
+    m_expr->setPlaceholderText(QString::fromLatin1(example));
+    m_expTouchstone->setVisible(d != Domain::Acoustic
+                                && d != Domain::Underwater);
 }
 
 // 作業ディレクトリを走査して実在する結果ファイルだけを列挙する

@@ -136,6 +136,7 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
 
     // PBC
     auto *sPbc = new SectionBox(I18n::tr("g_periodic"), body);
+    m_pbcSection = sPbc;
     auto *pbcRow = new QHBoxLayout();
     static const char *axisKey[3] = { "g_periodic_x", "g_periodic_y",
                                       "g_periodic_z" };
@@ -169,6 +170,7 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     };
     addFreqSection(I18n::tr("g_freq1"), m_f1min, m_f1max, m_f1div);
     auto *sFar = addFreqSection(I18n::tr("g_freq2"), m_f2min, m_f2max, m_f2div);
+    m_farSection = sFar;
     // 遠方界/近傍界の分割数に対する注意 (mock の warn 行)
     auto *farWarn = new QLabel(I18n::tr("g_far_warn"), sFar);
     farWarn->setWordWrap(true);
@@ -176,6 +178,7 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
 
     // advanced
     auto *sAdv = new SectionBox(I18n::tr("g_advanced"), body);
+    m_advSection = sAdv;
     m_dt = sciEdit(sAdv);
     m_tw = sciEdit(sAdv);
     m_rfeed = sciEdit(sAdv);
@@ -245,8 +248,13 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     connect(m_abc, &QComboBox::currentIndexChanged,
             this, &GeneralTab::updateAbcView);
 
+    // ドメイン切替 → FDTD/BPM 固有項目の表示切替
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+
     connect(project, &Project::loaded, this, &GeneralTab::refresh);
     refresh();
+    updateDomainVisibility();
 }
 
 // combo index: 0 = Mur 1次 (.ofd abc=0), 1 = PML (.ofd abc=1),
@@ -262,6 +270,35 @@ void GeneralTab::updateAbcView()
         if (QWidget *lab = f->labelForField(w)) lab->setVisible(pml);
     }
     m_mur2Note->setVisible(m_abc->currentIndex() == 2);
+}
+
+// ドメインに関係のない UI 項目を隠す (ドメイン監査の結果)。
+// - 音響 (RIR 解析) / 水中音響 (BELLHOP レイトレース) には Mur/PML (ABC)・
+//   PBC・遠方界周波数・Δt/Tw・整合損・偏波回転の概念が無い → 非表示。
+// - 給電抵抗 rfeed は EM のみ (BPM では rfeed は無効キーワード、
+//   音響の点音源に給電抵抗の概念は無い)。
+// あくまで表示のみの切替で、apply() は隠れていても従来どおり全値を書く
+// (シリアライズ出力は不変)。
+void GeneralTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const bool wave = (d == Domain::EM || d == Domain::Optical); // FDTD/BPM 系
+    const bool em   = (d == Domain::EM);
+
+    m_abcSection->setVisible(wave);
+    m_pbcSection->setVisible(wave);
+    m_farSection->setVisible(wave);
+
+    // 詳細設定: Δt / Tw は波動ソルバのみ、rfeed は EM のみ (行ごと隠す)
+    QFormLayout *f = m_advSection->form();
+    f->setRowVisible(m_dt, wave);
+    f->setRowVisible(m_tw, wave);
+    f->setRowVisible(m_rfeed, em);
+
+    // 計算条件オプション: 整合損 / 偏波回転は波動ソルバのみ
+    // (イテレーション飛ばしと未実装注記は全ドメイン共通のまま)
+    m_optMatch->setVisible(wave);
+    m_optPol->setVisible(wave);
 }
 
 void GeneralTab::refresh()

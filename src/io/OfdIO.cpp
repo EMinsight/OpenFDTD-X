@@ -597,10 +597,37 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"ref_index", o.bpmRefIndex}, {"input_mode", o.bpmInputMode} };
         opt["fmm"] = QJsonObject{
             {"harmonics", o.fmmHarmonics}, {"li_rules", o.fmmLiRules} };
+        // BPF: il_db / stop_db (設計目標) は既存キーの後ろへの追加のみ。
         opt["bpf"] = QJsonObject{
-            {"band_nm", QJsonArray{ o.bpfBandMin, o.bpfBandMax }}, {"Q", o.bpfQ} };
+            {"band_nm", QJsonArray{ o.bpfBandMin, o.bpfBandMax }}, {"Q", o.bpfQ},
+            {"il_db", o.bpfIL_dB}, {"stop_db", o.bpfStop_dB} };
         opt["ring"] = QJsonObject{
-            {"radius_um", o.ringRadius_um}, {"gap_nm", o.ringGap_nm} };
+            {"radius_um", o.ringRadius_um}, {"gap_nm", o.ringGap_nm},
+            {"thru_port", o.ringThruPort}, {"drop_port", o.ringDropPort} };
+        // ── 光解析モード別設定 (mock のモード別セクション) — 追加キーのみ。
+        // .ofd (カーネル入力) には出力しない: 設計目標 / 解析対象の記録。
+        opt["waveguide"] = QJsonObject{
+            {"te0", o.wgTE0}, {"te1", o.wgTE1},
+            {"tm0", o.wgTM0}, {"tm1", o.wgTM1},
+            {"loss_db_cm", o.wgLoss_dBcm} };
+        opt["mzi"] = QJsonObject{
+            {"delta_l_um", o.mziDeltaL_um},
+            {"thermo", o.mziThermo}, {"electro", o.mziElectro} };
+        opt["metasurface"] = QJsonObject{
+            {"period_nm", o.metaPeriod_nm},
+            {"shape", o.metaShape}, {"phase", o.metaPhase} };
+        opt["phc"] = QJsonObject{
+            {"lattice", o.phcLattice}, {"a_nm", o.phcA_nm},
+            {"r_over_a", o.phcRoverA},
+            {"band", o.phcBand}, {"defect", o.phcDefect} };
+        opt["nf2ff"] = QJsonObject{
+            {"surface", o.nfffSurface},
+            {"distance_lambda", o.nfffDistance_lambda} };
+        opt["sparam"] = QJsonObject{
+            {"ports", o.spPorts},
+            {"port_in", o.spPortIn}, {"port_out", o.spPortOut},
+            {"s11", o.spS11}, {"s21", o.spS21},
+            {"phase", o.spPhase}, {"group_delay", o.spGroupDelay} };
         // 非線形 (TPA) / ONN 活性化 (Opt. Lett. 49, 5811 (2024)) — 追加キー
         // のみ。既存キーの改名・削除・順序変更は後方互換のため禁止。
         opt["tpa"] = QJsonObject{
@@ -643,6 +670,14 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"src_directivity", a.srcDirectivity},
             {"src_spl_db", a.srcSPL_dB},
             {"mic_count", a.micCount},
+            // AcousticTab 追加設定 (LF 指標 / 音源位置・向き / 解析タイプ /
+            // 周波数帯域) — 追加キーのみ。改名・削除・型変更は禁止。
+            {"lf", a.lf},
+            {"src_pos_m", QJsonArray{ a.srcX_m, a.srcY_m, a.srcZ_m }},
+            {"src_aim_deg", QJsonArray{ a.srcAimTheta_deg, a.srcAimPhi_deg }},
+            {"analysis_type", a.analysisType},
+            {"third_octave", a.thirdOctave},
+            {"band_range", a.bandRange},
             {"room_l", a.roomL}, {"room_w", a.roomW}, {"room_h", a.roomH},
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
@@ -696,6 +731,9 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"bottom_type", u.bottomType},
             {"bottom_c_mps", u.bottomC_mps},
             {"bottom_rho_kgm3", u.bottomRho_kgm3},
+            // 底質吸収係数 α [dB/λ] — 追加キーのみ。欠落時は 0.5 (旧ファイル
+            // 互換 = 従来 BellhopIO がハードコードしていた値)。
+            {"bottom_alpha_db_lambda", u.bottomAlpha_dBlambda},
             {"sonar_freq_khz", u.sonarFreq_kHz},
             {"sonar_sl_db", u.sonarSL_dB},
             {"range_max_km", u.rangeMax_km} };
@@ -778,9 +816,50 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             o.bpfBandMax = band[1].toDouble(o.bpfBandMax);
         }
         o.bpfQ = bpf.value("Q").toDouble(o.bpfQ);
+        // BPF 設計目標 — 欠落キーは既定値のまま (旧ファイル互換)
+        o.bpfIL_dB = bpf.value("il_db").toDouble(o.bpfIL_dB);
+        o.bpfStop_dB = bpf.value("stop_db").toDouble(o.bpfStop_dB);
         const QJsonObject ring = opt["ring"].toObject();
         o.ringRadius_um = ring.value("radius_um").toDouble(o.ringRadius_um);
         o.ringGap_nm = ring.value("gap_nm").toDouble(o.ringGap_nm);
+        o.ringThruPort = ring.value("thru_port").toBool(o.ringThruPort);
+        o.ringDropPort = ring.value("drop_port").toBool(o.ringDropPort);
+        // ── 光解析モード別設定 — 欠落キーは既定値のまま (旧ファイル互換)。
+        // コンボの index になる int は壊れたファイルの範囲外値で不正な
+        // 選択を作らないようクランプする (solverBackend と同じ流儀)。
+        const QJsonObject wg = opt["waveguide"].toObject();
+        o.wgTE0 = wg.value("te0").toBool(o.wgTE0);
+        o.wgTE1 = wg.value("te1").toBool(o.wgTE1);
+        o.wgTM0 = wg.value("tm0").toBool(o.wgTM0);
+        o.wgTM1 = wg.value("tm1").toBool(o.wgTM1);
+        o.wgLoss_dBcm = wg.value("loss_db_cm").toDouble(o.wgLoss_dBcm);
+        const QJsonObject mzi = opt["mzi"].toObject();
+        o.mziDeltaL_um = mzi.value("delta_l_um").toDouble(o.mziDeltaL_um);
+        o.mziThermo = mzi.value("thermo").toBool(o.mziThermo);
+        o.mziElectro = mzi.value("electro").toBool(o.mziElectro);
+        const QJsonObject meta = opt["metasurface"].toObject();
+        o.metaPeriod_nm = meta.value("period_nm").toDouble(o.metaPeriod_nm);
+        o.metaShape = qBound(0, meta.value("shape").toInt(o.metaShape), 2);
+        o.metaPhase = qBound(0, meta.value("phase").toInt(o.metaPhase), 2);
+        const QJsonObject phc = opt["phc"].toObject();
+        o.phcLattice = qBound(0, phc.value("lattice").toInt(o.phcLattice), 2);
+        o.phcA_nm = phc.value("a_nm").toDouble(o.phcA_nm);
+        o.phcRoverA = phc.value("r_over_a").toDouble(o.phcRoverA);
+        o.phcBand = phc.value("band").toBool(o.phcBand);
+        o.phcDefect = phc.value("defect").toBool(o.phcDefect);
+        const QJsonObject nfff = opt["nf2ff"].toObject();
+        o.nfffSurface = qBound(0, nfff.value("surface").toInt(o.nfffSurface), 1);
+        o.nfffDistance_lambda =
+            nfff.value("distance_lambda").toDouble(o.nfffDistance_lambda);
+        const QJsonObject sp = opt["sparam"].toObject();
+        o.spPorts = qBound(1, sp.value("ports").toInt(o.spPorts), 64);
+        o.spPortIn = qBound(1, sp.value("port_in").toInt(o.spPortIn), o.spPorts);
+        o.spPortOut =
+            qBound(1, sp.value("port_out").toInt(o.spPortOut), o.spPorts);
+        o.spS11 = sp.value("s11").toBool(o.spS11);
+        o.spS21 = sp.value("s21").toBool(o.spS21);
+        o.spPhase = sp.value("phase").toBool(o.spPhase);
+        o.spGroupDelay = sp.value("group_delay").toBool(o.spGroupDelay);
         // 非線形 (TPA) / ONN 活性化 — 欠落キーは既定値のまま (旧ファイル互換)
         const QJsonObject tpa = opt["tpa"].toObject();
         o.tpaEnabled = tpa.value("enabled").toBool(o.tpaEnabled);
@@ -808,6 +887,25 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.srcDirectivity = ac.value("src_directivity").toString(a.srcDirectivity);
         a.srcSPL_dB = ac.value("src_spl_db").toDouble(a.srcSPL_dB);
         a.micCount = ac.value("mic_count").toInt(a.micCount);
+        // AcousticTab 追加設定 — 欠落キーは既定値のまま (旧ファイル互換)。
+        // コンボの index になる int は範囲外値で不正な選択を作らないよう
+        // クランプする (metaShape / solverBackend と同じ流儀)。
+        a.lf = ac.value("lf").toBool(a.lf);
+        const QJsonArray srcPos = ac["src_pos_m"].toArray();
+        if (srcPos.size() >= 3) {
+            a.srcX_m = srcPos[0].toDouble(a.srcX_m);
+            a.srcY_m = srcPos[1].toDouble(a.srcY_m);
+            a.srcZ_m = srcPos[2].toDouble(a.srcZ_m);
+        }
+        const QJsonArray srcAim = ac["src_aim_deg"].toArray();
+        if (srcAim.size() >= 2) {
+            a.srcAimTheta_deg = srcAim[0].toDouble(a.srcAimTheta_deg);
+            a.srcAimPhi_deg   = srcAim[1].toDouble(a.srcAimPhi_deg);
+        }
+        a.analysisType =
+            qBound(0, ac.value("analysis_type").toInt(a.analysisType), 2);
+        a.thirdOctave = ac.value("third_octave").toBool(a.thirdOctave);
+        a.bandRange = qBound(0, ac.value("band_range").toInt(a.bandRange), 2);
         a.roomL = ac.value("room_l").toDouble(a.roomL);
         a.roomW = ac.value("room_w").toDouble(a.roomW);
         a.roomH = ac.value("room_h").toDouble(a.roomH);
@@ -910,6 +1008,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         u.bottomType = uw.value("bottom_type").toString(u.bottomType);
         u.bottomC_mps = uw.value("bottom_c_mps").toDouble(u.bottomC_mps);
         u.bottomRho_kgm3 = uw.value("bottom_rho_kgm3").toDouble(u.bottomRho_kgm3);
+        u.bottomAlpha_dBlambda =
+            uw.value("bottom_alpha_db_lambda").toDouble(u.bottomAlpha_dBlambda);
         u.sonarFreq_kHz = uw.value("sonar_freq_khz").toDouble(u.sonarFreq_kHz);
         u.sonarSL_dB = uw.value("sonar_sl_db").toDouble(u.sonarSL_dB);
         u.rangeMax_km = uw.value("range_max_km").toDouble(u.rangeMax_km);

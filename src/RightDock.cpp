@@ -26,6 +26,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("rd_selected",  "選択中 / Selected", "Selected");
     ofd::I18n::reg("rd_no_sel",
         "ツリーで要素を選択してください。", "Select an item in the tree.");
+    // 音響/水中ドメイン用の表記 (EM の feed/point は波源・観測点として
+    // 意味を持たないため、ツリー上の見せ方だけ切り替える)
+    ofd::I18n::reg("rd_src_point",  "点音源", "Point source");
+    ofd::I18n::reg("rd_probe_recv", "受音点", "Receiver");
     return true;
 }();
 } // namespace
@@ -139,6 +143,12 @@ void RightDock::rebuildTree()
 {
     m_tree->clear();
 
+    // ドメインで意味を持たない項目は表示しない / 表記を切り替える
+    // (Project::setActiveDomain() が changed() を発火するので、ドメイン切替
+    //  時もここが呼び直される。表示のみの分岐でモデルには一切触らない)
+    const Domain dom = m_project->activeDomain();
+    const bool acoustic = (dom == Domain::Acoustic || dom == Domain::Underwater);
+
     auto *root = new QTreeWidgetItem(m_tree,
         { m_project->general().title.isEmpty() ? I18n::tr("untitled")
                                                : m_project->general().title });
@@ -160,7 +170,11 @@ void RightDock::rebuildTree()
         QString::number(m_project->materials().size()) });
     int id = 2;
     for (const Material &m : m_project->materials()) {
-        const QString desc = (m.type == 2)
+        // 音響/水中では誘電率表記は無意味 → 音響物性 (ρ, c, α) を表示
+        const QString desc = acoustic
+            ? QStringLiteral("ρ=%1 c=%2 α=%3")
+                  .arg(m.rho).arg(m.soundSpeed).arg(m.absorption)
+            : (m.type == 2)
             ? QStringLiteral("disp ε∞=%1").arg(m.einf)
             : QStringLiteral("εr=%1 σ=%2").arg(m.epsr).arg(m.esgm);
         new QTreeWidgetItem(mats, {
@@ -177,13 +191,18 @@ void RightDock::rebuildTree()
                                  : g.name),
             QStringLiteral("mat %1").arg(g.materialId) });
 
+    // planewave は音響/水中では意味を持たないため表示しない
+    // (モデル上の enabled はそのまま — 表示だけ抑制し、件数も表示に合わせる)
+    const bool showPw = m_project->planewave().enabled && !acoustic;
     auto *srcs = new QTreeWidgetItem(root, { I18n::tr("rd_tree_sources"),
-        QString::number(m_project->feeds().size()
-                        + (m_project->planewave().enabled ? 1 : 0)) });
+        QString::number(m_project->feeds().size() + (showPw ? 1 : 0)) });
     for (const Feed &f : m_project->feeds())
-        new QTreeWidgetItem(srcs, { QStringLiteral("feed %1").arg(f.dir),
+        // 音響/水中は点音源 (dir 成分 Ex 等は無意味なので出さない)
+        new QTreeWidgetItem(srcs, { acoustic
+                ? I18n::tr("rd_src_point")
+                : QStringLiteral("feed %1").arg(f.dir),
             QStringLiteral("(%1, %2, %3)").arg(f.x).arg(f.y).arg(f.z) });
-    if (m_project->planewave().enabled)
+    if (showPw)
         new QTreeWidgetItem(srcs, { "planewave",
             QStringLiteral("θ=%1 φ=%2").arg(m_project->planewave().theta)
                                        .arg(m_project->planewave().phi) });
@@ -191,10 +210,15 @@ void RightDock::rebuildTree()
     auto *pts = new QTreeWidgetItem(root, { I18n::tr("rd_tree_points"),
         QString::number(m_project->probes().size()) });
     for (const Probe &pr : m_project->probes())
-        new QTreeWidgetItem(pts, { QStringLiteral("point %1").arg(pr.dir),
+        // 音響/水中は受音点 (dir 成分表示は抑制)
+        new QTreeWidgetItem(pts, { acoustic
+                ? I18n::tr("rd_probe_recv")
+                : QStringLiteral("point %1").arg(pr.dir),
             QStringLiteral("(%1, %2, %3)").arg(pr.x).arg(pr.y).arg(pr.z) });
 
-    if (!m_project->loads().isEmpty()) {
+    // 集中定数負荷 (R/L/C) は EM 専用 — 他ドメインではデータが
+    // 入っていてもノード自体を出さない (モデルは保持したまま)
+    if (dom == Domain::EM && !m_project->loads().isEmpty()) {
         auto *lds = new QTreeWidgetItem(root, { I18n::tr("rd_tree_loads"),
             QString::number(m_project->loads().size()) });
         for (const Load &l : m_project->loads())

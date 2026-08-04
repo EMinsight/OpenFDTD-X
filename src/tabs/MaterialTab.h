@@ -32,8 +32,11 @@ private:
     QTableWidget *m_mats;
     QTableWidget *m_loads;
     SectionBox   *m_matSection;
+    SectionBox   *m_lumpedSection; // 集中定数素子 (.ofd の load — EM のみ表示)
     QLabel       *m_dispHint;    // 分散モデルの案内 (光ドメインのみ)
     QLabel       *m_libStatus;   // ライブラリ読込の状態表示
+    QWidget      *m_libRowRi;    // RefractiveIndex.info 行 (光のみ表示)
+    QWidget      *m_libRowAstm;  // ASTM 音響材料行 (音響/水中のみ表示)
 };
 
 } // namespace ofd

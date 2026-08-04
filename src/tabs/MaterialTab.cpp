@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -129,8 +130,9 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
     sm->vbox()->addWidget(m_dispHint);
     v->addWidget(sm);
 
-    // lumped elements
+    // lumped elements (.ofd の load キー — EM FDTD 専用。updateColumns で出し分け)
     auto *sl = new SectionBox(I18n::tr("ma_lumped"), body);
+    m_lumpedSection = sl;
     m_loads = new QTableWidget(0, 6, sl);
     m_loads->setHorizontalHeaderLabels({
         I18n::tr("ma_dir"), "X [m]", "Y [m]", "Z [m]",
@@ -154,18 +156,26 @@ MaterialTab::MaterialTab(Project *project, QWidget *parent)
     slib->vbox()->addWidget(new QLabel(I18n::tr("ma_lib_std"), slib));
     static const char *libKeys[4] = { "ma_lib_ri", "ma_lib_nist",
                                       "ma_lib_astm", "ma_lib_ofd" };
-    for (const char *key : libKeys) {
-        const QString name = I18n::tr(key);
-        auto *r = new QHBoxLayout();
-        r->addWidget(new QLabel(QString::fromUtf8("▸"), slib));
-        r->addWidget(new QLabel(name, slib), 1);
-        auto *load = new QPushButton(I18n::tr("ma_lib_load"), slib);
+    // 各行を QWidget に包み、ドメイン限定の行を丸ごと隠せるようにする
+    QWidget *libRows[4];
+    for (int i = 0; i < 4; ++i) {
+        const QString name = I18n::tr(libKeys[i]);
+        auto *row = new QWidget(slib);
+        auto *r = new QHBoxLayout(row);
+        r->setContentsMargins(0, 0, 0, 0);
+        r->addWidget(new QLabel(QString::fromUtf8("▸"), row));
+        r->addWidget(new QLabel(name, row), 1);
+        auto *load = new QPushButton(I18n::tr("ma_lib_load"), row);
         r->addWidget(load);
-        slib->vbox()->addLayout(r);
+        slib->vbox()->addWidget(row);
+        libRows[i] = row;
         connect(load, &QPushButton::clicked, this, [this, name] {
             m_libStatus->setText(I18n::tr("ma_lib_todo").arg(name));
         });
     }
+    // RefractiveIndex.info は光学定数 DB、ASTM は音響材料 DB (updateColumns で切替)
+    m_libRowRi   = libRows[0];
+    m_libRowAstm = libRows[2];
     m_libStatus = new QLabel(slib);
     m_libStatus->setWordWrap(true);
     slib->vbox()->addWidget(m_libStatus);
@@ -267,6 +277,14 @@ void MaterialTab::updateColumns()
         + (opt ? I18n::tr("ma_opt_suffix")
                : ac ? I18n::tr("ma_ac_suffix") : QString()));
     m_dispHint->setVisible(opt);
+
+    // ── ドメイン別のセクション/行の出し分け ────────────────────────────────
+    // 集中定数素子 (.ofd の load キー) は EM FDTD 専用。隠すだけでモデルと
+    // シリアライズは従来どおり保持する (可視性で書き込みを分岐しない)。
+    m_lumpedSection->setVisible(m_p->activeDomain() == Domain::EM);
+    // 標準ライブラリ: RefractiveIndex.info は光のみ、ASTM 音響材料は音響/水中のみ
+    m_libRowRi->setVisible(opt);
+    m_libRowAstm->setVisible(ac);
 }
 
 void MaterialTab::applyMaterials()
@@ -342,6 +360,13 @@ void MaterialTab::refresh()
         type->addItem(I18n::tr("ma_normal"));
         type->addItem(I18n::tr("ma_dispersive"));
         type->setCurrentIndex(m.type == 2 ? 1 : 0);
+        // 音響/水中: 分散モデル (Drude/Lorentz/Sellmeier) は光学の概念なので
+        // 「分散性」を選択不可にする。既に分散性の材料は表示のみ維持
+        // (無効項目でも currentIndex には設定できる)。
+        if (ac)
+            if (auto *im = qobject_cast<QStandardItemModel *>(type->model()))
+                if (auto *item = im->item(1))
+                    item->setEnabled(false);
         connect(type, &QComboBox::currentIndexChanged, this, [this] {
             if (m_updating) return;
             applyMaterials();

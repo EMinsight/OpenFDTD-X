@@ -18,6 +18,7 @@ class QComboBox;
 class QLabel;
 class QButtonGroup;
 class QRadioButton;
+class QFormLayout;
 
 namespace ofd {
 
@@ -38,6 +39,7 @@ private:
     void updateExclusiveWarning();
     void updateSourceType();     // 波源の種類 → 給電点/平面波セクションの表示切替
     void updateWaveform();       // 波形の種類 → パラメータ行 + プレビュー更新
+    void updateDomainVisibility(); // ドメイン別の出し分け (Z0 列 / 偏波 / 平面波)
 
     Project      *m_p;
     bool          m_updating = false;
@@ -48,6 +50,8 @@ private:
     // mock の平面波「振幅」欄。.ofd の planewave = θ φ pol に振幅キーは無い
     // (振幅は給電点の電圧が担う) ので、ここはローカル状態のみ。
     QLineEdit    *m_pwAmp = nullptr;
+    // 平面波セクションのフォーム (偏波行のドメイン別出し分けに使う)
+    QFormLayout  *m_pwForm = nullptr;
     QTableWidget *m_points;
     QLabel       *m_warning;
 
@@ -71,6 +75,11 @@ private:
     QWidget      *m_rowFmax = nullptr;
     QWidget      *m_rowSweep = nullptr;
     MiniPlot     *m_wavePlot = nullptr;
+    // 周波数行のラベル (ドメイン別に単位表記を切り替える — 値はローカル
+    // プレビュー専用でモデルへ保存されないため、換算は発生しない)
+    QLabel       *m_f0Label   = nullptr;
+    QLabel       *m_fminLabel = nullptr;
+    QLabel       *m_fmaxLabel = nullptr;
 };
 
 } // namespace ofd

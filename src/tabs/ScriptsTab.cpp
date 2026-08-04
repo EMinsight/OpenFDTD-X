@@ -5,14 +5,19 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QFile>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QStringConverter>
 #include <QTableWidget>
 #include <QTextCursor>
+#include <QTextStream>
 #include <QVBoxLayout>
 
 using namespace ofd;
@@ -28,6 +33,12 @@ const bool s_i18n = [] {
     I18n::reg("scr_load", "📁 読込", "📁 Load");
     I18n::reg("scr_save", "💾 保存", "💾 Save");
     I18n::reg("scr_examples", "📚 サンプル", "📚 Examples");
+    I18n::reg("scr_load_title", "スクリプトを読込", "Load script");
+    I18n::reg("scr_save_title", "スクリプトを保存", "Save script");
+    I18n::reg("scr_filter_py", "Pythonスクリプト (*.py);;すべてのファイル (*)",
+              "Python scripts (*.py);;All files (*)");
+    I18n::reg("scr_filter_lsf", "スクリプト (*.lsf *.m);;すべてのファイル (*)",
+              "Scripts (*.lsf *.m);;All files (*)");
     I18n::reg("scr_run", "▶ 実行", "▶ Run");
     I18n::reg("scr_abort", "⏸ 中断", "⏸ Abort");
     I18n::reg("scr_status_fmt", "行 %1 列 %2 · UTF-8", "Ln %1 Col %2 · UTF-8");
@@ -152,6 +163,13 @@ TL = getresult("TL_range", "TL");
 ?"TL @ 50km = " + num2str(TL_at_range(TL,50e3)) + " dB";
 )CODE";
 
+// 言語に応じたファイルダイアログのフィルタ (python → .py, lsf → .lsf/.m)
+QString scriptFilter(const QString &lang)
+{
+    using ofd::I18n;
+    return I18n::tr(lang == "python" ? "scr_filter_py" : "scr_filter_lsf");
+}
+
 const char *sampleCode(const QString &lang, ofd::Domain d)
 {
     const bool py = (lang == "python");
@@ -224,12 +242,15 @@ ScriptsTab::ScriptsTab(Project *project, QWidget *parent)
     addLangBtn("scr_python", "python", m_editorSec);
     addLangBtn("scr_lsf", "lsf", m_editorSec);
     topRow->addStretch(1);
-    for (const char *key : { "scr_load", "scr_save", "scr_examples" }) {
+    auto addToolBtn = [this, topRow](const char *key, void (ScriptsTab::*slot)()) {
         auto *b = new QPushButton(I18n::tr(key), m_editorSec);
         b->setStyleSheet("font-size:11px; padding:2px 8px;");
-        tabhelp::markNotImplemented(b);   // 読込/保存/サンプル切替は未配線
+        connect(b, &QPushButton::clicked, this, slot);
         topRow->addWidget(b);
-    }
+    };
+    addToolBtn("scr_load", &ScriptsTab::loadScript);
+    addToolBtn("scr_save", &ScriptsTab::saveScript);
+    addToolBtn("scr_examples", &ScriptsTab::insertSample);
     m_editorSec->vbox()->addLayout(topRow);
 
     m_editor = new QPlainTextEdit(m_editorSec);
@@ -300,6 +321,43 @@ void ScriptsTab::setLang(const QString &lang)
 {
     m_lang = lang;
     rebuild();
+}
+
+// ── 読込 / 保存 / サンプル再挿入 ────────────────────────────────────────────
+void ScriptsTab::loadScript()
+{
+    const QString title = I18n::tr("scr_load_title");
+    const QString path = QFileDialog::getOpenFileName(this, title, QString(),
+                                                      scriptFilter(m_lang));
+    if (path.isEmpty()) return;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, title, f.errorString());
+        return;
+    }
+    QTextStream in(&f);
+    in.setEncoding(QStringConverter::Utf8);
+    m_editor->setPlainText(in.readAll());
+    // 読み込んだ内容をドメイン切替時のサンプル差し替えで潰さない
+    // (rebuild() は未編集時のみサンプルを流し込む)
+    m_editor->document()->setModified(true);
+}
+
+void ScriptsTab::saveScript()
+{
+    const QString suggested = (m_lang == "python") ? QStringLiteral("script.py")
+                                                   : QStringLiteral("script.lsf");
+    tabhelp::saveTextFile(this, I18n::tr("scr_save_title"), suggested,
+                          scriptFilter(m_lang), m_editor->toPlainText());
+}
+
+void ScriptsTab::insertSample()
+{
+    // 現在の言語×ドメインのサンプルをエディタへ再挿入。
+    // setPlainText は modified フラグをリセットするので、以後はドメイン切替に
+    // 追従してサンプルが更新される (ctor 直後と同じ状態に戻る)。
+    m_editor->setPlainText(
+        QString::fromUtf8(sampleCode(m_lang, m_p->activeDomain())));
 }
 
 void ScriptsTab::rebuild()

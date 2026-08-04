@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QBrush>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -32,6 +33,13 @@ const bool s_i18n = [] {
         "The central Lumerical-FDTD object: simulation time, region, mesh and "
         "boundary conditions managed in one place.\n"
         "Geometry, sources and monitors are placed inside this region.");
+    // 音響/水中音響用: FDTD/Lumerical 前提を含まないドメイン中立の文言
+    ofd::I18n::reg("sreg_hint_ac",
+        "シミュレーション時間・領域・メッシュを一括管理する中心オブジェクト。\n"
+        "形状・音源・受音点はこの領域内に配置されます。",
+        "The central object managing simulation time, region and mesh "
+        "in one place.\n"
+        "Geometry, sources and receivers are placed inside this region.");
     ofd::I18n::reg("sreg_region", "シミュレーション領域", "Simulation region");
     ofd::I18n::reg("sreg_dim", "次元", "Dimension");
     ofd::I18n::reg("sreg_dim_cyl", "円筒対称 (2.5D)", "Cylindrical (2.5D)");
@@ -57,27 +65,16 @@ const bool s_i18n = [] {
         "▸ 最高 (7〜8): 検証用、計算時間×16, 誤差 <0.2% (目安)",
         "▸ Highest (7-8): for verification, 16x compute time, <0.2% error "
         "(rough guide)");
-    ofd::I18n::reg("sreg_cells", "セル数 (目安 — プリセット例)",
-                   "Cell count (guide — preset example)");
-    ofd::I18n::reg("sreg_memory", "メモリ (目安 — プリセット例)",
-                   "Memory (guide — preset example)");
-    ofd::I18n::reg("sreg_est_time", "計算時間 (目安 — プリセット例)",
-                   "Compute time (guide — preset example)");
-    ofd::I18n::reg("sreg_preset_note",
-        "上の値はメッシュ精度プリセットごとの固定の目安表で、"
-        "このプロジェクトからの実推定ではありません。"
-        "実際のセル数・メモリ推定はメッシュタブを参照。",
-        "The values above come from a fixed per-preset lookup table, not an "
-        "estimate for this project. See the Mesh tab for the real cell-count "
-        "and memory estimate.");
-    ofd::I18n::reg("sreg_eta1", "<5秒", "<5 s");
-    ofd::I18n::reg("sreg_eta2", "~20秒", "~20 s");
-    ofd::I18n::reg("sreg_eta3", "~1分", "~1 min");
-    ofd::I18n::reg("sreg_eta4", "~5分", "~5 min");
-    ofd::I18n::reg("sreg_eta5", "~15分", "~15 min");
-    ofd::I18n::reg("sreg_eta6", "~1時間", "~1 h");
-    ofd::I18n::reg("sreg_eta7", "~4時間", "~4 h");
-    ofd::I18n::reg("sreg_eta8", "~12時間", "~12 h");
+    ofd::I18n::reg("sreg_cells", "セル数 (推定)", "Cell count (estimate)");
+    ofd::I18n::reg("sreg_memory", "メモリ (推定)", "Memory (estimate)");
+    ofd::I18n::reg("sreg_est_note",
+        "セル数・メモリは現在のメッシュ設定 (メッシュタブ) からの実推定です "
+        "(約 60 byte/セル換算)。計算時間の予測は実測モデルが無いため表示しません。",
+        "Cell count and memory are estimated from the current mesh settings "
+        "(Mesh tab), assuming ~60 bytes/cell. No compute-time prediction is "
+        "shown (no measured model available).");
+    // メッシュ精度プリセットの目標解像度 (λ/N @ 代表周波数) — スライダの説明
+    ofd::I18n::reg("sreg_lambda_note", "(目標 λ/%1 @ %2)", "(target λ/%1 @ %2)");
     ofd::I18n::reg("sreg_advanced", "▼ 詳細メッシュ設定", "▼ Advanced");
     ofd::I18n::reg("sreg_mesh_type", "メッシュタイプ", "Mesh type");
     ofd::I18n::reg("sreg_mesh_auto", "自動非均一", "Auto non-uniform");
@@ -95,8 +92,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("sreg_time", "時間 (FDTD)", "Time (FDTD)");
     ofd::I18n::reg("sreg_shutoff", "自動シャットオフ", "Auto shutoff");
     ofd::I18n::reg("sreg_shutoff_level", "レベル ≤", "level ≤");
-    ofd::I18n::reg("sreg_dt_steps", "→ ステップ数 ~107,400", "→ ~107,400 steps");
+    ofd::I18n::reg("sreg_dt_steps_fmt", "→ ステップ数 ~%1", "→ ~%1 steps");
+    ofd::I18n::reg("sreg_dt_none", "— (メッシュ未定義)", "— (no mesh defined)");
     ofd::I18n::reg("sreg_stable", "安定", "Stable");
+    ofd::I18n::reg("sreg_unstable", "不安定", "Unstable");
     ofd::I18n::reg("sreg_cfl", "CFL 係数", "CFL factor");
     ofd::I18n::reg("sreg_cfl_hint", "(0.99で安定限界、0.5で安全)",
                    "(0.99 = stability limit, 0.5 = safe)");
@@ -104,6 +103,12 @@ const bool s_i18n = [] {
     ofd::I18n::reg("sreg_bc_hint", "面別BC (詳細は「境界面」タブで設定)",
                    "Per-face BC (details in the \"Per-face BC\" tab)");
     ofd::I18n::reg("sreg_col_face", "面", "Face");
+    ofd::I18n::reg("sreg_bc_pbc", "周期", "Periodic");
+    ofd::I18n::reg("sreg_bc_derived",
+        "面別表示は全般タブの吸収境界 (abc) と周期境界 (pbc) からの導出です "
+        "(.ofd に面別の個別 BC はありません)。",
+        "Per-face labels are derived from the ABC and PBC settings on the "
+        "General tab (the .ofd format has no per-face BC).");
     ofd::I18n::reg("sreg_pml_profile", "PML プロファイル", "PML profile");
     ofd::I18n::reg("sreg_pml_layers", "PML 層数", "PML layers");
     ofd::I18n::reg("sreg_auto_sym", "対称性を自動検出して計算量削減 (未実装)",
@@ -115,14 +120,8 @@ const bool s_i18n = [] {
     return true;
 }();
 
-// メッシュ精度 1〜8 の派生値表 (モックの配列をそのまま)
-const qint64 kCells[8]     = { 8000, 27900, 88000, 280000, 720000,
-                               1800000, 4200000, 8400000 };
-const int    kLambdaDiv[8] = { 6, 10, 14, 18, 22, 30, 40, 50 };
-const int    kMemMB[8]     = { 5, 18, 56, 180, 460, 1200, 2700, 5400 };
-const char  *kEtaKeys[8]   = { "sreg_eta1", "sreg_eta2", "sreg_eta3",
-                               "sreg_eta4", "sreg_eta5", "sreg_eta6",
-                               "sreg_eta7", "sreg_eta8" };
+// メッシュ精度 1〜8 の目標解像度 (λ/N) — Lumerical 風プリセットの定義値
+const int kLambdaDiv[8] = { 6, 10, 14, 18, 22, 30, 40, 50 };
 } // namespace
 
 SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
@@ -135,9 +134,9 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── ソルバ領域 / FDTD Solver Region (説明) ──────────────────────────────
     auto *st = new SectionBox(I18n::tr("sreg_title"), body);
-    auto *hint = new QLabel(I18n::tr("sreg_hint"), st);
-    hint->setWordWrap(true);
-    st->vbox()->addWidget(hint);
+    m_hint = new QLabel(I18n::tr("sreg_hint"), st);   // 文言はドメイン別に切替
+    m_hint->setWordWrap(true);
+    st->vbox()->addWidget(m_hint);
     v->addWidget(st);
 
     // ── シミュレーション領域 / Simulation region ────────────────────────────
@@ -173,6 +172,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── メッシュ設定 / Mesh ─────────────────────────────────────────────────
     auto *sm = new SectionBox(I18n::tr("sreg_mesh"), body);
+    m_meshForm = sm->form();             // ドメイン別の行出し分けに使う
     auto *accRow = new QHBoxLayout();
     m_meshAcc = new QSlider(Qt::Horizontal, sm);
     m_meshAcc->setRange(1, 8);
@@ -185,31 +185,26 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_meshAccVal->setAlignment(Qt::AlignCenter);
     m_meshAccVal->setStyleSheet("font-weight:600; color:#0078D4;");
     accRow->addWidget(m_meshAccVal);
+    // プリセットの目標解像度 (λ/N @ 代表周波数) はスライダの説明として表示
+    m_cellsNote = new QLabel(sm);
+    m_cellsNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    accRow->addWidget(m_cellsNote);
     sm->form()->addRow(I18n::tr("sreg_mesh_acc"), accRow);
 
     m_meshHint = new QLabel(sm);
     m_meshHint->setWordWrap(true);
     sm->form()->addRow(m_meshHint);
 
-    auto *cellRow = new QHBoxLayout();
+    // セル数/メモリは Project の実メッシュからの推定 (updateEstimates が更新)
     m_cells = new QLabel(sm);
-    m_cellsNote = new QLabel(sm);
-    cellRow->addWidget(m_cells);
-    cellRow->addWidget(m_cellsNote);
-    cellRow->addStretch(1);
-    sm->form()->addRow(I18n::tr("sreg_cells"), cellRow);
-
+    sm->form()->addRow(I18n::tr("sreg_cells"), m_cells);
     m_memory = new QLabel(sm);
     sm->form()->addRow(I18n::tr("sreg_memory"), m_memory);
-    m_estTime = new QLabel(sm);
-    sm->form()->addRow(I18n::tr("sreg_est_time"), m_estTime);
 
-    // セル数/メモリ/計算時間は精度プリセットの固定表 (実推定ではない)
-    sm->form()->addRow(tabhelp::sampleNote(sm));
-    auto *presetNote = new QLabel(I18n::tr("sreg_preset_note"), sm);
-    presetNote->setWordWrap(true);
-    presetNote->setStyleSheet("font-size:11px; color:palette(mid);");
-    sm->form()->addRow(presetNote);
+    auto *estNote = new QLabel(I18n::tr("sreg_est_note"), sm);
+    estNote->setWordWrap(true);
+    estNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sm->form()->addRow(estNote);
 
     auto *sep = new QFrame(sm);          // sep-h
     sep->setFrameShape(QFrame::HLine);
@@ -242,6 +237,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── シミュレーション時間 / Simulation time ──────────────────────────────
     auto *ss = new SectionBox(I18n::tr("sreg_simtime"), body);
+    m_timeForm = ss->form();             // ドメイン別の行出し分けに使う
     auto *timeRow = new QHBoxLayout();
     m_simTime = new QLineEdit("1000", ss);
     m_simTime->setMaximumWidth(100);
@@ -262,29 +258,30 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     shutRow->addStretch(1);
     ss->form()->addRow(I18n::tr("sreg_shutoff"), shutRow);
 
-    auto *dtRow = new QHBoxLayout();
-    dtRow->addWidget(new QLabel("9.31e-13 s", ss));
-    dtRow->addWidget(new QLabel(I18n::tr("sreg_dt_steps"), ss));
-    auto *stable = new QLabel(I18n::tr("sreg_stable"), ss);
-    stable->setStyleSheet("color:#2E8B57; font-weight:600;");   // badge ok
-    dtRow->addWidget(stable);
-    dtRow->addStretch(1);
-    ss->form()->addRow(QString::fromUtf8("Δt (CFL)"), dtRow);
-    // Δt / ステップ数 / 「安定」バッジはモックの固定値 (CFL 計算は未実装)
-    ss->form()->addRow(tabhelp::sampleNote(ss));
+    // Δt = CFL 係数 × Courant 限界 / ステップ数 = 時間 ÷ Δt (updateEstimates)
+    m_dtRow = new QHBoxLayout();
+    m_dtVal = new QLabel(ss);
+    m_dtSteps = new QLabel(ss);
+    m_stable = new QLabel(ss);
+    m_dtRow->addWidget(m_dtVal);
+    m_dtRow->addWidget(m_dtSteps);
+    m_dtRow->addWidget(m_stable);
+    m_dtRow->addStretch(1);
+    ss->form()->addRow(QString::fromUtf8("Δt (CFL)"), m_dtRow);
 
-    auto *cflRow = new QHBoxLayout();
+    m_cflRow = new QHBoxLayout();
     m_cfl = new QLineEdit("0.99", ss);
     m_cfl->setMaximumWidth(70);
-    cflRow->addWidget(m_cfl);
-    cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
-    cflRow->addStretch(1);
-    ss->form()->addRow(I18n::tr("sreg_cfl"), cflRow);
+    m_cflRow->addWidget(m_cfl);
+    m_cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
+    m_cflRow->addStretch(1);
+    ss->form()->addRow(I18n::tr("sreg_cfl"), m_cflRow);
     ss->form()->addRow(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 境界条件 / Boundary conditions ──────────────────────────────────────
     auto *sb = new SectionBox(I18n::tr("sreg_bc"), body);
+    m_bcBox = sb;                        // PML/PEC は音響系ではセクション毎隠す
     auto *bcHint = new QLabel(I18n::tr("sreg_bc_hint"), sb);
     bcHint->setWordWrap(true);
     sb->form()->addRow(bcHint);
@@ -297,19 +294,17 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_bcTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_bcTable->setMaximumHeight(70);
     m_bcTable->setItem(0, 0, new QTableWidgetItem("BC"));
-    static const char *kFaceBC[6] = { "PML", "PML", "PML", "PML", "PEC", "PML" };
-    for (int c = 0; c < 6; ++c) {
-        auto *it = new QTableWidgetItem(kFaceBC[c]);
+    for (int c = 0; c < 6; ++c) {        // 中身は updateEstimates が導出する
+        auto *it = new QTableWidgetItem;
         it->setTextAlignment(Qt::AlignCenter);
-        if (c == 4) {                    // Z- の PEC は accent バッジ
-            it->setForeground(QColor("#0078D4"));
-            QFont f = it->font(); f.setBold(true); it->setFont(f);
-        }
         m_bcTable->setItem(0, c + 1, it);
     }
     sb->form()->addRow(m_bcTable);
-    // 面別 BC 表はモックの固定値 (境界面タブの実設定とは連動していない)
-    sb->form()->addRow(tabhelp::sampleNote(sb));
+    // .ofd は面別の個別 BC を持たない — abc/pbc からの導出表示であることを注記
+    auto *bcDerived = new QLabel(I18n::tr("sreg_bc_derived"), sb);
+    bcDerived->setWordWrap(true);
+    bcDerived->setStyleSheet("font-size:11px; color:palette(mid);");
+    sb->form()->addRow(bcDerived);
 
     m_pmlProfile = new QComboBox(sb);
     m_pmlProfile->addItems({ "Standard", "Stabilized", "CPML" });
@@ -338,8 +333,16 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
             [this] { updateMeshDerived(); });
     connect(m_pmlLayers, &QSpinBox::valueChanged, this,
             [this] { apply(); });
+    // CFL 係数・シミュレーション時間はローカル状態だが Δt/ステップ数表示に効く
+    connect(m_cfl, &QLineEdit::textChanged, this,
+            [this] { updateEstimates(); });
+    connect(m_simTime, &QLineEdit::textChanged, this,
+            [this] { updateEstimates(); });
     connect(project, &Project::domainChanged, this,
             [this] { updateDomainDeps(); });
+    // メッシュ/全般設定の編集 (他タブ含む) で実推定を追従させる
+    connect(project, &Project::changed, this,
+            [this] { updateEstimates(); });
     connect(project, &Project::loaded, this, &SolverRegionTab::refresh);
     refresh();
 }
@@ -371,18 +374,99 @@ void SolverRegionTab::updateMeshDerived()
                         : (a <= 6) ? "sreg_acc_high"
                                    : "sreg_acc_max";
     m_meshHint->setText(I18n::tr(hintKey));
-    m_cells->setText(QLocale(QLocale::English).toString(qlonglong(kCells[a - 1])));
-    m_memory->setText(QStringLiteral("%1 MB").arg(kMemMB[a - 1]));
-    m_estTime->setText(I18n::tr(kEtaKeys[a - 1]));
     updateDomainDeps();
 }
 
 void SolverRegionTab::updateDomainDeps()
 {
-    const bool optical = (m_p->activeDomain() == Domain::Optical);
+    const Domain d = m_p->activeDomain();
     const int a = m_meshAcc->value();
-    m_cellsNote->setText(QStringLiteral("(λ/%1 @ %2)")
-        .arg(kLambdaDiv[a - 1])
-        .arg(optical ? QStringLiteral("1550nm") : QStringLiteral("2.5GHz")));
-    m_simTimeUnit->setText(optical ? QStringLiteral("fs") : QStringLiteral("ns"));
+
+    // 目標解像度注記の基準周波数/波長・時間単位・秒換算係数 (ドメイン別の代表値)
+    QString ref, unit;
+    switch (d) {
+    case Domain::Optical:
+        ref = QStringLiteral("1550nm");  unit = QStringLiteral("fs");
+        m_simTimeScale = 1e-15; break;
+    case Domain::Acoustic:               // 室内音響: 可聴帯域の代表値
+        ref = QStringLiteral("1kHz");    unit = QStringLiteral("ms");
+        m_simTimeScale = 1e-3;  break;
+    case Domain::Underwater:             // 水中音響: ソナー帯域の代表値
+        ref = QStringLiteral("3.5kHz");  unit = QStringLiteral("s");
+        m_simTimeScale = 1.0;   break;
+    default:                             // EM
+        ref = QStringLiteral("2.5GHz");  unit = QStringLiteral("ns");
+        m_simTimeScale = 1e-9;  break;
+    }
+    m_cellsNote->setText(I18n::tr("sreg_lambda_note")
+        .arg(kLambdaDiv[a - 1]).arg(ref));
+    m_simTimeUnit->setText(unit);
+
+    // 電磁 FDTD (EM/光) 固有の項目は音響系ドメインでは隠す (混乱防止)。
+    // 隠すだけでモデル書き込み (apply の pmlL) は従来どおり行う。
+    const bool em = (d == Domain::EM || d == Domain::Optical);
+    m_hint->setText(I18n::tr(em ? "sreg_hint" : "sreg_hint_ac"));
+    m_meshForm->setRowVisible(m_meshRefine, em);   // Conformal/Yu-Mittra
+    m_meshForm->setRowVisible(m_subpixel, em);     // サブピクセル平均
+    m_timeForm->setRowVisible(m_dtRow, em);        // Δt (CFL) + 安定バッジ
+    m_timeForm->setRowVisible(m_cflRow, em);       // CFL 係数
+    m_bcBox->setVisible(em);                       // PML/PEC 境界条件セクション
+
+    updateEstimates();                             // 単位換算が変わるので再計算
+}
+
+// Project の実データからの推定表示: セル数/メモリ (実メッシュ)、
+// Δt = CFL 係数 × Project::courantDt()、ステップ数 = シミュレーション時間 ÷ Δt、
+// 面別 BC 表 = GeneralOpts の abc/pbc からの導出。
+// ラベル/テーブル表示のみ更新し、モデルへは書き込まない。
+void SolverRegionTab::updateEstimates()
+{
+    // ── セル数 / メモリ: Project の実メッシュから ──────────────────────────
+    const QLocale loc(QLocale::English);
+    m_cells->setText(loc.toString(qlonglong(m_p->totalCells())));
+    const double mb = m_p->estimatedMemoryMB();
+    m_memory->setText(mb >= 1024.0
+        ? QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 1)
+        : QStringLiteral("%1 MB").arg(mb, 0, 'f', (mb < 10.0) ? 1 : 0));
+
+    // ── Δt / ステップ数 / 安定バッジ ────────────────────────────────────────
+    bool okCfl = false;
+    const double cfl = m_cfl->text().toDouble(&okCfl);
+    const double dt0 = m_p->courantDt();     // Courant 安定限界 (CFL=1 の Δt)
+    if (!okCfl || cfl <= 0 || dt0 <= 0) {
+        m_dtVal->setText(I18n::tr("sreg_dt_none"));
+        m_dtSteps->clear();
+        m_stable->clear();
+    } else {
+        const double dt = cfl * dt0;
+        m_dtVal->setText(QStringLiteral("%1 s").arg(QString::number(dt, 'e', 2)));
+        bool okT = false;
+        const double t = m_simTime->text().toDouble(&okT);   // 単位はドメイン別
+        const double steps = okT && t > 0 ? t * m_simTimeScale / dt : 0;
+        if (steps >= 1.0 && steps < 9e15)
+            m_dtSteps->setText(I18n::tr("sreg_dt_steps_fmt")
+                .arg(loc.toString(qlonglong(steps + 0.5))));
+        else
+            m_dtSteps->clear();
+        const bool stable = (cfl <= 1.0);    // Courant 条件: CFL ≤ 1 で安定
+        m_stable->setText(I18n::tr(stable ? "sreg_stable" : "sreg_unstable"));
+        m_stable->setStyleSheet(stable ? "color:#2E8B57; font-weight:600;"
+                                       : "color:#C42B1C; font-weight:600;");
+    }
+
+    // ── 面別 BC 表: abc (0=Mur-1, 1=PML) と pbcX/Y/Z からの導出表示 ─────────
+    const GeneralOpts &g = m_p->general();
+    const QString abcName = (g.abc == 1) ? QStringLiteral("PML")
+                                         : QStringLiteral("Mur-1");
+    const bool pbc[6] = { g.pbcX, g.pbcX, g.pbcY, g.pbcY, g.pbcZ, g.pbcZ };
+    for (int c = 0; c < 6; ++c) {
+        QTableWidgetItem *it = m_bcTable->item(0, c + 1);
+        if (!it) continue;
+        it->setText(pbc[c] ? I18n::tr("sreg_bc_pbc") : abcName);
+        // 周期境界の面はアクセント表示 (既定の吸収境界と区別)
+        it->setForeground(pbc[c] ? QBrush(QColor("#0078D4")) : QBrush());
+        QFont f = it->font();
+        f.setBold(pbc[c]);
+        it->setFont(f);
+    }
 }

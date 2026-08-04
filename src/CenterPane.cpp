@@ -16,12 +16,14 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListView>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSettings>
 #include <QScrollBar>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QTabBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -45,7 +47,8 @@ const bool s_i18n = [] {
                    "Mode switching not implemented (use mouse drag in the "
                    "viewport)");
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
-    ofd::I18n::reg("vp_boundary","境界 (PML)",     "Boundary (PML)");
+    // PML は EM/光の用語なので全ドメイン共通の中立語にする
+    ofd::I18n::reg("vp_boundary","吸収境界",       "Boundary");
     ofd::I18n::reg("vp_vertex",  "頂点スナップ",   "Vertex snap");
     ofd::I18n::reg("vp_vertex_tip",
         "スナップ動作は未実装 (表示のみ)",
@@ -57,8 +60,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_style_field","+ Field","+ Field");
     ofd::I18n::reg("vp_style_rays", "+ Rays", "+ Rays");
     ofd::I18n::reg("vp_snapshot","📷 Snap",        "📷 Snap");
+    // 「近傍界」は EM の用語 — 初期タイトルは全ドメイン中立の表現にする
+    // (結果読込後は vp_slice_result で置き換わる)
     ofd::I18n::reg("vp_slice_title",
-        "近傍界面上分布 / Near-field slice", "Near-field slice");
+        "場の断面分布 / Field slice", "Field slice");
     ofd::I18n::reg("vp_slice_result",
         "解析結果 %1 (正規化 |値|)", "Result %1 (normalised |value|)");
     ofd::I18n::reg("vp_saved",   "スクリーンショットを保存", "Save screenshot");
@@ -240,7 +245,42 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     m_azLabel->setText(QString::number(qRound(m_viewport->azimuth())) + "°");
     m_elLabel->setText(QString::number(qRound(m_viewport->elevation())) + "°");
 
+    // ドメイン切替でも出し分けを更新 (MainWindow::onDomainChanged →
+    // setDomain 経由でも呼ばれるが、直結しておくと経路に依存しない)
+    connect(project, &Project::domainChanged, this, [this](Domain d) {
+        updateDomainVisibility(d);
+    });
+
     onTabChanged(0);
+    updateDomainVisibility(m_p->activeDomain());   // 初回反映
+}
+
+// ドメインで意味を持たない UI 項目の出し分け。
+// 現状は 3D ビュースタイル「+ Rays」のみ — 光 (ビーム経路) と
+// 水中 (BELLHOP の音線) でだけ意味を持つので、EM/室内音響では
+// コンボの項目自体を隠す。
+void CenterPane::updateDomainVisibility(Domain d)
+{
+    const bool raysOk = (d == Domain::Optical || d == Domain::Underwater);
+    const int rayRow = int(ViewStyle::Rays);
+
+    // ポップアップの行を隠し、キーボード循環でも選ばれないよう無効化する
+    if (auto *view = qobject_cast<QListView *>(m_styleBox->view()))
+        view->setRowHidden(rayRow, !raysOk);
+    if (auto *model = qobject_cast<QStandardItemModel *>(m_styleBox->model())) {
+        if (QStandardItem *item = model->item(rayRow))
+            item->setFlags(raysOk
+                ? (item->flags() | Qt::ItemIsEnabled)
+                : (item->flags() & ~Qt::ItemIsEnabled));
+    }
+
+    // 選択中に隠れた場合は既定スタイル (Solid) へフォールバック。
+    // ユーザー操作ではないので QSettings へは書き込まない (シグナル抑止)。
+    if (!raysOk && m_styleBox->currentIndex() == rayRow) {
+        QSignalBlocker block(m_styleBox);
+        m_styleBox->setCurrentIndex(int(ViewStyle::Solid));
+        m_viewport->setViewStyle(ViewStyle::Solid);
+    }
 }
 
 void CenterPane::onTabChanged(int index)
@@ -254,6 +294,7 @@ void CenterPane::setDomain(Domain d)
 {
     m_viewport->setDomain(d);
     m_plot->setDomain(d);
+    updateDomainVisibility(d);
 }
 
 void CenterPane::setViewStyleIndex(int i)

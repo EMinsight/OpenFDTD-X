@@ -8,6 +8,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -58,12 +59,22 @@ const bool s_i18n = [] {
               "(給電点の電圧が振幅に相当)。",
               "Amplitude has no counterpart on the .ofd planewave line, so it "
               "is not saved (the feed voltage plays that role).");
+    // ドメイン別文言 (音響/水中): 「給電点」→「点音源」、「電圧」→「音源振幅」
+    I18n::reg("sox_point_source", "点音源", "Point source");
+    I18n::reg("sox_src_amp", "音源振幅", "Source amplitude");
+    // 波形プレビューの周波数単位 (音響/水中は kHz)。この欄はローカル
+    // プレビュー専用でモデルへ保存されないため、単位切替に換算は伴わない。
+    I18n::reg("sox_f0_khz", "中心周波数 [kHz]", "Center frequency [kHz]");
+    I18n::reg("sox_fmin_khz", "fmin [kHz]", "fmin [kHz]");
+    I18n::reg("sox_fmax_khz", "fmax [kHz]", "fmax [kHz]");
     return true;
 }();
 
 // mock の <Row label>…<input>…</Row> 相当。表示切替できるよう 1 行 = 1 QWidget。
+// labelOut を渡すとラベルを受け取れる (ドメイン別の単位表記切替に使う)。
 QWidget *makeParamRow(QWidget *parent, const QString &label,
-                      const QString &value, int width = 110)
+                      const QString &value, int width = 110,
+                      QLabel **labelOut = nullptr)
 {
     auto *w = new QWidget(parent);
     auto *h = new QHBoxLayout(w);
@@ -71,6 +82,7 @@ QWidget *makeParamRow(QWidget *parent, const QString &label,
     h->setSpacing(6);
     auto *l = new QLabel(label, w);
     l->setMinimumWidth(120);
+    if (labelOut) *labelOut = l;
     auto *e = new QLineEdit(value, w);
     e->setMaximumWidth(width);
     h->addWidget(l);
@@ -141,11 +153,12 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
     m_pwPol->addItem(I18n::tr("so_pol_h"));
     // 振幅 (mock: <Row label={t("src_amp")}> defaultValue="1.0") — ローカル状態
     m_pwAmp = new QLineEdit("1.0", sp); m_pwAmp->setMaximumWidth(90);
-    sp->form()->addRow(m_pwEnable);
-    sp->form()->addRow(I18n::tr("so_theta"), m_pwTheta);
-    sp->form()->addRow(I18n::tr("so_phi"), m_pwPhi);
-    sp->form()->addRow(I18n::tr("so_pol"), m_pwPol);
-    sp->form()->addRow(I18n::tr("sox_amp"), m_pwAmp);
+    m_pwForm = sp->form();
+    m_pwForm->addRow(m_pwEnable);
+    m_pwForm->addRow(I18n::tr("so_theta"), m_pwTheta);
+    m_pwForm->addRow(I18n::tr("so_phi"), m_pwPhi);
+    m_pwForm->addRow(I18n::tr("so_pol"), m_pwPol);
+    m_pwForm->addRow(I18n::tr("sox_amp"), m_pwAmp);
     auto *pwHint = new QLabel(I18n::tr("sox_amp_hint"), sp);
     pwHint->setWordWrap(true);
     pwHint->setStyleSheet("color:#888888; font-size:11px;");  // mock: muted text-sm
@@ -171,10 +184,13 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
     sw->vbox()->addLayout(wrow);
 
     m_rowPulseWidth = makeParamRow(sw, I18n::tr("sox_pulse_width"), "5.08e-10");
-    m_rowF0         = makeParamRow(sw, I18n::tr("sox_f0"), "2.500");
+    m_rowF0         = makeParamRow(sw, I18n::tr("sox_f0"), "2.500", 110,
+                                   &m_f0Label);
     m_rowPeak       = makeParamRow(sw, I18n::tr("sox_peak_time"), "1.5e-9");
-    m_rowFmin       = makeParamRow(sw, I18n::tr("sox_fmin"), "2.0", 90);
-    m_rowFmax       = makeParamRow(sw, I18n::tr("sox_fmax"), "3.0", 90);
+    m_rowFmin       = makeParamRow(sw, I18n::tr("sox_fmin"), "2.0", 90,
+                                   &m_fminLabel);
+    m_rowFmax       = makeParamRow(sw, I18n::tr("sox_fmax"), "3.0", 90,
+                                   &m_fmaxLabel);
     m_rowSweep      = makeParamRow(sw, I18n::tr("sox_sweep_time"), "2.0e-9");
     for (QWidget *r : { m_rowPulseWidth, m_rowF0, m_rowPeak,
                         m_rowFmin, m_rowFmax, m_rowSweep })
@@ -285,19 +301,67 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
         updateWaveform();
     });
 
+    // ドメイン切替 → 音響/水中で意味を持たない項目の出し分け
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+
     connect(project, &Project::loaded, this, &SourceTab::refresh);
     refresh();
     updateWaveform();
+    updateDomainVisibility();
 }
 
 // 波源の種類 → 該当セクションのみ表示。ただしデータが入っている側は
 // 隠さない (排他警告と併せて、取り違えで設定を見失わないようにする)。
+// 水中音響 (BELLHOP) は点音源のみで平面波が存在しないため、平面波
+// セクションはデータの有無に関わらず隠す (モデル値はそのまま保持される)。
 void SourceTab::updateSourceType()
 {
     if (!m_feedSection || !m_pwSection) return;
     const bool feedSel = m_srcFeed->isChecked();
+    const bool uw = (m_p->activeDomain() == Domain::Underwater);
     m_feedSection->setVisible(feedSel || !m_p->feeds().isEmpty());
-    m_pwSection->setVisible(!feedSel || m_p->planewave().enabled);
+    m_pwSection->setVisible(!uw && (!feedSel || m_p->planewave().enabled));
+}
+
+// ドメインに関係のない UI 項目を隠す/文言を切り替える (ドメイン監査の結果)。
+// - Z0 (給電インピーダンス) と偏波は EM/光の概念 → 音響/水中では隠す。
+// - 音響/水中の点音源に「給電点」「電圧」の語は合わない → 文言のみ切替。
+// - 水中音響 (BELLHOP) は点音源のみ → 平面波の選択肢ごと隠す。
+// あくまで表示・文言のみの切替で、applyFeeds()/applyPw は隠れていても
+// 従来どおり全値を書く (シリアライズ出力は不変)。
+void SourceTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const bool ac = (d == Domain::Acoustic || d == Domain::Underwater);
+    const bool uw = (d == Domain::Underwater);
+
+    // 給電点表: Z0 列は EM/光のみ。電圧列の見出しは音響では「音源振幅」
+    m_feeds->setColumnHidden(6, ac);
+    if (auto *h = m_feeds->horizontalHeaderItem(4))
+        h->setText(ac ? I18n::tr("sox_src_amp") : I18n::tr("so_volt"));
+
+    // 波源の種類: 音響/水中では「点音源」、水中は平面波の選択肢自体を隠す
+    m_srcFeed->setText(ac ? I18n::tr("sox_point_source") : I18n::tr("sox_feed"));
+    m_srcPlane->setVisible(!uw);
+    if (uw && m_srcPlane->isChecked())
+        m_srcFeed->setChecked(true);   // ローカル状態のみ (モデルには書かない)
+
+    // 平面波: スカラー圧力場に偏波は無い → コンボ行をラベルごと隠す
+    if (m_pwForm) m_pwForm->setRowVisible(m_pwPol, !ac);
+
+    // 波形プレビューの周波数単位。値はローカルプレビュー専用でモデルへ
+    // 保存されない (実際の周波数は「全般」タブが保持) ため換算は不要。
+    if (m_f0Label)
+        m_f0Label->setText(ac ? I18n::tr("sox_f0_khz") : I18n::tr("sox_f0"));
+    if (m_fminLabel)
+        m_fminLabel->setText(ac ? I18n::tr("sox_fmin_khz")
+                                : I18n::tr("sox_fmin"));
+    if (m_fmaxLabel)
+        m_fmaxLabel->setText(ac ? I18n::tr("sox_fmax_khz")
+                                : I18n::tr("sox_fmax"));
+
+    updateSourceType();
 }
 
 // 波形の種類に応じてパラメータ行を出し入れし、プレビュー波形を作り直す。
@@ -440,6 +504,7 @@ void SourceTab::refresh()
     }
 
     updateExclusiveWarning();
-    updateSourceType();
+    // ロード直後もドメインに応じた出し分けを反映する (updateSourceType を含む)
+    updateDomainVisibility();
     m_updating = false;
 }

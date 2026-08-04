@@ -15,6 +15,9 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLinearGradient>
@@ -113,6 +116,11 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_next", "次 ▶", "Next ▶");
     ofd::I18n::reg("h5_last", "末尾 ⏭", "Last ⏭");
     ofd::I18n::reg("h5_loop", "⟳ ループ", "⟳ Loop");
+    ofd::I18n::reg("h5_loop_tip",
+        "ON: 末尾フレームの後は先頭へ戻って再生を続けます / "
+        "OFF: 末尾フレームで再生を停止します",
+        "ON: playback wraps to the first frame after the last / "
+        "OFF: playback stops at the last frame");
     ofd::I18n::reg("h5_frame", "フレーム", "Frame");
     ofd::I18n::reg("h5_speed", "速度", "Speed");
     ofd::I18n::reg("h5_time_range", "時間範囲", "Time range");
@@ -148,6 +156,20 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_integration", "連携", "Integration");
     ofd::I18n::reg("h5_int_python", "🐍 Python (h5py) で開く",
                    "🐍 Open in Python (h5py)");
+    ofd::I18n::reg("h5_int_jupyter", "📊 Jupyter Notebook",
+                   "📊 Jupyter Notebook");
+    ofd::I18n::reg("h5_int_need_file",
+        "先に .h5 ファイルを開いてください (スクリプトは開いているファイルの"
+        "実スキーマから生成します)",
+        "Open an .h5 file first (the script is generated from the actual "
+        "schema of the open file)");
+    ofd::I18n::reg("h5_int_hint",
+        "▸ Python / Jupyter は開いている .h5 の実スキーマに合わせた h5py "
+        "読み込みコード (|E| プロットまで) をファイルへ生成します"
+        " (外部ツールの起動は行いません)",
+        "▸ Python / Jupyter generate h5py loading code (through an |E| plot) "
+        "matched to the actual schema of the open .h5 file "
+        "(no external tool is launched)");
     ofd::I18n::reg("h5_int_paraview", "🌐 ParaView ファイル出力 (.vtk)",
                    "🌐 ParaView file export (.vtk)");
     ofd::I18n::reg("h5_int_matlab", "📦 Matlab .mat 変換",
@@ -176,6 +198,162 @@ QString dimsText(const QVector<qlonglong> &dims)
     QStringList parts;
     for (const qlonglong d : dims) parts << QString::number(d);
     return QString("(%1)").arg(parts.join(QString::fromUtf8(" × ")));
+}
+
+// ── Python (h5py) コード生成 (連携ボタン) ──────────────────────────────────
+// Python の文字列リテラルとしてパスを埋め込む (バックスラッシュ・引用符を
+// エスケープ — Windows パス対策)
+QString pyQuote(const QString &s)
+{
+    QString t = s;
+    t.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+    t.replace(QLatin1Char('"'), QLatin1String("\\\""));
+    return QLatin1Char('"') + t + QLatin1Char('"');
+}
+
+// 列挙結果の 1 行表記 "  /timeseries/E  float32 (100 × 41 × 41 × 41 × 3)"
+QStringList schemaLines(const QVector<ofd::H5DatasetInfo> &dsets)
+{
+    QStringList out;
+    for (const ofd::H5DatasetInfo &ds : dsets)
+        out << QStringLiteral("  %1  %2 %3")
+                   .arg(ds.path, ds.typeName, dimsText(ds.dims));
+    return out;
+}
+
+// 開いているファイルの実スキーマから h5py 読み込みコードを組み立てる。
+// プロット対象は列挙結果から実在するものを選ぶ:
+//   (a) /timeseries/E|H (新レイアウト {Nt,Nx+1,Ny+1,Nz+1,3}) → 最終フレームの
+//       |E| z 中央断面
+//   (b) 旧 /data%06d/E|H ({1,NFreq2,NN,6}) → /metadata の格子定数で空間展開
+//   (c) それ以外の最初の 2D データセット → そのまま表示
+// どれも無ければ列挙のみのコードを返す。戻り値はコード行 (改行なし)。
+QStringList buildH5PyCode(const QString &filePath,
+                          const QVector<ofd::H5DatasetInfo> &dsets)
+{
+    QStringList c;
+    c << QStringLiteral("import h5py")
+      << QStringLiteral("import numpy as np")
+      << QStringLiteral("import matplotlib.pyplot as plt")
+      << QString()
+      << QStringLiteral("path = %1").arg(pyQuote(filePath))
+      << QString()
+      << QStringLiteral("with h5py.File(path, \"r\") as f:")
+      << QStringLiteral("    # 全データセットの確認 (パス・形状・型)")
+      << QStringLiteral("    f.visititems(lambda name, obj: print(")
+      << QStringLiteral("        name, getattr(obj, \"shape\", ()), "
+                        "getattr(obj, \"dtype\", \"\")))");
+
+    // (a) 新レイアウトの伝搬時系列 (E 優先)
+    QString seriesPath;
+    for (const char *p : { "/timeseries/E", "/timeseries/H" }) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.path == QLatin1String(p)) { seriesPath = ds.path; break; }
+        if (!seriesPath.isEmpty()) break;
+    }
+    // (b) 旧レイアウト /data%06d/E|H — 最大 (最終) グループ番号を選ぶ
+    QString dataPath;
+    if (seriesPath.isEmpty()) {
+        static const QRegularExpression dataRe(
+            QStringLiteral("^/data(\\d+)/(E|H)$"));
+        for (const char *comp : { "E", "H" }) {
+            qlonglong best = -1;
+            for (const ofd::H5DatasetInfo &ds : dsets) {
+                const QRegularExpressionMatch m = dataRe.match(ds.path);
+                if (!m.hasMatch()
+                        || m.captured(2) != QLatin1String(comp)) continue;
+                const qlonglong num = m.captured(1).toLongLong();
+                if (num > best) { best = num; dataPath = ds.path; }
+            }
+            if (best >= 0) break;
+        }
+    }
+    // (c) 最初の 2D データセット
+    QString flatPath;
+    if (seriesPath.isEmpty() && dataPath.isEmpty()) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.dims.size() == 2) { flatPath = ds.path; break; }
+    }
+
+    bool hasPlot = true;
+    QString xlab = QStringLiteral("x index"), ylab = QStringLiteral("y index");
+    if (!seriesPath.isEmpty()) {
+        const QString comp = seriesPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("    # 伝搬時系列 (瞬時値): "
+                            "(Nt, Nx+1, Ny+1, Nz+1, 3)")
+          << QStringLiteral("    ds = f[%1]").arg(pyQuote(seriesPath))
+          << QStringLiteral("    nt, nx1, ny1, nz1, _ = ds.shape")
+          << QStringLiteral("    frame = np.asarray(ds[nt - 1], "
+                            "dtype=np.float64)  # 最終フレーム")
+          << QStringLiteral("    amp = np.sqrt((frame ** 2).sum(axis=-1))"
+                            "     # |%1| (成分の RSS)").arg(comp)
+          << QStringLiteral("    img = amp[:, :, nz1 // 2].T"
+                            "                    # z 中央断面 (行 = y)")
+          << QStringLiteral("    title = f\"%1  |%2|  frame {nt - 1}  "
+                            "z index {nz1 // 2}\"").arg(seriesPath, comp);
+    } else if (!dataPath.isEmpty()) {
+        const QString comp = dataPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("    # 旧レイアウト %1: (1, NFreq2, NN, 6)。"
+                            "/metadata の格子定数で").arg(dataPath)
+          << QStringLiteral("    # ノード番号 n = Ni*i + Nj*j + Nk*k + N0 "
+                            "を空間へ展開する")
+          << QStringLiteral("    md = f[\"/metadata\"]")
+          << QStringLiteral("    Nx, Ny, Nz = (int(md[k][()]) for k in "
+                            "(\"Nx\", \"Ny\", \"Nz\"))")
+          << QStringLiteral("    Ni, Nj, Nk, N0 = (int(md[k][()]) for k in "
+                            "(\"Ni\", \"Nj\", \"Nk\", \"N0\"))")
+          << QStringLiteral("    e = np.asarray(f[%1][0, 0], "
+                            "dtype=np.float64)  # 周波数 0: (NN, 6)")
+                 .arg(pyQuote(dataPath))
+          << QStringLiteral("    amp = np.sqrt((e ** 2).sum(axis=1))"
+                            "   # |%1| (実部 3 + 虚部 3 の RSS)").arg(comp)
+          << QStringLiteral("    kz = Nz // 2"
+                            "                          # z 中央断面")
+          << QStringLiteral("    ii = np.arange(Nx + 1)[None, :]")
+          << QStringLiteral("    jj = np.arange(Ny + 1)[:, None]")
+          << QStringLiteral("    img = amp[Ni * ii + Nj * jj + Nk * kz + N0]"
+                            "  # (Ny+1, Nx+1)")
+          << QStringLiteral("    title = f\"%1  |%2|  z index {kz}\"")
+                 .arg(dataPath, comp);
+    } else if (!flatPath.isEmpty()) {
+        xlab = QStringLiteral("col");
+        ylab = QStringLiteral("row");
+        c << QString()
+          << QStringLiteral("    # 2D データセットをそのまま表示")
+          << QStringLiteral("    img = np.asarray(f[%1], dtype=np.float64)")
+                 .arg(pyQuote(flatPath))
+          << QStringLiteral("    title = %1").arg(pyQuote(flatPath));
+    } else {
+        hasPlot = false;
+        c << QString()
+          << QStringLiteral("    # 表示に適した 2D / 時系列データセットが"
+                            "見つからないため列挙のみ");
+    }
+
+    if (hasPlot) {
+        c << QString()
+          << QStringLiteral("plt.figure(figsize=(6, 5))")
+          << QStringLiteral("plt.imshow(img, origin=\"lower\", cmap=\"jet\")")
+          << QStringLiteral("plt.colorbar()")
+          << QStringLiteral("plt.title(title)")
+          << QStringLiteral("plt.xlabel(%1)").arg(pyQuote(xlab))
+          << QStringLiteral("plt.ylabel(%1)").arg(pyQuote(ylab))
+          << QStringLiteral("plt.tight_layout()")
+          << QStringLiteral("plt.show()");
+    }
+    return c;
+}
+
+// コード行 → ipynb の "source" 配列 (各行に改行を付ける。最終行は付けない)
+QJsonArray ipynbSource(const QStringList &lines)
+{
+    QJsonArray arr;
+    for (int i = 0; i < lines.size(); ++i)
+        arr.append(i + 1 < lines.size() ? lines[i] + QLatin1Char('\n')
+                                        : lines[i]);
+    return arr;
 }
 } // namespace
 
@@ -513,9 +691,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     prow->addWidget(m_prevBtn);
     prow->addWidget(m_nextBtn);
     prow->addWidget(m_lastBtn);
-    auto *loopBtn = new QPushButton(I18n::tr("h5_loop"), sp);
-    ofd::tabhelp::markNotImplemented(loopBtn);   // 再生は常にループ (切替未実装)
-    prow->addWidget(loopBtn);
+    // ループ切替 (checkable)。既定 ON = 従来どおりのループ再生、
+    // OFF は末尾フレーム到達で再生を停止する (タイマー timeout 参照)
+    m_loopBtn = new QPushButton(I18n::tr("h5_loop"), sp);
+    m_loopBtn->setCheckable(true);
+    m_loopBtn->setChecked(true);
+    m_loopBtn->setToolTip(I18n::tr("h5_loop_tip"));
+    prow->addWidget(m_loopBtn);
     prow->addStretch(1);
     sp->vbox()->addLayout(prow);
     auto *fr = new QHBoxLayout();
@@ -539,7 +721,9 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     tr0->addWidget(rangeLo);
     tr0->addWidget(new QLabel(QString::fromUtf8("〜"), sp));
     tr0->addWidget(rangeHi);
-    tr0->addWidget(new QLabel("ps", sp));
+    // 単位はドメイン別 (EM/光: ps、室内音響: ms、水中: s) — updateDomainVisibility
+    m_timeUnit = new QLabel("ps", sp);
+    tr0->addWidget(m_timeUnit);
     auto *ckRangeOnly = new QCheckBox(I18n::tr("h5_range_only"), sp);
     ofd::tabhelp::markNotImplemented(ckRangeOnly);
     tr0->addWidget(ckRangeOnly);
@@ -625,7 +809,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     echecks->addWidget(new QCheckBox(I18n::tr("h5_embed_geom"), se));
     echecks->addStretch(1);
     se->form()->addRow(echecks);
-    // 動画設定・埋込オプションはエクスポート未実装のため反映先が無い
+    // 動画設定 (FPS/解像度/コーデック) と埋込オプションは ffmpeg 呼び出しに
+    // 反映されない (fps は速度コンボから決まる) — 未配線として明示する
     se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
     v->addWidget(se);
 
@@ -645,6 +830,9 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
                              "h5_stat_fft", "h5_stat_lineint" }) {
         auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
         ofd::tabhelp::markNotImplemented(b);
+        // Schroeder 減衰は室内音響の指標 — ドメイン別に表示を切り替える
+        if (qstrcmp(key, "h5_stat_schroeder") == 0)
+            m_schroederBtn = b;
         srow->addWidget(b);
     }
     srow->addStretch(1);
@@ -654,19 +842,29 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     // 連携 / Integration
     auto *sg = new SectionBox(I18n::tr("h5_integration"), body);
     auto *grow = new QHBoxLayout();
-    // 外部連携は全て未実装 → 無効化
+    // Python / Jupyter は開いている .h5 の実スキーマから h5py 読み込み
+    // コードを生成して保存する (外部ツールの起動はしない)。
+    // ParaView / Matlab 変換は未実装のまま → 無効化
     auto *pyBtn  = new QPushButton(I18n::tr("h5_int_python"), sg);
-    auto *jupBtn = new QPushButton("📊 Jupyter Notebook", sg);
+    auto *jupBtn = new QPushButton(I18n::tr("h5_int_jupyter"), sg);
     auto *pvBtn  = new QPushButton(I18n::tr("h5_int_paraview"), sg);
     auto *mlBtn  = new QPushButton(I18n::tr("h5_int_matlab"), sg);
-    for (QPushButton *b : { pyBtn, jupBtn, pvBtn, mlBtn })
+    for (QPushButton *b : { pvBtn, mlBtn })
         ofd::tabhelp::markNotImplemented(b);
+    connect(pyBtn, &QPushButton::clicked, this,
+            [this] { exportPythonScript(false); });
+    connect(jupBtn, &QPushButton::clicked, this,
+            [this] { exportPythonScript(true); });
     grow->addWidget(pyBtn);
     grow->addWidget(jupBtn);
     grow->addWidget(pvBtn);
     grow->addWidget(mlBtn);
     grow->addStretch(1);
     sg->vbox()->addLayout(grow);
+    auto *ghint = new QLabel(I18n::tr("h5_int_hint"), sg);
+    ghint->setWordWrap(true);
+    ghint->setStyleSheet("font-size:11px; color:palette(mid);");
+    sg->vbox()->addWidget(ghint);
     v->addWidget(sg);
 
     v->addStretch(1);
@@ -678,14 +876,33 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_timer = new QTimer(this);
     m_timer->setInterval(int(1000.0 / (30.0 * kSpeeds[2])));
     connect(m_timer, &QTimer::timeout, this, [this] {
-        if (m_nframes > 1)
-            setFrame((m_frame + 1) % m_nframes);      // ループ再生
+        if (m_nframes <= 1) return;
+        const bool loop = m_loopBtn->isChecked();
+        int next = m_frame + 1;
+        if (next >= m_nframes) {
+            if (!loop) {
+                // 念のため (末尾到達時に停止済みのはずだが二重に守る)
+                m_timer->stop();
+                m_playBtn->setText(I18n::tr("h5_play"));
+                return;
+            }
+            next = 0;                                 // ループ再生
+        }
+        setFrame(next);
+        if (!loop && next == m_nframes - 1) {
+            // ループ OFF: 末尾フレーム到達で停止 (ボタン表示も再生へ戻す)
+            m_timer->stop();
+            m_playBtn->setText(I18n::tr("h5_play"));
+        }
     });
     connect(m_playBtn, &QPushButton::clicked, this, [this] {
         if (m_timer->isActive()) {
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
         } else if (m_nframes > 1) {
+            // ループ OFF で末尾に居るときは先頭から再生し直す
+            if (!m_loopBtn->isChecked() && m_frame >= m_nframes - 1)
+                setFrame(0);
             m_timer->start();
             m_playBtn->setText(I18n::tr("h5_pause"));
         }
@@ -746,6 +963,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     });
 
     setPlaybackEnabled(false);
+
+    // ドメイン別の出し分け (時間範囲の単位ラベル / Schroeder 減衰ボタン)
+    connect(m_p, &Project::domainChanged, this,
+            &H5ViewerTab::updateDomainVisibility);
+    connect(m_p, &Project::loaded, this,
+            &H5ViewerTab::updateDomainVisibility);
+    updateDomainVisibility();
 
     // HDF5 無効ビルド: 注記をタブ先頭に出し、読込 UI を無効化する
     if (!H5Reader::available()) {
@@ -1058,6 +1282,89 @@ void H5ViewerTab::exportCsvCurrent()
         I18n::tr("h5_exp_done").arg(QFileInfo(path).fileName()));
 }
 
+// 開いている .h5 の実スキーマ (列挙結果) から h5py 読み込みコードを生成し、
+// .py スクリプト / .ipynb ノートブック (JSON 直書き) として保存する。
+// 外部ツール (python / jupyter) の起動は行わない — 生成のみ
+void H5ViewerTab::exportPythonScript(bool notebook)
+{
+    if (m_filePath.isEmpty() || m_dsets.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("h5_integration"),
+                                 I18n::tr("h5_int_need_file"));
+        return;
+    }
+    const QStringList code = buildH5PyCode(m_filePath, m_dsets);
+    const QStringList schema = schemaLines(m_dsets);
+    const QFileInfo fi(m_filePath);
+
+    if (!notebook) {
+        // .py: ヘッダコメントに実スキーマの一覧を添える
+        QStringList lines;
+        lines << QStringLiteral("#!/usr/bin/env python3")
+              << QStringLiteral("# -*- coding: utf-8 -*-")
+              << QStringLiteral("# OpenFDTD-X (H5 アニメタブ) が生成した "
+                                "h5py 読み込みスクリプト")
+              << QStringLiteral("# 対象: %1").arg(m_filePath)
+              << QStringLiteral("# 生成時点のデータセット (実スキーマ):");
+        for (const QString &l : schema)
+            lines << QLatin1Char('#') + l;
+        lines << QString();
+        lines += code;
+        tabhelp::saveTextFile(this, I18n::tr("h5_int_python"),
+                              fi.completeBaseName()
+                                  + QStringLiteral("_h5py.py"),
+                              QStringLiteral("Python (*.py)"),
+                              lines.join(QLatin1Char('\n'))
+                                  + QLatin1Char('\n'));
+        return;
+    }
+
+    // .ipynb: nbformat 4 の JSON を直接組み立てる (markdown + code の 2 セル)
+    QStringList md;
+    md << QStringLiteral("# %1 — h5py 読み込み").arg(fi.fileName())
+       << QString()
+       << QStringLiteral("OpenFDTD-X (H5 アニメタブ) が生成した"
+                         "ノートブックです。")
+       << QString()
+       << QStringLiteral("対象ファイル: `%1`").arg(m_filePath)
+       << QString()
+       << QStringLiteral("生成時点のデータセット (実スキーマ):")
+       << QStringLiteral("```");
+    md += schema;
+    md << QStringLiteral("```");
+
+    const QJsonObject mdCell{
+        { QStringLiteral("cell_type"), QStringLiteral("markdown") },
+        { QStringLiteral("metadata"), QJsonObject() },
+        { QStringLiteral("source"), ipynbSource(md) },
+    };
+    const QJsonObject codeCell{
+        { QStringLiteral("cell_type"), QStringLiteral("code") },
+        { QStringLiteral("execution_count"), QJsonValue() },
+        { QStringLiteral("metadata"), QJsonObject() },
+        { QStringLiteral("outputs"), QJsonArray() },
+        { QStringLiteral("source"), ipynbSource(code) },
+    };
+    const QJsonObject root{
+        { QStringLiteral("cells"), QJsonArray{ mdCell, codeCell } },
+        { QStringLiteral("metadata"), QJsonObject{
+            { QStringLiteral("kernelspec"), QJsonObject{
+                { QStringLiteral("display_name"),
+                  QStringLiteral("Python 3") },
+                { QStringLiteral("language"), QStringLiteral("python") },
+                { QStringLiteral("name"), QStringLiteral("python3") } } },
+            { QStringLiteral("language_info"), QJsonObject{
+                { QStringLiteral("name"), QStringLiteral("python") } } } } },
+        { QStringLiteral("nbformat"), 4 },
+        { QStringLiteral("nbformat_minor"), 5 },
+    };
+    tabhelp::saveTextFile(this, I18n::tr("h5_int_jupyter"),
+                          fi.completeBaseName()
+                              + QStringLiteral("_h5py.ipynb"),
+                          QStringLiteral("Jupyter Notebook (*.ipynb)"),
+                          QString::fromUtf8(QJsonDocument(root)
+                              .toJson(QJsonDocument::Indented)));
+}
+
 // frame 番目のフレームを読み込んで指定スケールで画像化する
 QImage H5ViewerTab::frameImage(int frame, double lo, double hi, bool *ok)
 {
@@ -1284,6 +1591,7 @@ void H5ViewerTab::setPlaybackEnabled(bool on)
     m_prevBtn->setEnabled(on);
     m_nextBtn->setEnabled(on);
     m_lastBtn->setEnabled(on);
+    m_loopBtn->setEnabled(on);
     m_frameSlider->setEnabled(on);
     if (!on && m_timer->isActive()) {
         m_timer->stop();
@@ -1300,4 +1608,18 @@ void H5ViewerTab::clearStats()
     m_statMean->setText(I18n::tr("h5_stat_mean") + ": -");
     m_barMax->setText("-");
     m_barMin->setText("-");
+}
+
+// ドメインに応じた出し分け:
+//   - 時間範囲の単位ラベル (EM/光: ps、室内音響: ms、水中: s)。値の換算は
+//     しない — 時間範囲入力は再生に反映されない飾り (unwiredNote 済み)。
+//   - Schroeder 減衰ボタンは室内音響でのみ意味を持つため他ドメインでは隠す。
+void H5ViewerTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const char *unit = "ps";                       // EM / 光
+    if (d == Domain::Acoustic)        unit = "ms"; // 室内音響
+    else if (d == Domain::Underwater) unit = "s";  // 水中音響
+    m_timeUnit->setText(QLatin1String(unit));
+    m_schroederBtn->setVisible(d == Domain::Acoustic);
 }

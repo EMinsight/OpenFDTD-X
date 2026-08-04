@@ -98,10 +98,14 @@ private:
     void setScaleLabels(double lo, double hi);
     void setPlaybackEnabled(bool on); // 3D のときだけ再生 UI を有効化
     void clearStats();
+    void updateDomainVisibility();    // ドメイン別の出し分け (時間単位 / Schroeder)
     void updateSliceControls();       // 断面 UI の範囲/有効化 (series のみ)
     int  sliceAxis() const;           // planeBox → 0=X/1=Y/2=Z
     void exportPngCurrent();          // 現在フレームを PNG 保存
     void exportCsvCurrent();          // 現在フレームの行列を CSV 保存
+    // 開いている .h5 の実スキーマから h5py 読込コードを生成して保存する
+    // (notebook=false: .py スクリプト / true: .ipynb ノートブック)
+    void exportPythonScript(bool notebook);
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);
@@ -138,14 +142,17 @@ private:
 
     // 統計 (実計算)
     QLabel      *m_statMin, *m_statMax, *m_statMean;
+    QPushButton *m_schroederBtn = nullptr;    // Schroeder 減衰 (室内音響のみ表示)
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
+    QPushButton *m_loopBtn = nullptr; // ループ切替 (checkable, 既定 ON)
     QSlider     *m_frameSlider;
     QLabel      *m_frameLabel;
     QComboBox   *m_speed;
     QTimer      *m_timer;
     int          m_frame = 0;
+    QLabel      *m_timeUnit = nullptr;        // 時間範囲の単位 (ドメイン別 ps/ms/s)
 
     // 断面 (伝搬時系列でのみ有効 — 軸と位置を選ぶ)
     QComboBox   *m_planeBox = nullptr;

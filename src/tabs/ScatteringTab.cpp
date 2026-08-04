@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 
 using namespace ofd;
@@ -35,6 +36,19 @@ const bool s_i18n = [] {
               "Incidence-angle sweep (bistatic)");
     I18n::reg("sct_sweep_range", "スイープ範囲", "Sweep range");
     I18n::reg("sct_points", "点", "points");
+    I18n::reg("sct_inc_note",
+              "θ/φ/偏波は波源タブの平面波 (planewave) と同じ設定を共有します。"
+              "平面波の有効/無効は波源タブで切り替えます。",
+              "θ/φ/polarization share the plane-wave (planewave) settings on "
+              "the Source tab; enable or disable the plane wave there.");
+    I18n::reg("sct_cp_notimpl",
+              "円偏波はカーネル未対応 (未実装)",
+              "Circular polarization is not supported by the kernel "
+              "(not implemented)");
+    I18n::reg("sct_sweep_notimpl",
+              "▸ 円偏波と入射角スイープはカーネル未対応 (未実装)",
+              "▸ Circular polarization and incidence-angle sweep are not "
+              "supported by the kernel (not implemented)");
 
     // RCS
     I18n::reg("sct_rcs", "RCS / レーダ断面積", "RCS / Radar cross-section");
@@ -107,13 +121,24 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sInc->form()->addRow(I18n::tr("sct_inc_dir"), dirRow);
 
     m_pol = new QComboBox(sInc);
-    m_pol->addItem(I18n::tr("sct_pol_v"));
-    m_pol->addItem(I18n::tr("sct_pol_h"));
-    m_pol->addItem(I18n::tr("sct_pol_cp"));
-    m_pol->setCurrentIndex(1);                   // 既定 "hh"
+    m_pol->addItem(I18n::tr("sct_pol_v"));       // index 0 → pol=1 (SourceTab と同一対応)
+    m_pol->addItem(I18n::tr("sct_pol_h"));       // index 1 → pol=2
+    m_pol->addItem(I18n::tr("sct_pol_cp"));      // index 2: カーネル未対応 → 選択不可
+    if (auto *polModel = qobject_cast<QStandardItemModel *>(m_pol->model())) {
+        QStandardItem *cp = polModel->item(2);
+        cp->setFlags(cp->flags() & ~Qt::ItemIsEnabled);
+        cp->setToolTip(I18n::tr("sct_cp_notimpl"));
+    }
     sInc->form()->addRow(I18n::tr("sct_pol"), m_pol);
 
+    // θ/φ/偏波は SourceTab の平面波と同じ Project::planewave() を編集する
+    auto *incNote = new QLabel(I18n::tr("sct_inc_note"), sInc);
+    incNote->setWordWrap(true);
+    incNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sInc->form()->addRow(incNote);
+
     m_sweep = new QCheckBox(I18n::tr("sct_sweep"), sInc);
+    tabhelp::markNotImplemented(m_sweep);        // 入射角スイープはカーネル未対応
     sInc->form()->addRow(m_sweep);
 
     auto *swRow = new QHBoxLayout();
@@ -128,8 +153,11 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     swRow->addWidget(new QLabel(I18n::tr("sct_points") + QStringLiteral(")"), sInc));
     swRow->addStretch(1);
     sInc->form()->addRow(I18n::tr("sct_sweep_range"), swRow);
-    // このタブの入力はまだ Project / .ofd へ配線されていない (絶対規則 5)
-    sInc->form()->addRow(tabhelp::unwiredNote(sInc));
+    // 円偏波・入射角スイープのみ未実装 (θ/φ/偏波は配線済み — 絶対規則 5)
+    auto *sweepNote = new QLabel(I18n::tr("sct_sweep_notimpl"), sInc);
+    sweepNote->setWordWrap(true);
+    sweepNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sInc->form()->addRow(sweepNote);
     v->addWidget(sInc);
 
     // ── RCS ────────────────────────────────────────────────────────────────
@@ -184,6 +212,42 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     };
     connect(m_sweep, &QCheckBox::toggled, this, syncSweep);
     syncSweep();
+
+    // ── 入射波 (θ/φ/偏波) の配線: Project::planewave() の View ────────────
+    connect(m_theta, &QLineEdit::editingFinished, this, &ScatteringTab::apply);
+    connect(m_phi,   &QLineEdit::editingFinished, this, &ScatteringTab::apply);
+    connect(m_pol, &QComboBox::currentIndexChanged, this, &ScatteringTab::apply);
+
+    // SourceTab など他ビューでの平面波編集も反映する (同一モデルの共有)
+    connect(project, &Project::loaded,  this, &ScatteringTab::refresh);
+    connect(project, &Project::changed, this, &ScatteringTab::refresh);
+    refresh();
+}
+
+// widgets → model。入射波 (θ/φ/偏波) のみ。平面波の有効/無効は SourceTab が
+// 受け持つため enabled には触れない (planewave 行の書出条件は enabled)。
+void ScatteringTab::apply()
+{
+    if (m_updating) return;
+    PlaneWave &pw = m_p->planewave();
+    pw.theta = m_theta->text().toDouble();
+    pw.phi   = m_phi->text().toDouble();
+    // pol 対応は SourceTab と同一: index 0 = V → 1, index 1 = H → 2。
+    // 円偏波 (index 2) は選択不可だが、万一の場合もモデルへは書かない。
+    if (m_pol->currentIndex() >= 0 && m_pol->currentIndex() <= 1)
+        pw.pol = m_pol->currentIndex() + 1;
+    m_p->touch();
+}
+
+// model → widgets (m_updating ガード付き)
+void ScatteringTab::refresh()
+{
+    m_updating = true;
+    const PlaneWave &pw = m_p->planewave();
+    m_theta->setText(QString::number(pw.theta, 'g', 8));
+    m_phi->setText(QString::number(pw.phi, 'g', 8));
+    m_pol->setCurrentIndex(pw.pol == 2 ? 1 : 0);
+    m_updating = false;
 }
 
 SectionBox *ScatteringTab::checkSection(QWidget *parent, const char *titleKey,

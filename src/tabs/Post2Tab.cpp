@@ -61,6 +61,14 @@ const bool s_i18n = [] {
               "ベクトル表示はローカル設定です。",
               "Only 'contour' has an .ofd counterpart (near2dcontour); "
               "vector rendering is a local setting.");
+    // near1d/near2d の「成分」列の候補ヒント — ドメインで文言を切り替える
+    // (機能は全ドメイン有効。列そのものは隠さない)
+    I18n::reg("p2x_cmp_hint_em",
+              "成分の候補: E / Ex / Ey / Ez / H / Hx / Hy / Hz",
+              "Component candidates: E / Ex / Ey / Ez / H / Hx / Hy / Hz");
+    I18n::reg("p2x_cmp_hint_ac",
+              "成分の候補: p (音圧) など",
+              "Component candidates: p (sound pressure), etc.");
     // エクスポート (mock: エクスポート / Export)
     I18n::reg("p2x_export", "エクスポート", "Export");
     I18n::reg("p2x_export_hint",
@@ -93,6 +101,7 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
 
     // far0d
     auto *s0 = new SectionBox(I18n::tr("p2_far0d"), body);
+    m_far0dSection = s0;                // 音響/水中では丸ごと隠す (下記参照)
     m_far0d = new QCheckBox(I18n::tr("p2_far0d"), s0);
     m_far0dTheta = new QLineEdit(s0); m_far0dTheta->setMaximumWidth(80);
     m_far0dPhi   = new QLineEdit(s0); m_far0dPhi->setMaximumWidth(80);
@@ -107,6 +116,7 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
 
     // far1d
     auto *s1 = new SectionBox(I18n::tr("p2_far1d"), body);
+    m_far1dSection = s1;                // 音響/水中では丸ごと隠す (下記参照)
     m_far1d = new QTableWidget(0, 3, s1);
     m_far1d->setHorizontalHeaderLabels({
         I18n::tr("p2_dir"), I18n::tr("p2_division"), I18n::tr("p2_angle") });
@@ -152,6 +162,7 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
 
     // far2d (mock: <Section title={t("pp_far_3d")}> = 遠方界全方向(3D))
     auto *s2 = new SectionBox(I18n::tr("p2x_far_3d"), body);
+    m_far2dSection = s2;                // 音響/水中では丸ごと隠す (下記参照)
     m_far2d = new QCheckBox(I18n::tr("p2_far2d"), s2);
     m_far2dTheta = new QSpinBox(s2); m_far2dTheta->setRange(1, 3600);
     m_far2dPhi   = new QSpinBox(s2); m_far2dPhi->setRange(1, 3600);
@@ -224,6 +235,11 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     r3->addWidget(m_near1dDb); r3->addWidget(m_near1dNoinc);
     r3->addStretch(1);
     s3->vbox()->addLayout(r3);
+    // 「成分」列の候補ヒント (文言はドメイン別 — updateDomainVisibility)
+    m_near1dCmpHint = new QLabel(s3);
+    m_near1dCmpHint->setWordWrap(true);
+    m_near1dCmpHint->setStyleSheet("color:#888888; font-size:11px;");  // muted
+    s3->vbox()->addWidget(m_near1dCmpHint);
     v->addWidget(s3);
 
     // near2d
@@ -240,6 +256,11 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     auto *del4 = new QPushButton(I18n::tr("p2_del"), s4);
     r4->addWidget(add4); r4->addWidget(del4); r4->addStretch(1);
     s4->vbox()->addLayout(r4);
+    // 「成分」列の候補ヒント (文言はドメイン別 — updateDomainVisibility)
+    m_near2dCmpHint = new QLabel(s4);
+    m_near2dCmpHint->setWordWrap(true);
+    m_near2dCmpHint->setStyleSheet("color:#888888; font-size:11px;");  // muted
+    s4->vbox()->addWidget(m_near2dCmpHint);
     auto *r4b = new QHBoxLayout();
     r4b->addWidget(new QLabel("dim", s4));
     m_near2dDim0 = new QSpinBox(s4); m_near2dDim0->setRange(0, 1);
@@ -390,8 +411,38 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
         if (!m_updating) { applyNear2dTable(); m_p->touch(); }
     });
 
+    // ドメイン切替 → 遠方界セクション等の表示切替と成分ヒントの文言切替
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+
     connect(project, &Project::loaded, this, &Post2Tab::refresh);
     refresh();
+    updateDomainVisibility();
+}
+
+// ドメインに関係のない UI 項目を隠す (ドメイン監査の結果)。
+// - 遠方界 far0d/far1d/far2d (Eθ/Eφ・LHCP/RHCP・dBi) は電磁界/光の概念で、
+//   音響 (RIR 解析) / 水中音響 (BELLHOP レイトレース) には無い → 非表示。
+// - 「入射波を除く (noinc)」は平面波波源が前提。音響/水中に平面波波源は
+//   無い → 非表示。
+// - 近傍界の「成分」列は全ドメインで有効。候補のヒントだけを
+//   ドメイン別の文言 (音響/水中は音圧 p など) に切り替える。
+// 表示のみの切替で、apply() は隠れていても従来どおり全値を書く
+// (シリアライズ出力は不変)。
+void Post2Tab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const bool ac = (d == Domain::Acoustic || d == Domain::Underwater);
+
+    m_far0dSection->setVisible(!ac);
+    m_far1dSection->setVisible(!ac);
+    m_far2dSection->setVisible(!ac);
+    m_near1dNoinc->setVisible(!ac);
+    m_near2dNoinc->setVisible(!ac);
+
+    const char *hint = ac ? "p2x_cmp_hint_ac" : "p2x_cmp_hint_em";
+    m_near1dCmpHint->setText(I18n::tr(hint));
+    m_near2dCmpHint->setText(I18n::tr(hint));
 }
 
 void Post2Tab::apply()

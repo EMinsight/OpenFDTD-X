@@ -18,6 +18,7 @@ class QLineEdit;
 namespace ofd {
 
 class Project;
+class SectionBox;
 struct FreqPlot;
 
 class Post1Tab : public QScrollArea {
@@ -41,6 +42,8 @@ private:
     void apply();
     // 自動スケール (mock: pp_auto_scale) を各行の「スケール指定」から復元する
     void syncAutoScale();
+    // ドメイン別の出し分け (周波数特性(2D)は EM のみ / 給電点→音源ラベル切替)
+    void updateDomainVisibility();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -50,6 +53,9 @@ private:
     // mock の「自動スケール」— 各行の userScale をまとめて反転するマスター。
     // モデルを持つのは各行なので、ここはウィジェット操作のみ。
     QCheckBox *m_autoScale = nullptr;
+    // 周波数特性(2D) セクション — スミスチャート/Zin/Yin/反射/Sパラ/結合/整合損。
+    // 音響・水中・光カーネルはこれらを出力しないので EM 以外では丸ごと隠す。
+    SectionBox *m_freqSection = nullptr;
 };
 
 } // namespace ofd

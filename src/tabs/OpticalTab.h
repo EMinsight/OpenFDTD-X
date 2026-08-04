@@ -50,6 +50,8 @@ private:
     void updateTpaWidgetState();
     // mock の {mode === "…" && <Section…>} 相当: 選択モードのセクションだけ表示
     void updateModeSections();
+    // BPF 設計目標の透過スペクトル (目標帯域・Q・IL・阻止域から再計算)
+    void updateBpfPlot();
     // RCWA 層テーブル ↔ モデル。applyRcwaTable() はテーブルの内容を
     // そのままモデルへ書き、不正な行を赤字にして警告文字列を返す
     // (UI とモデル/保存内容を乖離させない — 不正時は OfdIO 側が RCWA 行を
@@ -98,7 +100,9 @@ private:
     SectionBox *m_secBpf, *m_secWg, *m_secRing, *m_secMzi;
     SectionBox *m_secMeta, *m_secPhc, *m_secNfff, *m_secSparam;
 
-    // BPF: 挿入損失 / 阻止域 + 透過スペクトル (Project フィールド無し → local)
+    // 以下のモード別設定は OpticalOpts へ apply()/refresh() で配線され、
+    // .ofdx サイドカーに保存される (カーネル入力 .ofd は不変)。
+    // BPF: 挿入損失 / 阻止域 + 透過スペクトル (設計目標カーブを再計算)
     QLineEdit *m_bpfIL, *m_bpfStop;
     MiniPlot  *m_bpfPlot;
     // Ring: thru / drop ポート出力
@@ -116,7 +120,7 @@ private:
     QComboBox *m_phcLattice;
     QLineEdit *m_phcA, *m_phcRa;
     QCheckBox *m_phcBand, *m_phcDefect;
-    // 近傍界→遠方界変換
+    // 近傍界→遠方界変換 (ofd_post 連携は未実装 — 設定の保存のみ)
     QComboBox *m_nfffSurface;
     QLineEdit *m_nfffDistance;
     // S パラメータ (入力/出力ポート番号は S21 抽出の対象ポート対)

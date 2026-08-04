@@ -52,11 +52,14 @@ QString BellhopIO::envText(const Project &p)
     for (const SSPPoint &s : ssp)
         out << num(s.depth_m) << " " << num(s.c_mps) << " /\n";
 
-    // 底面: 音響半無限層 ('A')。減衰 0.5 dB/λ は砂〜シルト底の代表値。
+    // 底面: 音響半無限層 ('A')。減衰は UnderwaterOpts::bottomAlpha_dBlambda
+    // [dB/λ] (SSPOPT 3 文字目 'W' = dB/wavelength と整合)。既定 0.5 dB/λ は
+    // 砂〜シルト底の代表値 (従来のハードコード値 — 既定なら .env はバイト一致)。
     // 密度は kg/m^3 → g/cm^3。
     out << "'A' 0.0\n";
     out << num(bottomDepth) << " " << num(u.bottomC_mps) << " 0.0 "
-        << num(u.bottomRho_kgm3 / 1000.0) << " 0.5 /\n";
+        << num(u.bottomRho_kgm3 / 1000.0) << " "
+        << num(u.bottomAlpha_dBlambda) << " /\n";
 
     // 音源・受波器・距離レンジ
     out << "1\t\t\t! NSD\n";

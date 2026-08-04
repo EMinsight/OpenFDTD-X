@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -121,9 +122,16 @@ const Tr kTr[] = {
     { "geoc_place_scale", "× スケール", "× scale" },
     { "geoc_place_offset", "オフセット (x,y,z)", "Offset (x,y,z)" },
     { "geoc_place_rot", "回転 (XYZ)", "Rotation (XYZ)" },
-    { "geoc_place_center", "モデル原点を計算領域中心に整列",
-      "Align the model origin with the domain centre" },
+    { "geoc_place_center", "モデル bbox 中心を原点に整列",
+      "Align the model bbox centre with the origin" },
     { "geoc_place_autoaxis", "主軸を自動検出", "Auto-detect principal axes" },
+    { "geoc_place_hint",
+      "取込 STL の頂点に スケール (単位換算 ×係数) → 中心合わせ → 回転 "
+      "(X→Y→Z, 原点基準) → オフセット [m] の順で適用され、プレビュー・計測・"
+      "ボクセル化に反映されます。",
+      "Applied to the imported STL vertices as scale (unit conversion × "
+      "factor) → centring → rotation (X→Y→Z about the origin) → offset [m]; "
+      "reflected in the preview, measurement and voxelization." },
 
     // ── ジオメトリ修復 / Healing ────────────────────────────────────────────
     { "geoc_heal_section", "ジオメトリ修復 / Healing (CAD cleanup)",
@@ -169,6 +177,14 @@ const Tr kTr[] = {
     { "geoc_map_m2", "2 — 誘電体 (εr=3.5)", "2 — dielectric (εr=3.5)" },
     { "geoc_map_m1", "1 — PEC", "1 — PEC" },
     { "geoc_map_m3", "3 — FR-4", "3 — FR-4" },
+    // 音響 (室内) / 水中: εr 系ではなく ρ/c 系の材料名 (ラベルのみ — 未配線)
+    { "geoc_map_ac2", "2 — 空気 (ρ=1.2, c=343)", "2 — air (ρ=1.2, c=343)" },
+    { "geoc_map_ac1", "1 — 剛壁 (rigid)", "1 — rigid wall" },
+    { "geoc_map_ac3", "3 — 多孔質吸音材", "3 — porous absorber" },
+    { "geoc_map_uw2", "2 — 海水 (ρ=1025, c=1500)",
+      "2 — seawater (ρ=1025, c=1500)" },
+    { "geoc_map_uw3", "3 — 堆積層 (ρ=1600, c=1600)",
+      "3 — sediment (ρ=1600, c=1600)" },
 
     // ── 取込プレビュー / Preview ────────────────────────────────────────────
     { "geoc_prev_section", "取込プレビュー / Preview", "Import preview" },
@@ -184,6 +200,27 @@ const Tr kTr[] = {
     { "geoc_prev_import", "📥 取込実行", "📥 Run import" },
     { "geoc_prev_3d", "👁 3Dプレビュー", "👁 3D preview" },
     { "geoc_prev_measure", "📐 寸法測定", "📐 Measure" },
+
+    // ── 寸法測定 / Measure (取込メッシュの実測値ダイアログ) ─────────────────
+    { "geoc_meas_title", "寸法測定", "Measure" },
+    { "geoc_meas_none",
+      "取込済みのモデルがありません。先に「取込実行」で STL を取り込んで"
+      "ください。",
+      "No imported model yet — load an STL with \"Run import\" first." },
+    { "geoc_meas_model", "モデル", "Model" },
+    { "geoc_meas_tri", "三角形数", "Triangles" },
+    { "geoc_meas_bbox", "bbox 寸法", "Bbox size" },
+    { "geoc_meas_range", "bbox 範囲 [m]", "Bbox extent [m]" },
+    { "geoc_meas_area", "表面積", "Surface area" },
+    { "geoc_meas_vol", "体積 (閉メッシュ前提)",
+      "Volume (assumes a closed mesh)" },
+    { "geoc_meas_placed",
+      "※ 配置・変換 (スケール/回転/オフセット) 適用後の値です。",
+      "Values are after placement (scale / rotation / offset)." },
+    { "geoc_meas_pick",
+      "▸ 2点間クリック計測は 3D ピッキング未実装のため未対応です。",
+      "▸ Point-to-point click measurement is not available (3D picking is "
+      "not implemented)." },
 
     // ── 取込済みモデル / Imported models ────────────────────────────────────
     { "geoc_models_section", "取込済みモデル / Imported models",
@@ -212,6 +249,10 @@ const Tr kTr[] = {
       "voxel runs FDTD can handle." },
     { "geoc_vox_delta", "分解度 Δ", "Resolution Δ" },
     { "geoc_vox_delta_hint", "→ λ/22 @ 2.5 GHz", "→ λ/22 @ 2.5 GHz" },
+    // 分解度Δ の評価点はドメインの代表波長/周波数で切り替える
+    { "geoc_vox_delta_hint_opt", "→ λ/22 @ 1550 nm", "→ λ/22 @ 1550 nm" },
+    { "geoc_vox_delta_hint_ac",  "→ λ/22 @ 1 kHz",   "→ λ/22 @ 1 kHz" },
+    { "geoc_vox_delta_hint_uw",  "→ λ/22 @ 3.5 kHz", "→ λ/22 @ 3.5 kHz" },
     { "geoc_vox_inout", "内外判定", "Inside/outside test" },
     { "geoc_vox_ray", "レイキャスト", "Ray cast" },
     { "geoc_vox_winding", "巻数 (Winding)", "Winding number" },
@@ -226,6 +267,13 @@ const Tr kTr[] = {
       "▸ Staircase: fast, simple, large shape error　▸ Conformal: deformed Yee "
       "boundary, more accurate (recommended)　▸ Sub-cell: best for zero-"
       "thickness films and thin PEC plates" },
+    // 音響 (室内) では PEC 薄板ではなく剛壁 (rigid) の表現にする
+    { "geoc_vox_surf_hint_ac",
+      "▸ 階段: 高速・実装容易・形状誤差大　▸ 共形: 境界変形で精度向上・推奨　"
+      "▸ サブセル: 厚さ0の剛壁 (rigid) 薄板・薄い仕切りに最適",
+      "▸ Staircase: fast, simple, large shape error　▸ Conformal: deformed "
+      "boundary, more accurate (recommended)　▸ Sub-cell: best for zero-"
+      "thickness rigid plates and thin partitions" },
     { "geoc_vox_pvf_label", "部分容積判定", "Partial volume" },
     { "geoc_vox_pvf", "PVF (Partial Volume Fraction)",
       "PVF (partial volume fraction)" },
@@ -281,6 +329,9 @@ const Tr kTr[] = {
     { "geoc_ref_curve", "湾曲面", "Curved surfaces" },
     { "geoc_ref_thin", "薄膜・薄板", "Thin films / plates" },
     { "geoc_ref_higheps", "高εr 領域", "High-εr regions" },
+    // 音響/水中では εr ではなく音速コントラストが細分化の対象になる
+    { "geoc_ref_highc", "高音速コントラスト領域",
+      "High sound-speed-contrast regions" },
     { "geoc_ref_ratio", "細分化比率", "Refinement ratio" },
     { "geoc_ref_ratio_hint", "x (1セルを3x3x3に分割)",
       "x (one cell → 3×3×3)" },
@@ -457,9 +508,10 @@ QSpinBox *makeIntSpin(QWidget *parent, int lo, int hi, int value)
     return w;
 }
 
-// 「値 + 単位 (+ 補足)」の行 (mock の <input> + <span className="muted">)
+// 「値 + 単位 (+ 補足)」の行 (mock の <input> + <span className="muted">)。
+// outHint に補足ラベルを返せる (ドメイン別に文言を差し替える行で使用)。
 QWidget *valueRow(QWidget *parent, QWidget *field, const QString &unit,
-                  const QString &hint = QString())
+                  const QString &hint = QString(), QLabel **outHint = nullptr)
 {
     auto *w = new QWidget(parent);
     auto *h = new QHBoxLayout(w);
@@ -467,7 +519,11 @@ QWidget *valueRow(QWidget *parent, QWidget *field, const QString &unit,
     h->setSpacing(6);
     h->addWidget(field);
     if (!unit.isEmpty()) h->addWidget(makeHint(unit, w));
-    if (!hint.isEmpty()) h->addWidget(makeHint(hint, w));
+    if (!hint.isEmpty()) {
+        auto *hl = makeHint(hint, w);
+        h->addWidget(hl);
+        if (outHint) *outHint = hl;
+    }
     h->addStretch(1);
     return w;
 }
@@ -494,6 +550,46 @@ double meshVolume(const ImportedMesh &m)
               + z1 * (x2 * y3 - y2 * x3)) / 6.0;
     }
     return std::fabs(vol);
+}
+
+// 変換後のメッシュの bbox / 表面積を頂点から取り直す (StlImporter が取込時に
+// 求めるのと同じ定義: bbox = 全頂点の min/max、面積 = Σ|外積|/2)。
+void recomputeMeshStats(ImportedMesh &m)
+{
+    const int n = qMin(m.numTriangles, int(m.vertices.size() / 9));
+    if (n <= 0) return;
+    double lo[3] = { m.vertices[0], m.vertices[1], m.vertices[2] };
+    double hi[3] = { lo[0], lo[1], lo[2] };
+    double area = 0.0;
+    for (int t = 0; t < n; ++t) {
+        const float *p = m.vertices.constData() + t * 9;
+        for (int k = 0; k < 3; ++k)
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], double(p[k * 3 + a]));
+                hi[a] = std::max(hi[a], double(p[k * 3 + a]));
+            }
+        const double ux = p[3] - p[0], uy = p[4] - p[1], uz = p[5] - p[2];
+        const double vx = p[6] - p[0], vy = p[7] - p[1], vz = p[8] - p[2];
+        const double cx = uy * vz - uz * vy;
+        const double cy = uz * vx - ux * vz;
+        const double cz = ux * vy - uy * vx;
+        area += 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+    }
+    for (int a = 0; a < 3; ++a) {
+        m.bbox[a]     = lo[a];
+        m.bbox[3 + a] = hi[a];
+    }
+    m.surfaceArea = area;
+}
+
+// 頂点 p[3] を軸 axis まわりに回転 (原点基準・右手系 — rotateGeometry と同じ
+// 巡回規約: 軸 a の回転面は (u,v) = ((a+1)%3, (a+2)%3))。
+void rotateVertex(float *p, int axis, double cs, double sn)
+{
+    const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+    const double pu = p[u], pv = p[v];
+    p[u] = float(pu * cs - pv * sn);
+    p[v] = float(pu * sn + pv * cs);
 }
 
 // ── ユニット編集の座標変換 (Geometry::coordIndices = sol/ingeometry.c 準拠) ──
@@ -667,8 +763,12 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
     v->addWidget(buildMaterialMapSection());
     v->addWidget(buildPreviewSection());
     v->addWidget(buildImportedSection());
-    v->addWidget(buildVoxelSection());
-    v->addWidget(buildVoxelStatsSection());
+    // ボクセル化〜ボクセル統計は Yee 格子 (FDTD) 前提のため、ドメインに
+    // よっては隠す (updateDomainVisibility) — ポインタを保持しておく
+    m_voxSection = buildVoxelSection();
+    v->addWidget(m_voxSection);
+    m_voxStatsSection = buildVoxelStatsSection();
+    v->addWidget(m_voxStatsSection);
     v->addWidget(buildRefineSection());
     v->addWidget(buildRefinedRegionsSection());
 
@@ -711,7 +811,67 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
     connect(m_voxBtn, &QPushButton::clicked, this, &GeometryTab::voxelizeImported);
 
     connect(project, &Project::loaded, this, &GeometryTab::refresh);
+
+    // ドメイン切替 → FDTD 前提セクション/文言の出し分け (表示のみ)
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+    updateDomainVisibility();
+
     refresh();
+}
+
+// ── ドメイン別の出し分け ────────────────────────────────────────────────────
+// Yee 格子 (FDTD) を前提とするセクション/文言を、選択中ドメインに合わせて
+// 隠す・切り替える。**表示のみ**で、モデルへの書き込み・.ofd/.ofdx の
+// シリアライズは一切変えない (隠れていても従来どおり動作する)。
+void GeometryTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+
+    // ボクセル化〜ボクセル統計: 水中音響 (BELLHOP) はレイトレースで
+    // Yee 格子を使わないため Underwater では非表示
+    const bool useVoxel = (d != Domain::Underwater);
+    if (m_voxSection)      m_voxSection->setVisible(useVoxel);
+    if (m_voxStatsSection) m_voxStatsSection->setVisible(useVoxel);
+
+    // 分解度Δ の補足 (λ/22 の評価点) はドメインの代表波長/周波数で切替
+    if (m_voxDeltaHint) {
+        const char *key = "geoc_vox_delta_hint";           // EM: 2.5 GHz
+        switch (d) {
+            case Domain::Optical:    key = "geoc_vox_delta_hint_opt"; break;
+            case Domain::Acoustic:   key = "geoc_vox_delta_hint_ac";  break;
+            case Domain::Underwater: key = "geoc_vox_delta_hint_uw";  break;
+            default:                 break;
+        }
+        m_voxDeltaHint->setText(I18n::tr(QLatin1String(key)));
+    }
+
+    // 表面処理の解説: Acoustic では PEC 薄板ではなく剛壁 (rigid) の表現
+    if (m_voxSurfHint)
+        m_voxSurfHint->setText(I18n::tr(
+            d == Domain::Acoustic ? "geoc_vox_surf_hint_ac"
+                                  : "geoc_vox_surf_hint"));
+
+    // 物性値割当のデフォルト材質: Acoustic/Underwater は εr 系 (PEC/誘電体/
+    // FR-4) ではなく ρ/c 系の材料名にする (セクションは未配線 — ラベルのみ)
+    if (m_mapDefault) {
+        const char *k0 = "geoc_map_m2", *k1 = "geoc_map_m1",
+                   *k2 = "geoc_map_m3";
+        if (d == Domain::Acoustic) {
+            k0 = "geoc_map_ac2"; k1 = "geoc_map_ac1"; k2 = "geoc_map_ac3";
+        } else if (d == Domain::Underwater) {
+            k0 = "geoc_map_uw2"; k1 = "geoc_map_ac1"; k2 = "geoc_map_uw3";
+        }
+        m_mapDefault->setItemText(0, I18n::tr(QLatin1String(k0)));
+        m_mapDefault->setItemText(1, I18n::tr(QLatin1String(k1)));
+        m_mapDefault->setItemText(2, I18n::tr(QLatin1String(k2)));
+    }
+
+    // メッシュ細分化の対象: 高εr → 高音速コントラスト (Acoustic/Underwater)
+    if (m_refHighEps)
+        m_refHighEps->setText(I18n::tr(
+            (d == Domain::Acoustic || d == Domain::Underwater)
+                ? "geoc_ref_highc" : "geoc_ref_higheps"));
 }
 
 // ── ユニット編集 / Unit transform ───────────────────────────────────────────
@@ -1040,16 +1200,21 @@ QWidget *GeometryTab::buildAssemblySection()
 }
 
 // ── 配置・変換 / Placement ─────────────────────────────────────────────────
+// 取込 STL へのアフィン変換 (applyPlacement) として実配線済み。既定値は
+// 恒等変換 (単位 m・×1・回転/オフセット 0・中心合わせ OFF) にして、設定を
+// 触らない限り従来の取込動作 (STL 座標を m とみなす) と完全一致させる。
 QWidget *GeometryTab::buildPlacementSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_place_section"));
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_place_hint"), s));
 
     auto *unitRowW = new QWidget(s);
     auto *uh = new QHBoxLayout(unitRowW);
     uh->setContentsMargins(0, 0, 0, 0);
     uh->setSpacing(6);
+    // 既定は m (index 1) — 従来どおり STL 座標をそのまま m として扱う
     uh->addWidget(segRow(unitRowW, &m_placeUnit,
-                         { "mm", "m", "μm", "nm", "inch" }, 0));
+                         { "mm", "m", "μm", "nm", "inch" }, 1));
     uh->addWidget(makeHint(I18n::tr("geoc_place_scale"), unitRowW));
     m_placeScale = makeSpin(unitRowW, 1e-6, 1e6, 3, 1.0, 0.1);
     uh->addWidget(m_placeScale);
@@ -1081,13 +1246,28 @@ QWidget *GeometryTab::buildPlacementSection()
     s->form()->addRow(I18n::tr("geoc_place_rot"), rotRow);
 
     auto *cr = new QHBoxLayout();
-    m_placeCenter = makeCheck(I18n::tr("geoc_place_center"), true, s);
+    // 既定 OFF — ON にすると取込時に bbox 中心を原点へ移動する (実配線)
+    m_placeCenter = makeCheck(I18n::tr("geoc_place_center"), false, s);
     m_placeAutoAxis = makeCheck(I18n::tr("geoc_place_autoaxis"), false, s);
+    tabhelp::markNotImplemented(m_placeAutoAxis);   // 主軸検出のみ未実装
     cr->addWidget(m_placeCenter);
     cr->addWidget(m_placeAutoAxis);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // 取込/ボクセル化とも未接続
+
+    // 設定変更 → 取込済みメッシュへ即時反映 (取込前は何もしない)
+    connect(m_placeUnit, &QButtonGroup::idClicked, this,
+            [this](int) { reapplyPlacement(); });
+    connect(m_placeScale, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { reapplyPlacement(); });
+    for (int i = 0; i < 3; ++i) {
+        connect(m_placeOffset[i], &QDoubleSpinBox::valueChanged, this,
+                [this](double) { reapplyPlacement(); });
+        connect(m_placeRot[i], &QDoubleSpinBox::valueChanged, this,
+                [this](double) { reapplyPlacement(); });
+    }
+    connect(m_placeCenter, &QCheckBox::toggled, this,
+            [this](bool) { reapplyPlacement(); });
     return s;
 }
 
@@ -1171,7 +1351,6 @@ QWidget *GeometryTab::buildPreviewSection()
     auto *prev3dBtn = new QPushButton(I18n::tr("geoc_prev_3d"), s);
     auto *measureBtn = new QPushButton(I18n::tr("geoc_prev_measure"), s);
     tabhelp::markNotImplemented(prev3dBtn);
-    tabhelp::markNotImplemented(measureBtn);
     hr->addWidget(prev3dBtn);
     hr->addWidget(measureBtn);
     hr->addStretch(1);
@@ -1179,6 +1358,9 @@ QWidget *GeometryTab::buildPreviewSection()
 
     // 取込実行 = 実際の STL 取込 (io/StlImporter)
     connect(runImport, &QPushButton::clicked, this, &GeometryTab::importStl);
+    // 寸法測定 = 取込メッシュの実測値ダイアログ
+    connect(measureBtn, &QPushButton::clicked, this,
+            &GeometryTab::showMeasureDialog);
     return s;
 }
 
@@ -1232,9 +1414,11 @@ QWidget *GeometryTab::buildVoxelSection()
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_vox_hint"), s));
 
     m_voxDelta = makeSpin(s, 0.001, 1000.0, 3, 0.5, 0.1);
+    // 補足ラベルはドメイン別に文言を差し替える (updateDomainVisibility)
     s->form()->addRow(I18n::tr("geoc_vox_delta"),
                       valueRow(s, m_voxDelta, "mm",
-                               I18n::tr("geoc_vox_delta_hint")));
+                               I18n::tr("geoc_vox_delta_hint"),
+                               &m_voxDeltaHint));
     s->form()->addRow(I18n::tr("geoc_vox_inout"),
                       segRow(s, &m_voxInside,
                              { I18n::tr("geoc_vox_ray"),
@@ -1247,7 +1431,9 @@ QWidget *GeometryTab::buildVoxelSection()
                                I18n::tr("geoc_vox_conformal"),
                                I18n::tr("geoc_vox_subcell") }, 0));
     // 行順を守るため、フォーム内に全幅行として差し込む
-    s->form()->addRow(makeHint(I18n::tr("geoc_vox_surf_hint"), s));
+    // (Acoustic では剛壁 (rigid) の文言に切り替える — updateDomainVisibility)
+    m_voxSurfHint = makeHint(I18n::tr("geoc_vox_surf_hint"), s);
+    s->form()->addRow(m_voxSurfHint);
 
     m_voxPvf = makeCheck(I18n::tr("geoc_vox_pvf"), true, s);
     s->form()->addRow(I18n::tr("geoc_vox_pvf_label"),
@@ -1432,22 +1618,144 @@ void GeometryTab::importStl()
         return;
     }
 
-    // Keep the mesh so the user can voxelize it onto the Yee grid.
-    m_lastMesh = mesh;
+    // 変換前の生メッシュを保持し、配置・変換 (placement) を適用したものを
+    // プレビュー・計測・ボクセル化に使う (恒等変換なら取込そのまま)。
+    m_rawMesh = mesh;
+    m_lastMesh = applyPlacement(mesh);
     m_hasMesh = true;
     m_voxBtn->setEnabled(true);
     if (m_cadFile) m_cadFile->setText(path);
 
+    const ImportedMesh &shown = m_lastMesh;   // 配置・変換適用後の実測値
     m_importInfo->setText(QStringLiteral(
         "%1 — %2 triangles, area %3 m², bbox [%4, %5]×[%6, %7]×[%8, %9]\n%10")
-        .arg(mesh.name).arg(mesh.numTriangles)
-        .arg(QString::number(mesh.surfaceArea, 'g', 4))
-        .arg(QString::number(mesh.bbox[0], 'g', 4), QString::number(mesh.bbox[3], 'g', 4),
-             QString::number(mesh.bbox[1], 'g', 4), QString::number(mesh.bbox[4], 'g', 4),
-             QString::number(mesh.bbox[2], 'g', 4), QString::number(mesh.bbox[5], 'g', 4))
+        .arg(shown.name).arg(shown.numTriangles)
+        .arg(QString::number(shown.surfaceArea, 'g', 4))
+        .arg(QString::number(shown.bbox[0], 'g', 4), QString::number(shown.bbox[3], 'g', 4),
+             QString::number(shown.bbox[1], 'g', 4), QString::number(shown.bbox[4], 'g', 4),
+             QString::number(shown.bbox[2], 'g', 4), QString::number(shown.bbox[5], 'g', 4))
         .arg(I18n::tr("ge_voxelize_hint")));
 
     refreshImportBadges();
+}
+
+// ── 配置・変換 (placement) の適用 ──────────────────────────────────────────
+// 取込 STL の頂点へ スケール (単位換算 ×係数) → 中心合わせ (bbox 中心を
+// 原点へ) → 回転 (X→Y→Z, 原点基準) → オフセット [m] の順にアフィン変換を
+// かけ、bbox / 表面積を頂点から取り直す。恒等変換ならメッシュをそのまま返す
+// (既定値では従来の取込動作と完全一致)。純幾何処理 — StlImporter / Voxelizer
+// は変更しない。
+ImportedMesh GeometryTab::applyPlacement(const ImportedMesh &src) const
+{
+    // 単位ボタン (mm / m / μm / nm / inch) → m 換算係数
+    static const double kUnit[5] = { 1e-3, 1.0, 1e-6, 1e-9, 0.0254 };
+    int ui = m_placeUnit ? m_placeUnit->checkedId() : 1;
+    if (ui < 0 || ui >= 5) ui = 1;
+    const double s = kUnit[ui] * (m_placeScale ? m_placeScale->value() : 1.0);
+
+    double off[3], rot[3];
+    bool hasOff = false, hasRot = false;
+    for (int a = 0; a < 3; ++a) {
+        off[a] = m_placeOffset[a] ? m_placeOffset[a]->value() : 0.0;
+        rot[a] = m_placeRot[a]    ? m_placeRot[a]->value()    : 0.0;
+        hasOff = hasOff || off[a] != 0.0;
+        hasRot = hasRot || rot[a] != 0.0;
+    }
+    const bool center = m_placeCenter && m_placeCenter->isChecked();
+    if (s == 1.0 && !center && !hasRot && !hasOff)
+        return src;   // 恒等変換 — 従来どおり無変換
+
+    ImportedMesh m = src;
+    const int nv = m.vertices.size() / 3;   // 頂点数 (3 float / 頂点)
+    float *vp = m.vertices.data();
+
+    // 1) スケール (単位換算 × 任意係数)
+    if (s != 1.0)
+        for (int i = 0; i < nv * 3; ++i)
+            vp[i] = float(double(vp[i]) * s);
+
+    // 2) 中心合わせ: スケール後の bbox 中心を原点へ
+    if (center) {
+        recomputeMeshStats(m);
+        const double c[3] = { (m.bbox[0] + m.bbox[3]) / 2.0,
+                              (m.bbox[1] + m.bbox[4]) / 2.0,
+                              (m.bbox[2] + m.bbox[5]) / 2.0 };
+        for (int i = 0; i < nv; ++i)
+            for (int a = 0; a < 3; ++a)
+                vp[i * 3 + a] = float(double(vp[i * 3 + a]) - c[a]);
+    }
+
+    // 3) 回転 X → Y → Z (原点基準 — 中心合わせ ON なら bbox 中心基準になる)
+    if (hasRot)
+        for (int axis = 0; axis < 3; ++axis) {
+            if (rot[axis] == 0.0) continue;
+            const double th = rot[axis] * M_PI / 180.0;
+            const double cs = std::cos(th), sn = std::sin(th);
+            for (int i = 0; i < nv; ++i)
+                rotateVertex(vp + i * 3, axis, cs, sn);
+        }
+
+    // 4) オフセット [m]
+    if (hasOff)
+        for (int i = 0; i < nv; ++i)
+            for (int a = 0; a < 3; ++a)
+                vp[i * 3 + a] = float(double(vp[i * 3 + a]) + off[a]);
+
+    recomputeMeshStats(m);
+    return m;
+}
+
+// 配置・変換の設定変更 → 取込済みメッシュへ変換をかけ直して表示を更新。
+// ボクセル化は m_lastMesh を読むので、次回実行から自動的に反映される。
+void GeometryTab::reapplyPlacement()
+{
+    if (!m_hasMesh) return;
+    m_lastMesh = applyPlacement(m_rawMesh);
+    refreshImportBadges();
+}
+
+// ── 寸法測定 / Measure ─────────────────────────────────────────────────────
+// 取込メッシュ (配置・変換適用後) の bbox 寸法・表面積 (StlImporter と同じ
+// 定義で再計算) と meshVolume() の体積 (発散定理 — 閉メッシュ前提) をまとめて
+// 表示する。2点間クリック計測は 3D ピッキング未実装のため対象外 (明記)。
+void GeometryTab::showMeasureDialog()
+{
+    if (!m_hasMesh) {
+        QMessageBox::information(this, I18n::tr("geoc_meas_title"),
+                                 I18n::tr("geoc_meas_none"));
+        return;
+    }
+    const ImportedMesh &m = m_lastMesh;
+    const double sx = (m.bbox[3] - m.bbox[0]) * 1e3;   // m → mm
+    const double sy = (m.bbox[4] - m.bbox[1]) * 1e3;
+    const double sz = (m.bbox[5] - m.bbox[2]) * 1e3;
+    const double volCm3 = meshVolume(m) * 1e6;         // m³ → cm³
+
+    auto line = [](const QString &label, const QString &value) {
+        return label + QStringLiteral(": ") + value;
+    };
+    const QString range =
+        QString::fromUtf8("X [%1, %2] · Y [%3, %4] · Z [%5, %6]")
+            .arg(QString::number(m.bbox[0], 'g', 4), QString::number(m.bbox[3], 'g', 4),
+                 QString::number(m.bbox[1], 'g', 4), QString::number(m.bbox[4], 'g', 4),
+                 QString::number(m.bbox[2], 'g', 4), QString::number(m.bbox[5], 'g', 4));
+    const QString body =
+        line(I18n::tr("geoc_meas_model"), m.name) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_tri"), groupNum(m.numTriangles)) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_bbox"),
+             QString::fromUtf8("%1 × %2 × %3 mm")
+                 .arg(QString::number(sx, 'f', 1), QString::number(sy, 'f', 1),
+                      QString::number(sz, 'f', 1))) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_range"), range) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_area"),
+             QString::number(m.surfaceArea, 'g', 4)
+                 + QString::fromUtf8(" m²")) + QLatin1Char('\n')
+      + line(I18n::tr("geoc_meas_vol"),
+             QString::number(volCm3, 'f', 2) + QString::fromUtf8(" cm³"))
+      + QStringLiteral("\n\n")
+      + I18n::tr("geoc_meas_placed") + QLatin1Char('\n')
+      + I18n::tr("geoc_meas_pick");
+    QMessageBox::information(this, I18n::tr("geoc_meas_title"), body);
 }
 
 void GeometryTab::voxelizeImported()

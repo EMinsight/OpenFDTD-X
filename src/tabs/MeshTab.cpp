@@ -81,6 +81,17 @@ QString formatSci(double v)
 
 const double kC0 = 2.99792458e8;   // 真空中の光速 [m/s]
 
+// λ/N 評価に使うドメイン別の伝搬速度 [m/s]。
+// 音響/水中は光速ではなく音速で波長を計算する (光速のままだと誤解を招く)。
+double domainWaveSpeed(ofd::Domain d)
+{
+    switch (d) {
+    case ofd::Domain::Acoustic:   return 343.0;    // 空気中の音速 (20℃)
+    case ofd::Domain::Underwater: return 1500.0;   // 海水中の代表音速
+    default:                      return kC0;      // EM / 光: 真空光速
+    }
+}
+
 } // namespace
 
 MeshTab::MeshTab(Project *project, QWidget *parent)
@@ -205,6 +216,7 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
 
     m_statMem = styledLabel(st, Theme::monoQss());
     st->form()->addRow(I18n::tr("mst_memory"), m_statMem);
+    m_statsForm = st->form();   // CFL 行のドメイン別出し分けに使う
     v->addWidget(st);
 
     v->addStretch(1);
@@ -219,7 +231,25 @@ MeshTab::MeshTab(Project *project, QWidget *parent)
     updateMethodView();
 
     connect(project, &Project::loaded, this, &MeshTab::refresh);
+
+    // ドメイン切替 → CFL 行の出し分け + 統計の再計算 (λ/N の伝搬速度が変わる)
+    connect(project, &Project::domainChanged, this, [this] {
+        updateDomainVisibility();
+        refreshStats();
+    });
+    updateDomainVisibility();
+
     refresh();
+}
+
+// ドメイン別の出し分け — Acoustic/Underwater のソルバは FDTD ではなく
+// CFL 条件が存在しないため、光速基準の CFL Δt (Project::courantDt) 行を隠す。
+// モデルへの書き込みは一切変えない (表示のみ)。
+void MeshTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const bool fdtd = (d == Domain::EM || d == Domain::Optical);
+    m_statsForm->setRowVisible(m_statCfl, fdtd);
 }
 
 void MeshTab::updateMethodView()
@@ -281,11 +311,13 @@ void MeshTab::refreshStats()
     m_statDxMin->setText(dxOk ? QStringLiteral("%1 m").arg(formatSci(dmin))
                               : QStringLiteral("—"));
 
-    // λ/N @ f — 解析周波数1 の中心周波数で評価 (mock: "→ λ/22 @ 2.5 GHz")
+    // λ/N @ f — 解析周波数1 の中心周波数で評価 (mock: "→ λ/22 @ 2.5 GHz")。
+    // 波長はドメイン別の伝搬速度で計算する (音響 343 m/s / 水中 1500 m/s /
+    // EM・光は真空光速)。周波数表示は formatFreq が Hz〜GHz を自動選択する。
     const GeneralOpts &g = m_p->general();
     const double fc = g.hasF1 ? 0.5 * (g.f1min + g.f1max) : 0.0;
     if (dxOk && fc > 0) {
-        const double lambda = kC0 / fc;
+        const double lambda = domainWaveSpeed(m_p->activeDomain()) / fc;
         const qint64 n = qint64(qBound(0.0, lambda / dmin + 0.5, 1e12));
         m_statLambda->setText(I18n::tr("mst_lambda_fmt")
                                   .arg(n).arg(formatFreq(fc)));

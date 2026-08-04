@@ -30,6 +30,10 @@ const bool s_i18n = [] {
     I18n::reg("p1x_auto_scale", "自動スケール", "Auto-scale");
     I18n::reg("p1x_auto_hint", "→ OFF時に最小/最大/分割数を指定",
               "→ set min / max / div when off");
+    // 音響/水中では「給電点」の概念が無いので同じ plotfeed をこの名で見せる
+    // (ラベルのみの切替 — 保存キーは plotfeed のまま)
+    I18n::reg("p1x_src_wave", "音源波形・スペクトル",
+              "Source waveform & spectrum");
     return true;
 }();
 } // namespace
@@ -60,6 +64,7 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     // ── 周波数特性(2D) — mock の並び順:
     //    スミスチャート → 入力インピーダンス…結合係数 → 自動スケール → 分割数
     auto *sf = new SectionBox(I18n::tr("p1_freq_section"), body);
+    m_freqSection = sf;                 // EM 以外では丸ごと隠す (下記参照)
     m_smith = new QCheckBox(I18n::tr("p1_smith"), sf);
     sf->vbox()->addWidget(m_smith);
 
@@ -111,8 +116,31 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
         apply();
     });
 
+    // ドメイン切替 → EM 固有セクションの表示切替とラベル切替
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+
     connect(project, &Project::loaded, this, &Post1Tab::refresh);
     refresh();
+    updateDomainVisibility();
+}
+
+// ドメインに関係のない UI 項目を隠す (ドメイン監査の結果)。
+// - 周波数特性(2D) (スミスチャート / 入力インピーダンス / アドミタンス /
+//   反射係数 / Sパラメータ / 結合係数 / 整合損 / 周波数目盛分割) は
+//   EM カーネルだけが出力する → EM のみ表示。
+// - 「給電点波形・スペクトル」(plotfeed) は全ドメインで有効だが、音響/水中に
+//   給電点の概念は無いので「音源波形・スペクトル」ラベルへ切り替える。
+// 表示のみの切替で、apply() は隠れていても従来どおり全値を書く
+// (シリアライズ出力は不変)。
+void Post1Tab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const bool em = (d == Domain::EM);
+    const bool ac = (d == Domain::Acoustic || d == Domain::Underwater);
+
+    m_freqSection->setVisible(em);
+    m_feed->setText(I18n::tr(ac ? "p1x_src_wave" : "p1x_feed_wave"));
 }
 
 void Post1Tab::addFreqRow(QWidget *, SectionBox *s, const QString &label,

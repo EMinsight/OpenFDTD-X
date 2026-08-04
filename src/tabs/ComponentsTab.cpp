@@ -39,6 +39,19 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
     ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
+    // 最近使用チップ (ドメイン別の固定サンプル — 履歴機能は未実装)
+    ofd::I18n::reg("cl_rec_em_1", "パッチアンテナ",     "Patch antenna");
+    ofd::I18n::reg("cl_rec_em_2", "ダイポール 0.5λ",    "Dipole 0.5λ");
+    ofd::I18n::reg("cl_rec_em_3", "ホーンアンテナ",     "Horn antenna");
+    ofd::I18n::reg("cl_rec_op_1", "リング共振器 R=5μm", "Ring resonator R=5μm");
+    ofd::I18n::reg("cl_rec_op_2", "DBRミラー 25層",     "DBR mirror, 25 pairs");
+    ofd::I18n::reg("cl_rec_op_3", "格子結合器",         "Grating coupler");
+    ofd::I18n::reg("cl_rec_ac_1", "吸音パネル",         "Absorber panel");
+    ofd::I18n::reg("cl_rec_ac_2", "拡散体 (QRD)",       "Diffuser (QRD)");
+    ofd::I18n::reg("cl_rec_ac_3", "客席ブロック",       "Audience block");
+    ofd::I18n::reg("cl_rec_uw_1", "ソナー音源",         "Sonar source");
+    ofd::I18n::reg("cl_rec_uw_2", "ハイドロホン",       "Hydrophone");
+    ofd::I18n::reg("cl_rec_uw_3", "点モニター (深度別)", "Point monitors (per depth)");
     return true;
 }();
 
@@ -142,8 +155,12 @@ QStringList allowedCats(const QString &d)
     if (d == "optical")
         return { "basic", "photonic", "grating", "lens", "metal", "source",
                  "monitor", "imported" };
-    if (d == "acoustic" || d == "underwater")
+    if (d == "acoustic")
         return { "basic", "acoustic", "source", "monitor", "imported" };
+    if (d == "underwater")
+        // 音響カテゴリの部材 (吸音パネル/客席ブロック等) は室内音響用で、
+        // 水中音響では意味を持たないため表示しない
+        return { "basic", "source", "monitor", "imported" };
     return { "basic", "source", "monitor", "imported" };
 }
 
@@ -154,8 +171,10 @@ QStringList priorityCats(const QString &d)
         return { "antenna", "source", "monitor", "basic", "metal" };
     if (d == "optical")
         return { "photonic", "grating", "lens", "metal", "source", "monitor", "basic" };
-    if (d == "acoustic" || d == "underwater")
+    if (d == "acoustic")
         return { "acoustic", "source", "monitor", "basic" };
+    if (d == "underwater")
+        return { "source", "monitor", "basic" };
     return { "basic" };
 }
 
@@ -207,22 +226,13 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     m_favSection->vbox()->addLayout(m_favRow);
     v->addWidget(m_favSection);
 
-    // 最近使用 — 履歴機能は未実装で、チップはモック由来の固定サンプル
-    auto *sRecent = new SectionBox(I18n::tr("cl_recent"), body);
-    sRecent->vbox()->addWidget(tabhelp::sampleNote(sRecent));
-    auto *recentRow = new QHBoxLayout();
-    static const char *kRecent[] = {
-        "パッチアンテナ", "リング共振器 R=5μm", "DBRミラー 25層" };
-    for (const char *r : kRecent) {
-        // クリックしても何も起きないため「押せる見た目」(手カーソル) にしない
-        auto *b = new QLabel(QString::fromUtf8(r), sRecent);
-        b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
-                         "padding:1px 6px; font-size:11px;");
-        recentRow->addWidget(b);
-    }
-    recentRow->addStretch(1);
-    sRecent->vbox()->addLayout(recentRow);
-    v->addWidget(sRecent);
+    // 最近使用 — 履歴機能は未実装で、チップはドメイン別の固定サンプル
+    // (rebuildCats → rebuildRecent で再構築)
+    m_recentSection = new SectionBox(I18n::tr("cl_recent"), body);
+    m_recentSection->vbox()->addWidget(tabhelp::sampleNote(m_recentSection));
+    m_recentRow = new QHBoxLayout();
+    m_recentSection->vbox()->addLayout(m_recentRow);
+    v->addWidget(m_recentSection);
 
     v->addStretch(1);
     setWidget(body);
@@ -299,6 +309,38 @@ void ComponentsTab::rebuildCats()
         ++i;
     }
     rebuildGrid();
+    rebuildRecent();
+}
+
+// 最近使用チップ行の再構築 — ドメインで意味を持つサンプルのみ表示する
+// (履歴機能は未実装のため固定サンプル。sampleNote 済み)
+void ComponentsTab::rebuildRecent()
+{
+    while (QLayoutItem *it = m_recentRow->takeAt(0)) {
+        delete it->widget();
+        delete it;
+    }
+    static const char *const kRecEm[] = { "cl_rec_em_1", "cl_rec_em_2",
+                                          "cl_rec_em_3" };
+    static const char *const kRecOp[] = { "cl_rec_op_1", "cl_rec_op_2",
+                                          "cl_rec_op_3" };
+    static const char *const kRecAc[] = { "cl_rec_ac_1", "cl_rec_ac_2",
+                                          "cl_rec_ac_3" };
+    static const char *const kRecUw[] = { "cl_rec_uw_1", "cl_rec_uw_2",
+                                          "cl_rec_uw_3" };
+    const QString domain = domainKey(m_p->activeDomain());
+    const char *const *keys = kRecEm;
+    if (domain == "optical")         keys = kRecOp;
+    else if (domain == "acoustic")   keys = kRecAc;
+    else if (domain == "underwater") keys = kRecUw;
+    for (int i = 0; i < 3; ++i) {
+        // クリックしても何も起きないため「押せる見た目」(手カーソル) にしない
+        auto *b = new QLabel(I18n::tr(QLatin1String(keys[i])), m_recentSection);
+        b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
+                         "padding:1px 6px; font-size:11px;");
+        m_recentRow->addWidget(b);
+    }
+    m_recentRow->addStretch(1);
 }
 
 // 検索/カテゴリ/ドメインの現状態でコンポーネントカードを並べ直す

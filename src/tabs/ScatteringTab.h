@@ -1,7 +1,9 @@
 // ScatteringTab.h — 散乱特性タブ (openfdtd-family.jsx ScatteringTab 相当)。
 // OpenFDTD ドキュメント §2.15「散乱」: 平面波入射に対する散乱体の解析。
 //   入射波 (θ, φ, 偏波, 角度スイープ) ・RCS ・近傍/遠方界変換 (NTFF) ・その他散乱量。
-// Static prototype: values/toggles are local state (no matching Project field).
+// 入射波 (θ/φ/偏波) は Project::planewave() へ配線済み (SourceTab と同一モデル)。
+// 円偏波・入射角スイープと RCS/NTFF/その他散乱量はカーネル未対応のため
+// ローカル状態のまま (未実装表示あり)。
 #pragma once
 #include <QScrollArea>
 #include <QVector>
@@ -20,14 +22,18 @@ class ScatteringTab : public QScrollArea {
 public:
     explicit ScatteringTab(Project *project, QWidget *parent = nullptr);
 
+    void apply();     // widgets → model (入射波 θ/φ/偏波のみ)
+    void refresh();   // model → widgets
+
 private:
     SectionBox *checkSection(QWidget *parent, const char *titleKey,
                              const char *const *keys, const bool *checked, int n,
                              QVector<QCheckBox *> *out);
 
     Project *m_p;
+    bool m_updating = false;    // refresh() 中の apply() 再入ガード
 
-    // 入射波 / Incident wave
+    // 入射波 / Incident wave (θ/φ/偏波は Project::planewave() の View)
     QLineEdit *m_theta, *m_phi;
     QComboBox *m_pol;                       // V(TE) / H(TM) / 円偏波
     QCheckBox *m_sweep;                     // 入射角スイープ (バイスタティック)

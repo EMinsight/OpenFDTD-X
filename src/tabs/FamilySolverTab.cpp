@@ -231,16 +231,16 @@ FamilySolverTab::FamilySolverTab(Project *project, QWidget *parent)
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(8);
 
-    // 姉妹ソルバ一覧
-    auto *sList = new SectionBox(I18n::tr("fam_title"), body);
-    auto *intro = new QLabel(I18n::tr("fam_intro"), sList);
+    // 姉妹ソルバ一覧 (音響/水中ではカードが 0 枚 → セクションごと隠す)
+    m_listSection = new SectionBox(I18n::tr("fam_title"), body);
+    auto *intro = new QLabel(I18n::tr("fam_intro"), m_listSection);
     intro->setTextFormat(Qt::RichText);
     intro->setWordWrap(true);
-    sList->vbox()->addWidget(intro);
+    m_listSection->vbox()->addWidget(intro);
     m_cardGrid = new QGridLayout();
     m_cardGrid->setSpacing(8);
-    sList->vbox()->addLayout(m_cardGrid);
-    v->addWidget(sList);
+    m_listSection->vbox()->addLayout(m_cardGrid);
+    v->addWidget(m_listSection);
 
     // 選択中ソルバの詳細設定
     m_detailSection = new SectionBox(QString(), body);
@@ -254,14 +254,14 @@ FamilySolverTab::FamilySolverTab(Project *project, QWidget *parent)
     m_detailSection->vbox()->addWidget(m_detailStack);
     v->addWidget(m_detailSection);
 
-    // ソルバ間連携
-    auto *sCross = new SectionBox(I18n::tr("fam_cross_title"), body);
-    sCross->vbox()->addWidget(hintLabel(I18n::tr("fam_cross_hint"), sCross));
+    // ソルバ間連携 (全て EM 姉妹ソルバ間のパイプライン → 音響/水中では隠す)
+    m_crossSection = new SectionBox(I18n::tr("fam_cross_title"), body);
+    m_crossSection->vbox()->addWidget(hintLabel(I18n::tr("fam_cross_hint"), m_crossSection));
     for (const char *key : { "fam_cross_1", "fam_cross_2", "fam_cross_3", "fam_cross_4" })
-        sCross->vbox()->addWidget(new QCheckBox(I18n::tr(key), sCross));
+        m_crossSection->vbox()->addWidget(new QCheckBox(I18n::tr(key), m_crossSection));
     // 連携チェックはどこにも読まれていない (未実装)
-    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross));
-    v->addWidget(sCross);
+    m_crossSection->vbox()->addWidget(tabhelp::unwiredNote(m_crossSection));
+    v->addWidget(m_crossSection);
 
     v->addStretch(1);
     setWidget(body);
@@ -300,6 +300,14 @@ void FamilySolverTab::rebuildCards()
         ++slot;
     }
     select(m_pick);
+
+    // 音響/水中ドメインでは姉妹ソルバ (全て電磁/光系) が 1 枚も無い。
+    // 空のカードグリッドと EM 専用の詳細/連携セクションを見せると
+    // 「このドメインの機能」と誤認させるため、セクションごと非表示にする。
+    const bool anyCard = !m_cards.isEmpty();
+    m_listSection->setVisible(anyCard);
+    m_detailSection->setVisible(anyCard);
+    m_crossSection->setVisible(d == Domain::EM || d == Domain::Optical);
 }
 
 void FamilySolverTab::select(int familyIndex)

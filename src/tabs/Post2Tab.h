@@ -20,10 +20,12 @@ class QSpinBox;
 class QLineEdit;
 class QComboBox;
 class QTableWidget;
+class QLabel;
 
 namespace ofd {
 
 class Project;
+class SectionBox;
 
 class Post2Tab : public QScrollArea {
     Q_OBJECT
@@ -40,6 +42,8 @@ private:
     void applyNear2dTable();
     // 等高線チェック (near2dcontour) → 描画方法コンボの表示を合わせる
     void syncDrawMethod();
+    // ドメイン別の出し分け (遠方界・noinc は音響/水中で非表示、成分ヒント切替)
+    void updateDomainVisibility();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -87,6 +91,15 @@ private:
     // 双方向に同期させ、「ベクトル」だけをローカル状態として覚えておく。
     QComboBox *m_near2dDrawMethod = nullptr;
     int        m_drawMethod = 0;   // 0=塗りつぶし 1=等高線 2=ベクトル (mock 既定 0)
+
+    // ドメイン別の出し分け用 (遠方界 far0d/far1d/far2d の各セクション —
+    // 音響 RIR / BELLHOP レイトレースに遠方界の概念は無いので丸ごと隠す)
+    SectionBox *m_far0dSection = nullptr;
+    SectionBox *m_far1dSection = nullptr;
+    SectionBox *m_far2dSection = nullptr;
+    // near1d/near2d の「成分」列の候補を示すヒント (ドメインで文言を切替)
+    QLabel *m_near1dCmpHint = nullptr;
+    QLabel *m_near2dCmpHint = nullptr;
 };
 
 } // namespace ofd

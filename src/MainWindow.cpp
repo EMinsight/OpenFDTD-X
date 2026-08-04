@@ -108,6 +108,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTextStream>
@@ -271,7 +272,9 @@ void MainWindow::buildMenu()
         if (!p.isEmpty()) m_plotPanel->exportCsv(p);
     });
     mPost->addAction(I18n::tr("pp_export_h5"), this, &MainWindow::exportHdf5);
-    mPost->addAction(I18n::tr("pp_export_s2p"), this, &MainWindow::exportTouchstone);
+    m_s2pMenuAction =
+        mPost->addAction(I18n::tr("pp_export_s2p"), this,
+                         &MainWindow::exportTouchstone);
 
     // クラウド送信は光ドメイン専用 (showCloudDialog が非光では何もしないため
     // ツールバー側と同様にドメインで有効/無効を切り替える)
@@ -353,8 +356,12 @@ void MainWindow::buildToolbar()
         if (!p.isEmpty()) m_plotPanel->exportCsv(p);
     });
     exportMenu->addAction(I18n::tr("pp_export_h5"), this, &MainWindow::exportHdf5);
-    exportMenu->addAction(I18n::tr("pp_export_s2p"), this, &MainWindow::exportTouchstone);
-    exportMenu->addAction(I18n::tr("t3_export"), this, &MainWindow::exportTidy3d);
+    m_s2pExportAction =
+        exportMenu->addAction(I18n::tr("pp_export_s2p"), this,
+                              &MainWindow::exportTouchstone);
+    m_t3ExportAction =
+        exportMenu->addAction(I18n::tr("t3_export"), this,
+                              &MainWindow::exportTidy3d);
     exportBtn->setMenu(exportMenu);
     tb->addWidget(exportBtn);
 
@@ -411,7 +418,8 @@ void MainWindow::buildToolbar()
     syncDevice();
 }
 
-// エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)
+// エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)。
+// 室内音響 (AcousticRunner) は MPI/GPU エンジンを持たないため CPU のみ有効化する。
 void MainWindow::updateEngineItems(Domain d)
 {
     constexpr int kTidy3dIndex = 4;
@@ -422,6 +430,17 @@ void MainWindow::updateEngineItems(Domain d)
         if (m_engineBox->currentIndex() >= kTidy3dIndex)
             m_engineBox->setCurrentIndex(0);
         m_engineBox->removeItem(kTidy3dIndex);
+    }
+
+    if (auto *model = qobject_cast<QStandardItemModel *>(m_engineBox->model())) {
+        const bool cpuOnly = (d == Domain::Acoustic);
+        for (int i = int(Engine::CPU_MPI); i <= int(Engine::GPU_MPI)
+                 && i < model->rowCount(); ++i)
+            if (auto *item = model->item(i))
+                item->setEnabled(!cpuOnly);
+        if (cpuOnly && m_engineBox->currentIndex() != int(Engine::CPU)
+                    && m_engineBox->currentIndex() < kTidy3dIndex)
+            m_engineBox->setCurrentIndex(int(Engine::CPU));
     }
 }
 
@@ -561,7 +580,10 @@ void MainWindow::buildLeftNav(QWidget *parent)
         { "monitors",     "cat_setup", "nav_monitors",     m_tabMonitors,     ALL, true  },
         { "general",      "cat_setup", "nav_general",      m_tabGeneral,      ALL, false },
         { "mesh",         "cat_setup", "nav_mesh",         m_tabMesh,         ALL, false },
-        { "perface",      "cat_setup", "nav_perface",      m_tabPerFace,      ALL, false },
+        // 面別 BC (PML/PEC/PMC/ブロッホ/接地面) は EM/光 FDTD 専用の概念 —
+        // 音響の境界は吸音率 (RoomAcousticsTab)、水中は海面/海底 (OceanEnvTab) が担う
+        { "perface",      "cat_setup", "nav_perface",      m_tabPerFace,
+          { D::EM, D::Optical }, false },
         // ライブラリ
         { "components",   "cat_library", "nav_components",   m_tabComponents,  ALL, true },
         { "matexplorer",  "cat_library", "nav_matexplorer",  m_tabMatExplorer,
@@ -743,6 +765,18 @@ void MainWindow::onDomainChanged(Domain d)
         ? I18n::tr("tb_cloud") : I18n::tr("tb_cloud_optical_only"));
     updateEngineItems(d);
 
+    // ドメインで意味を持たないエクスポートの無効化:
+    //   S2P (S パラメータ) = 給電点を持つ EM のみ / tidy3d py = 光のみ
+    if (m_s2pMenuAction)   m_s2pMenuAction->setEnabled(d == Domain::EM);
+    if (m_s2pExportAction) m_s2pExportAction->setEnabled(d == Domain::EM);
+    if (m_t3ExportAction)  m_t3ExportAction->setEnabled(d == Domain::Optical);
+
+    // ステータスバーの Δt / CFL は時間発展 FDTD の量 — 光 (RCWA/BPM) と
+    // 水中 (BELLHOP = 周波数領域レイトレース) では表示しない
+    const bool fdtdLike = (d == Domain::EM || d == Domain::Acoustic);
+    if (m_sbDt)  m_sbDt->setVisible(fdtdLike);
+    if (m_sbCfl) m_sbCfl->setVisible(fdtdLike);
+
     m_domainBar->setActiveDomain(d);
     m_center->setDomain(d);
 
@@ -821,6 +855,17 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
+    // プロジェクトのディレクトリに既存の HDF5 結果があれば H5 アニメタブへ
+    // 自動セットする (どのファイルを見ているかは同タブに常に明示される。
+    // 「この実行の結果」とは扱わない — 2D 断面への反映は実行時の mtime
+    // ゲート付き経路のみが行う)
+    const QString h5 = QFileInfo(p).dir()
+                           .filePath(QStringLiteral("time_series_data.h5"));
+    if (QFileInfo::exists(h5)) {
+        if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer))
+            viewer->openFile(h5);
+        m_rightDock->appendLog(I18n::tr("log_h5_found").arg(h5));
+    }
     updateWindowTitle();
 }
 

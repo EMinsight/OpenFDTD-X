@@ -6,6 +6,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
 class QTableWidget;
 class QLabel;
 
@@ -26,6 +27,7 @@ private:
     void refreshAxisInfo(int axis);
     void refreshStats();          // メッシュ統計 (セル数 / 最小Δx / CFL / メモリ)
     void updateMethodView();      // 入力方法 → 名前列の表示/ λ/n チェックの反映
+    void updateDomainVisibility(); // ドメイン別の出し分け (CFL 行は FDTD 系のみ)
 
     Project      *m_p;
     bool          m_updating = false;
@@ -47,6 +49,7 @@ private:
     QLabel       *m_statBadge;
     QLabel       *m_statCfl;
     QLabel       *m_statMem;
+    QFormLayout  *m_statsForm;    // 統計セクションの form (CFL 行の出し分けに使用)
 };
 
 } // namespace ofd
