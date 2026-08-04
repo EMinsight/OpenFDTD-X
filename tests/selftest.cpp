@@ -1929,8 +1929,53 @@ static void testH5Reader()
               "h5: ofd slice center value");
     }
 
+    // 旧レイアウトの伝搬時系列: /data000000 (ゼロ) → /data000100 (実値) の
+    // 2 フレーム列として読めること
+    {
+        H5OfdSeriesInfo info;
+        check(H5Reader::ofdSeriesInfo(ofdPath, "E", info),
+              "h5: old-layout series info");
+        check(info.frames == 2 && info.rows == 3 && info.cols == 3 &&
+              !info.instantaneous, "h5: old-layout series shape");
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString label;
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 0, 2, -1, cells, rows, cols,
+                                           &label),
+              "h5: old-layout series frame 0");
+        double vmax = 0.0;
+        for (double v : cells) vmax = std::max(vmax, v);
+        check(vmax == 0.0 && label == QLatin1String("data000000"),
+              "h5: old-layout frame 0 is the zero snapshot");
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 2, -1, cells, rows, cols,
+                                           &label),
+              "h5: old-layout series frame 1");
+        const double s6b = std::sqrt(6.0);
+        check(std::fabs(cells[1 * 3 + 1] - (9 + 3 + 1) * s6b) < 1e-9 &&
+              label == QLatin1String("data000100"),
+              "h5: old-layout frame 1 values");
+        check(!H5Reader::readOfdSeriesFrame(ofdPath, "E", 2, 2, -1, cells, rows, cols),
+              "h5: old-layout series rejects out-of-range frame");
+        // 断面軸の切替: YZ 面 (X=1 固定, node = 9·1+3j+k)。
+        // 列 = Y (u=j), 行 = Z (v=k, 行 0 = k=2)
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 0, 1, cells,
+                                           rows, cols),
+              "h5: old-layout YZ slice");
+        check(rows == 3 && cols == 3 &&
+              std::fabs(cells[0 * 3 + 1] - (9 + 3 + 2) * s6b) < 1e-9 &&
+              std::fabs(cells[2 * 3 + 1] - (9 + 3 + 0) * s6b) < 1e-9,
+              "h5: old-layout YZ slice values");
+        // XZ 面 (Y=0 固定, node = 9i+k)。列 = X, 行 = Z
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 1, 0, cells,
+                                           rows, cols) &&
+              std::fabs(cells[1 * 3 + 2] - (18 + 1) * s6b) < 1e-9,
+              "h5: old-layout XZ slice values");
+    }
+
     // 新レイアウト (OpenFDTD sol/outputHdf5.c): /freqdomain/E
-    // {F, Nx+1, Ny+1, Nz+1, 3, 2}。値は全 6 成分 = 9i+3j+k → |E| = v·√6
+    // {F, Nx+1, Ny+1, Nz+1, 3, 2}。値は全 6 成分 = 9i+3j+k → |E| = v·√6。
+    // あわせて /timeseries/E {2, 3, 3, 3, 3} (瞬時値 3 成分 = 同値 →
+    // |E| = v·√3。フレーム 0 はゼロ) と /timeseries/time {2} を書く
     const QString newPath = dir.filePath("ofd_new.h5");
     {
         const hid_t file = H5Fcreate(newPath.toLocal8Bit().constData(),
@@ -1946,11 +1991,36 @@ static void testH5Reader()
                     for (int cc = 0; cc < 6; ++cc)
                         e[m6++] = float(9 * i + 3 * j + k);
         const hsize_t d6[6] = { 1, 3, 3, 3, 3, 2 };
-        const hid_t sp = H5Screate_simple(6, d6, nullptr);
-        const hid_t ds = H5Dcreate2(file, "/freqdomain/E", H5T_NATIVE_FLOAT,
-                                    sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t sp = H5Screate_simple(6, d6, nullptr);
+        hid_t ds = H5Dcreate2(file, "/freqdomain/E", H5T_NATIVE_FLOAT,
+                              sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                  e.constData());
+        H5Dclose(ds); H5Sclose(sp);
+
+        // /timeseries: 瞬時値スナップショット 2 フレーム + 時刻
+        H5Gclose(H5Gcreate2(file, "/timeseries", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        QVector<float> ts(2 * 3 * 3 * 3 * 3, 0.0f);
+        int m5 = 3 * 3 * 3 * 3;    // フレーム 1 の先頭 (フレーム 0 はゼロ)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    for (int cc = 0; cc < 3; ++cc)
+                        ts[m5++] = float(9 * i + 3 * j + k);
+        const hsize_t d5[5] = { 2, 3, 3, 3, 3 };
+        sp = H5Screate_simple(5, d5, nullptr);
+        ds = H5Dcreate2(file, "/timeseries/E", H5T_NATIVE_FLOAT, sp,
+                        H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                 ts.constData());
+        H5Dclose(ds); H5Sclose(sp);
+        const double times[2] = { 0.0, 1.5e-9 };
+        const hsize_t d1[1] = { 2 };
+        sp = H5Screate_simple(1, d1, nullptr);
+        ds = H5Dcreate2(file, "/timeseries/time", H5T_NATIVE_DOUBLE, sp,
+                        H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, times);
         H5Dclose(ds); H5Sclose(sp);
         H5Fclose(file);
     }
@@ -1970,6 +2040,45 @@ static void testH5Reader()
               "h5: freqdomain value (i=2,j=2 → row 0)");
         check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-5,
               "h5: freqdomain center value");
+    }
+
+    // 新レイアウトの伝搬時系列 (/timeseries/E 瞬時値) の再生
+    {
+        H5OfdSeriesInfo info;
+        check(H5Reader::ofdSeriesInfo(newPath, "E", info),
+              "h5: timeseries info");
+        check(info.frames == 2 && info.rows == 3 && info.cols == 3 &&
+              info.instantaneous, "h5: timeseries shape (instantaneous)");
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString label;
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 0, 2, -1, cells, rows, cols,
+                                           &label),
+              "h5: timeseries frame 0");
+        double vmax = 0.0;
+        for (double v : cells) vmax = std::max(vmax, v);
+        check(vmax == 0.0, "h5: timeseries frame 0 is zero");
+        check(label.startsWith(QStringLiteral("t = 0")),
+              "h5: timeseries frame 0 time label");
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 1, 2, -1, cells, rows, cols,
+                                           &label),
+              "h5: timeseries frame 1");
+        const double s3 = std::sqrt(3.0);
+        // k = (Nz+1-1)/2 = 1、行 0 = +y。|E|(i,j) = (9i+3j+1)·√3
+        check(std::fabs(cells[1 * 3 + 1] - (9 + 3 + 1) * s3) < 1e-5,
+              "h5: timeseries frame 1 center value");
+        // 断面軸の切替: YZ 面 (X=2 固定)。列 = Y, 行 = Z (行 0 = k=2)
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 1, 0, 2, cells,
+                                           rows, cols),
+              "h5: timeseries YZ slice");
+        check(rows == 3 && cols == 3 &&
+              std::fabs(cells[0 * 3 + 1] - (18 + 3 + 2) * s3) < 1e-5,
+              "h5: timeseries YZ slice value");
+        check(label.contains(QStringLiteral("1.5e-09")),
+              "h5: timeseries frame 1 time label");
+        check(!H5Reader::readOfdSeriesFrame(newPath, "E", 5, 2, -1, cells, rows,
+                                            cols),
+              "h5: timeseries rejects out-of-range frame");
     }
 #endif
 }
@@ -2023,6 +2132,26 @@ static void testOfdIntegration(const QString &sampleDir)
         double vmax = 0.0;
         for (double v : cells) vmax = std::max(vmax, v);
         check(vmax > 0.0, "ofd: h5 slice has non-zero field");
+        // 伝搬時系列 (新 /timeseries、旧 /data%06d のどちらでも) が
+        // フレーム列として読めること
+        H5OfdSeriesInfo sinfo;
+        check(H5Reader::ofdSeriesInfo(dir.filePath("time_series_data.h5"),
+                                      "E", sinfo) && sinfo.frames > 0,
+              "ofd: propagation series available");
+        QVector<double> fcells;
+        int fr = 0, fc = 0;
+        check(H5Reader::readOfdSeriesFrame(
+                  dir.filePath("time_series_data.h5"), "E",
+                  sinfo.frames - 1, 2, -1, fcells, fr, fc),
+              "ofd: propagation series last frame readable");
+        check(fr == 31 && fc == 31, "ofd: series frame dims 31x31");
+        // 断面軸の切替 (XZ 面 = Y 固定): dipole は 30×30×31 セル →
+        // 行 = Nz+1 = 32, 列 = Nx+1 = 31
+        check(H5Reader::readOfdSeriesFrame(
+                  dir.filePath("time_series_data.h5"), "E",
+                  sinfo.frames - 1, 1, -1, fcells, fr, fc),
+              "ofd: XZ slice readable");
+        check(fr == 32 && fc == 31, "ofd: XZ slice dims 32x31");
     }
 #endif
 

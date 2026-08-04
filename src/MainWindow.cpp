@@ -1206,10 +1206,16 @@ void MainWindow::onRunnerFinished(bool ok)
                                .filePath(QStringLiteral("time_series_data.h5"));
         const QFileInfo fi(h5);
         if (fi.exists()
-            && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs
-            && m_center->loadResultField(h5)) {
-            m_rightDock->appendLog(
-                I18n::tr("log_h5_slice").arg(fi.fileName()));
+            && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs) {
+            if (m_center->loadResultField(h5))
+                m_rightDock->appendLog(
+                    I18n::tr("log_h5_slice").arg(fi.fileName()));
+            // 伝搬時系列 (ofd の /timeseries、obpm の /field/frames 等) は
+            // H5 アニメタブで再生する — この実行の h5 を読み込んでおく
+            if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer)) {
+                viewer->openFile(h5);
+                m_rightDock->appendLog(I18n::tr("log_h5_anime"));
+            }
         }
     }
     // カーネルログの給電点表と far1d.log の遠方界パターンを結果プロットへ

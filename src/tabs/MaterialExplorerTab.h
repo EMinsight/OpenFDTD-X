@@ -11,6 +11,7 @@
 
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QLineEdit;
 class QStackedWidget;
 class QTreeWidget;
@@ -54,6 +55,8 @@ private:
     QLineEdit      *m_epsInfD, *m_wpD, *m_gammaD;            // Drude
     QLineEdit      *m_epsInfL, *m_wpL, *m_gammaL, *m_w0L;    // Lorentz
     MiniPlot       *m_plotN, *m_plotK;
+    QPushButton    *m_addBtn = nullptr;
+    QLabel         *m_previewNote = nullptr;   // 実分散 / 例示曲線の別を明示
     int             m_sel = 0;
 };
 

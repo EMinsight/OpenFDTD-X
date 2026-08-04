@@ -45,6 +45,11 @@ public:
     void setDatasetName(const QString &n) { m_name = n; update(); }
     bool hasData() const { return !m_img.isNull(); }
 
+    // エクスポート用: 行列を指定スケールで画像化する (1 セル = cellPx px、
+    // ニアレスト拡大)。表示中のカラーマップを使う
+    QImage renderImage(const QVector<double> &d, int rows, int cols,
+                       int cellPx, double lo, double hi);
+
 protected:
     void paintEvent(QPaintEvent *) override;
 
@@ -79,6 +84,9 @@ class H5ViewerTab : public QScrollArea {
 public:
     explicit H5ViewerTab(Project *project, QWidget *parent = nullptr);
 
+    // 実行完了時に MainWindow から実行出力の .h5 を渡して読み込む
+    void openFile(const QString &path);
+
 private:
     void loadFile();                  // m_file のパスを列挙してツリー再構築
     void rebuildTree();               // m_dsets → パス階層ツリー
@@ -90,6 +98,13 @@ private:
     void setScaleLabels(double lo, double hi);
     void setPlaybackEnabled(bool on); // 3D のときだけ再生 UI を有効化
     void clearStats();
+    void updateSliceControls();       // 断面 UI の範囲/有効化 (series のみ)
+    int  sliceAxis() const;           // planeBox → 0=X/1=Y/2=Z
+    void exportPngCurrent();          // 現在フレームを PNG 保存
+    void exportCsvCurrent();          // 現在フレームの行列を CSV 保存
+    // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
+    void exportFrames(bool video, const QString &videoExt);
+    QImage frameImage(int frame, double lo, double hi, bool *ok);
 
     Project     *m_p;
 
@@ -103,6 +118,9 @@ private:
 
     // 選択中データセットの状態
     QString      m_dataset;                   // 例 "/field/Ixz"
+    bool         m_seriesMode = false;        // ofd 伝搬時系列を再生中か
+    QString      m_seriesComp;                // "E" / "H"
+    H5OfdSeriesInfo m_seriesInfo;             // 格子サイズ (断面 UI の範囲)
     int          m_nframes = 0;               // 3D のフレーム数 (2D は 0)
     QVector<double> m_data;                   // 表示中の行列
     int          m_rows = 0, m_cols = 0;
@@ -129,9 +147,18 @@ private:
     QTimer      *m_timer;
     int          m_frame = 0;
 
-    // 断面 (未配線のまま — unwiredNote 付き)
+    // 断面 (伝搬時系列でのみ有効 — 軸と位置を選ぶ)
+    QComboBox   *m_planeBox = nullptr;
     QSlider     *m_secSlider;
     QLabel      *m_secValue;
+    QLabel      *m_secNote = nullptr;
+
+    // エクスポート
+    QPushButton *m_expMp4 = nullptr, *m_expGif = nullptr,
+                *m_expPng = nullptr, *m_expPngSeq = nullptr,
+                *m_expCsv = nullptr;
+    QLabel      *m_expStatus = nullptr;
+    bool         m_exporting = false;
 };
 
 } // namespace ofd
