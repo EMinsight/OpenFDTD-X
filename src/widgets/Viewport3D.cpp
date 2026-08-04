@@ -4,12 +4,18 @@
 #include "../I18n.h"
 #include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
 
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFontMetrics>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QRectF>
+#include <QTimer>
 #include <QTransform>
 #include <QWheelEvent>
 #include <algorithm>   // std::clamp (レイ反射の位置クランプ)
@@ -38,6 +44,55 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_rays_sample",
         "サンプル表示 — ソルバ結果ではありません (24本 × 4反射)",
         "Sample display — not solver results (24 rays x 4 bounces)");
+    // ── ドラッグ&ドロップ配置 ────────────────────────────────────────────
+    ofd::I18n::reg("vp_drop_floor",
+        "床面 z = %1 m 上", "on the floor plane z = %1 m");
+    ofd::I18n::reg("vp_drop_viewplane",
+        "視線に垂直な中心面上 (床面と交わらないため)",
+        "on the view-perpendicular centre plane (the floor is not hit)");
+    ofd::I18n::reg("vp_drop_added",
+        "%1 を配置しました — %2   %3",
+        "Placed %1 — %2   %3");
+    ofd::I18n::reg("vp_drop_geom",
+        "形状ユニット #%1 (%2)", "geometry unit #%1 (%2)");
+    ofd::I18n::reg("vp_drop_feed",
+        "給電点 #%1 (Z 方向)", "feed #%1 (Z direction)");
+    ofd::I18n::reg("vp_drop_probe",
+        "観測点 #%1 (Z 方向)", "observation point #%1 (Z direction)");
+    ofd::I18n::reg("vp_drop_nomesh",
+        "メッシュ領域が未定義のため配置できません (メッシュタブで領域を設定"
+        "してください)",
+        "No mesh region is defined, so nothing can be placed (define it in "
+        "the Mesh tab)");
+    ofd::I18n::reg("vp_drop_r_verts",
+        "%1 は頂点座標の指定が必要なため、ドロップでは配置できません "
+        "(形状タブで作成してください)",
+        "%1 needs explicit vertex coordinates, so it cannot be placed by "
+        "drag & drop (create it in the Geometry tab)");
+    ofd::I18n::reg("vp_drop_r_pos",
+        "%1 は位置を持たない設定のため、ドロップでは配置できません "
+        "(波源タブで設定してください)",
+        "%1 has no position, so it cannot be placed by drag & drop "
+        "(set it in the Source tab)");
+    ofd::I18n::reg("vp_drop_r_file",
+        "%1 はファイルの取込が必要なため、ドロップでは配置できません "
+        "(形状タブ / レイアウトタブから取り込んでください)",
+        "%1 requires importing a file, so it cannot be placed by drag & drop "
+        "(import it from the Geometry / Layout tab)");
+    ofd::I18n::reg("vp_drop_r_area",
+        "%1 は点ではなく面/領域の指定が必要なため、ドロップでは配置できません "
+        "(該当タブで設定してください)",
+        "%1 needs a surface/region rather than a point, so it cannot be "
+        "placed by drag & drop (set it in the corresponding tab)");
+    // 形状コード → 表示名 (本家 sol/ingeometry.c の形状)
+    ofd::I18n::reg("vp_drop_s1",  "直方体",   "box");
+    ofd::I18n::reg("vp_drop_s2",  "楕円体",   "ellipsoid");
+    ofd::I18n::reg("vp_drop_s11", "円柱 X",   "X cylinder");
+    ofd::I18n::reg("vp_drop_s12", "円柱 Y",   "Y cylinder");
+    ofd::I18n::reg("vp_drop_s13", "円柱 Z",   "Z cylinder");
+    ofd::I18n::reg("vp_drop_s33", "三角柱 Z", "Z triangular pillar");
+    ofd::I18n::reg("vp_drop_s43", "角錐 Z",   "Z pyramid");
+    ofd::I18n::reg("vp_drop_s53", "円錐台 Z", "Z truncated cone");
     return true;
 }();
 
@@ -46,7 +101,175 @@ const char *sliceAxisName(int axis)
 {
     return (axis == 0) ? "X" : (axis == 1) ? "Y" : "Z";
 }
+
+// ── コンポーネントのドロップ配置仕様 ────────────────────────────────────────
+// ドロップ 1 回で作れるのは「位置と既定寸法だけで決まる要素」に限る。
+// 頂点列やファイル取込が要るもの (多角形 / STL / GDS など) は作らずに
+// 理由を出す (CLAUDE.md 絶対規則 5: 出来ないことを出来たように見せない)。
+enum class DropKind { Shape, Feed, Probe, Unsupported };
+
+struct DropSpec {
+    DropKind    kind  = DropKind::Shape;
+    int         shape = 1;      // Geometry::shape (本家 sol/ingeometry.c)
+    double      fx = 1, fy = 1, fz = 1;   // 既定寸法 (基準寸法) に対する倍率
+    const char *reasonKey = nullptr;      // Unsupported のときの理由キー
+};
+
+struct NamedSpec { const char *name; DropSpec spec; };
+
+// コンポーネント名 (ComponentsTab の kComponents と同一) 別の配置仕様。
+// 表に無い名前はカテゴリ既定 (catDefaultSpec) を使う。
+const NamedSpec kNamedSpecs[] = {
+    // ── 基本形状 ──
+    { "Rectangle",             { DropKind::Shape, 1,  1.0, 1.0, 1.0 } },
+    { "Circle/Disk",           { DropKind::Shape, 13, 1.0, 1.0, 0.2 } },
+    { "Sphere",                { DropKind::Shape, 2,  1.0, 1.0, 1.0 } },
+    { "Pyramid",               { DropKind::Shape, 43, 1.0, 1.0, 1.0 } },
+    { "Triangle",              { DropKind::Shape, 33, 1.0, 1.0, 0.2 } },
+    { "Polygon",               { DropKind::Unsupported, 0, 1, 1, 1,
+                                 "vp_drop_r_verts" } },
+    { "Spline",                { DropKind::Unsupported, 0, 1, 1, 1,
+                                 "vp_drop_r_verts" } },
+    // ── フォトニクス (導波路系は伝搬方向 x に長い薄板を既定にする) ──
+    { "Waveguide (rib)",       { DropKind::Shape, 1,  3.0, 0.6, 0.3 } },
+    { "Ring resonator",        { DropKind::Shape, 13, 1.0, 1.0, 0.3 } },
+    { "Bragg grating (DBR)",   { DropKind::Shape, 1,  2.0, 0.6, 0.3 } },
+    { "Y-branch splitter",     { DropKind::Shape, 1,  2.0, 1.0, 0.3 } },
+    { "Directional coupler",   { DropKind::Shape, 1,  2.0, 1.0, 0.3 } },
+    { "MMI splitter",          { DropKind::Shape, 1,  2.0, 1.0, 0.3 } },
+    { "Photonic crystal",      { DropKind::Shape, 1,  1.0, 1.0, 0.3 } },
+    { "Grating coupler",       { DropKind::Shape, 1,  1.0, 1.0, 0.3 } },
+    { "MZI",                   { DropKind::Shape, 1,  3.0, 1.0, 0.3 } },
+    { "Quantum dot",           { DropKind::Shape, 2,  0.3, 0.3, 0.3 } },
+    // ── 金属・プラズモニクス ──
+    { "Nanoparticle (Au/Ag)",  { DropKind::Shape, 2,  1.0, 1.0, 1.0 } },
+    { "Nanorod",               { DropKind::Shape, 13, 0.3, 0.3, 1.0 } },
+    { "Nanowire grid",         { DropKind::Shape, 1,  1.0, 1.0, 0.2 } },
+    { "Bow-tie antenna",       { DropKind::Shape, 1,  1.0, 0.6, 0.2 } },
+    // ── レンズ (曲面は未対応なので楕円体/円柱で外形を置く) ──
+    { "Plano-convex lens",     { DropKind::Shape, 2,  1.0, 1.0, 0.4 } },
+    { "Biconvex lens",         { DropKind::Shape, 2,  1.0, 1.0, 0.5 } },
+    { "Aspheric lens",         { DropKind::Shape, 2,  1.0, 1.0, 0.4 } },
+    { "Metalens",              { DropKind::Shape, 13, 1.0, 1.0, 0.15 } },
+    { "GRIN lens",             { DropKind::Shape, 13, 1.0, 1.0, 1.0 } },
+    { "Mirror",                { DropKind::Shape, 1,  1.0, 1.0, 0.1 } },
+    { "Aperture / Stop",       { DropKind::Shape, 1,  1.0, 1.0, 0.1 } },
+    // ── アンテナ ──
+    { "Dipole",                { DropKind::Shape, 13, 0.1, 0.1, 1.0 } },
+    { "Patch antenna",         { DropKind::Shape, 1,  1.0, 1.0, 0.1 } },
+    { "Horn",                  { DropKind::Shape, 53, 1.0, 1.0, 1.0 } },
+    { "Helix",                 { DropKind::Shape, 13, 0.5, 0.5, 1.5 } },
+    { "Yagi-Uda",              { DropKind::Shape, 1,  1.5, 1.0, 0.1 } },
+    { "Array (8×8)",           { DropKind::Shape, 1,  2.0, 2.0, 0.1 } },
+    // ── 音響 (スピーカー/マイクは形状ではなく波源・観測点として置く) ──
+    { "Loudspeaker",           { DropKind::Feed } },
+    { "Microphone",            { DropKind::Probe } },
+    { "Absorber panel",        { DropKind::Shape, 1,  1.0, 1.0, 0.15 } },
+    { "Diffuser (QRD)",        { DropKind::Shape, 1,  1.0, 1.0, 0.3 } },
+    { "Audience block",        { DropKind::Shape, 1,  2.0, 2.0, 0.5 } },
+    // ── 波源 (点として置けないものは理由を出す) ──
+    { "Plane wave",            { DropKind::Unsupported, 0, 1, 1, 1,
+                                 "vp_drop_r_pos" } },
+    { "TFSF (全/散乱場)",      { DropKind::Unsupported, 0, 1, 1, 1,
+                                 "vp_drop_r_area" } },
+    { "Import source",         { DropKind::Unsupported, 0, 1, 1, 1,
+                                 "vp_drop_r_file" } },
+    // ── モニター (.ofd が保持できるのは点観測 "point =" のみ) ──
+    { "Point monitor",         { DropKind::Probe } },
+    { "Time monitor",          { DropKind::Probe } },
+};
+
+// カテゴリ既定。格子は薄板、波源は給電点、モニターは面/領域指定が要るので
+// 既定では作らない (点モニターだけ上の表で Probe にしている)。
+DropSpec catDefaultSpec(const QString &cat)
+{
+    if (cat == QLatin1String("source"))
+        return { DropKind::Feed };
+    if (cat == QLatin1String("monitor"))
+        return { DropKind::Unsupported, 0, 1, 1, 1, "vp_drop_r_area" };
+    if (cat == QLatin1String("imported"))
+        return { DropKind::Unsupported, 0, 1, 1, 1, "vp_drop_r_file" };
+    if (cat == QLatin1String("grating"))
+        return { DropKind::Shape, 1, 1.0, 1.0, 0.2 };   // 周期構造は薄板
+    return { DropKind::Shape, 1, 1.0, 1.0, 1.0 };
+}
+
+DropSpec dropSpecFor(const QString &cat, const QString &name)
+{
+    // 名前には非 ASCII を含むもの ("TFSF (全/散乱場)" 等) があるので
+    // QLatin1String 比較は使えない (バイト列を Latin-1 と解釈して不一致になる)
+    for (const NamedSpec &ns : kNamedSpecs)
+        if (name == QString::fromUtf8(ns.name)) return ns.spec;
+    return catDefaultSpec(cat);
+}
+
+QString shapeLabel(int shape)
+{
+    switch (shape) {
+        case 1:  return ofd::I18n::tr("vp_drop_s1");
+        case 2:  return ofd::I18n::tr("vp_drop_s2");
+        case 11: return ofd::I18n::tr("vp_drop_s11");
+        case 12: return ofd::I18n::tr("vp_drop_s12");
+        case 13: return ofd::I18n::tr("vp_drop_s13");
+        case 33: return ofd::I18n::tr("vp_drop_s33");
+        case 43: return ofd::I18n::tr("vp_drop_s43");
+        case 53: return ofd::I18n::tr("vp_drop_s53");
+    }
+    return QString::number(shape);
+}
+
+// 配置先の外接直方体 (中心 = ドロップ位置、寸法 = 基準寸法 × 倍率)
+void dropBounds(const DropSpec &sp, const double pos[3], double base,
+                double lo[3], double hi[3])
+{
+    const double f[3] = { sp.fx, sp.fy, sp.fz };
+    for (int a = 0; a < 3; ++a) {
+        const double h = base * f[a] / 2.0;
+        lo[a] = pos[a] - h;
+        hi[a] = pos[a] + h;
+    }
+}
+
+QString posText(const double p[3])
+{
+    return QStringLiteral("x=%1  y=%2  z=%3 [m]")
+        .arg(QString::number(p[0], 'g', 4),
+             QString::number(p[1], 'g', 4),
+             QString::number(p[2], 'g', 4));
+}
 } // namespace
+
+// ── ComponentDrop (ComponentsTab と共有するドラッグ&ドロップ契約) ───────────
+const char *ofd::ComponentDrop::mimeType()
+{
+    return "application/x-openfdtd-component";
+}
+
+QByteArray ofd::ComponentDrop::encode(const QString &cat, const QString &name)
+{
+    return (cat + QLatin1Char('\t') + name).toUtf8();
+}
+
+bool ofd::ComponentDrop::decode(const QByteArray &data, QString *cat,
+                                QString *name)
+{
+    const QString s = QString::fromUtf8(data);
+    const int tab = s.indexOf(QLatin1Char('\t'));
+    if (tab <= 0 || tab + 1 >= s.size()) return false;
+    if (cat)  *cat  = s.left(tab);
+    if (name) *name = s.mid(tab + 1);
+    return true;
+}
+
+bool ofd::ComponentDrop::canPlace(const QString &cat, const QString &name,
+                                  QString *why)
+{
+    const DropSpec sp = dropSpecFor(cat, name);
+    if (sp.kind != DropKind::Unsupported) return true;
+    if (why)
+        *why = I18n::tr(QLatin1String(sp.reasonKey)).arg(name);
+    return false;
+}
 
 Viewport3D::Viewport3D(Project *project, QWidget *parent)
     : QWidget(parent), m_project(project)
@@ -55,6 +278,8 @@ Viewport3D::Viewport3D(Project *project, QWidget *parent)
     setMinimumSize(320, 240);
     setMouseTracking(false);
     setAutoFillBackground(false);
+    // コンポーネントライブラリのカードを受け取る (ComponentDrop の MIME)
+    setAcceptDrops(true);
     connect(project, &Project::changed, this, qOverload<>(&QWidget::update));
     connect(project, &Project::loaded, this, qOverload<>(&QWidget::update));
     // Field は実データの静止断面を描くだけなのでアニメーション用タイマーは
@@ -144,6 +369,53 @@ void Viewport3D::setViewPlane(int plane)
     emit viewChanged(m_azimuthDeg, m_elevationDeg);
 }
 
+// メッシュ領域の範囲。1 軸も広がりが無ければ既定の箱を入れて false を返す
+// (paintEvent の従来の挙動そのまま — 空プロジェクトでも軸が描けるように)。
+bool Viewport3D::sceneBounds(double lo[3], double hi[3]) const
+{
+    bool any = false;
+    for (int a = 0; a < 3; ++a) {
+        const MeshAxis &ax = m_project->mesh(a);
+        lo[a] = ax.min(); hi[a] = ax.max();
+        if (hi[a] > lo[a]) any = true;
+    }
+    if (!any) { lo[0]=lo[1]=lo[2]=-0.5; hi[0]=hi[1]=hi[2]=0.5; }
+    return any;
+}
+
+// projectPoint が使う中心と縮尺を現在の状態から求める。paintEvent と
+// ドロップの逆変換で同じ値を使う (描画前でも逆変換が正しく効くように)。
+void Viewport3D::updateSceneTransform() const
+{
+    double lo[3], hi[3];
+    sceneBounds(lo, hi);
+    m_cx = (lo[0] + hi[0]) / 2;
+    m_cy = (lo[1] + hi[1]) / 2;
+    m_cz = (lo[2] + hi[2]) / 2;
+    const double ext = std::max({ hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2], 1e-12 });
+    m_scale = 0.55 * std::min(width(), height()) / ext * m_zoom;
+}
+
+// 3 軸すべてに広がりがあるか (ドロップ配置の前提)
+bool Viewport3D::meshDefined() const
+{
+    for (int a = 0; a < 3; ++a)
+        if (!(m_project->mesh(a).max() > m_project->mesh(a).min()))
+            return false;
+    return true;
+}
+
+// ドロップで作る要素の基準寸法 = メッシュ最小スパンの 1/10 [m]
+double Viewport3D::defaultSize() const
+{
+    double s = 0.0;
+    for (int a = 0; a < 3; ++a) {
+        const double d = m_project->mesh(a).max() - m_project->mesh(a).min();
+        if (d > 0.0) s = (s == 0.0) ? d : std::min(s, d);
+    }
+    return s * 0.1;
+}
+
 QPointF Viewport3D::projectPoint(double x, double y, double z) const
 {
     // center + rotate (azimuth around Z, then elevation around screen-X)
@@ -161,6 +433,70 @@ QPointF Viewport3D::projectPoint(double x, double y, double z) const
                    height() / 2.0 + m_panPx.y() + y2);
 }
 
+// 画面座標 → シーン座標 (projectPoint の逆変換)。
+//
+// projectPoint の回転は正規直交基底で書ける。縮尺後の相対座標
+// (u, v, w) = ((x-cx), (y-cy), (z-cz)) * scale に対して
+//   x1 (画面右)   = e1・(u,v,w),  e1 = ( cosA,          sinA,         0     )
+//   y2 (画面下)   = e2・(u,v,w),  e2 = (-sinA·cosE,  cosA·cosE,  -sinE)
+//   d  (奥行き)   = e3・(u,v,w),  e3 = (-sinA·sinE,  cosA·sinE,   cosE)
+// 逆に (u,v,w) = x1·e1 + y2·e2 + d·e3。正射影なので奥行き d は画面からは
+// 決まらない → 床面 (メッシュ領域の z 最小面) との交点で d を決める。
+// 視線が床面と平行に近い (|cosE| が小さい) か、交点がメッシュ領域の外に
+// なるときは d = 0、すなわちシーン中心を通る視線垂直面へ落とす。
+bool Viewport3D::unprojectToScene(const QPointF &screen, double out[3],
+                                  bool *onFloor) const
+{
+    if (onFloor) *onFloor = false;
+    if (!meshDefined()) return false;      // 置く場所が定義されていない
+    updateSceneTransform();
+    if (!(m_scale > 0.0)) return false;
+
+    double lo[3], hi[3];
+    sceneBounds(lo, hi);
+
+    const double az = m_azimuthDeg   * M_PI / 180.0;
+    const double el = m_elevationDeg * M_PI / 180.0;
+    const double ca = std::cos(az), sa = std::sin(az);
+    const double ce = std::cos(el), se = std::sin(el);
+    const double e1[3] = {  ca,       sa,      0.0 };
+    const double e2[3] = { -sa * ce,  ca * ce, -se };
+    const double e3[3] = { -sa * se,  ca * se,  ce };
+
+    const double x1 = screen.x() - width()  / 2.0 - m_panPx.x();
+    const double y2 = screen.y() - height() / 2.0 - m_panPx.y();
+
+    const double c[3] = { m_cx, m_cy, m_cz };
+    const auto scenePoint = [&](double d, double p[3]) {
+        for (int a = 0; a < 3; ++a)
+            p[a] = c[a] + (x1 * e1[a] + y2 * e2[a] + d * e3[a]) / m_scale;
+    };
+
+    // ① 床面 (z = lo[2]) との交点。w = (lo[2]-cz)*scale を満たす d を解く。
+    //    e3[2] = cosE が 0 に近いと視線が床面と平行で交点が定まらない。
+    if (std::fabs(e3[2]) > 0.10) {
+        const double w = (lo[2] - m_cz) * m_scale;
+        const double d = (w - x1 * e1[2] - y2 * e2[2]) / e3[2];
+        double p[3];
+        scenePoint(d, p);
+        p[2] = lo[2];                       // 丸め誤差を残さず床面に載せる
+        // メッシュ領域の外は「床の外」なので採用しない
+        const double tol = 1e-9 * std::max(hi[0]-lo[0], hi[1]-lo[1]);
+        if (p[0] >= lo[0] - tol && p[0] <= hi[0] + tol &&
+            p[1] >= lo[1] - tol && p[1] <= hi[1] + tol) {
+            out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
+            if (onFloor) *onFloor = true;
+            return true;
+        }
+    }
+
+    // ② 代替: シーン中心を通る視線垂直面 (d = 0) へ落とし、領域内へ丸める
+    double p[3];
+    scenePoint(0.0, p);
+    for (int a = 0; a < 3; ++a) out[a] = qBound(lo[a], p[a], hi[a]);
+    return true;
+}
+
 void Viewport3D::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -169,19 +505,9 @@ void Viewport3D::paintEvent(QPaintEvent *)
 
     // scene extents from the mesh
     double lo[3], hi[3];
-    bool any = false;
-    for (int a = 0; a < 3; ++a) {
-        const MeshAxis &ax = m_project->mesh(a);
-        lo[a] = ax.min(); hi[a] = ax.max();
-        if (hi[a] > lo[a]) any = true;
-    }
-    if (!any) { lo[0]=lo[1]=lo[2]=-0.5; hi[0]=hi[1]=hi[2]=0.5; }
-
-    m_cx = (lo[0] + hi[0]) / 2;
-    m_cy = (lo[1] + hi[1]) / 2;
-    m_cz = (lo[2] + hi[2]) / 2;
+    sceneBounds(lo, hi);
+    updateSceneTransform();
     const double ext = std::max({ hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2], 1e-12 });
-    m_scale = 0.55 * std::min(width(), height()) / ext * m_zoom;
 
     const QColor accent(accentColor(m_domain));
 
@@ -199,17 +525,7 @@ void Viewport3D::paintEvent(QPaintEvent *)
 
     // mesh region box
     auto drawBox = [&](const double a[3], const double b[3], const QPen &pen) {
-        const QPointF v[8] = {
-            projectPoint(a[0],a[1],a[2]), projectPoint(b[0],a[1],a[2]),
-            projectPoint(b[0],b[1],a[2]), projectPoint(a[0],b[1],a[2]),
-            projectPoint(a[0],a[1],b[2]), projectPoint(b[0],a[1],b[2]),
-            projectPoint(b[0],b[1],b[2]), projectPoint(a[0],b[1],b[2]),
-        };
-        static const int e[12][2] = { {0,1},{1,2},{2,3},{3,0},
-                                      {4,5},{5,6},{6,7},{7,4},
-                                      {0,4},{1,5},{2,6},{3,7} };
-        p.setPen(pen);
-        for (auto &ed : e) p.drawLine(v[ed[0]], v[ed[1]]);
+        drawWireBox(p, a, b, pen);
     };
     drawBox(lo, hi, QPen(QColor(255,255,255,70), 1, Qt::DashLine));
 
@@ -339,6 +655,10 @@ void Viewport3D::paintEvent(QPaintEvent *)
     // ビュースタイル別オーバーレイ
     if (m_viewStyle == ViewStyle::Field) drawResultSlice(p);
     if (m_viewStyle == ViewStyle::Rays)  drawRayOverlay(p);
+
+    // ドラッグ中の配置プレビューとドロップ結果の一時表示
+    if (m_dragHover) drawDropPreview(p);
+    drawDropMessage(p);
 
     // overlay text
     p.setPen(QColor(255,255,255,150));
@@ -635,4 +955,323 @@ void Viewport3D::wheelEvent(QWheelEvent *e)
 void Viewport3D::mouseDoubleClickEvent(QMouseEvent *)
 {
     fitView();
+}
+
+// ── ドラッグ&ドロップ配置 ────────────────────────────────────────────────────
+
+// 直方体のワイヤフレーム (メッシュ領域・形状ユニット・配置プレビュー共用)
+void Viewport3D::drawWireBox(QPainter &p, const double a[3], const double b[3],
+                             const QPen &pen) const
+{
+    const QPointF v[8] = {
+        projectPoint(a[0],a[1],a[2]), projectPoint(b[0],a[1],a[2]),
+        projectPoint(b[0],b[1],a[2]), projectPoint(a[0],b[1],a[2]),
+        projectPoint(a[0],a[1],b[2]), projectPoint(b[0],a[1],b[2]),
+        projectPoint(b[0],b[1],b[2]), projectPoint(a[0],b[1],b[2]),
+    };
+    static const int e[12][2] = { {0,1},{1,2},{2,3},{3,0},
+                                  {4,5},{5,6},{6,7},{7,4},
+                                  {0,4},{1,5},{2,6},{3,7} };
+    p.setPen(pen);
+    for (auto &ed : e) p.drawLine(v[ed[0]], v[ed[1]]);
+}
+
+// ドラッグ位置 → 配置先の再計算。配置できるときだけ true。
+bool Viewport3D::updateDragTarget(const QPointF &pos)
+{
+    m_dragPos = pos;
+    m_dragWhy.clear();
+    m_dragOk = false;
+
+    QString why;
+    if (!ComponentDrop::canPlace(m_dragCat, m_dragName, &why)) {
+        m_dragWhy = why;
+        return false;
+    }
+    if (!meshDefined()) {
+        m_dragWhy = I18n::tr("vp_drop_nomesh");
+        return false;
+    }
+    if (!unprojectToScene(pos, m_dragScene, &m_dragOnFloor)) {
+        m_dragWhy = I18n::tr("vp_drop_nomesh");
+        return false;
+    }
+    m_dragOk = true;
+    return true;
+}
+
+void Viewport3D::dragEnterEvent(QDragEnterEvent *e)
+{
+    if (!e->mimeData()->hasFormat(ComponentDrop::mimeType())) {
+        e->ignore();
+        return;
+    }
+    if (!ComponentDrop::decode(e->mimeData()->data(ComponentDrop::mimeType()),
+                               &m_dragCat, &m_dragName)) {
+        e->ignore();
+        return;
+    }
+    m_dragHover = true;
+    m_dropMsg.clear();          // 前回の結果表示はプレビューに譲る
+    // 配置できない場合もドラッグは受け付けて理由を画面に出す
+    // (カーソルが「禁止」になるだけで理由が分からない状態にしない)。
+    e->acceptProposedAction();
+    updateDragTarget(e->position());
+    update();
+}
+
+void Viewport3D::dragMoveEvent(QDragMoveEvent *e)
+{
+    if (!m_dragHover) { e->ignore(); return; }
+    const bool ok = updateDragTarget(e->position());
+    if (ok) e->acceptProposedAction();
+    else    e->ignore();        // 落とせないことはカーソルで、理由は画面で示す
+    update();
+}
+
+void Viewport3D::dragLeaveEvent(QDragLeaveEvent *)
+{
+    m_dragHover = false;
+    m_dragOk = false;
+    m_dragWhy.clear();
+    update();
+}
+
+void Viewport3D::dropEvent(QDropEvent *e)
+{
+    QString cat, name;
+    if (!e->mimeData()->hasFormat(ComponentDrop::mimeType())
+        || !ComponentDrop::decode(
+               e->mimeData()->data(ComponentDrop::mimeType()), &cat, &name)) {
+        e->ignore();
+        return;
+    }
+    m_dragHover = false;
+    m_dragCat = cat;
+    m_dragName = name;
+
+    QString msg;
+    if (!updateDragTarget(e->position())) {
+        showDropMessage(m_dragWhy, false);
+        e->ignore();
+        update();
+        return;
+    }
+    const bool ok = placeComponent(cat, name, m_dragScene, m_dragOnFloor, &msg);
+    showDropMessage(msg, ok);
+    if (ok) e->acceptProposedAction();
+    else    e->ignore();
+    update();
+}
+
+// ドロップされたコンポーネントをモデルへ反映する。
+// 形状系 → geometry、波源系 → feed、モニター系 (点) → point。
+// 位置だけでは作れないもの (取込モデル・平面波・面/領域モニター) は
+// 何も追加せず理由を返す。
+bool Viewport3D::placeComponent(const QString &cat, const QString &name,
+                                const double pos[3], bool onFloor,
+                                QString *msg)
+{
+    const DropSpec sp = dropSpecFor(cat, name);
+    if (sp.kind == DropKind::Unsupported) {
+        if (msg) *msg = I18n::tr(QLatin1String(sp.reasonKey)).arg(name);
+        return false;
+    }
+    if (!meshDefined()) {
+        if (msg) *msg = I18n::tr("vp_drop_nomesh");
+        return false;
+    }
+
+    const QString where = onFloor
+        ? I18n::tr("vp_drop_floor").arg(QString::number(pos[2], 'g', 4))
+        : I18n::tr("vp_drop_viewplane");
+    QString what;
+
+    switch (sp.kind) {
+    case DropKind::Feed: {
+        Feed f;
+        f.dir = 'Z';
+        f.x = pos[0]; f.y = pos[1]; f.z = pos[2];
+        m_project->feeds().push_back(f);
+        what = I18n::tr("vp_drop_feed").arg(m_project->feeds().size());
+        break;
+    }
+    case DropKind::Probe: {
+        Probe pr;
+        pr.dir = 'Z';
+        pr.x = pos[0]; pr.y = pos[1]; pr.z = pos[2];
+        // 1 点目は伝搬方向を持つ (SourceTab の追加と同じ既定)
+        if (m_project->probes().isEmpty()) pr.propagation = "+X";
+        m_project->probes().push_back(pr);
+        what = I18n::tr("vp_drop_probe").arg(m_project->probes().size());
+        break;
+    }
+    default: {
+        const double base = defaultSize();
+        double lo[3], hi[3];
+        dropBounds(sp, pos, base, lo, hi);
+
+        Geometry g;
+        g.shape = sp.shape;
+        g.name  = name;
+        // 材料は先頭のユーザー定義材料 (id=2)。まだ 1 つも無いときは
+        // 必ず存在する PEC (id=1) にする (存在しない材料番号を書かない)。
+        g.materialId = m_project->materials().isEmpty() ? 1 : 2;
+
+        switch (sp.shape) {
+        case 33: {
+            // 三角柱 Z: g[0..1]=z範囲, g[2..4]=頂点の x, g[5..7]=頂点の y
+            // (本家 sol/ingeometry.c shape 33 / inout3 の並び)。
+            // 外接円半径 r の正三角形を xy 面に置く。
+            g.g[0] = lo[2]; g.g[1] = hi[2];
+            const double xc = (lo[0]+hi[0])/2, yc = (lo[1]+hi[1])/2;
+            const double rx = (hi[0]-lo[0])/2, ry = (hi[1]-lo[1])/2;
+            for (int k = 0; k < 3; ++k) {
+                const double t = M_PI / 2.0 + 2.0 * M_PI * k / 3.0;
+                g.g[2 + k] = xc + rx * std::cos(t);
+                g.g[5 + k] = yc + ry * std::sin(t);
+            }
+            break;
+        }
+        case 43:
+            // 角錐 Z: g = z1 z2 x0 y0 (z1の x幅) (z1の y幅) (z2の x幅) (z2の y幅)
+            // (本家 shape 43。幅は全幅で、カーネル側が /2 する)
+            g.g[0] = lo[2]; g.g[1] = hi[2];
+            g.g[2] = (lo[0]+hi[0])/2; g.g[3] = (lo[1]+hi[1])/2;
+            g.g[4] = hi[0]-lo[0]; g.g[5] = hi[1]-lo[1];
+            g.g[6] = 0.0;         g.g[7] = 0.0;          // 上端は頂点
+            break;
+        case 53:
+            // 円錐台 Z: g = z1 z2 x0 y0 (z1の径x) (z1の径y) (z2の径x) (z2の径y)
+            // 上端の径は 0 にしない — 本家 shape 53 は径で除算するため
+            // (ingeometry.c)、頂点を持つ円錐は下端の 1/10 の径で近似する。
+            g.g[0] = lo[2]; g.g[1] = hi[2];
+            g.g[2] = (lo[0]+hi[0])/2; g.g[3] = (lo[1]+hi[1])/2;
+            g.g[4] = hi[0]-lo[0];         g.g[5] = hi[1]-lo[1];
+            g.g[6] = (hi[0]-lo[0]) * 0.1; g.g[7] = (hi[1]-lo[1]) * 0.1;
+            break;
+        default:
+            // 6 パラメータ形状 (1 直方体 / 2 楕円体 / 11-13 円柱) は
+            // 外接直方体そのもの
+            for (int a = 0; a < 3; ++a) {
+                g.g[2*a]     = lo[a];
+                g.g[2*a + 1] = hi[a];
+            }
+            break;
+        }
+        m_project->geometries().push_back(g);
+        what = I18n::tr("vp_drop_geom")
+                   .arg(m_project->geometries().size())
+                   .arg(shapeLabel(sp.shape));
+        break;
+    }
+    }
+
+    // モデルが変わった → ビューポート / ツリー / ステータスバーが自動更新
+    m_project->touch();
+    if (msg)
+        *msg = I18n::tr("vp_drop_added").arg(name, what,
+                                             posText(pos) + "   " + where);
+    return true;
+}
+
+// ドロップ結果 (成功/理由) の一時表示。数秒で自動的に消す。
+void Viewport3D::showDropMessage(const QString &msg, bool ok)
+{
+    m_dropMsg = msg;
+    m_dropMsgOk = ok;
+    const int seq = ++m_dropMsgSeq;
+    if (msg.isEmpty()) return;
+    QTimer::singleShot(6000, this, [this, seq] {
+        if (seq != m_dropMsgSeq) return;   // 新しい表示に置き換わっている
+        m_dropMsg.clear();
+        update();
+    });
+}
+
+// ドラッグ中の配置プレビュー — 置かれる位置に輪郭を描く。
+// 配置できない場合は理由を出す (黙って何も起きない状態にしない)。
+void Viewport3D::drawDropPreview(QPainter &p)
+{
+    const QFontMetrics fm(p.font());
+    QStringList lines;
+    lines << m_dragName;
+
+    if (m_dragOk) {
+        const DropSpec sp = dropSpecFor(m_dragCat, m_dragName);
+        QColor col(accentColor(m_domain));
+        col = col.lighter(140);
+        const QPointF c = projectPoint(m_dragScene[0], m_dragScene[1],
+                                       m_dragScene[2]);
+        if (sp.kind == DropKind::Shape) {
+            double lo[3], hi[3];
+            dropBounds(sp, m_dragScene, defaultSize(), lo, hi);
+            drawWireBox(p, lo, hi, QPen(col, 1.6, Qt::DashLine));
+        } else if (sp.kind == DropKind::Feed) {
+            QPolygonF d; d << c+QPointF(0,-7) << c+QPointF(7,0)
+                           << c+QPointF(0,7)  << c+QPointF(-7,0);
+            p.setPen(QPen(QColor("#ff5252"), 1.6, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(d);
+        } else {
+            p.setPen(QPen(QColor("#69d069"), 1.6, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(c, 6, 6);
+        }
+        // 配置点の十字 (どの点に落ちるかを明示)
+        p.setPen(QPen(col, 1));
+        p.drawLine(c + QPointF(-6, 0), c + QPointF(6, 0));
+        p.drawLine(c + QPointF(0, -6), c + QPointF(0, 6));
+
+        lines << posText(m_dragScene);
+        lines << (m_dragOnFloor
+                  ? I18n::tr("vp_drop_floor")
+                        .arg(QString::number(m_dragScene[2], 'g', 4))
+                  : I18n::tr("vp_drop_viewplane"));
+    } else {
+        lines << m_dragWhy;
+    }
+
+    // ラベル (カーソルの右下。画面外へはみ出さないように寄せる)
+    int w = 0;
+    for (const QString &s : lines) w = std::max(w, fm.horizontalAdvance(s));
+    const double bw = w + 16, bh = fm.height() * lines.size() + 10;
+    double bx = m_dragPos.x() + 14, by = m_dragPos.y() + 14;
+    bx = std::min(bx, width() - bw - 4.0);
+    by = std::min(by, height() - bh - 4.0);
+    const QRectF box(std::max(4.0, bx), std::max(4.0, by), bw, bh);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(15, 20, 28, 205));
+    p.drawRoundedRect(box, 4, 4);
+    p.setBrush(Qt::NoBrush);
+    for (int i = 0; i < lines.size(); ++i) {
+        p.setPen(i == 0 ? QColor(accentColor(m_domain)).lighter(150)
+                        : (m_dragOk ? QColor(255,255,255,185)
+                                    : QColor(245, 158, 11)));
+        p.drawText(QRectF(box.x() + 8, box.y() + 5 + fm.height() * i,
+                          box.width() - 16, fm.height()),
+                   Qt::AlignLeft | Qt::AlignVCenter, lines[i]);
+    }
+}
+
+// ドロップ結果 / 拒否理由の一時表示 (画面下部)
+void Viewport3D::drawDropMessage(QPainter &p)
+{
+    if (m_dropMsg.isEmpty()) return;
+    const QFontMetrics fm(p.font());
+    // 長い理由文は折り返す
+    const int maxW = std::max(120, width() - 40);
+    const QRectF need = fm.boundingRect(QRect(0, 0, maxW, 1000),
+                                        Qt::TextWordWrap, m_dropMsg);
+    const QRectF box((width() - need.width()) / 2.0 - 10,
+                     height() - need.height() - 40,
+                     need.width() + 20, need.height() + 12);
+    p.setPen(QPen(m_dropMsgOk ? QColor(105, 208, 105, 200)
+                              : QColor(245, 158, 11, 200), 1));
+    p.setBrush(QColor(15, 20, 28, 215));
+    p.drawRoundedRect(box, 5, 5);
+    p.setPen(m_dropMsgOk ? QColor(210, 245, 210) : QColor(245, 158, 11));
+    p.drawText(box.adjusted(10, 6, -10, -6),
+               Qt::AlignLeft | Qt::TextWordWrap, m_dropMsg);
+    p.setBrush(Qt::NoBrush);
 }

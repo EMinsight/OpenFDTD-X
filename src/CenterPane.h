@@ -13,6 +13,8 @@
 #include <QWidget>
 #include "core/Domain.h"
 
+class QDragEnterEvent;
+class QDragMoveEvent;
 class QCheckBox;
 class QComboBox;
 class QSlider;
@@ -65,6 +67,13 @@ signals:
     // (座標情報が無い等)。ログ出力は MainWindow が行う。
     void result3DSliceStatus(bool ok, const QString &detail);
 
+protected:
+    // コンポーネントを 3D シーン以外のビューへドラッグしてきたら、
+    // 配置先である 3D シーンへ自動で切り替える (ドロップ自体は
+    // Viewport3D が受ける)。
+    void dragEnterEvent(QDragEnterEvent *) override;
+    void dragMoveEvent(QDragMoveEvent *) override;
+
 private slots:
     void onTabChanged(int index);
     void saveSnapshot();
@@ -77,6 +86,8 @@ private:
     bool applyResultSliceTo3D(const QString &h5Path, QString *why);
     // 「結果断面を重ねる」トグルの有効/ツールチップ更新
     void updateOverlayUi();
+    // コンポーネントのドラッグ通過時の共通処理 (3D シーンへの自動切替)
+    void handleComponentDragOver(QDragMoveEvent *e);
 
 private:
     Project        *m_p;

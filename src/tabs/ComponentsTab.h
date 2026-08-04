@@ -2,7 +2,10 @@
 // Ansys Lumerical 流のドラッグ&ドロップパレット:
 //   検索 + カテゴリフィルタ + ドメイン別コンポーネントグリッド + 最近使用。
 // カテゴリの表示/優先順はアクティブドメイン (em/optical/acoustic/underwater)
-// に応じて切り替わる。配置そのもの (drag & drop) はオーケストレータ側で配線。
+// に応じて切り替わる。
+// カード (と お気に入り / 最近使用 のチップ) は 3D ビューへのドラッグ元で、
+// MIME は widgets/Viewport3D.h の ComponentDrop。実際の配置 (ジオメトリ /
+// 給電点 / 観測点の追加) はドロップ先の Viewport3D が行う。
 // お気に入り (cl_favorites) はカードの ☆ で開閉するローカル状態のみ (Project 非依存)。
 #pragma once
 #include <QScrollArea>
