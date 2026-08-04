@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <initializer_list>
+#include <utility>
 
 using namespace ofd;
 
@@ -132,6 +133,11 @@ const bool s_i18nOptModes = [] {
     I18n::reg("optm_bpf_stop", "阻止域減衰", "Stopband rejection");
     I18n::reg("optm_bpf_spectrum", "透過スペクトル (設計目標)",
               "Transmission spectrum (design target)");
+    I18n::reg("optm_bpf_target_note",
+              "目標帯域・Q・挿入損失・阻止域減衰から計算した設計目標カーブ"
+              "です (ソルバーの計算結果ではありません)",
+              "Design-target curve computed from the target band, Q, insertion "
+              "loss and stopband rejection — not a solver result");
     // Ring 追加行
     I18n::reg("optm_fsr", "FSR (Free Spectral Range)", "FSR");
     I18n::reg("optm_finesse", "フィネス", "Finesse");
@@ -473,36 +479,22 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
                        hrow({ m_bpfMin, mutedLabel("~", sb), m_bpfMax,
                               mutedLabel("nm", sb) }));
     sb->form()->addRow(I18n::tr("opt_q"), m_bpfQ);
-    // 挿入損失 / 阻止域減衰 — 設計目標値 (OpticalOpts に対応フィールドが無いので
-    // ローカル state, mock 既定値 0.5 dB / 40 dB)。
+    // 挿入損失 / 阻止域減衰 — 設計目標値 (.ofdx "bpf" il_db / stop_db へ保存)
     m_bpfIL = numEdit("0.5", sb);
     sb->form()->addRow(I18n::tr("optm_bpf_il"),
                        hrow({ m_bpfIL, mutedLabel("dB", sb) }));
     m_bpfStop = numEdit("40", sb);
     sb->form()->addRow(I18n::tr("optm_bpf_stop"),
                        hrow({ m_bpfStop, mutedLabel("dB", sb) }));
-    // 挿入損失 / 阻止域減衰はローカル state のみ (目標帯域・Q は保存される)
-    sb->form()->addRow(tabhelp::unwiredNote(sb));
-    // 設計目標の透過スペクトル (mock の MiniPlot):
-    //   T(λ) = 10·log10( 1 / (1 + ((λ-1550)/8)^8) )   — 8次 Butterworth 型
-    //   λ = 1500 + i [nm] (i = 0…99), 下限クランプ 1e-5, Y 範囲 [-50, 2] dB
+    // 設計目標の透過スペクトル — 目標帯域・Q・IL・阻止域から updateBpfPlot()
+    // が再計算する (設計目標カーブの表示なので物理的に正当。計算結果ではない
+    // ことを注記で明示する)。
     m_bpfPlot = new MiniPlot(sb);
     m_bpfPlot->setLabels("λ [nm]", "T [dB]");
-    m_bpfPlot->setYRange(-50, 2);
     m_bpfPlot->setMinimumHeight(90);
-    {
-        MiniSeries s;
-        s.color = QColor("#B83280");             // mock: var(--acc-opt)
-        for (int i = 0; i < 100; ++i) {
-            const double x = 1500.0 + i;
-            const double f = x - 1550.0;
-            const double y = 1.0 / (1.0 + std::pow(f / 8.0, 8.0));
-            s.pts.push_back({ x, 10.0 * std::log10(std::max(y, 1e-5)) });
-        }
-        m_bpfPlot->setSeries(QVector<MiniSeries>{ s });
-    }
     sb->vbox()->addWidget(new QLabel(I18n::tr("optm_bpf_spectrum"), sb));
     sb->vbox()->addWidget(m_bpfPlot);
+    sb->vbox()->addWidget(mutedLabel(I18n::tr("optm_bpf_target_note"), sb));
     v->addWidget(sb);
 
     // Ring spec (mode = Ring)
@@ -524,11 +516,10 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     sr->form()->addRow(I18n::tr("optm_q_factor"),
                        hrow({ monoLabel("~80,000", sr),
                               mutedLabel(I18n::tr("optm_design_example"), sr) }));
+    // スルー/ドロップポートの出力選択 (.ofdx "ring" thru_port / drop_port)
     m_ringThru = makeCheck(I18n::tr("optm_thru_port"), true, sr);
     m_ringDrop = makeCheck(I18n::tr("optm_drop_port"), true, sr);
     sr->vbox()->addLayout(hrow({ m_ringThru, m_ringDrop }));
-    // スルー/ドロップポートのチェックはローカル state のみ (半径・ギャップは保存される)
-    sr->vbox()->addWidget(tabhelp::unwiredNote(sr));
     v->addWidget(sr);
 
     // ── 導波路モード解析 / Waveguide mode (mode = Waveguide) ────────────────
@@ -546,8 +537,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
                mutedLabel(I18n::tr("optm_design_example"), swg) }));
     m_wgLoss = numEdit("0.3", swg);
     swg->form()->addRow(I18n::tr("optm_loss"), m_wgLoss);
-    // この節のモード選択・損失はローカル state のみ
-    swg->form()->addRow(tabhelp::unwiredNote(swg));
+    // モード選択・損失は .ofdx "waveguide" へ保存 (カーネル連携は未実装)
     v->addWidget(swg);
 
     // ── MZI 干渉計 (mode = MZI) ────────────────────────────────────────────
@@ -563,8 +553,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_mziElectro = makeCheck(I18n::tr("optm_mzi_eo"), false, smz);
     smz->form()->addRow(I18n::tr("optm_mzi_shifter"),
                         hrow({ m_mziThermo, m_mziElectro }));
-    // この節はローカル state のみ
-    smz->form()->addRow(tabhelp::unwiredNote(smz));
+    // ΔL・位相シフタは .ofdx "mzi" へ保存
     v->addWidget(smz);
 
     // ── メタサーフェス (mode = Metasurface) ────────────────────────────────
@@ -583,8 +572,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_metaPhase->addItem(I18n::tr("optm_meta_steer"));
     m_metaPhase->addItem(I18n::tr("optm_meta_oam"));
     sms->form()->addRow(I18n::tr("optm_meta_phase"), m_metaPhase);
-    // この節はローカル state のみ
-    sms->form()->addRow(tabhelp::unwiredNote(sms));
+    // 周期・形状・位相設計は .ofdx "metasurface" へ保存
     v->addWidget(sms);
 
     // ── フォトニック結晶 (mode = PhC) ──────────────────────────────────────
@@ -603,8 +591,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_phcBand   = makeCheck(I18n::tr("optm_phc_band"), true, sph);
     m_phcDefect = makeCheck(I18n::tr("optm_phc_defect"), false, sph);
     sph->vbox()->addLayout(hrow({ m_phcBand, m_phcDefect }));
-    // この節はローカル state のみ
-    sph->vbox()->addWidget(tabhelp::unwiredNote(sph));
+    // 格子・a・r/a・解析チェックは .ofdx "phc" へ保存
     v->addWidget(sph);
 
     // ── 近接場/遠方場変換 (mode = NF2FF) ──────────────────────────────────
@@ -618,8 +605,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_nfffDistance = numEdit("1.0e3", snf, 120);
     snf->form()->addRow(I18n::tr("optm_nf_dist"),
                         hrow({ m_nfffDistance, mutedLabel("λ", snf) }));
-    // この節はローカル state のみ
-    snf->form()->addRow(tabhelp::unwiredNote(snf));
+    // 変換面・観測距離は .ofdx "nf2ff" へ保存 (ofd_post 連携は未実装)
     v->addWidget(snf);
 
     // ── S パラメータ抽出 (mode = SParam) ──────────────────────────────────
@@ -630,8 +616,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_spPorts->setValue(2);
     m_spPorts->setMaximumWidth(100);
     ssp->form()->addRow(I18n::tr("optm_sp_ports"), m_spPorts);
-    // 入力/出力ポート — S21 を取る対象ポート対 (mock 既定のポート数 2 に合わせ 1→2)。
-    // OpticalOpts に対応フィールドが無いためローカル state のみ。
+    // 入力/出力ポート — S21 を取る対象ポート対 (mock 既定のポート数 2 に合わせ
+    // 1→2)。ポート数・チェック群とともに .ofdx "sparam" へ保存する。
     m_spPortIn = new QSpinBox(ssp);
     m_spPortIn->setRange(1, 64);
     m_spPortIn->setValue(1);
@@ -653,8 +639,6 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_spExport = new QPushButton(I18n::tr("optm_sp_export"), ssp);
     tabhelp::markNotImplemented(m_spExport);   // Touchstone 出力は未配線
     ssp->vbox()->addLayout(hrow({ m_spExport }));
-    // この節はローカル state のみ
-    ssp->vbox()->addWidget(tabhelp::unwiredNote(ssp));
     v->addWidget(ssp);
 
     // ── Raycast 設定 / Geometric Optics ────────────────────────────────────
@@ -830,16 +814,28 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     connect(m_bpmAlgo, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_bpmInput, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_psScale, &QComboBox::currentIndexChanged, this, applyCb);
+    // モード別セクションのコンボ (メタサーフェス / PhC / NF2FF) も永続化対象
+    for (auto *c : { m_metaShape, m_metaPhase, m_phcLattice, m_nfffSurface })
+        connect(c, &QComboBox::currentIndexChanged, this, applyCb);
     for (auto *e : { m_lambdaMin, m_lambdaMax, m_rcwaPx, m_rcwaPy, m_bpmDz,
                      m_bpmN0, m_tpaBeta, m_psPmin, m_psPmax,
-                     m_bpfMin, m_bpfMax, m_bpfQ, m_ringR, m_ringGap })
+                     m_bpfMin, m_bpfMax, m_bpfQ, m_ringR, m_ringGap,
+                     m_bpfIL, m_bpfStop, m_wgLoss, m_mziDeltaL,
+                     m_metaPeriod, m_phcA, m_phcRa, m_nfffDistance })
         connect(e, &QLineEdit::editingFinished, this, applyCb);
     for (auto *s : { m_lambdaDiv, m_rcwaNx, m_rcwaNy, m_rcwaLayers,
-                     m_fmmHarmonics, m_tpaMatId, m_psPoints })
+                     m_fmmHarmonics, m_tpaMatId, m_psPoints,
+                     m_spPorts, m_spPortIn, m_spPortOut })
         connect(s, &QSpinBox::valueChanged, this, applyCb);
     connect(m_fmmLi, &QCheckBox::toggled, this, applyCb);
     connect(m_tpaEnable, &QCheckBox::toggled, this, applyCb);
     connect(m_psEnable, &QCheckBox::toggled, this, applyCb);
+    // モード別セクションのチェック群 (Ring / 導波路 / MZI / PhC / S パラメータ)
+    for (auto *c : { m_ringThru, m_ringDrop, m_wgTe0, m_wgTe1, m_wgTm0,
+                     m_wgTm1, m_mziThermo, m_mziElectro, m_phcBand,
+                     m_phcDefect, m_spS11, m_spS21, m_spPhase,
+                     m_spGroupDelay })
+        connect(c, &QCheckBox::toggled, this, applyCb);
 
     // 解法 (波動 / 幾何光学 / ハイブリッド): UI 専用なので apply() は呼ばず、
     // mock と同じくヒント文だけ差し替える。
@@ -849,7 +845,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
                                  : "optm_geo_hint_fdtd";
         m_geoHint->setText(I18n::tr(k));
     });
-    // ポート数を変えたら入力/出力ポート番号の上限も追従 (ローカル state のみ)
+    // ポート数を変えたら入力/出力ポート番号の上限も追従させる
     connect(m_spPorts, &QSpinBox::valueChanged, this, [this](int n) {
         m_spPortIn->setMaximum(std::max(1, n));
         m_spPortOut->setMaximum(std::max(1, n));
@@ -922,8 +918,42 @@ void OpticalTab::apply()
     o.bpfBandMin = m_bpfMin->text().toDouble();
     o.bpfBandMax = m_bpfMax->text().toDouble();
     o.bpfQ = m_bpfQ->text().toDouble();
+    o.bpfIL_dB = m_bpfIL->text().toDouble();
+    o.bpfStop_dB = m_bpfStop->text().toDouble();
     o.ringRadius_um = m_ringR->text().toDouble();
     o.ringGap_nm = m_ringGap->text().toDouble();
+    o.ringThruPort = m_ringThru->isChecked();
+    o.ringDropPort = m_ringDrop->isChecked();
+
+    // ── 光解析モード別設定 (.ofdx へ保存。カーネル入力 .ofd は不変) ──
+    o.wgTE0 = m_wgTe0->isChecked();
+    o.wgTE1 = m_wgTe1->isChecked();
+    o.wgTM0 = m_wgTm0->isChecked();
+    o.wgTM1 = m_wgTm1->isChecked();
+    o.wgLoss_dBcm = m_wgLoss->text().toDouble();
+    o.mziDeltaL_um = m_mziDeltaL->text().toDouble();
+    o.mziThermo = m_mziThermo->isChecked();
+    o.mziElectro = m_mziElectro->isChecked();
+    o.metaPeriod_nm = m_metaPeriod->text().toDouble();
+    o.metaShape = m_metaShape->currentIndex();
+    o.metaPhase = m_metaPhase->currentIndex();
+    o.phcLattice = m_phcLattice->currentIndex();
+    o.phcA_nm = m_phcA->text().toDouble();
+    o.phcRoverA = m_phcRa->text().toDouble();
+    o.phcBand = m_phcBand->isChecked();
+    o.phcDefect = m_phcDefect->isChecked();
+    o.nfffSurface = m_nfffSurface->currentIndex();
+    o.nfffDistance_lambda = m_nfffDistance->text().toDouble();
+    o.spPorts = m_spPorts->value();
+    o.spPortIn = m_spPortIn->value();
+    o.spPortOut = m_spPortOut->value();
+    o.spS11 = m_spS11->isChecked();
+    o.spS21 = m_spS21->isChecked();
+    o.spPhase = m_spPhase->isChecked();
+    o.spGroupDelay = m_spGroupDelay->isChecked();
+
+    // 目標帯域 / Q / IL / 阻止域が変わったので設計目標カーブを描き直す
+    updateBpfPlot();
 
     // ── 非線形 (TPA) / ONN 活性化 — バリデーション付き ──
     // 不正値はモデルに書き込まず警告を表示する (β>0, 0<Pmin≤Pmax, 点数≥1)。
@@ -1065,9 +1095,79 @@ void OpticalTab::refresh()
     m_bpfMin->setText(QString::number(o.bpfBandMin, 'g', 8));
     m_bpfMax->setText(QString::number(o.bpfBandMax, 'g', 8));
     m_bpfQ->setText(QString::number(o.bpfQ, 'g', 8));
+    m_bpfIL->setText(QString::number(o.bpfIL_dB, 'g', 8));
+    m_bpfStop->setText(QString::number(o.bpfStop_dB, 'g', 8));
     m_ringR->setText(QString::number(o.ringRadius_um, 'g', 8));
     m_ringGap->setText(QString::number(o.ringGap_nm, 'g', 8));
+    m_ringThru->setChecked(o.ringThruPort);
+    m_ringDrop->setChecked(o.ringDropPort);
+
+    // ── 光解析モード別設定 (.ofdx から復元) ──
+    m_wgTe0->setChecked(o.wgTE0);
+    m_wgTe1->setChecked(o.wgTE1);
+    m_wgTm0->setChecked(o.wgTM0);
+    m_wgTm1->setChecked(o.wgTM1);
+    m_wgLoss->setText(QString::number(o.wgLoss_dBcm, 'g', 8));
+    m_mziDeltaL->setText(QString::number(o.mziDeltaL_um, 'g', 8));
+    m_mziThermo->setChecked(o.mziThermo);
+    m_mziElectro->setChecked(o.mziElectro);
+    m_metaPeriod->setText(QString::number(o.metaPeriod_nm, 'g', 8));
+    m_metaShape->setCurrentIndex(o.metaShape);
+    m_metaPhase->setCurrentIndex(o.metaPhase);
+    m_phcLattice->setCurrentIndex(o.phcLattice);
+    m_phcA->setText(QString::number(o.phcA_nm, 'g', 8));
+    m_phcRa->setText(QString::number(o.phcRoverA, 'g', 8));
+    m_phcBand->setChecked(o.phcBand);
+    m_phcDefect->setChecked(o.phcDefect);
+    m_nfffSurface->setCurrentIndex(o.nfffSurface);
+    m_nfffDistance->setText(QString::number(o.nfffDistance_lambda, 'g', 8));
+    // ポート数を先に入れて上限を確定させてから対象ポート対を入れる
+    m_spPorts->setValue(o.spPorts);
+    m_spPortIn->setValue(o.spPortIn);
+    m_spPortOut->setValue(o.spPortOut);
+    m_spS11->setChecked(o.spS11);
+    m_spS21->setChecked(o.spS21);
+    m_spPhase->setChecked(o.spPhase);
+    m_spGroupDelay->setChecked(o.spGroupDelay);
+
+    updateBpfPlot();
     m_updating = false;
+}
+
+// ── BPF 設計目標の透過スペクトル ────────────────────────────────────────────
+// mock の固定 Butterworth カーブを、ユーザーの設計目標値から再計算して描く:
+//   T(λ) = T_IL / (1 + ((λ−λ0)/w)^8)          — 4次 Butterworth 型 (mock と同型)
+//   λ0 = (min+max)/2, w = (max−min)/2 — 帯域端 (bpfBandMin/Max) が
+//   −3 dB (×T_IL) になる。帯域幅が退化しているときは共振器 1 段の
+//   FWHM = λ0/Q を代わりに使う。下限は阻止域減衰でクランプ (設計目標の floor)。
+// 表示するのはあくまで「設計目標」であり計算結果ではない (注記ラベルで明示)。
+void OpticalTab::updateBpfPlot()
+{
+    const OpticalOpts &o = m_p->optical();
+    double lo = o.bpfBandMin, hi = o.bpfBandMax;
+    if (hi < lo) std::swap(lo, hi);
+    const double l0 = 0.5 * (lo + hi);          // 中心波長 [nm]
+    if (l0 <= 0) {                              // 帯域が無意味 → 描画しない
+        m_bpfPlot->setSeries({});
+        return;
+    }
+    double w = 0.5 * (hi - lo);                 // 帯域半幅 [nm] (−3dB 点)
+    if (w <= 0)                                 // 退化時: FWHM = λ0/Q
+        w = 0.5 * l0 / std::max(o.bpfQ, 1.0);
+    const double il_dB   = std::max(o.bpfIL_dB, 0.0);
+    const double stop_dB = std::max(o.bpfStop_dB, 0.0);
+    const double tPass  = std::pow(10.0, -il_dB / 10.0);
+    const double tFloor = tPass * std::pow(10.0, -stop_dB / 10.0);
+    MiniSeries s;
+    s.color = QColor("#B83280");                // mock: var(--acc-opt)
+    const int n = 101;
+    for (int i = 0; i < n; ++i) {
+        const double x = l0 + w * (10.0 * i / (n - 1) - 5.0);   // λ0 ± 5w
+        const double t = tPass / (1.0 + std::pow((x - l0) / w, 8.0));
+        s.pts.push_back({ x, 10.0 * std::log10(std::max(t, tFloor)) });
+    }
+    m_bpfPlot->setYRange(-(il_dB + stop_dB) - 5.0, 2.0);
+    m_bpfPlot->setSeries(QVector<MiniSeries>{ s });
 }
 
 // ── ONN 活性化カーブ結果表示 ────────────────────────────────────────────────

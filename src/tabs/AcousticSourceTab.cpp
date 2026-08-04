@@ -1,6 +1,8 @@
 // AcousticSourceTab.cpp
 #include "AcousticSourceTab.h"
 #include "../core/Project.h"
+#include "../acoustics/qt/QtAcousticAdapter.h"
+#include "../audio/AudioEditEngine.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -9,17 +11,24 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProcess>
 #include <QPushButton>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QThread>
 #include <QVBoxLayout>
 #include <cmath>
+#include <memory>
+#include <vector>
 
 using namespace ofd;
 
@@ -127,6 +136,23 @@ const bool s_i18n = [] {
     I18n::reg("asrc_lib8_uw", "クジラ鳴音", "Whale call");
     I18n::reg("asrc_lib8u_uw", "生物音響", "Bioacoustics");
     I18n::reg("asrc_preview_section", "信号プレビュー", "Waveform preview");
+    I18n::reg("asrc_preview_fail", "読み込み失敗: %1", "Load failed: %1");
+    // 書式は日英共通 (数値と単位のみ)
+    I18n::reg("asrc_preview_stats",
+              "RMS: %1 dBFS · Peak: %2 dBFS · Crest factor: %3 dB",
+              "RMS: %1 dBFS · Peak: %2 dBFS · Crest factor: %3 dB");
+    // WAV 試聴 (外部 CLI プレイヤ — QtMultimedia は使わない)
+    I18n::reg("asrc_listen_title", "WAV 試聴", "WAV preview");
+    I18n::reg("asrc_play_nofile", "ファイルが見つかりません: %1",
+              "File not found: %1");
+    I18n::reg("asrc_play_noplayer",
+              "再生用プレイヤが見つかりません (PATH を確認)。ffplay / aplay / "
+              "afplay のいずれかが必要です — macOS: 標準の afplay または "
+              "brew install ffmpeg / Linux: apt install ffmpeg または "
+              "alsa-utils。",
+              "No audio player found on PATH. One of ffplay / aplay / afplay "
+              "is required — macOS: built-in afplay or brew install ffmpeg / "
+              "Linux: apt install ffmpeg or alsa-utils.");
     // directivity
     I18n::reg("asrc_dir_section", "指向性パターン", "Directivity");
     I18n::reg("asrc_dir_hint",
@@ -166,8 +192,17 @@ const bool s_i18n = [] {
     I18n::reg("asrc_col_v6", "垂直 -6dB", "Vertical -6dB");
     I18n::reg("asrc_col_q", "Q値", "Q");
     I18n::reg("asrc_polar_section", "可視化", "Polar plot preview");
-    I18n::reg("asrc_polar_hint", "水平面 (azimuth) ポーラパターン @ 1 kHz",
-              "Horizontal (azimuth) polar pattern @ 1 kHz");
+    I18n::reg("asrc_polar_hint",
+              "水平面 (azimuth) ポーラパターン — 一次指向性モデル "
+              "r = a + b·cosθ (周波数非依存)",
+              "Horizontal (azimuth) polar pattern — first-order model "
+              "r = a + b·cosθ (frequency-independent)");
+    I18n::reg("asrc_polar_note_clf",
+              "CLF/GLL・測定 polar のパーサは未実装 — 表示は選択中の解析モデル"
+              " (一次指向性) の理論パターンです。",
+              "CLF/GLL and measured-polar parsers are not implemented — the "
+              "plot shows the theoretical pattern of the selected analytic "
+              "(first-order) model.");
     I18n::reg("asrc_fr_section", "周波数特性",
               "Frequency response (on-axis)");
     // array
@@ -244,6 +279,25 @@ const bool s_i18n = [] {
               "▶ Listen (headphones recommended)");
     I18n::reg("asrc_btn_ab", "A/B 比較 (素音 vs 残響付)",
               "A/B compare (dry vs reverberant)");
+    I18n::reg("asrc_norender",
+              "レンダリング済みの WAV がありません。畳み込み (レンダリング) は"
+              "可聴化 (Auralization) タブで実行してください。",
+              "No rendered WAV yet. Run the convolution (render) in the "
+              "Auralization tab first.");
+    I18n::reg("asrc_ab_handoff",
+              "A/B 比較 (dry / wet の書き出しと波形比較) は可聴化 "
+              "(Auralization) タブで実行します。入力WAV を可聴化タブの dry "
+              "ファイルとして設定しました。",
+              "A/B comparison (dry / wet rendering and waveform comparison) "
+              "runs in the Auralization tab. The input WAV has been handed "
+              "over as the Auralization tab's dry file.");
+    I18n::reg("asrc_ab_delegate",
+              "A/B 比較 (dry / wet の書き出しと波形比較) は可聴化 "
+              "(Auralization) タブで実行します。入力WAV に実在するファイルを"
+              "指定すると、ここから dry ファイルとして引き渡します。",
+              "A/B comparison (dry / wet rendering and waveform comparison) "
+              "runs in the Auralization tab. Point the input WAV to an "
+              "existing file to hand it over as the dry file.");
     I18n::reg("asrc_ab_section", "A/B 試聴", "Listening test");
     I18n::reg("asrc_ab_target", "比較対象", "Compare");
     I18n::reg("asrc_ab_dry", "無響原音 (dry)", "Anechoic original (dry)");
@@ -304,13 +358,56 @@ void setupTable(QTableWidget *t, const QStringList &headers, int minH)
     t->setEditTriggers(QAbstractItemView::NoEditTriggers);
     t->setMinimumHeight(minH);
 }
+
+// WAV を外部 CLI プレイヤで再生する (QtMultimedia は依存に追加しない —
+// H5ViewerTab の ffmpeg 探索と同じ流儀で PATH から実行ファイルを探す)。
+// ffplay → aplay → afplay の順で最初に見つかったものを非同期起動し、
+// どれも無ければ導入方法を案内する。
+void playWavExternal(QWidget *parent, const QString &path)
+{
+    if (!QFileInfo::exists(path)) {
+        QMessageBox::warning(parent, ofd::I18n::tr("asrc_listen_title"),
+                             ofd::I18n::tr("asrc_play_nofile").arg(path));
+        return;
+    }
+    const QString ffplay =
+        QStandardPaths::findExecutable(QStringLiteral("ffplay"));
+    if (!ffplay.isEmpty()) {
+        // ウィンドウを開かず末尾で自動終了
+        QProcess::startDetached(ffplay,
+            { QStringLiteral("-nodisp"), QStringLiteral("-autoexit"),
+              QStringLiteral("-loglevel"), QStringLiteral("quiet"), path });
+        return;
+    }
+    const QString aplay =
+        QStandardPaths::findExecutable(QStringLiteral("aplay"));
+    if (!aplay.isEmpty()) {
+        QProcess::startDetached(aplay, { QStringLiteral("-q"), path });
+        return;
+    }
+    const QString afplay =
+        QStandardPaths::findExecutable(QStringLiteral("afplay"));
+    if (!afplay.isEmpty()) {
+        QProcess::startDetached(afplay, { path });
+        return;
+    }
+    QMessageBox::information(parent, ofd::I18n::tr("asrc_listen_title"),
+                             ofd::I18n::tr("asrc_play_noplayer"));
+}
 } // namespace
 
-// ── PolarPatternView — mock の SVG カーディオイドを QPainter で再現 ────────
+// ── PolarPatternView — 一次指向性 r = a + b·cosθ を QPainter で描画 ────────
 PolarPatternView::PolarPatternView(QWidget *parent)
     : QWidget(parent)
 {
     setFixedSize(200, 200);
+}
+
+void PolarPatternView::setPattern(double a, double b)
+{
+    m_a = a;
+    m_b = b;
+    update();
 }
 
 void PolarPatternView::paintEvent(QPaintEvent *)
@@ -341,12 +438,15 @@ void PolarPatternView::paintEvent(QPaintEvent *)
                    QPointF(100 * std::cos(rad), 100 * std::sin(rad)));
     }
 
-    // カーディオイド r = 100·(0.5 + 0.5·cosθ)
+    // 一次指向性 r = 100·|a + b·cosθ| / (a+b)  (θ = 0° を上向きに描く。
+    // fig-8 の後方ローブは絶対値で表す — 音圧振幅の極座標表示)
+    const double norm = std::max(std::fabs(m_a + m_b), 1e-9);
     QPainterPath path;
-    for (int i = 0; i < 73; ++i) {
-        const double a = i * 5.0 * M_PI / 180.0;
-        const double r = 100.0 * (0.5 + 0.5 * std::cos(a));
-        const QPointF pt(r * std::cos(a), r * std::sin(a));
+    for (int i = 0; i <= 180; ++i) {
+        const double th = i * 2.0 * M_PI / 180.0;
+        const double r =
+            100.0 * std::fabs(m_a + m_b * std::cos(th)) / norm;
+        const QPointF pt(r * std::sin(th), -r * std::cos(th));
         if (i == 0) path.moveTo(pt); else path.lineTo(pt);
     }
     path.closeSubpath();
@@ -561,7 +661,6 @@ QWidget *AcousticSourceTab::buildSignalPage()
     m_wavFile = new QLineEdit("anechoic_speech_48k.wav", sw);
     auto *browse = new QPushButton(I18n::tr("asrc_browse"), sw);
     auto *listen = new QPushButton(I18n::tr("asrc_listen"), sw);
-    tabhelp::markNotImplemented(listen);   // 再生機能は未実装
     fileRow->addWidget(m_wavFile, 1);
     fileRow->addWidget(browse);
     fileRow->addWidget(listen);
@@ -581,8 +680,10 @@ QWidget *AcousticSourceTab::buildSignalPage()
     sw->form()->addRow(I18n::tr("asrc_channels"), ch);
 
     auto *srRow = new QHBoxLayout();
-    // 実ファイルを解析していないので固定値ではなく「例」と表示する
-    srRow->addWidget(new QLabel(I18n::tr("asrc_srate_sample"), sw));
+    // ファイル未解析の間は固定値ではなく「例」と表示する
+    // (プレビューで実読込に成功したら実測値へ置き換える)
+    m_srateValue = new QLabel(I18n::tr("asrc_srate_sample"), sw);
+    srRow->addWidget(m_srateValue);
     auto *resample = new QCheckBox(I18n::tr("asrc_resample"), sw);
     resample->setChecked(true);
     srRow->addWidget(resample);
@@ -642,12 +743,13 @@ QWidget *AcousticSourceTab::buildSignalPage()
     }
     m_wavePlot->setSeries({ wave });
     sp->vbox()->addWidget(m_wavePlot);
-    auto *stats = new QLabel(
+    m_wavStats = new QLabel(
         QString::fromUtf8("RMS: -18 dBFS · Peak: -3 dBFS · Crest factor: 15 dB"),
         sp);
-    sp->vbox()->addWidget(stats);
-    // 波形・統計とも解析式による固定サンプル (実ファイル未解析)
-    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
+    sp->vbox()->addWidget(m_wavStats);
+    // ファイル未選択の間は解析式による見本波形 (実読込に成功したら隠す)
+    m_previewNote = tabhelp::sampleNote(sp);
+    sp->vbox()->addWidget(m_previewNote);
     v->addWidget(sp);
     v->addStretch(1);
 
@@ -655,9 +757,81 @@ QWidget *AcousticSourceTab::buildSignalPage()
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("asrc_wav_section"), QString(),
             "Audio (*.wav *.flac *.aiff *.ogg);;All files (*)");
-        if (!path.isEmpty()) m_wavFile->setText(path);
+        if (path.isEmpty()) return;
+        m_wavFile->setText(path);
+        loadWavPreview(path);
+    });
+    // 手入力パスも、確定時に実在すればプレビューへ反映する
+    connect(m_wavFile, &QLineEdit::editingFinished, this, [this] {
+        const QString path = m_wavFile->text();
+        if (path != m_previewPath && QFileInfo::exists(path))
+            loadWavPreview(path);
+    });
+    // 試聴: 外部 CLI プレイヤ (ffplay/aplay/afplay) に委ねる
+    connect(listen, &QPushButton::clicked, this, [this] {
+        playWavExternal(this, m_wavFile->text());
     });
     return page;
+}
+
+// 選択 WAV を実読込し、包絡線 (min/max) と RMS/Peak/Crest を実計算して表示。
+// 読込と解析は QThread で非同期 (gui.md: 秒単位処理を GUI スレッドで同期
+// 実行しない)。失敗時は見本表示のまま、エラーだけ統計行へ出す。
+void AcousticSourceTab::loadWavPreview(const QString &path)
+{
+    if (m_previewBusy || path.trimmed().isEmpty()) return;
+    m_previewBusy = true;
+
+    struct PreviewData {
+        bool ok = false;
+        QString err;
+        double fs = 0.0;
+        std::vector<double> mono;          // 平均モノ (包絡線用)
+        audioedit::LevelMetrics lv;
+    };
+    auto d = std::make_shared<PreviewData>();
+    const std::string p = path.toStdString();
+    QThread *th = QThread::create([p, d] {
+        const acoustics::AcousticResult<acoustics::AudioBuffer> res =
+            acoustics::readWavFile(p);
+        if (!res.success()) {
+            d->err = QString::fromStdString(res.message());
+            return;
+        }
+        d->fs = res.value().sampleRateHz;
+        d->mono = QtAcousticAdapter::selectChannel(res.value(), 2);
+        // 指標も包絡線と同じ平均モノで測る (チャンネル間の齟齬を避ける)
+        acoustics::AudioBuffer mb;
+        mb.sampleRateHz = d->fs;
+        mb.channels.push_back(d->mono);
+        d->lv = audioedit::analyzeLevels(mb, 0, 0);   // a >= z → 全範囲
+        d->ok = true;
+    });
+    connect(th, &QThread::finished, this, [this, th, d, path] {
+        th->deleteLater();
+        m_previewBusy = false;
+        if (!d->ok) {
+            m_wavStats->setText(I18n::tr("asrc_preview_fail").arg(d->err));
+            return;   // 見本波形と注記はそのまま
+        }
+        QVector<QPointF> top, bottom;
+        tabhelp::envelopeSeries(d->mono, d->fs, 1200,
+                                tabhelp::TimeUnit::Seconds, top, bottom);
+        MiniSeries hi;  hi.pts = top;     hi.color = kAcc;
+        MiniSeries lo;  lo.pts = bottom;  lo.color = kAcc;
+        m_wavePlot->setSeries({ hi, lo });
+        m_wavStats->setText(
+            I18n::tr("asrc_preview_stats")
+                .arg(QString::number(d->lv.rmsDbfs, 'f', 1),
+                     QString::number(d->lv.peakDbfs, 'f', 1),
+                     QString::number(d->lv.crestDb, 'f', 1))
+            + QStringLiteral(" · %1 s")
+                  .arg(QString::number(d->lv.durationSec, 'f', 2)));
+        m_srateValue->setText(QStringLiteral("%1 Hz").arg(qRound(d->fs)));
+        m_previewNote->setVisible(false);   // 実データ表示 — 見本注記を外す
+        m_previewPath = path;
+    });
+    th->start();
 }
 
 // ── page: directivity ───────────────────────────────────────────────────────
@@ -749,22 +923,20 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
     polarHint->setWordWrap(true);
     sp->vbox()->addWidget(polarHint);
     auto *polarRow = new QHBoxLayout();
-    polarRow->addWidget(new PolarPatternView(sp));
-    auto *info = new QLabel(sp);
-    info->setTextFormat(Qt::RichText);
-    info->setText(
-        "<b>Type:</b> Cardioid<br>"
-        "<b>-3 dB beam:</b> 131°<br>"
-        "<b>-6 dB beam:</b> 180°<br>"
-        "<b>F/B ratio:</b> &gt;15 dB<br>"
-        "<b>Q (1kHz):</b> 7.4");
-    info->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    m_polar = new PolarPatternView(sp);
+    polarRow->addWidget(m_polar);
+    m_polarInfo = new QLabel(sp);
+    m_polarInfo->setTextFormat(Qt::RichText);
+    m_polarInfo->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     polarRow->addSpacing(16);
-    polarRow->addWidget(info);
+    polarRow->addWidget(m_polarInfo);
     polarRow->addStretch(1);
     sp->vbox()->addLayout(polarRow);
-    // ポーラ図・特性値は固定サンプル (選択モデル非連動)
-    sp->vbox()->addWidget(tabhelp::sampleNote(sp));
+    // CLF/GLL・測定 polar 選択時のみ「ファイルは未解析」の注記を出す
+    m_polarClfNote = new QLabel(I18n::tr("asrc_polar_note_clf"), sp);
+    m_polarClfNote->setWordWrap(true);
+    m_polarClfNote->setStyleSheet("font-size:11px; color:#B8860B;");
+    sp->vbox()->addWidget(m_polarClfNote);
     v->addWidget(sp);
 
     auto *sr = new SectionBox(I18n::tr("asrc_fr_section"), page);
@@ -797,7 +969,60 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
             "Loudspeaker (*.clf *.gll *.xglc *.spk *.so8);;All files (*)");
         if (!path.isEmpty()) m_gllFile->setText(path);
     });
+    connect(m_dirModel, &QComboBox::currentIndexChanged, this,
+            [this](int) { updateDirectivity(); });
+    connect(m_dirSource, &QComboBox::currentIndexChanged, this,
+            [this](int i) { m_polarClfNote->setVisible(i == 3 || i == 4); });
+    m_polarClfNote->setVisible(m_dirSource->currentIndex() == 3 ||
+                               m_dirSource->currentIndex() == 4);
+    updateDirectivity();
     return page;
+}
+
+// 選択された一次指向性モデル r(θ) = a + b·cosθ をポーラ図へ反映し、
+// ビーム幅・F/B 比・指向性係数 Q を閉形式で実計算する。
+void AcousticSourceTab::updateDirectivity()
+{
+    // omni / cardioid / supercardioid / hypercardioid / fig-8 の係数
+    static const double kAB[5][2] = {
+        { 1.0, 0.0 }, { 0.5, 0.5 }, { 0.37, 0.63 },
+        { 0.25, 0.75 }, { 0.0, 1.0 },
+    };
+    const int idx = qBound(0, m_dirModel->currentIndex(), 4);
+    const double a = kAB[idx][0], b = kAB[idx][1];
+    m_polar->setPattern(a, b);
+
+    // ビーム幅: |r(θ)| が軸上値から dropDb 落ちる全角。
+    // そこまで落ちない (omni 等) 場合は 0 を返し「—」表示にする
+    auto beamDeg = [a, b](double dropDb) -> double {
+        if (b <= 0.0) return 0.0;
+        const double c =
+            (std::pow(10.0, -dropDb / 20.0) * (a + b) - a) / b;
+        if (c <= -1.0 || c >= 1.0) return 0.0;
+        return 2.0 * std::acos(c) * 180.0 / M_PI;
+    };
+    auto beamText = [](double deg) {
+        return deg > 0.0 ? QStringLiteral("%1°").arg(qRound(deg))
+                         : QStringLiteral("—");
+    };
+    // F/B 比 = 20·log10(|r(0°)| / |r(180°)|)。背面ヌル (cardioid) は ∞
+    const double back = std::fabs(a - b);
+    const QString fb = back < 1e-9
+        ? QStringLiteral("∞")
+        : QStringLiteral("%1 dB").arg(QString::number(
+              20.0 * std::log10((a + b) / back), 'f', 1));
+    // 指向性係数 (回転対称 3D): Q = (a+b)² / (a² + b²/3)、DI = 10·log10 Q
+    const double q = (a + b) * (a + b) / (a * a + b * b / 3.0);
+    const double di = 10.0 * std::log10(q);
+    m_polarInfo->setText(QStringLiteral(
+        "<b>Type:</b> %1<br>"
+        "<b>-3 dB beam:</b> %2<br>"
+        "<b>-6 dB beam:</b> %3<br>"
+        "<b>F/B ratio:</b> %4<br>"
+        "<b>Q:</b> %5 (DI %6 dB)")
+        .arg(m_dirModel->currentText(), beamText(beamDeg(3.0)),
+             beamText(beamDeg(6.0)), fb, QString::number(q, 'f', 1),
+             QString::number(di, 'f', 1)));
 }
 
 // ── page: array ─────────────────────────────────────────────────────────────
@@ -959,9 +1184,8 @@ QWidget *AcousticSourceTab::buildAuralPage()
     auto *renderBtn = new QPushButton(I18n::tr("asrc_btn_render"), sr);
     auto *listenBtn = new QPushButton(I18n::tr("asrc_btn_listen2"), sr);
     auto *abBtn     = new QPushButton(I18n::tr("asrc_btn_ab"), sr);
+    // レンダリング (畳み込み) 自体は可聴化タブが担う — このページでは未実装
     tabhelp::markNotImplemented(renderBtn);
-    tabhelp::markNotImplemented(listenBtn);
-    tabhelp::markNotImplemented(abBtn);
     btnRow->addWidget(renderBtn);
     btnRow->addWidget(listenBtn);
     btnRow->addWidget(abBtn);
@@ -1021,7 +1245,7 @@ QWidget *AcousticSourceTab::buildAuralPage()
     v->addWidget(sq);
     v->addStretch(1);
 
-    // 入力WAV の参照ボタンのみ実配線 (隣の QLineEdit にパスを反映)
+    // 入力WAV の参照ボタン (隣の QLineEdit にパスを反映)
     connect(inBtn, &QPushButton::clicked, this, [this, inWav] {
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("asrc_input_wav"), QString(),
@@ -1030,6 +1254,33 @@ QWidget *AcousticSourceTab::buildAuralPage()
     });
     connect(m_renderRate, &QComboBox::currentIndexChanged, this,
             [this] { apply(); });
+    // 試聴: 可聴化タブがレンダリングした出力 WAV を外部プレイヤで再生。
+    // まだ出力が無い場合は明示的にその旨を伝える (虚偽の動作表示をしない)
+    connect(listenBtn, &QPushButton::clicked, this, [this] {
+        const QString out =
+            m_p->operaAcoustic().auralizationOutputFile.trimmed();
+        if (out.isEmpty() || !QFileInfo::exists(out)) {
+            QMessageBox::information(this, I18n::tr("asrc_listen_title"),
+                                     I18n::tr("asrc_norender"));
+            return;
+        }
+        playWavExternal(this, out);
+    });
+    // A/B 比較: dry/wet の書き出し・比較は可聴化タブで実装済み —
+    // 入力WAV を dry ファイルとして引き渡し、実行場所を案内する
+    connect(abBtn, &QPushButton::clicked, this, [this, inWav] {
+        const QString wav = inWav->text().trimmed();
+        if (!wav.isEmpty() && QFileInfo::exists(wav)) {
+            m_p->operaAcoustic().auralizationDryFile = wav;
+            m_p->operaAcoustic().enabled = true;
+            m_p->touch();
+            QMessageBox::information(this, I18n::tr("asrc_btn_ab"),
+                                     I18n::tr("asrc_ab_handoff"));
+        } else {
+            QMessageBox::information(this, I18n::tr("asrc_btn_ab"),
+                                     I18n::tr("asrc_ab_delegate"));
+        }
+    });
     return page;
 }
 

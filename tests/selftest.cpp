@@ -1581,6 +1581,181 @@ static void testRcwaCore()
     }
 }
 
+// 光解析モード別設定 (BPF 設計目標 / Ring ポート / 導波路 / MZI /
+// メタサーフェス / PhC / NF2FF / S パラメータ) の .ofdx 永続化。
+// これらは .ofd (カーネル入力) には出力しない — 出力バイト不変を併せて検証。
+static void testOpticalModeSettings()
+{
+    g_file = "optical-modes";
+
+    // 全フィールドを非既定値にした Project を作るヘルパー
+    auto setNonDefaults = [](Project &p) {
+        OpticalOpts &o = p.optical();
+        o.bpfIL_dB = 1.5;
+        o.bpfStop_dB = 55.0;
+        o.ringThruPort = false;
+        o.ringDropPort = false;
+        o.wgTE0 = false; o.wgTE1 = true;
+        o.wgTM0 = true;  o.wgTM1 = true;
+        o.wgLoss_dBcm = 1.2;
+        o.mziDeltaL_um = 75.5;
+        o.mziThermo = false;
+        o.mziElectro = true;
+        o.metaPeriod_nm = 520.0;
+        o.metaShape = 2;
+        o.metaPhase = 1;
+        o.phcLattice = 1;
+        o.phcA_nm = 390.0;
+        o.phcRoverA = 0.25;
+        o.phcBand = false;
+        o.phcDefect = true;
+        o.nfffSurface = 1;
+        o.nfffDistance_lambda = 250.0;
+        o.spPorts = 4;
+        o.spPortIn = 2;
+        o.spPortOut = 4;
+        o.spS11 = false;
+        o.spS21 = false;
+        o.spPhase = false;
+        o.spGroupDelay = true;
+    };
+
+    // 1) これらの設定は .ofd (カーネル入力) を 1 バイトも変えない
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        setNonDefaults(p);
+        check(OfdIO::serialize(p) == base,
+              "optmode: settings keep .ofd output byte-identical");
+    }
+
+    // 2) .ofdx ラウンドトリップ (a: 新キーの往復)
+    {
+        Project p1;
+        setNonDefaults(p1);
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "optmode ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "optmode ofdx load");
+            const OpticalOpts &q = p2.optical();
+            check(nearlyEq(q.bpfIL_dB, 1.5) && nearlyEq(q.bpfStop_dB, 55.0),
+                  "optmode bpf il/stop round-trip");
+            check(!q.ringThruPort && !q.ringDropPort,
+                  "optmode ring ports round-trip");
+            check(!q.wgTE0 && q.wgTE1 && q.wgTM0 && q.wgTM1 &&
+                  nearlyEq(q.wgLoss_dBcm, 1.2),
+                  "optmode waveguide round-trip");
+            check(nearlyEq(q.mziDeltaL_um, 75.5) && !q.mziThermo &&
+                  q.mziElectro, "optmode mzi round-trip");
+            check(nearlyEq(q.metaPeriod_nm, 520.0) && q.metaShape == 2 &&
+                  q.metaPhase == 1, "optmode metasurface round-trip");
+            check(q.phcLattice == 1 && nearlyEq(q.phcA_nm, 390.0) &&
+                  nearlyEq(q.phcRoverA, 0.25) && !q.phcBand && q.phcDefect,
+                  "optmode phc round-trip");
+            check(q.nfffSurface == 1 &&
+                  nearlyEq(q.nfffDistance_lambda, 250.0),
+                  "optmode nf2ff round-trip");
+            check(q.spPorts == 4 && q.spPortIn == 2 && q.spPortOut == 4 &&
+                  !q.spS11 && !q.spS21 && !q.spPhase && q.spGroupDelay,
+                  "optmode sparam round-trip");
+
+            // JSON: 既存キーが残り、新キーが追加されていること
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "optmode ofdx reopen");
+            const QJsonObject opt = QJsonDocument::fromJson(jf.readAll())
+                                        .object().value("optical").toObject();
+            const QJsonObject bpf = opt.value("bpf").toObject();
+            check(bpf.contains("band_nm") && bpf.contains("Q"),
+                  "optmode json keeps existing bpf keys");
+            check(bpf.contains("il_db") && bpf.contains("stop_db"),
+                  "optmode json bpf il/stop keys");
+            const QJsonObject ring = opt.value("ring").toObject();
+            check(ring.contains("radius_um") && ring.contains("gap_nm"),
+                  "optmode json keeps existing ring keys");
+            check(ring.contains("thru_port") && ring.contains("drop_port"),
+                  "optmode json ring port keys");
+            check(opt.contains("waveguide") && opt.contains("mzi") &&
+                  opt.contains("metasurface") && opt.contains("phc") &&
+                  opt.contains("nf2ff") && opt.contains("sparam"),
+                  "optmode json mode-section keys present");
+        }
+    }
+
+    // 3) 旧 .ofdx (新キー無し): 既定値のまま (旧ファイル互換, b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0,"
+                "     \"bpf\": { \"band_nm\": [1530, 1570], \"Q\": 5000 },"
+                "     \"ring\": { \"radius_um\": 8, \"gap_nm\": 150 } } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "optmode legacy ofdx load");
+            const OpticalOpts &q = p.optical();
+            // 既存キーは読み込まれる
+            check(nearlyEq(q.bpfBandMin, 1530.0) &&
+                  nearlyEq(q.bpfBandMax, 1570.0) && nearlyEq(q.bpfQ, 5000.0),
+                  "optmode legacy bpf keys still load");
+            check(nearlyEq(q.ringRadius_um, 8.0) &&
+                  nearlyEq(q.ringGap_nm, 150.0),
+                  "optmode legacy ring keys still load");
+            // 新キーは既定値のまま
+            check(q.bpfIL_dB == 0.5 && q.bpfStop_dB == 40.0,
+                  "optmode legacy leaves bpf il/stop defaults");
+            check(q.ringThruPort && q.ringDropPort,
+                  "optmode legacy leaves ring port defaults");
+            check(q.wgTE0 && !q.wgTE1 && !q.wgTM0 && !q.wgTM1 &&
+                  q.wgLoss_dBcm == 0.3,
+                  "optmode legacy leaves waveguide defaults");
+            check(q.mziDeltaL_um == 50.0 && q.mziThermo && !q.mziElectro,
+                  "optmode legacy leaves mzi defaults");
+            check(q.metaPeriod_nm == 400.0 && q.metaShape == 0 &&
+                  q.metaPhase == 0,
+                  "optmode legacy leaves metasurface defaults");
+            check(q.phcLattice == 0 && q.phcA_nm == 430.0 &&
+                  q.phcRoverA == 0.30 && q.phcBand && !q.phcDefect,
+                  "optmode legacy leaves phc defaults");
+            check(q.nfffSurface == 0 && q.nfffDistance_lambda == 1000.0,
+                  "optmode legacy leaves nf2ff defaults");
+            check(q.spPorts == 2 && q.spPortIn == 1 && q.spPortOut == 2 &&
+                  q.spS11 && q.spS21 && q.spPhase && !q.spGroupDelay,
+                  "optmode legacy leaves sparam defaults");
+        }
+    }
+
+    // 4) 壊れたファイルの範囲外値はコンボ index の範囲へクランプされる
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_optmode_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": {"
+                "     \"metasurface\": { \"shape\": 99, \"phase\": -3 },"
+                "     \"phc\": { \"lattice\": 7 },"
+                "     \"nf2ff\": { \"surface\": 5 },"
+                "     \"sparam\": { \"ports\": 0, \"port_in\": 99 } } }";
+            bad.write(broken);
+            bad.flush();
+            Project p;
+            check(OfdxIO::load(bad.fileName(), p), "optmode broken ofdx load");
+            const OpticalOpts &q = p.optical();
+            check(q.metaShape == 2 && q.metaPhase == 0,
+                  "optmode broken metasurface clamped");
+            check(q.phcLattice == 2, "optmode broken phc lattice clamped");
+            check(q.nfffSurface == 1, "optmode broken nf2ff surface clamped");
+            check(q.spPorts == 1 && q.spPortIn == 1,
+                  "optmode broken sparam clamped");
+        }
+    }
+}
+
 // 実行結果の表示ゲート: ONN 活性化カーブは「その実行が生成したもの」だけ。
 static void testRunGating()
 {
@@ -2360,6 +2535,7 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testOnnActivation();
     testRcwaCore();
+    testOpticalModeSettings();
     testBellhop();
     testH5Reader();
     testOfdIntegration(dir);

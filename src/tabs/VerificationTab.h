@@ -8,6 +8,7 @@
 #include <QScrollArea>
 
 class QComboBox;
+class QPushButton;
 class QTableWidget;
 
 namespace ofd {
@@ -23,11 +24,16 @@ public:
 
 private slots:
     void refreshDomain();     // ドメイン依存表示 (チェック量・診断備考) を更新
+    void increasePmlLayers(); // ② PML層数を増加 (Project::general を実際に変更)
+    void addBoundaryMargin(); // ② 境界余裕 +λ/4 (メッシュ各軸の両端を拡張)
+    void refreshPmlButtons(); // ② 対策ボタンの文言・有効状態を現状に合わせる
 
 private:
     Project      *m_p;
     QComboBox    *m_qtyBox;       // ① チェックする量 (ドメイン別)
     SectionBox   *m_pmlSection;   // ② PML吸収品質 (水中では非表示)
+    QPushButton  *m_pmlBtn1;      // ② PML層数増加ボタン (配線済み)
+    QPushButton  *m_pmlBtn2;      // ② 境界余裕 +λ/4 ボタン (配線済み)
     SectionBox   *m_timeSection;  // ③ 時間精度 (水中では非表示)
     QComboBox    *m_crossBox;     // ④ 比較ソルバ (ドメイン別リスト)
     QTableWidget *m_diag;         // 自動診断表 (行0 備考と一部行がドメイン別)

@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -34,11 +35,13 @@ const bool s_i18n = [] {
     I18n::reg("ver_mock_note",
               "⚠ このタブの表示は設計モックです — 検証機能 (収束テスト/境界吸収/"
               "エネルギー減衰/自動診断) は未実装で、表示中の数値・判定はすべて"
-              "サンプルです",
+              "サンプルです (②の対策ボタン 2 個のみプロジェクト設定を実際に"
+              "変更します)",
               "⚠ This tab is a design mock — the verification features "
               "(convergence test / boundary absorption / energy decay / "
               "auto-diagnostics) are not implemented, and every value and "
-              "verdict shown is sample data");
+              "verdict shown is sample data (only the two remedy buttons in "
+              "section 2 actually modify the project settings)");
 
     I18n::reg("ver_mesh_title", "① メッシュ収束", "① Mesh convergence");
     I18n::reg("ver_mesh_hint", "メッシュ精度を段階的に上げて結果の収束を確認",
@@ -61,8 +64,25 @@ const bool s_i18n = [] {
     I18n::reg("ver_h_verdict", "判定", "Verdict");
     I18n::reg("ver_pml_warn", "境界に近接 → PML層数を増加推奨",
               "Close to the boundary → increase PML layers");
-    I18n::reg("ver_pml_btn1", "PML層数を8→12に増加", "Increase PML layers 8→12");
+    // 対策ボタン (配線済み — Project の実設定を変更する)。層数は現在値から表示
+    I18n::reg("ver_pml_btn1_fmt", "PML層数を%1→%2に増加",
+              "Increase PML layers %1→%2");
+    I18n::reg("ver_pml_btn1_tip",
+              "PML層数を増やして境界反射を低減します (プロジェクト設定を実際に"
+              "変更。境界条件が Mur の場合は PML へ切り替えます)",
+              "Increase the PML layer count to reduce boundary reflection "
+              "(actually modifies the project settings; switches a Mur "
+              "boundary to PML)");
     I18n::reg("ver_pml_btn2", "境界余裕を増加 (+λ/4)", "Increase boundary margin (+λ/4)");
+    I18n::reg("ver_pml_btn2_tip",
+              "解析周波数1の中心 %1 の λ/4 = %2 をメッシュ各軸の両端に追加します"
+              " (プロジェクト設定を実際に変更。周期境界の軸は除外)",
+              "Extend the mesh on both ends of each axis by λ/4 = %2 at %1 "
+              "(center of frequency1). Actually modifies the project settings; "
+              "periodic-boundary axes are excluded");
+    I18n::reg("ver_pml_margin_na",
+              "メッシュが未定義/不正、または解析周波数1が無いため使用できません",
+              "Unavailable: the mesh is undefined/invalid or frequency1 is absent");
 
     I18n::reg("ver_time_title", "③ 時間精度", "③ Time accuracy");
     I18n::reg("ver_time_hint", "自動シャットオフ前にエネルギーが十分減衰しているか確認",
@@ -127,6 +147,63 @@ const char *meshQuantity(ofd::Domain d)
         case ofd::Domain::Underwater: return "TL @ 50km";
         default:                      return "S11 @ 2.45GHz";
     }
+}
+
+// ── λ/4 境界余裕の計算 (MeshTab.cpp の λ/N 評価と同じ定義) ──────────────────
+// 波長評価に使うドメイン別の伝搬速度 [m/s]。MeshTab の file-local ヘルパーと
+// 同値 (数行のためここも file-local に留める)。水中は PML セクション自体を
+// 隠すので到達しないが、既定 (光速) のままにしておく。
+double domainWaveSpeed(ofd::Domain d)
+{
+    switch (d) {
+    case ofd::Domain::Acoustic:   return 343.0;         // 空気中の音速 (20℃)
+    case ofd::Domain::Underwater: return 1500.0;        // 海水中の代表音速
+    default:                      return 2.99792458e8;  // EM / 光: 真空光速
+    }
+}
+
+// 解析周波数1の中心 [Hz] (MeshTab の λ/N 評価と同じ)。無ければ 0
+double centerFreq1(const ofd::GeneralOpts &g)
+{
+    return g.hasF1 ? 0.5 * (g.f1min + g.f1max) : 0.0;
+}
+
+// 周波数の簡易表示 (MeshTab::formatFreq と同形式)
+QString formatFreq(double f)
+{
+    if (f >= 1e9) return QStringLiteral("%1 GHz").arg(f / 1e9, 0, 'g', 3);
+    if (f >= 1e6) return QStringLiteral("%1 MHz").arg(f / 1e6, 0, 'g', 3);
+    if (f >= 1e3) return QStringLiteral("%1 kHz").arg(f / 1e3, 0, 'g', 3);
+    return QStringLiteral("%1 Hz").arg(f, 0, 'g', 3);
+}
+
+// λ/4 マージン [m]。周波数が無く計算できないときは 0
+double quarterWaveMargin(const ofd::Project &p)
+{
+    const double fc = centerFreq1(p.general());
+    return (fc > 0) ? 0.25 * domainWaveSpeed(p.activeDomain()) / fc : 0.0;
+}
+
+// 軸 a (0=x 1=y 2=z) が +λ/4 拡張の対象か。
+// 周期境界 (PBC) の軸は端を延ばすと周期そのものが変わってしまうため除外する
+bool axisExtendable(const ofd::Project &p, int a)
+{
+    const ofd::GeneralOpts &g = p.general();
+    const bool pbc = (a == 0) ? g.pbcX : (a == 1) ? g.pbcY : g.pbcZ;
+    return !pbc;
+}
+
+// +λ/4 拡張が今すぐ安全に実行できるか (対象軸が 1 本以上あり、全て妥当)
+bool canAddMargin(const ofd::Project &p)
+{
+    if (!(quarterWaveMargin(p) > 0)) return false;
+    bool any = false;
+    for (int a = 0; a < 3; ++a) {
+        if (!axisExtendable(p, a)) continue;
+        if (!p.mesh(a).isValid()) return false;
+        any = true;
+    }
+    return any;
 }
 } // namespace
 
@@ -232,13 +309,16 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     pmlTbl->setMinimumHeight(170);
     sPml->vbox()->addWidget(pmlTbl);
     auto *pmlRow = new QHBoxLayout();
-    // 2 ボタンとも未配線 (設定を書き換えない) → 無効化
-    auto *pmlBtn1 = new QPushButton(I18n::tr("ver_pml_btn1"), sPml);
-    auto *pmlBtn2 = new QPushButton(I18n::tr("ver_pml_btn2"), sPml);
-    tabhelp::markNotImplemented(pmlBtn1);
-    tabhelp::markNotImplemented(pmlBtn2);
-    pmlRow->addWidget(pmlBtn1);
-    pmlRow->addWidget(pmlBtn2);
+    // 対策 2 ボタンは配線済み: Project の実設定 (PML 層数 / メッシュ端) を
+    // 変更する。文言・有効状態は refreshPmlButtons() が現状に合わせる
+    m_pmlBtn1 = new QPushButton(sPml);
+    m_pmlBtn2 = new QPushButton(I18n::tr("ver_pml_btn2"), sPml);
+    connect(m_pmlBtn1, &QPushButton::clicked,
+            this, &VerificationTab::increasePmlLayers);
+    connect(m_pmlBtn2, &QPushButton::clicked,
+            this, &VerificationTab::addBoundaryMargin);
+    pmlRow->addWidget(m_pmlBtn1);
+    pmlRow->addWidget(m_pmlBtn2);
     pmlRow->addStretch(1);
     sPml->vbox()->addLayout(pmlRow);
     // PML 反射表はモック固定値 (測定していない)
@@ -327,7 +407,65 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     connect(project, &Project::domainChanged, this, &VerificationTab::refreshDomain);
+    // 他タブでの編集 (pmlL・メッシュ・周波数・PBC) をボタン表示へ追従させる
+    connect(project, &Project::changed, this, &VerificationTab::refreshPmlButtons);
+    connect(project, &Project::loaded, this, &VerificationTab::refreshPmlButtons);
     refreshDomain();
+}
+
+// ② 対策ボタン 1: PML 層数を増加 (既に 12 以上なら +4)。
+// Mur (abc=0) のまま層数だけ増やしても効果が無いので PML へ切り替える
+void VerificationTab::increasePmlLayers()
+{
+    GeneralOpts &g = m_p->general();
+    g.abc = 1;                                    // PML を使用
+    g.pmlL = (g.pmlL >= 12) ? g.pmlL + 4 : 12;
+    m_p->touch();   // changed() → refreshPmlButtons() で表示も追従
+}
+
+// ② 対策ボタン 2: メッシュ各軸の両端を λ/4 (解析周波数1の中心) だけ拡張する。
+// 追加区間の分割数は端の区間のセル幅を保つように選ぶ (最低 1 分割)。
+// PBC の軸は周期が変わってしまうため対象外 (axisExtendable)
+void VerificationTab::addBoundaryMargin()
+{
+    if (!canAddMargin(*m_p)) return;   // 途中で失敗して半端に拡張しない
+    const double margin = quarterWaveMargin(*m_p);
+    // 端のセル幅を保つ分割数。周波数とメッシュスケールが極端に不整合でも
+    // int を溢れさせない (上限 1e6 — その場合は総セル数の統計表示で気付ける)
+    const auto ndiv = [](double ratio) {
+        return int(qBound(1.0, std::floor(ratio + 0.5), 1e6));
+    };
+    for (int a = 0; a < 3; ++a) {
+        if (!axisExtendable(*m_p, a)) continue;
+        MeshAxis &ax = m_p->mesh(a);
+        const int n = ax.nodes.size();
+        const double dLo = (ax.nodes[1] - ax.nodes[0]) / ax.divs.first();
+        const double dHi = (ax.nodes[n - 1] - ax.nodes[n - 2]) / ax.divs.last();
+        ax.nodes.prepend(ax.nodes.first() - margin);
+        ax.divs.prepend(ndiv(margin / dLo));
+        ax.nodes.append(ax.nodes.last() + margin);
+        ax.divs.append(ndiv(margin / dHi));
+    }
+    m_p->touch();
+}
+
+// ② 対策ボタンの表示更新: 層数は現在値→目標値で表示し、+λ/4 は実行できる
+// ときだけ有効化してツールチップに実際の追加量を示す
+void VerificationTab::refreshPmlButtons()
+{
+    const GeneralOpts &g = m_p->general();
+    const int target = (g.pmlL >= 12) ? g.pmlL + 4 : 12;
+    m_pmlBtn1->setText(I18n::tr("ver_pml_btn1_fmt").arg(g.pmlL).arg(target));
+    m_pmlBtn1->setToolTip(I18n::tr("ver_pml_btn1_tip"));
+
+    const bool ok = canAddMargin(*m_p);
+    m_pmlBtn2->setEnabled(ok);
+    m_pmlBtn2->setToolTip(ok
+        ? I18n::tr("ver_pml_btn2_tip")
+              .arg(formatFreq(centerFreq1(g)))
+              .arg(QStringLiteral("%1 m")
+                       .arg(quarterWaveMargin(*m_p), 0, 'g', 3))
+        : I18n::tr("ver_pml_margin_na"));
 }
 
 void VerificationTab::refreshDomain()
@@ -376,4 +514,7 @@ void VerificationTab::refreshDomain()
     }
     if (auto *it = m_diag->item(0, 2))
         it->setText(QString("λ/Δx = 22 @ %1").arg(freq));
+
+    // ドメインで伝搬速度 (λ/4 の量) が変わるためボタン表示も更新
+    refreshPmlButtons();
 }
