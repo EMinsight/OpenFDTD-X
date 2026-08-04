@@ -17,6 +17,7 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/H5Reader.h"
+#include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
 #include "kernel/Runner.h"
 #include "io/StlImporter.h"
@@ -756,6 +757,80 @@ static void testProjectTemplates()
         check(!templates::apply(p, "em", "no_such_template"),
               "unknown template id rejected");
     }
+}
+
+// カーネル結果リーダ (io/KernelResultReader) — 実行後の結果反映の入口。
+// 実カーネル出力から転記した固定文字列で、給電点表と far1d.log の
+// パースを検証する (書式はカーネル側が正 — GUI で変えない)。
+static void testKernelResultReader()
+{
+    g_file = "kernel_result";
+
+    // ofd.log の給電点表 (dipole 実行の実出力から抜粋)
+    const QString feedLog = QStringLiteral(
+        "Iterations = 1000, Convergence = 1.000e-03\n"
+        "\n"
+        "feed #1 (Z0[ohm] = 50.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  2.00000e+09     34.621   -104.556      2.854      8.619"
+        "     -2.095      8.332\n"
+        "  2.45000e+09     66.295     -9.256     14.796      2.066"
+        "    -15.883      1.383\n"
+        "  3.00000e+09    122.845    103.541      4.771     -4.021"
+        "     -4.653      3.851\n"
+        "\n"
+        "=== output files ===\n");
+    const QVector<FeedSweep> sweeps =
+        KernelResultReader::parseFeedSweeps(feedLog);
+    check(sweeps.size() == 1, "feed table found");
+    if (!sweeps.isEmpty()) {
+        const FeedSweep &s = sweeps.first();
+        check(s.feedIndex == 1 && nearlyEq(s.z0, 50.0), "feed header parsed");
+        check(s.points.size() == 3, "feed rows parsed");
+        check(nearlyEq(s.points[0].freqHz, 2.0e9) &&
+              nearlyEq(s.points[0].rin, 34.621) &&
+              nearlyEq(s.points[0].xin, -104.556),
+              "feed first row values");
+        check(nearlyEq(s.points[1].refDb, -15.883) &&
+              nearlyEq(s.points[1].vswr, 1.383),
+              "feed ref/vswr columns");
+    }
+    check(KernelResultReader::parseFeedSweeps(
+              QStringLiteral("no tables here\n")).isEmpty(),
+          "no feed table -> empty");
+
+    // far1d.log (dipole 実行の実出力から抜粋 — 2 面)
+    const QString farLog = QStringLiteral(
+        "#1 : X-plane, frequency[Hz] = 3.00000e+09\n"
+        "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+        "   E-phi[deg]\n"
+        "   0    0.0    -240.0000    -240.0000    -148.6233    -240.0000"
+        "     131.3390\n"
+        "   1    5.0     -22.3709     -22.3709     136.8919    -240.0000"
+        "      -5.4757\n"
+        "   2   10.0     -16.2784     -16.2784     136.8768    -240.0000"
+        "    -159.8874\n"
+        "#2 : Y-plane, frequency[Hz] = 3.00000e+09\n"
+        "  No.   deg    E-abs[dB]\n"
+        "   0    0.0      -8.0000\n"
+        "   1  180.0      -9.0000\n");
+    const QVector<FarPattern> pats = KernelResultReader::parseFar1d(farLog);
+    check(pats.size() == 2, "far1d blocks found");
+    if (pats.size() == 2) {
+        check(pats[0].plane == QStringLiteral("X-plane") &&
+              nearlyEq(pats[0].freqHz, 3.0e9),
+              "far1d header parsed");
+        check(pats[0].deg.size() == 3 &&
+              nearlyEq(pats[0].deg[1], 5.0) &&
+              nearlyEq(pats[0].eAbsDb[1], -22.3709),
+              "far1d rows parsed");
+        check(pats[1].plane == QStringLiteral("Y-plane") &&
+              pats[1].deg.size() == 2,
+              "far1d second block parsed");
+    }
+    check(KernelResultReader::parseFar1d(QStringLiteral("---\n")).isEmpty(),
+          "no far1d block -> empty");
 }
 
 // 音響編集エンジン (AudioEditorTab の DSP — src/audio/AudioEditEngine)。
@@ -1815,6 +1890,12 @@ static void testOfdIntegration(const QString &sampleDir)
     check(log.open(QIODevice::ReadOnly | QIODevice::Text)
               && QString::fromUtf8(log.readAll()).contains("normal end"),
           "ofd: log reports normal end");
+    // 実カーネルの ofd.log から給電点表が読めること (結果反映の入口)。
+    // dipole.ofd は frequency1 = 21 点
+    const QVector<FeedSweep> sweeps =
+        KernelResultReader::readFeedSweeps(dir.filePath("ofd.log"));
+    check(sweeps.size() == 1 && sweeps.first().points.size() == 21,
+          "ofd: feed sweep parsed from real log");
 
     // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
     // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)
@@ -2016,6 +2097,7 @@ int main(int argc, char *argv[])
     testRoomAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
+    testKernelResultReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();
     testOnnActivation();

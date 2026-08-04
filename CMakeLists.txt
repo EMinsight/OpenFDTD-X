@@ -66,6 +66,8 @@ set(CORE_SOURCES
     src/io/H5Writer.h
     src/io/H5Reader.cpp
     src/io/H5Reader.h
+    src/io/KernelResultReader.cpp
+    src/io/KernelResultReader.h
     src/io/EvReader.h
     src/io/StlImporter.cpp
     src/io/StlImporter.h

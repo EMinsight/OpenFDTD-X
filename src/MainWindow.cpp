@@ -12,6 +12,7 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/H5Writer.h"
+#include "io/KernelResultReader.h"
 #include "io/Tidy3dExporter.h"
 #include "io/Touchstone.h"
 
@@ -324,10 +325,16 @@ void MainWindow::buildToolbar()
         btn->setObjectName("primaryAction");
     tb->addAction(icon(QStyle::SP_MediaSeekForward), I18n::tr("tb_post"),
                   this, &MainWindow::runPostProcess);
-    tb->addAction(icon(QStyle::SP_FileDialogContentsView), I18n::tr("tb_plot2d"),
-                  this, &MainWindow::show2DPlot);
-    tb->addAction(icon(QStyle::SP_FileDialogListView), I18n::tr("tb_plot3d"),
-                  this, &MainWindow::show3DPlot);
+    // 2D = 結果プロット (波形/収束/周波数特性/放射パターン)、3D = 3D シーン。
+    // 何が出るのかをツールチップで明示する (「2D 側が何か分からない」対策)
+    QAction *plot2d = tb->addAction(icon(QStyle::SP_FileDialogContentsView),
+                                    I18n::tr("tb_plot2d"),
+                                    this, &MainWindow::show2DPlot);
+    plot2d->setToolTip(I18n::tr("tb_plot2d_tip"));
+    QAction *plot3d = tb->addAction(icon(QStyle::SP_FileDialogListView),
+                                    I18n::tr("tb_plot3d"),
+                                    this, &MainWindow::show3DPlot);
+    plot3d->setToolTip(I18n::tr("tb_plot3d_tip"));
     tb->addSeparator();
 
     m_cloudAction = tb->addAction(icon(QStyle::SP_ArrowUp), I18n::tr("tb_cloud"),
@@ -959,6 +966,10 @@ void MainWindow::runSimulation()
         }
     }
     m_plotPanel->clearConvergence();
+    // 前回実行の結果カーブを消し、実行中は収束履歴を前面にする
+    // (「この実行が生成したもの」だけを表示する — .claude/rules/gui.md)
+    m_plotPanel->clearRunResults();
+    m_plotPanel->showConvergence();
     m_lastAeff_m2 = 0.0;
     // モックの計算コンソール冒頭 2 行
     m_rightDock->appendLog("=== " + I18n::tr("log_starting") + " ===");
@@ -1199,6 +1210,57 @@ void MainWindow::onRunnerFinished(bool ok)
             && m_center->loadResultField(h5)) {
             m_rightDock->appendLog(
                 I18n::tr("log_h5_slice").arg(fi.fileName()));
+        }
+    }
+    // カーネルログの給電点表と far1d.log の遠方界パターンを結果プロットへ
+    // 反映する (この実行が更新したファイルに限る)。反映できたら結果プロット
+    // タブへ切替えて「計算後に結果が画面に出る」動線にする。
+    if (ok) {
+        const QDir wd(m_runner->workingDir());
+        auto freshFile = [&](const QString &name) -> QString {
+            const QFileInfo fi(wd.filePath(name));
+            return (fi.exists() &&
+                    fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs)
+                       ? fi.absoluteFilePath() : QString();
+        };
+        const Kernel k = m_runner->config().kernel;
+        const QString logName =
+            k == Kernel::FDTD ? QStringLiteral("ofd.log") :
+            k == Kernel::RCWA ? QStringLiteral("orcwa.log") :
+            k == Kernel::BPM  ? QStringLiteral("obpm.log") : QString();
+        QVector<FeedSweep> sweeps;
+        QVector<FarPattern> patterns;
+        if (!logName.isEmpty()) {
+            const QString logPath = freshFile(logName);
+            if (!logPath.isEmpty())
+                sweeps = KernelResultReader::readFeedSweeps(logPath);
+            const QString farPath = freshFile(QStringLiteral("far1d.log"));
+            if (!farPath.isEmpty())
+                patterns = KernelResultReader::readFar1d(farPath);
+        }
+        if (!sweeps.isEmpty() || !patterns.isEmpty()) {
+            m_plotPanel->setRunResults(sweeps, patterns);
+            if (!sweeps.isEmpty()) {
+                int n = 0;
+                for (const FeedSweep &s : sweeps) n += s.points.size();
+                m_rightDock->appendLog(
+                    I18n::tr("log_freqchar").arg(logName).arg(n));
+            }
+            if (!patterns.isEmpty())
+                m_rightDock->appendLog(
+                    I18n::tr("log_farpattern").arg(patterns.size()));
+            m_center->showPlot();
+        }
+        // 作図出力 (ev.ev2 / ev.ev3) — 図形表示の実体。EvViewer をこの実行の
+        // 作業ディレクトリへ向け、生成を計算コンソールに知らせる
+        QStringList evFiles;
+        for (const char *name : { "ev.ev2", "ev.ev3", "ev2d.ev2", "ev3d.ev3" })
+            if (!freshFile(QString::fromLatin1(name)).isEmpty())
+                evFiles << QString::fromLatin1(name);
+        if (!evFiles.isEmpty()) {
+            m_evViewer->setWorkdir(wd.path());
+            m_rightDock->appendLog(
+                I18n::tr("log_ev_ready").arg(evFiles.join(QStringLiteral(", "))));
         }
     }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
