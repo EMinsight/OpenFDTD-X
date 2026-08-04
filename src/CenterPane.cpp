@@ -16,6 +16,7 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSettings>
 #include <QScrollBar>
@@ -300,7 +301,11 @@ bool CenterPane::loadResultField(const QString &h5Path)
                 cells[i] = std::sqrt(re[i] * re[i] + im[i] * im[i]);
             shown = QStringLiteral("|/field/Efinal|");
         } else {
-            return false;   // 表示できる 2D 場が無い (ofd の /dataNNNNNN は未対応)
+            // ofd/orcwa のノード場 → z 中央断面 |E| (io/H5Reader が再構成)
+            QString group;
+            if (!H5Reader::readOfdMidSlice(h5Path, cells, rows, cols, &group))
+                return false;   // 表示できる 2D 場が無い
+            shown = QStringLiteral("|E| z-mid (%1)").arg(group);
         }
     }
 

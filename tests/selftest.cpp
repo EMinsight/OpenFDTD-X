@@ -17,6 +17,7 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/H5Reader.h"
+#include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
 #include "kernel/Runner.h"
 #include "io/StlImporter.h"
@@ -756,6 +757,80 @@ static void testProjectTemplates()
         check(!templates::apply(p, "em", "no_such_template"),
               "unknown template id rejected");
     }
+}
+
+// カーネル結果リーダ (io/KernelResultReader) — 実行後の結果反映の入口。
+// 実カーネル出力から転記した固定文字列で、給電点表と far1d.log の
+// パースを検証する (書式はカーネル側が正 — GUI で変えない)。
+static void testKernelResultReader()
+{
+    g_file = "kernel_result";
+
+    // ofd.log の給電点表 (dipole 実行の実出力から抜粋)
+    const QString feedLog = QStringLiteral(
+        "Iterations = 1000, Convergence = 1.000e-03\n"
+        "\n"
+        "feed #1 (Z0[ohm] = 50.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  2.00000e+09     34.621   -104.556      2.854      8.619"
+        "     -2.095      8.332\n"
+        "  2.45000e+09     66.295     -9.256     14.796      2.066"
+        "    -15.883      1.383\n"
+        "  3.00000e+09    122.845    103.541      4.771     -4.021"
+        "     -4.653      3.851\n"
+        "\n"
+        "=== output files ===\n");
+    const QVector<FeedSweep> sweeps =
+        KernelResultReader::parseFeedSweeps(feedLog);
+    check(sweeps.size() == 1, "feed table found");
+    if (!sweeps.isEmpty()) {
+        const FeedSweep &s = sweeps.first();
+        check(s.feedIndex == 1 && nearlyEq(s.z0, 50.0), "feed header parsed");
+        check(s.points.size() == 3, "feed rows parsed");
+        check(nearlyEq(s.points[0].freqHz, 2.0e9) &&
+              nearlyEq(s.points[0].rin, 34.621) &&
+              nearlyEq(s.points[0].xin, -104.556),
+              "feed first row values");
+        check(nearlyEq(s.points[1].refDb, -15.883) &&
+              nearlyEq(s.points[1].vswr, 1.383),
+              "feed ref/vswr columns");
+    }
+    check(KernelResultReader::parseFeedSweeps(
+              QStringLiteral("no tables here\n")).isEmpty(),
+          "no feed table -> empty");
+
+    // far1d.log (dipole 実行の実出力から抜粋 — 2 面)
+    const QString farLog = QStringLiteral(
+        "#1 : X-plane, frequency[Hz] = 3.00000e+09\n"
+        "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+        "   E-phi[deg]\n"
+        "   0    0.0    -240.0000    -240.0000    -148.6233    -240.0000"
+        "     131.3390\n"
+        "   1    5.0     -22.3709     -22.3709     136.8919    -240.0000"
+        "      -5.4757\n"
+        "   2   10.0     -16.2784     -16.2784     136.8768    -240.0000"
+        "    -159.8874\n"
+        "#2 : Y-plane, frequency[Hz] = 3.00000e+09\n"
+        "  No.   deg    E-abs[dB]\n"
+        "   0    0.0      -8.0000\n"
+        "   1  180.0      -9.0000\n");
+    const QVector<FarPattern> pats = KernelResultReader::parseFar1d(farLog);
+    check(pats.size() == 2, "far1d blocks found");
+    if (pats.size() == 2) {
+        check(pats[0].plane == QStringLiteral("X-plane") &&
+              nearlyEq(pats[0].freqHz, 3.0e9),
+              "far1d header parsed");
+        check(pats[0].deg.size() == 3 &&
+              nearlyEq(pats[0].deg[1], 5.0) &&
+              nearlyEq(pats[0].eAbsDb[1], -22.3709),
+              "far1d rows parsed");
+        check(pats[1].plane == QStringLiteral("Y-plane") &&
+              pats[1].deg.size() == 2,
+              "far1d second block parsed");
+    }
+    check(KernelResultReader::parseFar1d(QStringLiteral("---\n")).isEmpty(),
+          "no far1d block -> empty");
 }
 
 // 音響編集エンジン (AudioEditorTab の DSP — src/audio/AudioEditEngine)。
@@ -1783,6 +1858,119 @@ static void testH5Reader()
           "h5: read2D rejects 3-D dataset");
     check(!H5Reader::readFrame(path, "/field/frames", 9, m, r, c),
           "h5: readFrame rejects out-of-range frame");
+
+    // readAll: スカラーと 2D (float→double 変換込み)
+    QVector<double> flat;
+    QVector<qlonglong> dims;
+    check(H5Reader::readAll(path, "/field/Ixz", flat, dims),
+          "h5: readAll 2D ok");
+    check(dims == (QVector<qlonglong>{ 3, 4 }) && flat.size() == 12 &&
+          flat[6] == 12.0, "h5: readAll dims/values");
+
+    // ofd レイアウトの空間再構成: 2×2×2 セル (ノード 3×3×3, 余白なし)。
+    // node = 9i + 3j + k。全 6 成分 = node → |E| = node·√6。
+    // /data000000 はゼロ、/data000100 に実値 — 最終グループが選ばれること
+    const QString ofdPath = dir.filePath("ofd.h5");
+    {
+        const hid_t file = H5Fcreate(ofdPath.toLocal8Bit().constData(),
+                                     H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        check(file >= 0, "h5: ofd fixture created");
+        auto writeScalarInt = [&](const char *name, long long v) {
+            const hid_t sp = H5Screate(H5S_SCALAR);
+            const hid_t ds = H5Dcreate2(file,
+                (QByteArray("/metadata/") + name).constData(),
+                H5T_NATIVE_LLONG, sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v);
+            H5Dclose(ds); H5Sclose(sp);
+        };
+        H5Gclose(H5Gcreate2(file, "/metadata", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        writeScalarInt("Nx", 2); writeScalarInt("Ny", 2);
+        writeScalarInt("Nz", 2);
+        writeScalarInt("Ni", 9); writeScalarInt("Nj", 3);
+        writeScalarInt("Nk", 1); writeScalarInt("N0", 0);
+        writeScalarInt("NN", 27);
+        auto writeE = [&](const char *group, bool zeros) {
+            H5Gclose(H5Gcreate2(file, group, H5P_DEFAULT, H5P_DEFAULT,
+                                H5P_DEFAULT));
+            QVector<double> e(27 * 6);
+            for (int n = 0; n < 27; ++n)
+                for (int cc = 0; cc < 6; ++cc)
+                    e[n * 6 + cc] = zeros ? 0.0 : double(n);
+            const hsize_t d4[4] = { 1, 1, 27, 6 };
+            const hid_t sp = H5Screate_simple(4, d4, nullptr);
+            const hid_t ds = H5Dcreate2(file,
+                (QByteArray(group) + "/E").constData(),
+                H5T_NATIVE_DOUBLE, sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     e.constData());
+            H5Dclose(ds); H5Sclose(sp);
+        };
+        writeE("/data000000", true);
+        writeE("/data000100", false);
+        H5Fclose(file);
+    }
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(ofdPath, cells, rows, cols, &group),
+              "h5: ofd mid-slice ok");
+        check(rows == 3 && cols == 3, "h5: ofd slice dims (Ny+1, Nx+1)");
+        check(group == QLatin1String("data000100"),
+              "h5: ofd latest group selected");
+        // k = Nz/2 = 1。行 0 = +y (j=2)。|E|(i,j) = (9i+3j+1)·√6
+        const double s6 = std::sqrt(6.0);
+        check(std::fabs(cells[2 * 3 + 0] - (9 * 0 + 3 * 0 + 1) * s6) < 1e-9,
+              "h5: ofd slice value (i=0,j=0)");
+        check(std::fabs(cells[0 * 3 + 2] - (9 * 2 + 3 * 2 + 1) * s6) < 1e-9,
+              "h5: ofd slice value (i=2,j=2 → row 0)");
+        check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-9,
+              "h5: ofd slice center value");
+    }
+
+    // 新レイアウト (OpenFDTD sol/outputHdf5.c): /freqdomain/E
+    // {F, Nx+1, Ny+1, Nz+1, 3, 2}。値は全 6 成分 = 9i+3j+k → |E| = v·√6
+    const QString newPath = dir.filePath("ofd_new.h5");
+    {
+        const hid_t file = H5Fcreate(newPath.toLocal8Bit().constData(),
+                                     H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        check(file >= 0, "h5: freqdomain fixture created");
+        H5Gclose(H5Gcreate2(file, "/freqdomain", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        QVector<float> e(3 * 3 * 3 * 6);
+        int m6 = 0;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    for (int cc = 0; cc < 6; ++cc)
+                        e[m6++] = float(9 * i + 3 * j + k);
+        const hsize_t d6[6] = { 1, 3, 3, 3, 3, 2 };
+        const hid_t sp = H5Screate_simple(6, d6, nullptr);
+        const hid_t ds = H5Dcreate2(file, "/freqdomain/E", H5T_NATIVE_FLOAT,
+                                    sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                 e.constData());
+        H5Dclose(ds); H5Sclose(sp);
+        H5Fclose(file);
+    }
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(newPath, cells, rows, cols, &group),
+              "h5: freqdomain mid-slice ok");
+        check(rows == 3 && cols == 3, "h5: freqdomain slice dims");
+        check(group == QLatin1String("freqdomain"),
+              "h5: freqdomain layout detected");
+        const double s6 = std::sqrt(6.0);
+        check(std::fabs(cells[2 * 3 + 0] - (9 * 0 + 3 * 0 + 1) * s6) < 1e-5,
+              "h5: freqdomain value (i=0,j=0)");
+        check(std::fabs(cells[0 * 3 + 2] - (9 * 2 + 3 * 2 + 1) * s6) < 1e-5,
+              "h5: freqdomain value (i=2,j=2 → row 0)");
+        check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-5,
+              "h5: freqdomain center value");
+    }
 #endif
 }
 
@@ -1815,6 +2003,28 @@ static void testOfdIntegration(const QString &sampleDir)
     check(log.open(QIODevice::ReadOnly | QIODevice::Text)
               && QString::fromUtf8(log.readAll()).contains("normal end"),
           "ofd: log reports normal end");
+    // 実カーネルの ofd.log から給電点表が読めること (結果反映の入口)。
+    // dipole.ofd は frequency1 = 21 点
+    const QVector<FeedSweep> sweeps =
+        KernelResultReader::readFeedSweeps(dir.filePath("ofd.log"));
+    check(sweeps.size() == 1 && sweeps.first().points.size() == 21,
+          "ofd: feed sweep parsed from real log");
+#ifdef OFD_USE_HDF5
+    // 実カーネルの time_series_data.h5 から z 中央断面が再構成できること。
+    // dipole は 30×30×31 セル → 断面は 31×31 ノード
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(dir.filePath("time_series_data.h5"),
+                                        cells, rows, cols, &group),
+              "ofd: h5 mid-slice from real kernel output");
+        check(rows == 31 && cols == 31, "ofd: h5 slice dims 31x31");
+        double vmax = 0.0;
+        for (double v : cells) vmax = std::max(vmax, v);
+        check(vmax > 0.0, "ofd: h5 slice has non-zero field");
+    }
+#endif
 
     // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
     // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)
@@ -2016,6 +2226,7 @@ int main(int argc, char *argv[])
     testRoomAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
+    testKernelResultReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();
     testOnnActivation();

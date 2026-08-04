@@ -32,7 +32,7 @@ cmake --build build -j
 ### オプション
 | オプション | 既定 | 説明 |
 |---|---|---|
-| `-DUSE_HDF5=ON`   | OFF | HDF5 時系列/プロジェクト出力 (`io/H5Writer`) |
+| `-DUSE_HDF5=ON`   | OFF | HDF5 の読み書き。**計算結果の画面反映 (2D 断面 / H5 アニメ) に必要** — カーネルの `time_series_data.h5` を読む `io/H5Reader` と、時系列/プロジェクト出力の `io/H5Writer` が有効になる |
 | `-DUSE_LIBIGL=ON` | OFF | より高精度な共形/winding-number ボクセル化 (`docs/libigl-integration.md`)。標準ビルドでも `io/Voxelizer` の階段近似ボクセル化は有効 |
 | `-DBUILD_TESTS=ON`| ON  | `.ofd` ラウンドトリップ + ボクセル化 自己テスト (`ofdx_selftest`) |
 | `-DBUILD_OPENUWA=ON`| ON | 水中音響の分離アプリ `openuwa`。OFF でターゲットごと外せる (本体 `openfdtd_x` には影響しない) |
@@ -76,6 +76,27 @@ export OPENBPM_HOME=/path/to/OpenBPM     # obpm, obpm_post ...
 オプションのカーネルは対応ドメインを使うときだけ必要。現在のドメインの
 カーネルが見つからない場合はステータスバーに「⚠ カーネル未検出」が表示され、
 クリックでカーネルパス設定を開ける。
+
+#### 結果を HDF5 で確認する場合 (USE_HDF5)
+
+ofd / orcwa / obpm は実行時に作業ディレクトリへ `time_series_data.h5` を
+書き出す (カーネル側は HDF5 が必須依存なので追加のビルド設定は不要)。
+GUI 側でこれを読んで **2D 断面** (z 中央断面の |E| を `/metadata` の格子
+定数から空間再構成) と **H5 アニメ**タブに反映するには、GUI を
+`-DUSE_HDF5=ON` でビルドする:
+
+```bash
+# Linux: apt-get install libhdf5-dev / macOS: brew install hdf5
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_HDF5=ON
+cmake --build build -j
+```
+
+macOS で Homebrew の HDF5 が見つからない場合は
+`-DHDF5_ROOT="$(brew --prefix hdf5)"` を追加する。カーネル側
+(OpenFDTD / OpenRCWA の macOS ビルド — LAPACKE や libomp を明示指定する
+構成でも) は `find_package(HDF5 REQUIRED)` なので、`brew install hdf5`
+さえあれば cmake オプションの追加は不要 (見つからないときだけ同じ
+`-DHDF5_ROOT` を足す)。
 
 #### カーネルが見つからないとき
 

@@ -54,6 +54,17 @@ void I18n::loadTables() {
     add("tb_post", "ポスト処理", "Post");
     add("tb_plot2d", "図形表示2D", "Plot 2D");
     add("tb_plot3d", "図形表示3D", "Plot 3D");
+    add("tb_plot2d_tip",
+        "結果プロットタブを開く — 実行後は給電点の周波数特性 (<kernel>.log) "
+        "と遠方界パターン (far1d.log) を表示。実行前は波源波形プレビュー。"
+        "カーネル作図 (ev.ev2) は下部の「ev2d を開く」から",
+        "Open the result-plot tab — after a run it shows the feed-point "
+        "frequency response (<kernel>.log) and far-field pattern (far1d.log); "
+        "before a run, the source-waveform preview. Kernel-drawn figures "
+        "(ev.ev2) open via the ev2d button at the bottom");
+    add("tb_plot3d_tip",
+        "3D シーン (形状・メッシュのビューポート) へ切替",
+        "Switch to the 3D scene (geometry / mesh viewport)");
     add("tb_stop", "停止", "Stop");
     add("tb_cloud", "クラウド送信", "Cloud");
     add("tb_cloud_optical_only", "クラウド送信 (光のみ)", "Cloud (optical only)");
@@ -996,6 +1007,18 @@ void I18n::loadTables() {
     add("log_h5_slice",
         "HDF5 結果 (%1) を 2D 断面ビューに反映しました",
         "Loaded the HDF5 result (%1) into the 2D slice view");
+    add("log_freqchar",
+        "%1 の給電点特性 (%2 点) を結果プロットに反映しました",
+        "Loaded the feed-point response from %1 (%2 points) into the result "
+        "plot");
+    add("log_farpattern",
+        "far1d.log の遠方界パターン (%1 面) を結果プロットに反映しました",
+        "Loaded the far-field pattern from far1d.log (%1 cuts) into the "
+        "result plot");
+    add("log_ev_ready",
+        "作図出力 %1 を確認 — 下部の「ev2d を開く / ev3d を開く」で表示できます",
+        "Plot output %1 is ready — open it with the ev2d / ev3d buttons at "
+        "the bottom");
     add("log_validate", "入力データを検証中…", "Validating input data…");
 
     // 編集メニュー
