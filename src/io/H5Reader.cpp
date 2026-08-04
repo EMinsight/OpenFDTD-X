@@ -220,6 +220,68 @@ bool H5Reader::readOfdMidSlice(const QString &path, QVector<double> &cells,
     cells.clear();
     rows = cols = 0;
 
+    // ── (a) 新レイアウト: /freqdomain/E {F, Nx+1, Ny+1, Nz+1, 3, 2} ────────
+    // 既に (i,j,k) の空間形状なので k 中央断面だけをハイパースラブで読む
+    // (大規模格子で全体を読まない)
+    {
+        Ids id;
+        id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
+                          H5P_DEFAULT);
+        if (id.file < 0) {
+            setErr(err, QStringLiteral("cannot open %1").arg(path));
+            return false;
+        }
+        if (H5Lexists(id.file, "/freqdomain", H5P_DEFAULT) > 0 &&
+            H5Lexists(id.file, "/freqdomain/E", H5P_DEFAULT) > 0) {
+            id.dset = H5Dopen2(id.file, "/freqdomain/E", H5P_DEFAULT);
+            if (id.dset >= 0) {
+                id.space = H5Dget_space(id.dset);
+                hsize_t d[6];
+                if (H5Sget_simple_extent_ndims(id.space) == 6 &&
+                    H5Sget_simple_extent_dims(id.space, d, nullptr) == 6 &&
+                    d[0] >= 1 && d[4] == 3 && d[5] == 2) {
+                    const hsize_t nx1 = d[1], ny1 = d[2], nz1 = d[3];
+                    const hsize_t kmid = (nz1 > 0) ? (nz1 - 1) / 2 : 0;
+                    const hsize_t start[6] = { 0, 0, 0, kmid, 0, 0 };
+                    const hsize_t count[6] = { 1, nx1, ny1, 1, 3, 2 };
+                    H5Sselect_hyperslab(id.space, H5S_SELECT_SET, start,
+                                        nullptr, count, nullptr);
+                    const hsize_t mdims[3] = { nx1, ny1, 6 };
+                    id.mem = H5Screate_simple(3, mdims, nullptr);
+                    QVector<double> buf(int(nx1 * ny1 * 6));
+                    if (H5Dread(id.dset, H5T_NATIVE_DOUBLE, id.mem, id.space,
+                                H5P_DEFAULT, buf.data()) < 0) {
+                        setErr(err,
+                               QStringLiteral("read failed: /freqdomain/E"));
+                        return false;
+                    }
+                    cols = int(nx1);
+                    rows = int(ny1);
+                    cells.resize(cols * rows);
+                    for (hsize_t i = 0; i < nx1; ++i) {
+                        for (hsize_t j = 0; j < ny1; ++j) {
+                            const qlonglong base =
+                                (qlonglong(i) * qlonglong(ny1) +
+                                 qlonglong(j)) * 6;
+                            double s = 0.0;
+                            for (int c = 0; c < 6; ++c) {
+                                const double v = buf[int(base + c)];
+                                s += v * v;
+                            }
+                            // 行 0 = +y 側 (ヒートマップは行順で描画)
+                            cells[int((ny1 - 1 - j) * nx1 + i)] =
+                                std::sqrt(s);
+                        }
+                    }
+                    if (groupName)
+                        *groupName = QStringLiteral("freqdomain");
+                    return true;
+                }
+            }
+        }
+    }
+
+    // ── (b) 旧レイアウト: /data%06d/E + /metadata 格子定数 ──────────────────
     QVector<H5DatasetInfo> infos;
     if (!listDatasets(path, infos, err)) return false;
 

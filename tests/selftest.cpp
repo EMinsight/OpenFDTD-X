@@ -1928,6 +1928,49 @@ static void testH5Reader()
         check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-9,
               "h5: ofd slice center value");
     }
+
+    // 新レイアウト (OpenFDTD sol/outputHdf5.c): /freqdomain/E
+    // {F, Nx+1, Ny+1, Nz+1, 3, 2}。値は全 6 成分 = 9i+3j+k → |E| = v·√6
+    const QString newPath = dir.filePath("ofd_new.h5");
+    {
+        const hid_t file = H5Fcreate(newPath.toLocal8Bit().constData(),
+                                     H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        check(file >= 0, "h5: freqdomain fixture created");
+        H5Gclose(H5Gcreate2(file, "/freqdomain", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        QVector<float> e(3 * 3 * 3 * 6);
+        int m6 = 0;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    for (int cc = 0; cc < 6; ++cc)
+                        e[m6++] = float(9 * i + 3 * j + k);
+        const hsize_t d6[6] = { 1, 3, 3, 3, 3, 2 };
+        const hid_t sp = H5Screate_simple(6, d6, nullptr);
+        const hid_t ds = H5Dcreate2(file, "/freqdomain/E", H5T_NATIVE_FLOAT,
+                                    sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                 e.constData());
+        H5Dclose(ds); H5Sclose(sp);
+        H5Fclose(file);
+    }
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(newPath, cells, rows, cols, &group),
+              "h5: freqdomain mid-slice ok");
+        check(rows == 3 && cols == 3, "h5: freqdomain slice dims");
+        check(group == QLatin1String("freqdomain"),
+              "h5: freqdomain layout detected");
+        const double s6 = std::sqrt(6.0);
+        check(std::fabs(cells[2 * 3 + 0] - (9 * 0 + 3 * 0 + 1) * s6) < 1e-5,
+              "h5: freqdomain value (i=0,j=0)");
+        check(std::fabs(cells[0 * 3 + 2] - (9 * 2 + 3 * 2 + 1) * s6) < 1e-5,
+              "h5: freqdomain value (i=2,j=2 → row 0)");
+        check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-5,
+              "h5: freqdomain center value");
+    }
 #endif
 }
 
