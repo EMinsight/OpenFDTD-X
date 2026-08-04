@@ -29,10 +29,29 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_section", "マテリアルエクスプローラ (Ansys Lumerical 相当)",
                    "Material Explorer (Ansys Lumerical equivalent)");
     ofd::I18n::reg("mex_hint",
-        "金属・半導体・誘電体・2D材料のデータベースを内蔵。\n"
-        "(n,k 取込・分散モデルフィットは未実装 — 画面は設計モック)",
-        "Built-in database of metals, semiconductors, dielectrics and 2D materials.\n"
-        "(n,k import and dispersion-model fitting are not implemented — this page is a design mock)");
+        "金属・半導体・誘電体・2D材料のデータベース。誘電体 6 種 (SiO2/Si3N4/"
+        "Al2O3/Si/TiO2/PMMA) と光学ガラスは公刊 Sellmeier 係数の実分散を内蔵。"
+        "それ以外は例示表示のみ (n,k 取込・分散フィットは未実装)。",
+        "Database of metals, semiconductors, dielectrics and 2D materials. "
+        "Six dielectrics (SiO2/Si3N4/Al2O3/Si/TiO2/PMMA) and optical glasses "
+        "carry real published Sellmeier dispersion; the rest are illustrative "
+        "only (n,k import and dispersion fitting are not implemented).");
+    ofd::I18n::reg("mex_prev_real",
+        "実 Sellmeier 分散 (公刊係数) — 有効範囲 %1 のみ描画。この範囲では k≈0",
+        "Real Sellmeier dispersion (published coefficients) — drawn only "
+        "within the valid range %1, where k≈0");
+    ofd::I18n::reg("mex_prev_glass",
+        "ガラスカタログの Sellmeier 実曲線 (k≈0)",
+        "Real Sellmeier curve from the glass catalog (k≈0)");
+    ofd::I18n::reg("mex_prev_fake",
+        "⚠ 例示曲線 — この材料の実分散データは未内蔵 (追加ボタンは無効)",
+        "⚠ Illustrative curve — no real dispersion data built in for this "
+        "material (Add is disabled)");
+    ofd::I18n::reg("mex_add_na_tip",
+        "実分散データが無い材料は物性値に追加できません (誤った εr を"
+        "書き込まないため)。n,k 取込は未実装です",
+        "Materials without real dispersion data cannot be added (to avoid "
+        "writing an incorrect εr). n,k import is not implemented");
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
@@ -103,18 +122,19 @@ const DbGroup kDb[] = {
         { "W",       "W (Tungsten)",           "Sampled",           "0.3–25 μm" },
     } },
     { "半導体 / Semiconductors", {
-        { "Si",      "Si (Green 2008)",        "Sampled 3D",        "0.25–1.45 μm" },
+        // Si は Salzberg-Villa の Sellmeier を内蔵 (赤外の透明域)
+        { "Si",      "Si (Salzberg-Villa)",    "Sellmeier",         "1.36–11 μm" },
         { "Si_pala", "Si (Palik)",             "Sampled",           "0.1–333 μm" },
         { "GaAs",    "GaAs (Palik)",           "Multi-coefficient", "0.2–15 μm" },
         { "Ge",      "Ge (CRC)",               "Sampled",           "0.2–14 μm" },
         { "InP",     "InP",                    "Sellmeier",         "0.95–10 μm" },
     } },
     { "誘電体 / Dielectrics", {
-        { "SiO2",    "SiO2 (Palik)",           "Sampled",           "0.21–50 μm" },
+        { "SiO2",    "SiO2 (Malitson)",        "Sellmeier",         "0.21–3.71 μm" },
         { "Si3N4",   "Si3N4 (Luke)",           "Sellmeier",         "0.31–5.5 μm" },
-        { "Al2O3",   "Al2O3 (Sapphire)",       "Sellmeier",         "0.2–5 μm" },
-        { "TiO2",    "TiO2",                   "Sellmeier",         "0.43–1.5 μm" },
-        { "PMMA",    "PMMA (polymer)",         "Cauchy",            "0.4–1.6 μm" },
+        { "Al2O3",   "Al2O3 (Malitson)",       "Sellmeier",         "0.2–5 μm" },
+        { "TiO2",    "TiO2 (DeVore)",          "Sellmeier",         "0.43–1.5 μm" },
+        { "PMMA",    "PMMA (Sultanova)",       "Sellmeier",         "0.44–1.05 μm" },
     } },
     { "2D材料 / 2D & emerging", {
         { "graphene","Graphene (surface cond.)","Kubo",             "THz–IR" },
@@ -123,6 +143,53 @@ const DbGroup kDb[] = {
         { "ITO",     "ITO (epsilon-near-zero)","Drude",             "vis–IR" },
     } },
 };
+
+// ── 実分散データ (公刊 Sellmeier 係数 — 出典を明記) ─────────────────────────
+// n² = A + Σ Bi·λ²/(λ² − Ci) + Σ Di/(λ² − Ei)   (λ は μm, Ci/Ei は μm²)
+// 有効範囲外は評価しない (範囲外へ外挿した「それらしい値」を出さない)。
+struct RealDispersion {
+    const char *id;       // kDb の id と一致
+    double A;
+    double B[3], C[3];    // Sellmeier 項
+    double D, E;          // 加算極 (DeVore 型)。D=0 なら未使用
+    double lmin_um, lmax_um;
+};
+const RealDispersion kRealNk[] = {
+    // SiO2 — Malitson (1965)
+    { "SiO2", 1.0, { 0.6961663, 0.4079426, 0.8974794 },
+      { 0.004679148, 0.013512063, 97.934003 }, 0, 0, 0.21, 3.71 },
+    // Si3N4 — Luke (2015)
+    { "Si3N4", 1.0, { 3.0249, 40314.0, 0.0 },
+      { 0.018317068, 1537208.2, 1.0 }, 0, 0, 0.31, 5.5 },
+    // Al2O3 (サファイア常光) — Malitson (1962)
+    { "Al2O3", 1.0, { 1.4313493, 0.65054713, 5.3414021 },
+      { 0.005279925, 0.014238264, 325.01783 }, 0, 0, 0.2, 5.0 },
+    // Si — Salzberg & Villa (1957), 赤外の透明域
+    { "Si", 1.0, { 10.6684293, 0.0030434748, 1.54133408 },
+      { 0.090912190, 1.2876602, 1218816.0 }, 0, 0, 1.36, 11.0 },
+    // TiO2 (ルチル常光) — DeVore (1951): n² = 5.913 + 0.2441/(λ²−0.0803)
+    { "TiO2", 5.913, { 0, 0, 0 }, { 1, 1, 1 }, 0.2441, 0.0803, 0.43, 1.5 },
+    // PMMA — Sultanova ら (2009)
+    { "PMMA", 1.0, { 1.1819, 0, 0 }, { 0.011313, 1.0, 1.0 }, 0, 0,
+      0.44, 1.05 },
+};
+
+const RealDispersion *realNk(const QString &id)
+{
+    for (const RealDispersion &r : kRealNk)
+        if (id == QLatin1String(r.id)) return &r;
+    return nullptr;
+}
+
+double realN(const RealDispersion &r, double lambda_um)
+{
+    const double l2 = lambda_um * lambda_um;
+    double n2 = r.A;
+    for (int i = 0; i < 3; ++i)
+        if (r.B[i] != 0.0) n2 += r.B[i] * l2 / (l2 - r.C[i]);
+    if (r.D != 0.0) n2 += r.D / (l2 - r.E);
+    return (n2 > 0.0) ? std::sqrt(n2) : 0.0;
+}
 
 QLabel *makeBadge(const QString &text, const char *color, QWidget *parent)
 {
@@ -299,6 +366,10 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     m_plotK->setLabels(QString::fromUtf8("λ [nm]"), "k");
     m_plotK->setMinimumHeight(90);
     sFit->vbox()->addWidget(m_plotK);
+    m_previewNote = new QLabel(sFit);
+    m_previewNote->setWordWrap(true);
+    m_previewNote->setStyleSheet("font-size:11px;");
+    sFit->vbox()->addWidget(m_previewNote);
     auto *fitNote = new QLabel(I18n::tr("mex_fit_note"), sFit);
     fitNote->setWordWrap(true);
     sFit->vbox()->addWidget(fitNote);
@@ -341,9 +412,9 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     // 材料の利用
     auto *sApply = new SectionBox(I18n::tr("mex_apply_section"), body);
     auto *applyRow = new QHBoxLayout();
-    auto *addBtn = new QPushButton(I18n::tr("mex_add_material"), sApply);
-    addBtn->setProperty("primary", true);
-    applyRow->addWidget(addBtn);
+    m_addBtn = new QPushButton(I18n::tr("mex_add_material"), sApply);
+    m_addBtn->setProperty("primary", true);
+    applyRow->addWidget(m_addBtn);
     auto *tempBtn  = new QPushButton(I18n::tr("mex_temp_table"), sApply);
     auto *anisoBtn = new QPushButton(I18n::tr("mex_aniso"), sApply);
     tabhelp::markNotImplemented(tempBtn);    // 温度依存テーブルは未配線
@@ -379,7 +450,7 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
             });
     connect(m_fitModel, &QComboBox::currentIndexChanged,
             m_modelStack, &QStackedWidget::setCurrentIndex);
-    connect(addBtn, &QPushButton::clicked,
+    connect(m_addBtn, &QPushButton::clicked,
             this, &MaterialExplorerTab::addToMaterials);
 
     showEntry(0);   // 既定選択: Au (Johnson & Christy)
@@ -449,11 +520,16 @@ void MaterialExplorerTab::filterTree(const QString &query)
     }
 }
 
-// mock の n,k 曲線 (光学ガラスは Sellmeier、その他は例示式) — λ は nm
+// n 曲線: 光学ガラスと実分散内蔵材は実 Sellmeier、その他は例示式 — λ は nm。
+// 実分散は有効範囲へクランプして評価する (範囲外へ外挿しない)
 double MaterialExplorerTab::previewN(const Entry &e, double lambda_nm) const
 {
     if (e.glassIndex >= 0 && e.glassIndex < GlassCatalog::all().size())
         return GlassCatalog::all()[e.glassIndex].n(lambda_nm / 1000.0);
+    if (const RealDispersion *r = realNk(e.id)) {
+        const double um = qBound(r->lmin_um, lambda_nm / 1000.0, r->lmax_um);
+        return realN(*r, um);
+    }
     return 0.2 + 2.5 * std::exp(-(lambda_nm - 1200.0) / 900.0)
          + std::sin(lambda_nm / 200.0) * 0.05;
 }
@@ -468,20 +544,43 @@ void MaterialExplorerTab::showEntry(int index)
     m_modelBadge->setText(e.model);
     m_rangeLabel->setText(I18n::tr("mex_range_fmt").arg(e.range));
 
-    // λ = 400 + 20i nm (60点) — mock の数式そのまま
+    // 実分散内蔵材は有効範囲のみ、その他は 400–1580 nm を 60 点で描く
+    const RealDispersion *r = realNk(e.id);
+    double l0 = 400.0, l1 = 1580.0;
+    if (r) {
+        l0 = std::max(l0, r->lmin_um * 1000.0);
+        l1 = std::min(l1, r->lmax_um * 1000.0);
+        if (l1 <= l0) {              // 表示帯域と重ならない (Si の赤外域など)
+            l0 = r->lmin_um * 1000.0;
+            l1 = std::min(r->lmax_um, r->lmin_um * 4.0) * 1000.0;
+        }
+    }
+    const bool realCurve = (r != nullptr) || (e.glassIndex >= 0);
     MiniSeries sn, sk;
     sn.color = QColor("#B83280");
     sk.color = QColor("#F59E0B");
     for (int i = 0; i < 60; ++i) {
-        const double l = 400.0 + i * 20.0;
+        const double l = l0 + (l1 - l0) * i / 59.0;
         sn.pts.push_back({ l, previewN(e, l) });
-        // 光学ガラスはこの帯域で透明 (k≈0)
-        const double k = (e.glassIndex >= 0) ? 0.0
+        // 実 Sellmeier の有効範囲 (透明域) では k≈0
+        const double k = realCurve ? 0.0
             : 1.5 + (l - 400.0) / 1600.0 * 8.0 + std::cos(l / 300.0) * 0.1;
         sk.pts.push_back({ l, k });
     }
     m_plotN->setSeries({ sn });
     m_plotK->setSeries({ sk });
+
+    // 実データの有無を明示し、無い材料は追加を無効化する (誤った εr を
+    // プロジェクトへ書き込まない — 絶対規則 5/6 の流儀)
+    if (r)
+        m_previewNote->setText(I18n::tr("mex_prev_real").arg(e.range));
+    else if (e.glassIndex >= 0)
+        m_previewNote->setText(I18n::tr("mex_prev_glass"));
+    else
+        m_previewNote->setText(I18n::tr("mex_prev_fake"));
+    m_addBtn->setEnabled(realCurve);
+    m_addBtn->setToolTip(realCurve ? QString()
+                                   : I18n::tr("mex_add_na_tip"));
 }
 
 // 選択材料を Project::materials() へ (εr = n(λc)²  — GlassCatalogTab と同方針)
@@ -489,6 +588,9 @@ void MaterialExplorerTab::addToMaterials()
 {
     if (m_sel < 0 || m_sel >= m_entries.size()) return;
     const Entry &e = m_entries[m_sel];
+    // 実分散データの無い材料は追加しない (例示曲線から誤った εr を
+    // プロジェクトへ書き込まない)。UI 側でもボタンを無効化している
+    if (e.glassIndex < 0 && !realNk(e.id)) return;
 
     const OpticalOpts &o = m_p->optical();
     const double lc_nm = (o.lambdaMin + o.lambdaMax) / 2.0;

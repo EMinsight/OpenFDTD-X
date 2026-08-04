@@ -19,10 +19,16 @@
 #include <QLineEdit>
 #include <QLinearGradient>
 #include <QLocale>
+#include <QMessageBox>
 #include <QPainter>
+#include <QProcess>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSlider>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QTextStream>
 #include <QStringList>
 #include <QTimer>
 #include <QTreeWidget>
@@ -30,6 +36,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 
 using namespace ofd;
 
@@ -51,8 +58,31 @@ const bool s_i18n = [] {
         "plays ofd propagation series (instantaneous /timeseries/E|H, legacy "
         "/data*/E|H) as z-mid-slice animations. 1D etc. are not supported.");
     ofd::I18n::reg("h5_series_title",
-        "伝搬アニメ |%1| z 中央断面 — %2",
-        "Propagation |%1| z-mid slice — %2");
+        "伝搬アニメ |%1| %2 断面 — %3",
+        "Propagation |%1| %2 slice — %3");
+    ofd::I18n::reg("h5_sec_note_on",
+        "▸ 断面の軸と位置は伝搬時系列 (E/H) の表示に反映されます",
+        "▸ The slice plane and position apply to the propagation series "
+        "(E/H) view");
+    ofd::I18n::reg("h5_sec_note_off",
+        "▸ 断面の選択は伝搬時系列 (E/H) を選択したときに有効になります",
+        "▸ Slice selection becomes active when a propagation series (E/H) "
+        "is selected");
+    ofd::I18n::reg("h5_exp_running", "書き出し中… %1 / %2",
+                   "Exporting… %1 / %2");
+    ofd::I18n::reg("h5_exp_encoding", "ffmpeg でエンコード中…",
+                   "Encoding with ffmpeg…");
+    ofd::I18n::reg("h5_exp_done", "書き出しました: %1", "Exported: %1");
+    ofd::I18n::reg("h5_exp_fail", "書き出し失敗: %1", "Export failed: %1");
+    ofd::I18n::reg("h5_exp_noffmpeg",
+        "ffmpeg が見つかりません (PATH を確認)。動画化には ffmpeg の導入が"
+        "必要です — macOS: brew install ffmpeg / Linux: apt install ffmpeg。"
+        "代わりに「PNG連番」で書き出せます。",
+        "ffmpeg not found on PATH. Install it for video export — macOS: "
+        "brew install ffmpeg / Linux: apt install ffmpeg. You can export a "
+        "PNG sequence instead.");
+    ofd::I18n::reg("h5_exp_cancelled", "書き出しを中止しました",
+                   "Export cancelled");
     ofd::I18n::reg("h5_disabled",
         "HDF5 読取はこのビルドでは無効です (-DUSE_HDF5=ON でビルドしてください)",
         "HDF5 reading is disabled in this build (rebuild with -DUSE_HDF5=ON)");
@@ -238,6 +268,29 @@ void FieldCanvas::rebuildImage()
         for (int c = 0; c < m_cols; ++c)
             line[c] = mapColor(src[c]).rgb();
     }
+}
+
+QImage FieldCanvas::renderImage(const QVector<double> &d, int rows, int cols,
+                                int cellPx, double lo, double hi)
+{
+    if (rows <= 0 || cols <= 0 || d.size() < qsizetype(rows) * cols)
+        return QImage();
+    // mapColor は m_lo/m_hi で正規化するため一時的に差し替える
+    const double saveLo = m_lo, saveHi = m_hi;
+    m_lo = lo;
+    m_hi = (hi > lo) ? hi : lo + 1.0;
+    QImage img(cols, rows, QImage::Format_RGB32);
+    for (int r = 0; r < rows; ++r) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(r));
+        const double *src = d.constData() + qsizetype(r) * cols;
+        for (int c = 0; c < cols; ++c)
+            line[c] = mapColor(src[c]).rgb();
+    }
+    m_lo = saveLo;
+    m_hi = saveHi;
+    cellPx = qMax(1, cellPx);
+    return img.scaled(cols * cellPx, rows * cellPx, Qt::IgnoreAspectRatio,
+                      Qt::FastTransformation);
 }
 
 void FieldCanvas::paintEvent(QPaintEvent *)
@@ -496,14 +549,14 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     sp->form()->addRow(ofd::tabhelp::unwiredNote(sp));
     v->addWidget(sp);
 
-    // 時間断面 / Cross-sections (XY/XZ/YZ) — 未配線 (unwiredNote 付きで維持)
+    // 時間断面 / Cross-sections (XY/XZ/YZ) — 伝搬時系列の表示断面を選ぶ
     auto *sx = new SectionBox(I18n::tr("h5_xsec_section"), body);
     auto *xrow = new QHBoxLayout();
-    auto *planeBox = new QComboBox(sx);
-    planeBox->addItem(I18n::tr("h5_sec_xy"));
-    planeBox->addItem(I18n::tr("h5_sec_xz"));
-    planeBox->addItem(I18n::tr("h5_sec_yz"));
-    xrow->addWidget(planeBox);
+    m_planeBox = new QComboBox(sx);
+    m_planeBox->addItem(I18n::tr("h5_sec_xy"));
+    m_planeBox->addItem(I18n::tr("h5_sec_xz"));
+    m_planeBox->addItem(I18n::tr("h5_sec_yz"));
+    xrow->addWidget(m_planeBox);
     xrow->addWidget(new QLabel(I18n::tr("h5_sec_pos"), sx));
     m_secSlider = new QSlider(Qt::Horizontal, sx);
     m_secSlider->setRange(0, 30);
@@ -515,22 +568,39 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     auto *ckMulti = new QCheckBox(I18n::tr("h5_sec_multi"), sx);
     ofd::tabhelp::markNotImplemented(ckMulti);
     sx->vbox()->addWidget(ckMulti);
-    // 断面の選択・位置はプレビュー描画に反映されない (ラベル更新のみ)
-    sx->vbox()->addWidget(ofd::tabhelp::unwiredNote(sx));
+    m_secNote = new QLabel(I18n::tr("h5_sec_note_off"), sx);
+    m_secNote->setWordWrap(true);
+    m_secNote->setStyleSheet("color:palette(mid); font-size:11px;");
+    sx->vbox()->addWidget(m_secNote);
     v->addWidget(sx);
 
-    // エクスポート / Export
+    // エクスポート / Export — PNG/CSV は表示中データ、連番/動画は全フレーム。
+    // 動画 (MP4/GIF) は外部 ffmpeg を PATH から起動する
     auto *se = new SectionBox(I18n::tr("h5_export"), body);
     auto *erow = new QHBoxLayout();
-    // エクスポートは全て未実装 → 無効化
-    for (const char *key : { "h5_exp_mp4", "h5_exp_gif", "h5_exp_png",
-                             "h5_exp_pngseq", "h5_exp_csv" }) {
-        auto *b = new QPushButton(I18n::tr(QLatin1String(key)), se);
-        ofd::tabhelp::markNotImplemented(b);
+    m_expMp4 = new QPushButton(I18n::tr("h5_exp_mp4"), se);
+    m_expGif = new QPushButton(I18n::tr("h5_exp_gif"), se);
+    m_expPng = new QPushButton(I18n::tr("h5_exp_png"), se);
+    m_expPngSeq = new QPushButton(I18n::tr("h5_exp_pngseq"), se);
+    m_expCsv = new QPushButton(I18n::tr("h5_exp_csv"), se);
+    for (QPushButton *b : { m_expMp4, m_expGif, m_expPng, m_expPngSeq,
+                            m_expCsv })
         erow->addWidget(b);
-    }
     erow->addStretch(1);
     se->vbox()->addLayout(erow);
+    m_expStatus = new QLabel(se);
+    m_expStatus->setWordWrap(true);
+    se->vbox()->addWidget(m_expStatus);
+    connect(m_expPng, &QPushButton::clicked, this,
+            &H5ViewerTab::exportPngCurrent);
+    connect(m_expCsv, &QPushButton::clicked, this,
+            &H5ViewerTab::exportCsvCurrent);
+    connect(m_expPngSeq, &QPushButton::clicked, this,
+            [this] { exportFrames(false, QString()); });
+    connect(m_expMp4, &QPushButton::clicked, this,
+            [this] { exportFrames(true, QStringLiteral("mp4")); });
+    connect(m_expGif, &QPushButton::clicked, this,
+            [this] { exportFrames(true, QStringLiteral("gif")); });
     auto *mrow = new QHBoxLayout();
     mrow->addWidget(new QLabel("FPS", se));
     auto *fps = new QLineEdit("30", se);
@@ -660,7 +730,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
         m_canvas->setShowAxes(on);
     });
     connect(m_secSlider, &QSlider::valueChanged, this, [this](int val) {
-        m_secValue->setText(QString::number(val));
+        m_secValue->setText(QStringLiteral("%1 / %2")
+                                .arg(val).arg(m_secSlider->maximum()));
+        if (m_seriesMode) loadCurrentFrame();
+    });
+    connect(m_planeBox, &QComboBox::currentIndexChanged, this, [this](int) {
+        updateSliceControls();
+        if (m_seriesMode) loadCurrentFrame();
     });
     connect(m_tree, &QTreeWidget::itemClicked, this,
             [this](QTreeWidgetItem *it, int) {
@@ -828,17 +904,20 @@ void H5ViewerTab::selectDataset(int idx)
             && info.frames > 0) {
             m_seriesMode = true;
             m_seriesComp = sm.captured(1);
+            m_seriesInfo = info;
             m_nframes = info.frames;
             m_frameSlider->blockSignals(true);
             m_frameSlider->setRange(0, std::max(0, m_nframes - 1));
             m_frameSlider->blockSignals(false);
             setPlaybackEnabled(true);
+            updateSliceControls();
             m_frame = 0;
             setFrame(0);
             return;
         }
     }
     m_seriesMode = false;
+    updateSliceControls();
 
     const int nd = ds.dims.size();
     if (nd == 2) {
@@ -885,13 +964,14 @@ void H5ViewerTab::loadCurrentFrame()
     if (m_seriesMode) {
         QString label;
         if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, m_frame,
+                                          sliceAxis(), m_secSlider->value(),
                                           d, rows, cols, &label, &err)) {
             m_canvas->setMessage(I18n::tr("h5_load_error") + " " + err);
             clearStats();
             return;
         }
-        m_previewBox->setTitle(
-            I18n::tr("h5_series_title").arg(m_seriesComp, label));
+        m_previewBox->setTitle(I18n::tr("h5_series_title")
+            .arg(m_seriesComp, m_planeBox->currentText(), label));
         showData(d, rows, cols);
         return;
     }
@@ -909,6 +989,225 @@ void H5ViewerTab::openFile(const QString &path)
 {
     m_file->setText(path);
     loadFile();
+}
+
+// planeBox (XY/XZ/YZ) → 固定軸 (2=Z, 1=Y, 0=X)
+int H5ViewerTab::sliceAxis() const
+{
+    switch (m_planeBox->currentIndex()) {
+    case 1: return 1;      // XZ 面 = Y 固定
+    case 2: return 0;      // YZ 面 = X 固定
+    default: return 2;     // XY 面 = Z 固定
+    }
+}
+
+// 断面 UI の範囲と有効状態 (伝搬時系列のときだけ効く)
+void H5ViewerTab::updateSliceControls()
+{
+    const bool on = m_seriesMode;
+    m_planeBox->setEnabled(on);
+    m_secSlider->setEnabled(on);
+    m_secNote->setText(I18n::tr(on ? "h5_sec_note_on" : "h5_sec_note_off"));
+    if (!on) return;
+    const int n[3] = { m_seriesInfo.nx1, m_seriesInfo.ny1, m_seriesInfo.nz1 };
+    const int axis = sliceAxis();
+    const int maxIdx = std::max(0, n[axis] - 1);
+    m_secSlider->blockSignals(true);
+    m_secSlider->setRange(0, maxIdx);
+    m_secSlider->setValue(maxIdx / 2);      // 既定は中央断面
+    m_secSlider->blockSignals(false);
+    m_secValue->setText(QStringLiteral("%1 / %2")
+                            .arg(maxIdx / 2).arg(maxIdx));
+}
+
+// 現在フレームの表示画像を PNG 保存 (軸・カラーバーごと見た目のまま)
+void H5ViewerTab::exportPngCurrent()
+{
+    if (!m_canvas->hasData()) return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("h5_exp_png"), QStringLiteral("h5_frame.png"),
+        QStringLiteral("PNG (*.png)"));
+    if (path.isEmpty()) return;
+    m_expStatus->setText(m_canvas->grab().save(path)
+        ? I18n::tr("h5_exp_done").arg(QFileInfo(path).fileName())
+        : I18n::tr("h5_exp_fail").arg(path));
+}
+
+// 現在フレームの行列を CSV 保存 (実データ)
+void H5ViewerTab::exportCsvCurrent()
+{
+    if (m_data.isEmpty() || m_rows <= 0 || m_cols <= 0) return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("h5_exp_csv"), QStringLiteral("h5_frame.csv"),
+        QStringLiteral("CSV (*.csv)"));
+    if (path.isEmpty()) return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_expStatus->setText(I18n::tr("h5_exp_fail").arg(path));
+        return;
+    }
+    QTextStream out(&f);
+    for (int r = 0; r < m_rows; ++r) {
+        for (int c = 0; c < m_cols; ++c) {
+            if (c) out << ',';
+            out << m_data[r * m_cols + c];
+        }
+        out << '\n';
+    }
+    m_expStatus->setText(
+        I18n::tr("h5_exp_done").arg(QFileInfo(path).fileName()));
+}
+
+// frame 番目のフレームを読み込んで指定スケールで画像化する
+QImage H5ViewerTab::frameImage(int frame, double lo, double hi, bool *ok)
+{
+    QVector<double> d;
+    int rows = 0, cols = 0;
+    bool loaded = false;
+    if (m_seriesMode)
+        loaded = H5Reader::readOfdSeriesFrame(
+            m_filePath, m_seriesComp, frame, sliceAxis(),
+            m_secSlider->value(), d, rows, cols);
+    else
+        loaded = H5Reader::readFrame(m_filePath, m_dataset, frame, d, rows,
+                                     cols);
+    if (ok) *ok = loaded;
+    if (!loaded) return QImage();
+    // 512px 程度になるようセルを拡大 (ニアレスト — 物理格子をぼかさない)
+    const int cellPx = qMax(1, 512 / qMax(rows, cols));
+    return m_canvas->renderImage(d, rows, cols, cellPx, lo, hi);
+}
+
+// 全フレームを PNG 連番へ描き出す。video=true なら ffmpeg で動画化
+void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
+{
+    if (m_exporting || m_nframes <= 0) return;
+
+    QString ffmpeg, outPath, framesDir;
+    if (video) {
+        // 動画化は外部 ffmpeg (PATH) — 無ければ導入方法を案内して中止
+        ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        if (ffmpeg.isEmpty()) {
+            QMessageBox::information(this, I18n::tr("h5_export"),
+                                     I18n::tr("h5_exp_noffmpeg"));
+            return;
+        }
+        outPath = QFileDialog::getSaveFileName(
+            this, I18n::tr("h5_export"),
+            QStringLiteral("propagation.%1").arg(videoExt),
+            QStringLiteral("%1 (*.%2)").arg(videoExt.toUpper(), videoExt));
+        if (outPath.isEmpty()) return;
+    } else {
+        framesDir = QFileDialog::getExistingDirectory(
+            this, I18n::tr("h5_exp_pngseq"));
+        if (framesDir.isEmpty()) return;
+    }
+
+    m_exporting = true;
+
+    // スケールは全フレーム共通 (自動: 全フレーム走査 / 手動: 入力値)。
+    // フレームごとの自動スケールはアニメがちらつくため使わない
+    double lo = 0.0, hi = 1.0;
+    QProgressDialog prog(I18n::tr("h5_export"), I18n::tr("gal_cancel"),
+                         0, m_nframes * (m_autoScale->isChecked() ? 2 : 1),
+                         this);
+    prog.setWindowModality(Qt::WindowModal);
+    prog.setMinimumDuration(200);
+    int step = 0;
+    if (m_autoScale->isChecked()) {
+        bool first = true;
+        for (int f = 0; f < m_nframes; ++f) {
+            QVector<double> d;
+            int rows = 0, cols = 0;
+            bool okF = m_seriesMode
+                ? H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f,
+                                               sliceAxis(),
+                                               m_secSlider->value(), d, rows,
+                                               cols)
+                : H5Reader::readFrame(m_filePath, m_dataset, f, d, rows,
+                                      cols);
+            if (okF) {
+                for (const double v : d) {
+                    if (first) { lo = hi = v; first = false; }
+                    lo = std::min(lo, v);
+                    hi = std::max(hi, v);
+                }
+            }
+            prog.setValue(++step);
+            if (prog.wasCanceled()) {
+                m_expStatus->setText(I18n::tr("h5_exp_cancelled"));
+                m_exporting = false;
+                return;
+            }
+        }
+    } else {
+        lo = m_scaleMin->text().toDouble();
+        hi = m_scaleMax->text().toDouble();
+    }
+    if (hi <= lo) hi = lo + 1.0;
+
+    // PNG 連番の書き出し先 (動画時は一時ディレクトリ)
+    auto tmp = std::make_shared<QTemporaryDir>();
+    const QString dir = video ? tmp->path() : framesDir;
+    int written = 0;
+    for (int f = 0; f < m_nframes; ++f) {
+        bool okF = false;
+        const QImage img = frameImage(f, lo, hi, &okF);
+        if (okF && !img.isNull()) {
+            img.save(QStringLiteral("%1/frame%2.png").arg(dir)
+                         .arg(f, 5, 10, QLatin1Char('0')));
+            ++written;
+        }
+        prog.setValue(++step);
+        if (prog.wasCanceled()) {
+            m_expStatus->setText(I18n::tr("h5_exp_cancelled"));
+            m_exporting = false;
+            return;
+        }
+    }
+    if (!video) {
+        m_expStatus->setText(I18n::tr("h5_exp_done")
+            .arg(QStringLiteral("%1 (%2 PNG)").arg(framesDir).arg(written)));
+        m_exporting = false;
+        return;
+    }
+
+    // ffmpeg でエンコード (非同期 — 終了はシグナルで受ける)
+    m_expStatus->setText(I18n::tr("h5_exp_encoding"));
+    static const int kFps[] = { 3, 5, 10, 20, 30 };
+    const int fps = kFps[qBound(0, m_speed->currentIndex(), 4)];
+    QStringList args;
+    args << QStringLiteral("-y")
+         << QStringLiteral("-framerate") << QString::number(fps)
+         << QStringLiteral("-i")
+         << QStringLiteral("%1/frame%05d.png").arg(dir);
+    if (videoExt == QLatin1String("gif")) {
+        args << QStringLiteral("-vf")
+             << QStringLiteral("fps=%1").arg(fps);
+    } else {
+        // yuv420p は偶数サイズが必要 — 奇数なら 1px 切り詰める
+        args << QStringLiteral("-c:v") << QStringLiteral("libx264")
+             << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
+             << QStringLiteral("-vf")
+             << QStringLiteral("crop=trunc(iw/2)*2:trunc(ih/2)*2");
+    }
+    args << outPath;
+    auto *proc = new QProcess(this);
+    connect(proc,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, [this, proc, tmp, outPath](int code,
+                                             QProcess::ExitStatus st) {
+        m_expStatus->setText(
+            (st == QProcess::NormalExit && code == 0)
+                ? I18n::tr("h5_exp_done").arg(QFileInfo(outPath).fileName())
+                : I18n::tr("h5_exp_fail")
+                      .arg(QString::fromUtf8(
+                          proc->readAllStandardError().right(300))));
+        m_exporting = false;
+        proc->deleteLater();
+        // tmp (連番の一時ディレクトリ) はここで破棄される
+    });
+    proc->start(ffmpeg, args);
 }
 
 // 行列をキャンバスへ渡し、min / max / 平均 を実計算して統計・スケールを更新

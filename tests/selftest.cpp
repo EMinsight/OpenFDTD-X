@@ -1940,22 +1940,36 @@ static void testH5Reader()
         QVector<double> cells;
         int rows = 0, cols = 0;
         QString label;
-        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 0, cells, rows, cols,
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 0, 2, -1, cells, rows, cols,
                                            &label),
               "h5: old-layout series frame 0");
         double vmax = 0.0;
         for (double v : cells) vmax = std::max(vmax, v);
         check(vmax == 0.0 && label == QLatin1String("data000000"),
               "h5: old-layout frame 0 is the zero snapshot");
-        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, cells, rows, cols,
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 2, -1, cells, rows, cols,
                                            &label),
               "h5: old-layout series frame 1");
         const double s6b = std::sqrt(6.0);
         check(std::fabs(cells[1 * 3 + 1] - (9 + 3 + 1) * s6b) < 1e-9 &&
               label == QLatin1String("data000100"),
               "h5: old-layout frame 1 values");
-        check(!H5Reader::readOfdSeriesFrame(ofdPath, "E", 2, cells, rows, cols),
+        check(!H5Reader::readOfdSeriesFrame(ofdPath, "E", 2, 2, -1, cells, rows, cols),
               "h5: old-layout series rejects out-of-range frame");
+        // 断面軸の切替: YZ 面 (X=1 固定, node = 9·1+3j+k)。
+        // 列 = Y (u=j), 行 = Z (v=k, 行 0 = k=2)
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 0, 1, cells,
+                                           rows, cols),
+              "h5: old-layout YZ slice");
+        check(rows == 3 && cols == 3 &&
+              std::fabs(cells[0 * 3 + 1] - (9 + 3 + 2) * s6b) < 1e-9 &&
+              std::fabs(cells[2 * 3 + 1] - (9 + 3 + 0) * s6b) < 1e-9,
+              "h5: old-layout YZ slice values");
+        // XZ 面 (Y=0 固定, node = 9i+k)。列 = X, 行 = Z
+        check(H5Reader::readOfdSeriesFrame(ofdPath, "E", 1, 1, 0, cells,
+                                           rows, cols) &&
+              std::fabs(cells[1 * 3 + 2] - (18 + 1) * s6b) < 1e-9,
+              "h5: old-layout XZ slice values");
     }
 
     // 新レイアウト (OpenFDTD sol/outputHdf5.c): /freqdomain/E
@@ -2038,7 +2052,7 @@ static void testH5Reader()
         QVector<double> cells;
         int rows = 0, cols = 0;
         QString label;
-        check(H5Reader::readOfdSeriesFrame(newPath, "E", 0, cells, rows, cols,
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 0, 2, -1, cells, rows, cols,
                                            &label),
               "h5: timeseries frame 0");
         double vmax = 0.0;
@@ -2046,16 +2060,23 @@ static void testH5Reader()
         check(vmax == 0.0, "h5: timeseries frame 0 is zero");
         check(label.startsWith(QStringLiteral("t = 0")),
               "h5: timeseries frame 0 time label");
-        check(H5Reader::readOfdSeriesFrame(newPath, "E", 1, cells, rows, cols,
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 1, 2, -1, cells, rows, cols,
                                            &label),
               "h5: timeseries frame 1");
         const double s3 = std::sqrt(3.0);
         // k = (Nz+1-1)/2 = 1、行 0 = +y。|E|(i,j) = (9i+3j+1)·√3
         check(std::fabs(cells[1 * 3 + 1] - (9 + 3 + 1) * s3) < 1e-5,
               "h5: timeseries frame 1 center value");
+        // 断面軸の切替: YZ 面 (X=2 固定)。列 = Y, 行 = Z (行 0 = k=2)
+        check(H5Reader::readOfdSeriesFrame(newPath, "E", 1, 0, 2, cells,
+                                           rows, cols),
+              "h5: timeseries YZ slice");
+        check(rows == 3 && cols == 3 &&
+              std::fabs(cells[0 * 3 + 1] - (18 + 3 + 2) * s3) < 1e-5,
+              "h5: timeseries YZ slice value");
         check(label.contains(QStringLiteral("1.5e-09")),
               "h5: timeseries frame 1 time label");
-        check(!H5Reader::readOfdSeriesFrame(newPath, "E", 5, cells, rows,
+        check(!H5Reader::readOfdSeriesFrame(newPath, "E", 5, 2, -1, cells, rows,
                                             cols),
               "h5: timeseries rejects out-of-range frame");
     }
@@ -2121,9 +2142,16 @@ static void testOfdIntegration(const QString &sampleDir)
         int fr = 0, fc = 0;
         check(H5Reader::readOfdSeriesFrame(
                   dir.filePath("time_series_data.h5"), "E",
-                  sinfo.frames - 1, fcells, fr, fc),
+                  sinfo.frames - 1, 2, -1, fcells, fr, fc),
               "ofd: propagation series last frame readable");
         check(fr == 31 && fc == 31, "ofd: series frame dims 31x31");
+        // 断面軸の切替 (XZ 面 = Y 固定): dipole は 30×30×31 セル →
+        // 行 = Nz+1 = 32, 列 = Nx+1 = 31
+        check(H5Reader::readOfdSeriesFrame(
+                  dir.filePath("time_series_data.h5"), "E",
+                  sinfo.frames - 1, 1, -1, fcells, fr, fc),
+              "ofd: XZ slice readable");
+        check(fr == 32 && fc == 31, "ofd: XZ slice dims 32x31");
     }
 #endif
 

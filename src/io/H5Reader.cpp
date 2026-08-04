@@ -260,9 +260,17 @@ QStringList oldGroupSeries(const QString &path, const QString &comp)
     return out;
 }
 
-// {1,F,NN,6} のノード場 → z 中央断面 (成分 RSS)。行 0 = +y 側
+// 断面軸 axis (0=X, 1=Y, 2=Z) と位置 index (-1 = 中央) を [0, n-1] に丸める
+qlonglong clampSliceIndex(int index, qlonglong nNodes)
+{
+    if (index < 0) return (nNodes - 1) / 2;
+    return qBound<qlonglong>(0, qlonglong(index), nNodes - 1);
+}
+
+// {1,F,NN,6} のノード場 → axis/index の断面 (成分 RSS)。行 0 = 上側
 bool oldSliceFrom(const QString &path, const QString &dset, const OldGrid &g,
-                  QVector<double> &cells, int &rows, int &cols, QString *err)
+                  int axis, int index, QVector<double> &cells,
+                  int &rows, int &cols, QString *err)
 {
     QVector<double> e;
     QVector<qlonglong> dims;
@@ -271,13 +279,22 @@ bool oldSliceFrom(const QString &path, const QString &dset, const OldGrid &g,
         setErr(err, QStringLiteral("%1: unexpected shape").arg(dset));
         return false;
     }
-    const qlonglong k = g.nz / 2;
-    cols = int(g.nx + 1);
-    rows = int(g.ny + 1);
+    // 断面の 2 軸 (列方向 u, 行方向 v) と固定軸のノード位置
+    const qlonglong nNodes[3] = { g.nx + 1, g.ny + 1, g.nz + 1 };
+    const int uAxis = (axis == 0) ? 1 : 0;   // YZ 面は Y, それ以外は X が列
+    const int vAxis = (axis == 2) ? 1 : 2;   // XY 面は Y, それ以外は Z が行
+    const qlonglong fixed = clampSliceIndex(index, nNodes[axis]);
+    cols = int(nNodes[uAxis]);
+    rows = int(nNodes[vAxis]);
     cells.resize(cols * rows);
-    for (qlonglong j = 0; j <= g.ny; ++j) {
-        for (qlonglong i = 0; i <= g.nx; ++i) {
-            const qlonglong node = g.ni * i + g.nj * j + g.nk * k + g.n0;
+    for (qlonglong v = 0; v < nNodes[vAxis]; ++v) {
+        for (qlonglong u = 0; u < nNodes[uAxis]; ++u) {
+            qlonglong ijk[3];
+            ijk[axis] = fixed;
+            ijk[uAxis] = u;
+            ijk[vAxis] = v;
+            const qlonglong node = g.ni * ijk[0] + g.nj * ijk[1]
+                                 + g.nk * ijk[2] + g.n0;
             if (node < 0 || node >= g.nn) {
                 setErr(err, QStringLiteral("node index out of range"));
                 cells.clear();
@@ -287,10 +304,12 @@ bool oldSliceFrom(const QString &path, const QString &dset, const OldGrid &g,
             const qlonglong base = node * 6;
             double s = 0.0;
             for (int c = 0; c < 6; ++c) {
-                const double v = e[int(base + c)];
-                s += v * v;
+                const double val = e[int(base + c)];
+                s += val * val;
             }
-            cells[int((g.ny - j) * (g.nx + 1) + i)] = std::sqrt(s);
+            // 行 0 = 行方向軸の + 側 (画面上側)
+            cells[int((nNodes[vAxis] - 1 - v) * nNodes[uAxis] + u)] =
+                std::sqrt(s);
         }
     }
     return true;
@@ -377,7 +396,7 @@ bool H5Reader::readOfdMidSlice(const QString &path, QVector<double> &cells,
         setErr(err, QStringLiteral("missing /metadata grid constants"));
         return false;
     }
-    if (!oldSliceFrom(path, groups.last(), g, cells, rows, cols, err))
+    if (!oldSliceFrom(path, groups.last(), g, 2, -1, cells, rows, cols, err))
         return false;
     if (groupName)
         *groupName = groups.last().section(QLatin1Char('/'), 1, 1);
@@ -411,6 +430,9 @@ bool H5Reader::ofdSeriesInfo(const QString &path, const QString &comp,
                     out.frames = int(d[0]);
                     out.cols = int(d[1]);
                     out.rows = int(d[2]);
+                    out.nx1 = int(d[1]);
+                    out.ny1 = int(d[2]);
+                    out.nz1 = int(d[3]);
                     out.instantaneous = true;
                     return true;
                 }
@@ -432,17 +454,22 @@ bool H5Reader::ofdSeriesInfo(const QString &path, const QString &comp,
     out.frames = groups.size();
     out.cols = int(g.nx + 1);
     out.rows = int(g.ny + 1);
+    out.nx1 = int(g.nx + 1);
+    out.ny1 = int(g.ny + 1);
+    out.nz1 = int(g.nz + 1);
     out.instantaneous = false;
     return true;
 }
 
 bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
-                                  int frame, QVector<double> &cells,
+                                  int frame, int axis, int index,
+                                  QVector<double> &cells,
                                   int &rows, int &cols, QString *label,
                                   QString *err)
 {
     cells.clear();
     rows = cols = 0;
+    axis = qBound(0, axis, 2);
 
     // ── 新: /timeseries/<comp> の 1 フレームをハイパースラブで読む ──────────
     {
@@ -468,36 +495,51 @@ bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
                                         .arg(frame));
                         return false;
                     }
-                    const hsize_t nx1 = d[1], ny1 = d[2], nz1 = d[3];
-                    const hsize_t kmid = (nz1 > 0) ? (nz1 - 1) / 2 : 0;
-                    const hsize_t start[5] = { hsize_t(frame), 0, 0, kmid, 0 };
-                    const hsize_t count[5] = { 1, nx1, ny1, 1, 3 };
+                    // 空間軸 (0=X,1=Y,2=Z) はデータセットの次元 1..3。
+                    // 断面の列軸 u / 行軸 v (行 0 = v の + 側)
+                    const int uAxis = (axis == 0) ? 1 : 0;
+                    const int vAxis = (axis == 2) ? 1 : 2;
+                    const hsize_t nNodes[3] = { d[1], d[2], d[3] };
+                    const hsize_t fixed = hsize_t(clampSliceIndex(
+                        index, qlonglong(nNodes[axis])));
+                    hsize_t start[5] = { hsize_t(frame), 0, 0, 0, 0 };
+                    hsize_t count[5] = { 1, d[1], d[2], d[3], 3 };
+                    start[1 + axis] = fixed;
+                    count[1 + axis] = 1;
                     H5Sselect_hyperslab(id.space, H5S_SELECT_SET, start,
                                         nullptr, count, nullptr);
-                    const hsize_t mdims[3] = { nx1, ny1, 3 };
-                    id.mem = H5Screate_simple(3, mdims, nullptr);
-                    QVector<double> buf(int(nx1 * ny1 * 3));
+                    const hsize_t nu = nNodes[uAxis], nv = nNodes[vAxis];
+                    // メモリ側は選択と同じ要素数 {nu, nv, 3}。ハイパースラブは
+                    // i→j→k の格納順を保つので、残る 2 軸は常に (u 外側,
+                    // v 内側) の順になる
+                    const hsize_t md[3] = { nu, nv, 3 };
+                    id.mem = H5Screate_simple(3, md, nullptr);
+                    QVector<double> buf(int(nu * nv * 3));
                     if (H5Dread(id.dset, H5T_NATIVE_DOUBLE, id.mem, id.space,
                                 H5P_DEFAULT, buf.data()) < 0) {
                         setErr(err, QStringLiteral("read failed: %1")
                                         .arg(QString::fromUtf8(ds)));
                         return false;
                     }
-                    cols = int(nx1);
-                    rows = int(ny1);
+                    // buf は残った 2 軸を i→j→k の順に並べたもの:
+                    //   axis=2 (k 固定): [i][j] / axis=1 (j 固定): [i][k]
+                    //   axis=0 (i 固定): [j][k]
+                    // → 外側 = uAxis (X or Y)、内側 = vAxis (Y or Z) …
+                    //   ただし axis=0 のときは外側 j = uAxis, 内側 k = vAxis
+                    cols = int(nu);
+                    rows = int(nv);
                     cells.resize(cols * rows);
-                    for (hsize_t i = 0; i < nx1; ++i) {
-                        for (hsize_t j = 0; j < ny1; ++j) {
+                    for (hsize_t u = 0; u < nu; ++u) {
+                        for (hsize_t v = 0; v < nv; ++v) {
                             const qlonglong base =
-                                (qlonglong(i) * qlonglong(ny1) +
-                                 qlonglong(j)) * 3;
+                                (qlonglong(u) * qlonglong(nv) +
+                                 qlonglong(v)) * 3;
                             double s = 0.0;
                             for (int c = 0; c < 3; ++c) {
-                                const double v = buf[int(base + c)];
-                                s += v * v;
+                                const double val = buf[int(base + c)];
+                                s += val * val;
                             }
-                            cells[int((ny1 - 1 - j) * nx1 + i)] =
-                                std::sqrt(s);
+                            cells[int((nv - 1 - v) * nu + u)] = std::sqrt(s);
                         }
                     }
                     if (label) {
@@ -534,7 +576,8 @@ bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
         setErr(err, QStringLiteral("missing /metadata grid constants"));
         return false;
     }
-    if (!oldSliceFrom(path, groups[frame], g, cells, rows, cols, err))
+    if (!oldSliceFrom(path, groups[frame], g, axis, index, cells, rows, cols,
+                      err))
         return false;
     if (label)
         *label = groups[frame].section(QLatin1Char('/'), 1, 1);
@@ -587,7 +630,7 @@ bool H5Reader::ofdSeriesInfo(const QString &, const QString &,
 }
 
 bool H5Reader::readOfdSeriesFrame(const QString &, const QString &, int,
-                                  QVector<double> &, int &, int &,
+                                  int, int, QVector<double> &, int &, int &,
                                   QString *, QString *err)
 {
     if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");

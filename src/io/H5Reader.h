@@ -21,10 +21,11 @@ struct H5DatasetInfo {
     QString typeName;           // "float32" / "float64" / "int…" / "other"
 };
 
-// ofd 系の伝搬時系列 (z 中央断面のフレーム列) の情報
+// ofd 系の伝搬時系列 (断面のフレーム列) の情報
 struct H5OfdSeriesInfo {
     int  frames = 0;
-    int  rows = 0, cols = 0;      // Ny+1, Nx+1
+    int  rows = 0, cols = 0;      // 既定 (XY 断面) の Ny+1, Nx+1
+    int  nx1 = 0, ny1 = 0, nz1 = 0;   // 各軸のノード数 (断面位置の範囲)
     bool instantaneous = false;   // true = /timeseries (瞬時値スナップショット)
                                   // false = /data%06d (DFT 蓄積の経過)
 };
@@ -75,11 +76,14 @@ public:
     //      ラベルは /timeseries/time (E) / time_H (H) の時刻 [s]
     //  (b) 旧: /data%06d/<comp> {1,NFreq2,NN,6} のグループ列 — DFT 蓄積の
     //      経過。ラベルはグループ名
-    // いずれも z 中央断面の振幅 (成分の RSS) をフレームとして返す
+    // 断面は axis (0=X→YZ 面, 1=Y→XZ 面, 2=Z→XY 面) と index (軸方向の
+    // ノード位置。-1 = 中央。範囲外はクランプ) で選ぶ。振幅 (成分の RSS)
+    // を行列で返す (行 0 は上側 = 第 2 軸の +側)
     static bool ofdSeriesInfo(const QString &path, const QString &comp,
                               H5OfdSeriesInfo &out, QString *err = nullptr);
     static bool readOfdSeriesFrame(const QString &path, const QString &comp,
-                                   int frame, QVector<double> &cells,
+                                   int frame, int axis, int index,
+                                   QVector<double> &cells,
                                    int &rows, int &cols,
                                    QString *label = nullptr,
                                    QString *err = nullptr);
