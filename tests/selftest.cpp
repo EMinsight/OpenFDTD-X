@@ -2473,7 +2473,11 @@ static void testThinFilmStack()
             // 厳密に 0 であること (処理系の丸め残差に依存しない実装を要求する
             // — Apple clang で Re(ηs) に微小な非零が残り macOS CI が落ちた)
             check(r.T == 0.0, "tmm: TIR T = 0");
-            check(r.A == 0.0, "tmm: TIR は吸収も 0");
+            // A は残差 (1 − R − T) として求めるので R の丸めをそのまま拾う。
+            // 「無損失系の全反射では吸収が無い」という物理量としての判定に
+            // とどめる (厳密 0 を要求すると R の最終ビットに依存し、処理系で
+            // 落ちる — macOS で実際に発生した)
+            check(std::fabs(r.A) < 1e-12, "tmm: TIR は吸収も 0");
             // 臨界角の直上でも同じ (境界付近で分岐が崩れないこと)
             const FilmResponse e = filmResponse(n0, {}, ns, 0.0, 550.0,
                                                 crit + 1e-6, pol);
