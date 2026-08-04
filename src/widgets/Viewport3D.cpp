@@ -1,16 +1,52 @@
 // Viewport3D.cpp
 #include "Viewport3D.h"
 #include "../core/Project.h"
+#include "../I18n.h"
+#include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
 
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QTimer>
+#include <QPolygonF>
+#include <QRectF>
+#include <QTransform>
 #include <QWheelEvent>
 #include <algorithm>   // std::clamp (レイ反射の位置クランプ)
 #include <cmath>
 
 using namespace ofd;
+
+namespace {
+const bool s_i18n = [] {
+    // 接頭辞は CenterPane と共通の vp_ (3D ビュー系の語彙)。
+    ofd::I18n::reg("vp_fld_none",
+        "結果未読込 — 計算を実行するか結果 HDF5 を開いてください",
+        "No result loaded — run the solver or open a result HDF5 file");
+    ofd::I18n::reg("vp_fld_none_hint",
+        "偽の界分布は表示しません",
+        "No synthetic field pattern is drawn here");
+    ofd::I18n::reg("vp_fld_real",
+        "結果断面 (ソルバ出力の実データ)",
+        "Result slice (actual solver output)");
+    ofd::I18n::reg("vp_fld_norm",
+        "正規化 |値| (最大 %1)",
+        "normalised |value| (max %1)");
+    ofd::I18n::reg("vp_fld_decim",
+        "表示のみ %1 セル毎に間引き",
+        "display decimated: every %1 cells");
+    ofd::I18n::reg("vp_rays_sample",
+        "サンプル表示 — ソルバ結果ではありません (24本 × 4反射)",
+        "Sample display — not solver results (24 rays x 4 bounces)");
+    return true;
+}();
+
+// 断面の固定軸 (0=X, 1=Y, 2=Z) → 表示用の軸名
+const char *sliceAxisName(int axis)
+{
+    return (axis == 0) ? "X" : (axis == 1) ? "Y" : "Z";
+}
+} // namespace
 
 Viewport3D::Viewport3D(Project *project, QWidget *parent)
     : QWidget(parent), m_project(project)
@@ -21,15 +57,8 @@ Viewport3D::Viewport3D(Project *project, QWidget *parent)
     setAutoFillBackground(false);
     connect(project, &Project::changed, this, qOverload<>(&QWidget::update));
     connect(project, &Project::loaded, this, qOverload<>(&QWidget::update));
-
-    // Field オーバーレイ用のアニメーション。Field 以外では止めておく
-    // (ヘッドレス/リモートで無駄に再描画しないため)。
-    m_animTimer = new QTimer(this);
-    m_animTimer->setInterval(50);
-    connect(m_animTimer, &QTimer::timeout, this, [this] {
-        ++m_animTick;
-        update();
-    });
+    // Field は実データの静止断面を描くだけなのでアニメーション用タイマーは
+    // 持たない (ヘッドレス/リモートで CPU を回さない)。
 }
 
 void Viewport3D::setViewStyle(ViewStyle s)
@@ -37,8 +66,46 @@ void Viewport3D::setViewStyle(ViewStyle s)
     if (m_viewStyle == s) return;
     m_viewStyle = s;
     m_solid = (s != ViewStyle::Wireframe);
-    if (s == ViewStyle::Field) m_animTimer->start();
-    else                       m_animTimer->stop();
+    update();
+}
+
+void Viewport3D::setResultSlice(const QVector<double> &cells, int rows,
+                                int cols, int axis, double pos_m,
+                                double u0, double u1, double v0, double v1,
+                                const QString &label)
+{
+    const qint64 need = qint64(rows) * qint64(cols);
+    if (rows <= 0 || cols <= 0 || qint64(cells.size()) < need) {
+        clearResultSlice();
+        return;
+    }
+    m_sliceCells = cells;
+    m_sliceRows  = rows;
+    m_sliceCols  = cols;
+    m_sliceAxis  = qBound(0, axis, 2);
+    m_slicePos   = pos_m;
+    m_sliceU0 = u0; m_sliceU1 = u1;
+    m_sliceV0 = v0; m_sliceV1 = v1;
+    m_sliceLabel = label;
+    // 正規化は「与えられた実データの最大値」で行う (勝手な下駄を履かせない)
+    m_sliceMax = 0.0;
+    for (qint64 i = 0; i < need; ++i) {
+        const double v = std::fabs(m_sliceCells[int(i)]);
+        if (std::isfinite(v) && v > m_sliceMax) m_sliceMax = v;
+    }
+    rebuildSliceImage();
+    update();
+}
+
+void Viewport3D::clearResultSlice()
+{
+    if (!hasResultSlice() && m_sliceLabel.isEmpty()) return;
+    m_sliceCells.clear();
+    m_sliceRows = m_sliceCols = 0;
+    m_sliceMax = 0.0;
+    m_sliceLabel.clear();
+    m_sliceImg = QImage();
+    m_sliceDecim = 1;
     update();
 }
 
@@ -269,8 +336,8 @@ void Viewport3D::paintEvent(QPaintEvent *)
         p.drawEllipse(to, 3, 3);
     }
 
-    // ビュースタイル別オーバーレイ (モックの fieldOverlay / rayOverlay)
-    if (m_viewStyle == ViewStyle::Field) drawFieldOverlay(p);
+    // ビュースタイル別オーバーレイ
+    if (m_viewStyle == ViewStyle::Field) drawResultSlice(p);
     if (m_viewStyle == ViewStyle::Rays)  drawRayOverlay(p);
 
     // overlay text
@@ -280,47 +347,204 @@ void Viewport3D::paintEvent(QPaintEvent *)
                .arg(domainKey(m_domain))
                .arg(m_project->totalCells())
                .arg(int(m_azimuthDeg)).arg(int(m_elevationDeg)));
-    // モックと同じ左上のスタイル注記
-    if (m_viewStyle == ViewStyle::Field || m_viewStyle == ViewStyle::Rays) {
-        p.setPen(QColor(accentColor(m_domain)));
-        p.drawText(8, 16, m_viewStyle == ViewStyle::Field
-            ? QStringLiteral("field overlay enabled")
-            : QStringLiteral("raycast: 24 rays · 4 bounces"));
+}
+
+// 面内座標 (u, v) [m] → 画面座標。固定軸は m_sliceAxis / m_slicePos。
+QPointF Viewport3D::projectSlicePoint(double u, double v) const
+{
+    switch (m_sliceAxis) {
+    case 0:  return projectPoint(m_slicePos, u, v);   // YZ 面 (X 一定)
+    case 1:  return projectPoint(u, m_slicePos, v);   // XZ 面 (Y 一定)
+    default: return projectPoint(u, v, m_slicePos);   // XY 面 (Z 一定)
     }
 }
 
-// 界分布オーバーレイ — モックの v = sin(8r - 0.08t)·exp(-0.6r) を
-// 領域中心の水平面上に市松模様で散布する。赤=正, 青=負, 透明度=|v|。
-void Viewport3D::drawFieldOverlay(QPainter &p)
+// 結果断面オーバーレイ — setResultSlice() で渡された実データを 3D 空間の
+// 該当平面に描く。面の 4 隅を投影し、色画像をアフィン変換で貼るだけ
+// (1 枚の平面なので自己遮蔽は無く深度ソート不要)。
+// 断面が未設定のときは合成パターンを描かず「未読込」を明示する
+// (存在しない結果を界分布らしく見せない — CLAUDE.md 絶対規則 5)。
+void Viewport3D::drawResultSlice(QPainter &p)
 {
-    const double ext = std::max({ m_project->mesh(0).max() - m_project->mesh(0).min(),
-                                  m_project->mesh(1).max() - m_project->mesh(1).min(),
-                                  m_project->mesh(2).max() - m_project->mesh(2).min() });
-    if (ext <= 0) return;
-    const double step = ext * 0.06;          // モックの 0.06 を領域スケールへ
-    const int N = 28;
-    const double zPlane = m_cz - ext * 0.05;
+    if (!hasResultSlice()) {
+        // ── 未読込の明示 ────────────────────────────────────────────────
+        const QString msg  = I18n::tr("vp_fld_none");
+        const QString hint = I18n::tr("vp_fld_none_hint");
+        const QFontMetrics fm(p.font());
+        const int w = std::max(fm.horizontalAdvance(msg),
+                               fm.horizontalAdvance(hint)) + 28;
+        const int h = fm.height() * 2 + 24;
+        const QRectF box((width() - w) / 2.0, (height() - h) / 2.0, w, h);
+        p.setPen(QPen(QColor(245, 158, 11, 200), 1));
+        p.setBrush(QColor(20, 26, 36, 215));
+        p.drawRoundedRect(box, 6, 6);
+        p.setPen(QColor(245, 158, 11));
+        p.drawText(QRectF(box.x(), box.y() + 8, box.width(), fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, msg);
+        p.setPen(QColor(255, 255, 255, 165));
+        p.drawText(QRectF(box.x(), box.y() + 10 + fm.height(), box.width(),
+                          fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+        p.setBrush(Qt::NoBrush);
+        return;
+    }
 
-    p.setPen(Qt::NoPen);
-    for (int i = -N; i <= N; ++i)
-        for (int j = -N; j <= N; ++j) {
-            if ((i + j) % 2 != 0) continue;   // 市松 (モックと同じ間引き)
-            const double x = i * step, y = j * step;
-            const double r = std::sqrt(x*x + y*y) / ext * 2.0;
-            const double v = std::sin(r * 8.0 - m_animTick * 0.08) * std::exp(-r * 0.6);
-            const double a = std::min(1.0, std::fabs(v) * 0.8);
-            if (a < 0.02) continue;
-            QColor c(v > 0 ? "#EF4444" : "#3B82F6");
-            c.setAlphaF(a);
-            p.setBrush(c);
-            p.drawEllipse(projectPoint(m_cx + x, m_cy + y, zPlane), 1.6, 1.6);
+    // 断面の 4 隅を投影する。画像の (0,0) は行 0 = 第 2 軸の +側
+    const QPointF c00 = projectSlicePoint(m_sliceU0, m_sliceV1);
+    const QPointF c10 = projectSlicePoint(m_sliceU1, m_sliceV1);
+    const QPointF c11 = projectSlicePoint(m_sliceU1, m_sliceV0);
+    const QPointF c01 = projectSlicePoint(m_sliceU0, m_sliceV0);
+
+    // 正射影なので断面の像は必ずアフィン変換で表せる。セル毎に四辺形を描くと
+    // 隣接セルの縁が重なって透明度が飽和する (下の形状が透けない) ため、
+    // 色画像を 1 回だけ貼る。25 万セルでも drawImage 1 回で済む。
+    if (!m_sliceImg.isNull()) {
+        const double iw = m_sliceImg.width(), ih = m_sliceImg.height();
+        const QPolygonF src{ QPointF(0, 0), QPointF(iw, 0),
+                             QPointF(iw, ih), QPointF(0, ih) };
+        const QPolygonF dst{ c00, c10, c11, c01 };
+        QTransform t;
+        if (QTransform::quadToQuad(src, dst, t)) {
+            p.save();
+            // データを補間しない (実際のセル解像度をそのまま見せる)
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setOpacity(0.72);     // 形状ワイヤが透ける程度の透明度
+            p.setTransform(t, true);
+            p.drawImage(QPointF(0, 0), m_sliceImg);
+            p.restore();
         }
+    }
+
+    // 断面の外枠 (面の位置を分かりやすく)
+    const QPolygonF outline{ c00, c10, c11, c01 };
+    p.setPen(QPen(QColor(255, 255, 255, 110), 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawPolygon(outline);
+
+    drawSliceLegend(p, m_sliceDecim);
+}
+
+// 断面データ → 色画像 (行 0 = 第 2 軸の +側)。setResultSlice のたびに 1 回
+// だけ作り、再描画では貼るだけにする。巨大格子は平均で束ねて画像サイズを
+// 抑える (束ねたら m_sliceDecim に残して凡例に出す)。
+void Viewport3D::rebuildSliceImage()
+{
+    m_sliceImg = QImage();
+    m_sliceDecim = 1;
+    if (!hasResultSlice()) return;
+
+    const int rows = m_sliceRows, cols = m_sliceCols;
+    const int maxDim = 1024;
+    int step = 1;
+    while ((cols + step - 1) / step > maxDim || (rows + step - 1) / step > maxDim)
+        ++step;
+    m_sliceDecim = step;
+
+    const int w = (cols + step - 1) / step;
+    const int h = (rows + step - 1) / step;
+    QImage img(w, h, QImage::Format_ARGB32);
+    if (img.isNull()) return;
+    const double inv = (m_sliceMax > 0.0) ? 1.0 / m_sliceMax : 0.0;
+    for (int r = 0; r < h; ++r) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(r));
+        const int r1 = std::min((r + 1) * step, rows);
+        for (int c = 0; c < w; ++c) {
+            const int c1 = std::min((c + 1) * step, cols);
+            double sum = 0.0;
+            int n = 0;
+            for (int rr = r * step; rr < r1; ++rr) {
+                const int base = rr * cols;
+                for (int cc = c * step; cc < c1; ++cc) {
+                    const double v = m_sliceCells[base + cc];
+                    if (std::isfinite(v)) { sum += std::fabs(v); ++n; }
+                }
+            }
+            if (n == 0) { line[c] = qRgba(0, 0, 0, 0); continue; }  // 値なし
+            const double t = qBound(0.0, sum / n * inv, 1.0);
+            const QColor col = FieldHeatmap::jet(t);
+            line[c] = qRgba(col.red(), col.green(), col.blue(), 255);
+        }
+    }
+    m_sliceImg = img;
+}
+
+// 結果断面の凡例 — カラーバー (0..1) + 実データである旨 + label
+void Viewport3D::drawSliceLegend(QPainter &p, int decim)
+{
+    const QFontMetrics fm(p.font());
+    // ── 左上: 実データ表記 + データセット名/時刻 + 断面位置 ─────────────
+    QStringList lines;
+    lines << I18n::tr("vp_fld_real");
+    QString sub = QStringLiteral("%1 = %2 m")
+                      .arg(QLatin1String(sliceAxisName(m_sliceAxis)))
+                      .arg(QString::number(m_slicePos, 'g', 4));
+    if (!m_sliceLabel.isEmpty())
+        sub = m_sliceLabel + QStringLiteral("   ") + sub;
+    lines << sub;
+    lines << QStringLiteral("%1 x %2").arg(m_sliceCols).arg(m_sliceRows)
+             + QStringLiteral("   ")
+             + I18n::tr("vp_fld_norm")
+                   .arg(QString::number(m_sliceMax, 'g', 4));
+    if (decim > 1)
+        lines << I18n::tr("vp_fld_decim").arg(decim);
+
+    int w = 0;
+    for (const QString &s : lines) w = std::max(w, fm.horizontalAdvance(s));
+    const QRectF box(6, 6, w + 16, fm.height() * lines.size() + 12);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(15, 20, 28, 175));
+    p.drawRoundedRect(box, 4, 4);
+    p.setBrush(Qt::NoBrush);
+    for (int i = 0; i < lines.size(); ++i) {
+        p.setPen(i == 0 ? QColor(accentColor(m_domain))
+                        : QColor(255, 255, 255, 175));
+        p.drawText(QRectF(box.x() + 8, box.y() + 6 + fm.height() * i,
+                          box.width() - 16, fm.height()),
+                   Qt::AlignLeft | Qt::AlignVCenter, lines[i]);
+    }
+
+    // ── 右辺: カラーバー (0.0 〜 1.0) ───────────────────────────────────
+    const int bh = qBound(60, height() - 120, 160);
+    const int bw = 12;
+    const int bx = width() - bw - 46;
+    const int by = 24;
+    if (bx <= 0 || bh <= 0) return;
+    for (int i = 0; i < bh; ++i) {
+        const double t = 1.0 - double(i) / double(bh - 1);
+        p.setPen(FieldHeatmap::jet(t));
+        p.drawLine(bx, by + i, bx + bw, by + i);
+    }
+    p.setPen(QColor(255, 255, 255, 150));
+    p.drawRect(bx, by, bw, bh);
+    p.drawText(QRectF(bx + bw + 3, by - fm.height() / 2.0, 40, fm.height()),
+               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("1.0"));
+    p.drawText(QRectF(bx + bw + 3, by + bh - fm.height() / 2.0, 40,
+                      fm.height()),
+               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("0.0"));
 }
 
 // レイトレースオーバーレイ — モックと同じ 24本 × 最大4反射。
 // 領域境界で支配軸を反転させ、反射ごとにエネルギーを 0.7 倍する。
+// **ソルバの計算結果ではなく見た目のサンプル** なので、その旨を画面に明示する
+// (未実装のものを動作済みに見せない — CLAUDE.md 絶対規則 5)。
 void Viewport3D::drawRayOverlay(QPainter &p)
 {
+    // 先に注記を描く (以降で return しても必ず出る)
+    {
+        const QString msg = I18n::tr("vp_rays_sample");
+        const QFontMetrics fm(p.font());
+        const QRectF box(6, 6, fm.horizontalAdvance(msg) + 16,
+                         fm.height() + 10);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(15, 20, 28, 175));
+        p.drawRoundedRect(box, 4, 4);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QColor(245, 158, 11));
+        p.drawText(box.adjusted(8, 0, -8, 0),
+                   Qt::AlignLeft | Qt::AlignVCenter, msg);
+    }
+
     double lo[3], hi[3];
     for (int a = 0; a < 3; ++a) {
         lo[a] = m_project->mesh(a).min();

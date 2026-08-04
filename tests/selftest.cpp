@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include "audio/AudioEditEngine.h"
 #include "core/Project.h"
@@ -2345,6 +2346,22 @@ static void testH5Reader()
         writeScalarInt("Ni", 9); writeScalarInt("Nj", 3);
         writeScalarInt("Nk", 1); writeScalarInt("N0", 0);
         writeScalarInt("NN", 27);
+        // 節点座標 [m] — 旧レイアウトは /metadata/Xn,Yn,Zn に native double
+        // の 1 次元配列で入る (実 ofd 出力で確認済み: Xn {Nx+1})
+        auto writeCoordsD = [&](const char *name,
+                                const std::vector<double> &v) {
+            const hsize_t d1[1] = { hsize_t(v.size()) };
+            const hid_t sp = H5Screate_simple(1, d1, nullptr);
+            const hid_t ds = H5Dcreate2(file,
+                (QByteArray("/metadata/") + name).constData(),
+                H5T_NATIVE_DOUBLE, sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     v.data());
+            H5Dclose(ds); H5Sclose(sp);
+        };
+        writeCoordsD("Xn", { 0.0, 0.5, 1.0 });
+        writeCoordsD("Yn", { -1.0, 0.0, 1.0 });
+        writeCoordsD("Zn", { 0.0, 1.0, 2.0 });
         auto writeE = [&](const char *group, bool zeros) {
             H5Gclose(H5Gcreate2(file, group, H5P_DEFAULT, H5P_DEFAULT,
                                 H5P_DEFAULT));
@@ -2427,6 +2444,19 @@ static void testH5Reader()
               "h5: old-layout XZ slice values");
     }
 
+    // 節点座標 (旧レイアウト /metadata/Xn,Yn,Zn) — 3D 表示で断面を実寸法・
+    // 実位置に置くために要る
+    {
+        QVector<double> xs, ys, zs;
+        check(H5Reader::ofdGridCoords(ofdPath, xs, ys, zs),
+              "h5: old-layout grid coords");
+        check(xs.size() == 3 && ys.size() == 3 && zs.size() == 3,
+              "h5: old-layout coord sizes (Nx+1 …)");
+        check(xs[0] == 0.0 && xs[2] == 1.0 && ys[0] == -1.0 &&
+              ys[2] == 1.0 && zs[0] == 0.0 && zs[2] == 2.0,
+              "h5: old-layout coord values [m]");
+    }
+
     // 新レイアウト (OpenFDTD sol/outputHdf5.c): /freqdomain/E
     // {F, Nx+1, Ny+1, Nz+1, 3, 2}。値は全 6 成分 = 9i+3j+k → |E| = v·√6。
     // あわせて /timeseries/E {2, 3, 3, 3, 3} (瞬時値 3 成分 = 同値 →
@@ -2477,6 +2507,25 @@ static void testH5Reader()
                         H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, times);
         H5Dclose(ds); H5Sclose(sp);
+
+        // 節点座標 [m] — 新レイアウトは /geometry/Xn,Yn,Zn。float32 で書いて
+        // double へ変換されること (型変換は HDF5 任せ) もあわせて確認する
+        H5Gclose(H5Gcreate2(file, "/geometry", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        auto writeCoordsF = [&](const char *name,
+                                const std::vector<float> &v) {
+            const hsize_t d1[1] = { hsize_t(v.size()) };
+            const hid_t s1 = H5Screate_simple(1, d1, nullptr);
+            const hid_t d = H5Dcreate2(file,
+                (QByteArray("/geometry/") + name).constData(),
+                H5T_NATIVE_FLOAT, s1, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(d, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     v.data());
+            H5Dclose(d); H5Sclose(s1);
+        };
+        writeCoordsF("Xn", { 0.0f, 0.25f, 0.5f });
+        writeCoordsF("Yn", { -0.5f, 0.0f, 0.5f });
+        writeCoordsF("Zn", { 1.0f, 1.5f, 2.0f });
         H5Fclose(file);
     }
     {
@@ -2534,6 +2583,62 @@ static void testH5Reader()
         check(!H5Reader::readOfdSeriesFrame(newPath, "E", 5, 2, -1, cells, rows,
                                             cols),
               "h5: timeseries rejects out-of-range frame");
+    }
+
+    // 節点座標 (新レイアウト /geometry/Xn,Yn,Zn。float32 → double 変換込み)
+    {
+        QVector<double> xs, ys, zs;
+        check(H5Reader::ofdGridCoords(newPath, xs, ys, zs),
+              "h5: new-layout grid coords (/geometry)");
+        check(xs.size() == 3 && ys.size() == 3 && zs.size() == 3,
+              "h5: new-layout coord sizes");
+        check(std::fabs(xs[1] - 0.25) < 1e-6 &&
+              std::fabs(ys[0] + 0.5) < 1e-6 &&
+              std::fabs(zs[2] - 2.0) < 1e-6,
+              "h5: new-layout coord values [m]");
+    }
+
+    // 座標が無いファイル / 片方の軸だけ欠けたファイル。
+    // 取れない軸は空ベクタで返る (呼び出し側が「座標不明」を判断できること)
+    {
+        QVector<double> xs, ys, zs;
+        check(!H5Reader::ofdGridCoords(path, xs, ys, zs),
+              "h5: grid coords absent → false");
+        check(xs.isEmpty() && ys.isEmpty() && zs.isEmpty(),
+              "h5: grid coords absent → all empty");
+
+        // /geometry/Xn と /metadata/Zn だけを持つファイル (Yn は欠落)。
+        // 軸ごとに 新 → 旧 の順で探すので混在でも拾えること
+        const QString partial = dir.filePath("coords_partial.h5");
+        {
+            const hid_t file = H5Fcreate(partial.toLocal8Bit().constData(),
+                                         H5F_ACC_TRUNC, H5P_DEFAULT,
+                                         H5P_DEFAULT);
+            check(file >= 0, "h5: partial coords fixture created");
+            H5Gclose(H5Gcreate2(file, "/geometry", H5P_DEFAULT, H5P_DEFAULT,
+                                H5P_DEFAULT));
+            H5Gclose(H5Gcreate2(file, "/metadata", H5P_DEFAULT, H5P_DEFAULT,
+                                H5P_DEFAULT));
+            auto write1D = [&](const char *name, const std::vector<double> &v) {
+                const hsize_t d1[1] = { hsize_t(v.size()) };
+                const hid_t sp = H5Screate_simple(1, d1, nullptr);
+                const hid_t ds = H5Dcreate2(file, name, H5T_NATIVE_DOUBLE, sp,
+                                            H5P_DEFAULT, H5P_DEFAULT,
+                                            H5P_DEFAULT);
+                H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                         v.data());
+                H5Dclose(ds); H5Sclose(sp);
+            };
+            write1D("/geometry/Xn", { 1.0, 3.0 });
+            write1D("/metadata/Zn", { 5.0, 7.0 });
+            H5Fclose(file);
+        }
+        check(H5Reader::ofdGridCoords(partial, xs, ys, zs),
+              "h5: partial grid coords ok");
+        check(xs.size() == 2 && ys.isEmpty() && zs.size() == 2,
+              "h5: partial grid coords — missing axis is empty");
+        check(xs[1] == 3.0 && zs[1] == 7.0,
+              "h5: partial grid coords values (新旧レイアウト混在)");
     }
 #endif
 }

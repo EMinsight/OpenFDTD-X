@@ -19,6 +19,8 @@ public:
     // 実データ (row-major, rows×cols, 0..1 正規化済み) を与えると
     // 解析パターンを置換しデモ表示バナーを消す
     void setData(const QVector<double> &cells, int cols, int rows);
+    // 実データを捨ててプレースホルダ表示へ戻す (プロジェクト切替時)
+    void clearData();
     void setTitle(const QString &t) { m_title = t; update(); }
     bool hasRealData() const { return !m_demo; }
 
@@ -28,6 +30,8 @@ protected:
     void paintEvent(QPaintEvent *) override;
 
 private:
+    void fillDemoPattern();
+
     QVector<double> m_cells;
     int      m_cols = 50, m_rows = 50;
     QString  m_title;

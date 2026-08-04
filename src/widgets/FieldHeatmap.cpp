@@ -12,9 +12,10 @@ namespace {
 const bool s_i18n = [] {
     // プレースホルダ表示の明示 (実行結果と誤読させない — 絶対規則 5)
     ofd::I18n::reg("fh_demo",
-        "デモ表示 — 実行結果ではありません (実データの 2D 断面表示は未実装)",
-        "Demo pattern — not a simulation result (real 2D slice display is "
-        "not implemented)");
+        "デモ表示 — 実行結果ではありません "
+        "(計算を実行するか結果 HDF5 を開くと実データに替わります)",
+        "Demo pattern — not a simulation result "
+        "(run a simulation or open a result HDF5 to replace it)");
     return true;
 }();
 } // namespace
@@ -22,9 +23,15 @@ const bool s_i18n = [] {
 FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
 {
     setMinimumHeight(240);
-    // モックの解析パターンを初期表示に (v = |sin(4r)·exp(-0.4r)|)。
-    // setData が呼ばれるまではデモ表示バナー付きで描画される。
-    const int n = m_cols;
+    fillDemoPattern();
+}
+
+// モックの解析パターン (v = |sin(4r)·exp(-0.4r)|)。
+// setData が呼ばれるまで / clearData() で戻したときはデモ表示バナー付きで描く。
+void FieldHeatmap::fillDemoPattern()
+{
+    const int n = 50;
+    m_cols = m_rows = n;
     m_cells.resize(n * n);
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) {
@@ -33,6 +40,17 @@ FieldHeatmap::FieldHeatmap(QWidget *parent) : QWidget(parent)
             const double r = std::sqrt(x * x + y * y);
             m_cells[j * n + i] = std::fabs(std::sin(r * 4.0) * std::exp(-r * 0.4));
         }
+    m_demo = true;
+}
+
+// 実データを捨ててデモ表示へ戻す。プロジェクトを切り替えたときに
+// 前のプロジェクトの結果が残らないようにするために使う (gui.md の規則)。
+void FieldHeatmap::clearData()
+{
+    if (m_demo) return;
+    fillDemoPattern();
+    m_title.clear();
+    update();
 }
 
 void FieldHeatmap::setData(const QVector<double> &cells, int cols, int rows)

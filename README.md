@@ -231,7 +231,8 @@ src/
 │   ├── SectionBox.{h,cpp}     見出し付きグループボックス
 │   ├── MiniPlot.{h,cpp}       共用XYミニプロット (分散曲線/RT60/NC/エコーグラム)
 │   ├── UnitNav.{h,cpp}        ユニット番号ナビ (◀ n/総数 ▶)
-│   ├── Viewport3D.{h,cpp}     QPainter 製 3Dワイヤフレームビュー (OpenGL不要)
+│   ├── Viewport3D.{h,cpp}     QPainter 製 3Dワイヤフレームビュー (OpenGL不要)。
+│   │                          結果 HDF5 の断面を 3D 空間の実位置へ重ねられる
 │   ├── PlotPanel.{h,cpp}      波源波形プレビュー + 収束履歴プロット
 │   ├── LogConsole.{h,cpp}     等幅ログペイン
 │   └── EvViewer.{h,cpp}       ev2/ev3 図形を3戦略 (HTML/外部exe/ネイティブ) で表示

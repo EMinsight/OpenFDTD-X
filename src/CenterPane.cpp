@@ -14,6 +14,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListView>
@@ -66,6 +67,31 @@ const bool s_i18n = [] {
         "場の断面分布 / Field slice", "Field slice");
     ofd::I18n::reg("vp_slice_result",
         "解析結果 %1 (正規化 |値|)", "Result %1 (normalised |value|)");
+    // 結果断面の 3D 重ね表示 (スタイルコンボの Field と同じ状態を指す)
+    ofd::I18n::reg("vp_overlay", "結果断面を重ねる", "Overlay result slice");
+    ofd::I18n::reg("vp_overlay_tip",
+        "3D シーンにソルバ出力の断面 (実データ) を重ねて表示する "
+        "(3D スタイル「+ Field」と同じ状態)",
+        "Overlay the solver's result slice (actual data) on the 3D scene "
+        "(same state as the 3D style \"+ Field\")");
+    ofd::I18n::reg("vp_overlay_none",
+        "結果断面が未読込 — 計算を実行するか、結果 HDF5 "
+        "(time_series_data.h5) のあるプロジェクトを開くと有効になります",
+        "No result slice loaded — run the solver, or open a project whose "
+        "folder contains a result HDF5 (time_series_data.h5)");
+    ofd::I18n::reg("vp_slice3d_label",
+        "%1: |E| z 中央断面 (%2)", "%1: |E| z-mid slice (%2)");
+    ofd::I18n::reg("vp_slice3d_nofield",
+        "3D 空間へ配置できる節点場 (ofd/orcwa の |E|) がありません (%1)",
+        "No node field that can be placed in 3D space (|E| of ofd/orcwa) "
+        "(%1)");
+    ofd::I18n::reg("vp_slice3d_nogeom",
+        "節点座標 (Xn/Yn/Zn) が無いため 3D 空間へ配置できません",
+        "No grid coordinates (Xn/Yn/Zn), so it cannot be placed in 3D space");
+    ofd::I18n::reg("vp_slice3d_mismatch",
+        "節点座標の数が断面の格子と一致しません (%1x%2 に対し %3x%4)",
+        "Grid coordinate counts do not match the slice (%3x%4 for a %1x%2 "
+        "slice)");
     ofd::I18n::reg("vp_saved",   "スクリーンショットを保存", "Save screenshot");
     return true;
 }();
@@ -131,6 +157,12 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     h->addWidget(grid);
     h->addWidget(bnd);
     h->addWidget(vtx);
+
+    // 結果断面の 3D 重ね表示。スタイルコンボの「+ Field」と同じ状態を指す
+    // (状態は m_styleBox 側が唯一の持ち主で、これはその別入口)。
+    // 結果が無いうちは無効 + 理由をツールチップに出す。
+    m_overlayCheck = new QCheckBox(I18n::tr("vp_overlay"), m_vpToolbar);
+    h->addWidget(m_overlayCheck);
 
     // 3D ビュースタイル (モックの TweaksPanel「3D ビュー / Viewport」相当)
     h->addWidget(new QLabel(I18n::tr("vp_style"), m_vpToolbar));
@@ -209,6 +241,15 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     connect(m_styleBox, &QComboBox::currentIndexChanged, this, [this](int i) {
         m_viewport->setViewStyle(ViewStyle(i));
         QSettings().setValue("ui/viewStyle", i);
+        if (i != int(ViewStyle::Field)) m_prevStyleIndex = i;
+        // トグルはスタイルの表示であって別状態ではない (二重管理しない)
+        QSignalBlocker block(m_overlayCheck);
+        m_overlayCheck->setChecked(i == int(ViewStyle::Field));
+    });
+    // トグル ON → スタイルを Field に、OFF → Field 以外の直前のスタイルへ
+    connect(m_overlayCheck, &QCheckBox::toggled, this, [this](bool on) {
+        m_styleBox->setCurrentIndex(on ? int(ViewStyle::Field)
+                                       : m_prevStyleIndex);
     });
     // 既定は Solid (モックの TWEAK_DEFAULTS と同じ)。
     // 初期化時の setCurrentIndex で上の connect が走ると、ユーザーが何も
@@ -217,9 +258,14 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
         const int vs = qBound(0,
             QSettings().value("ui/viewStyle", int(ViewStyle::Solid)).toInt(), 3);
         QSignalBlocker block(m_styleBox);
+        QSignalBlocker block2(m_overlayCheck);
         m_styleBox->setCurrentIndex(vs);
         m_viewport->setViewStyle(ViewStyle(vs));
+        m_prevStyleIndex = (vs == int(ViewStyle::Field)) ? int(ViewStyle::Solid)
+                                                         : vs;
+        m_overlayCheck->setChecked(vs == int(ViewStyle::Field));
     }
+    updateOverlayUi();   // 起動直後は結果が無いので無効 + 理由を出す
 
     connect(m_azSlider, &QSlider::valueChanged, this, [this](int val) {
         m_viewport->setAzimuth(val);
@@ -273,6 +319,11 @@ void CenterPane::updateDomainVisibility(Domain d)
                 ? (item->flags() | Qt::ItemIsEnabled)
                 : (item->flags() & ~Qt::ItemIsEnabled));
     }
+
+    // 「結果断面を重ねる」を外したときの戻り先が Rays のままだと、Rays を
+    // 出さないドメインで復活してしまう。隠したら戻り先も Solid にする。
+    if (!raysOk && m_prevStyleIndex == rayRow)
+        m_prevStyleIndex = int(ViewStyle::Solid);
 
     // 選択中に隠れた場合は既定スタイル (Solid) へフォールバック。
     // ユーザー操作ではないので QSettings へは書き込まない (シグナル抑止)。
@@ -358,5 +409,94 @@ bool CenterPane::loadResultField(const QString &h5Path)
 
     m_heatmap->setData(cells, cols, rows);
     m_heatmap->setTitle(I18n::tr("vp_slice_result").arg(shown));
+
+    // 同じ結果を 3D シーンにも重ねる (節点座標が取れる ofd/orcwa 系のみ)
+    QString why;
+    const bool ok3d = applyResultSliceTo3D(h5Path, &why);
+    emit result3DSliceStatus(ok3d, why);
     return true;
+}
+
+// プロジェクトを開いたときに見つかった既存 HDF5 用 — 3D シーンだけへ流す。
+// 2D 断面は「その実行が生成したもの」に限る (呼び出し側のゲート) ので
+// ここでは触らない。どのファイルの結果かは断面の凡例に出る。
+bool CenterPane::loadResult3DSlice(const QString &h5Path)
+{
+    QString why;
+    const bool ok = applyResultSliceTo3D(h5Path, &why);
+    emit result3DSliceStatus(ok, why);
+    return ok;
+}
+
+// HDF5 の z 中央断面 (実データ) を 3D 空間の該当平面へ置く。
+// 位置と寸法は節点座標 [m] から決める。取れないファイル (obpm の
+// /field/Ixz など格子情報を持たない出力) では 3D へ渡さない —
+// 座標不明の断面を適当な位置に置くと結果の読み違いになるため。
+bool CenterPane::applyResultSliceTo3D(const QString &h5Path, QString *why)
+{
+    const auto fail = [&](const QString &msg) {
+        if (why) *why = msg;
+        m_viewport->clearResultSlice();
+        updateOverlayUi();
+        return false;
+    };
+    if (!H5Reader::available())
+        return fail(QStringLiteral("HDF5 disabled (USE_HDF5=OFF)"));
+
+    // 2D 断面と同じ再構成 (z 中央断面の |E|)。正規化前の実値を使う
+    // (Viewport3D 側が最大値で正規化し、その最大値を凡例に出す)。
+    QVector<double> cells;
+    int rows = 0, cols = 0;
+    QString group, err;
+    if (!H5Reader::readOfdMidSlice(h5Path, cells, rows, cols, &group, &err))
+        return fail(I18n::tr("vp_slice3d_nofield").arg(err));
+
+    QVector<double> xs, ys, zs;
+    if (!H5Reader::ofdGridCoords(h5Path, xs, ys, zs, &err)
+        || xs.size() < 2 || ys.size() < 2 || zs.isEmpty())
+        return fail(I18n::tr("vp_slice3d_nogeom"));
+    // 断面 (rows = Ny+1, cols = Nx+1) と節点数が食い違うファイルは
+    // 対応が取れないので置かない (寸法を推測しない)
+    if (xs.size() != cols || ys.size() != rows)
+        return fail(I18n::tr("vp_slice3d_mismatch")
+                        .arg(cols).arg(rows).arg(xs.size()).arg(ys.size()));
+
+    // readOfdMidSlice が使う固定 k は (Nz+1-1)/2 (新旧レイアウト共通)
+    const double zmid = zs[(zs.size() - 1) / 2];
+    const QString label = I18n::tr("vp_slice3d_label")
+                              .arg(QFileInfo(h5Path).fileName(), group);
+    // axis=2 (XY 面): 面内 第1軸 = x (列)、第2軸 = y (行、行 0 = +y 側)
+    m_viewport->setResultSlice(cells, rows, cols, 2, zmid,
+                               xs.first(), xs.last(),
+                               ys.first(), ys.last(), label);
+    if (why) why->clear();
+    updateOverlayUi();
+    return m_viewport->hasResultSlice();
+}
+
+bool CenterPane::hasResult3DSlice() const
+{
+    return m_viewport->hasResultSlice();
+}
+
+// 新規/別プロジェクト — 前の実行の残骸を結果として見せない。
+// 2D ヒートマップは実データを解析パターンへ戻す API を持たないので、
+// タイトルで「前に開いていたファイルの結果」と明示する。
+void CenterPane::clearResultField()
+{
+    m_viewport->clearResultSlice();
+    updateOverlayUi();
+    // 2D 断面も実データを捨ててプレースホルダへ戻す。前のプロジェクトの
+    // 結果を新しいプロジェクトの結果と誤読させない (gui.md の規則)。
+    m_heatmap->clearData();
+    m_heatmap->setTitle(I18n::tr("vp_slice_title"));
+}
+
+// 「結果断面を重ねる」トグルの有効条件 = 3D に載せられる実データがあること
+void CenterPane::updateOverlayUi()
+{
+    const bool ok = m_viewport->hasResultSlice();
+    m_overlayCheck->setEnabled(ok);
+    m_overlayCheck->setToolTip(ok ? I18n::tr("vp_overlay_tip")
+                                  : I18n::tr("vp_overlay_none"));
 }

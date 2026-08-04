@@ -132,6 +132,35 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_sec_pos", "位置", "Position");
     ofd::I18n::reg("h5_sec_multi", "複数断面同時表示 (3面ビュー)",
                    "Show multiple sections (3-plane view)");
+    ofd::I18n::reg("h5_multi_tip_on",
+        "XY / XZ / YZ の 3 断面を同時に表示します "
+        "(カラースケールは 3 面共通 — 面どうしの強度を比較できます)",
+        "Shows the XY / XZ / YZ slices side by side "
+        "(one shared color scale, so intensities are comparable)");
+    ofd::I18n::reg("h5_multi_tip_off",
+        "3面ビューは 3 次元の伝搬時系列 (E/H) でのみ有効です。"
+        "2D データセットや汎用 3D (frames×rows×cols) データセットには"
+        "直交 3 断面が定義できません。",
+        "The 3-plane view requires a 3-D propagation series (E/H). "
+        "2-D datasets and generic 3-D (frames×rows×cols) datasets have no "
+        "orthogonal slice planes.");
+    ofd::I18n::reg("h5_sec_note_multi",
+        "▸ 3面ビュー: XY / XZ / YZ を共通カラースケール (3 面の合成 min/max) "
+        "で同時表示しています。位置スライダは上のコンボで選んだ面 (太字) の"
+        "断面位置を動かします。統計値も 3 面の合成です。",
+        "▸ 3-plane view: XY / XZ / YZ are shown together with one shared "
+        "color scale (min/max over all three). The position slider moves the "
+        "slice of the plane selected above (shown in bold). Statistics are "
+        "over all three planes as well.");
+    ofd::I18n::reg("h5_multi_title",
+        "伝搬アニメ |%1| 3面ビュー (XY / XZ / YZ) — %2",
+        "Propagation |%1| 3-plane view (XY / XZ / YZ) — %2");
+    ofd::I18n::reg("h5_multi_exp_note",
+        "▸ 3面ビュー表示中: PNG (現フレーム) / PNG連番 / MP4 / GIF は"
+        "「3 面を並べた画像」を書き出します。CSV は主断面 (%1) の行列のみです。",
+        "▸ 3-plane view is on: PNG (current frame) / PNG sequence / MP4 / GIF "
+        "export the three planes side by side. CSV writes only the primary "
+        "plane (%1).");
     ofd::I18n::reg("h5_export", "エクスポート", "Export");
     ofd::I18n::reg("h5_exp_mp4", "🎥 MP4 動画", "🎥 MP4 movie");
     ofd::I18n::reg("h5_exp_gif", "🎞 GIF アニメ", "🎞 GIF animation");
@@ -178,6 +207,17 @@ const bool s_i18n = [] {
 }();
 
 const double kSpeeds[5] = { 0.25, 0.5, 1.0, 2.0, 5.0 };
+
+// planeBox の並び (0=XY, 1=XZ, 2=YZ) → 固定軸 (0=X, 1=Y, 2=Z)。
+// 3 面ビューのパネル並びもこの順 (XY / XZ / YZ)
+const int kPlaneAxis[3] = { 2, 1, 0 };
+
+// 固定軸 → 軸名 / 面の i18n キー
+const char *const kAxisName[3] = { "X", "Y", "Z" };
+const char *const kPlaneKey[3] = { "h5_sec_yz", "h5_sec_xz", "h5_sec_xy" };
+
+// planeBox の並び順のパネル名 (キャンバス左上のオーバーレイ)
+const char *const kPlaneShort[3] = { "XY", "XZ", "YZ" };
 
 // バッジ風ラベル (mock .badge 相当, 最小限のスタイル)
 QLabel *makeBadge(const QString &text, QWidget *parent, const char *kind = "")
@@ -666,6 +706,25 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     auto *ph = new QHBoxLayout();
     m_canvas = new FieldCanvas(m_previewBox);
     ph->addWidget(m_canvas, 1);
+    // 3 面ビュー用のキャンバス群 (XY / XZ / YZ を横並び)。既定は非表示で、
+    // チェック ON のときだけ単一断面キャンバスと入れ替える
+    m_multiWrap = new QWidget(m_previewBox);
+    auto *mh = new QHBoxLayout(m_multiWrap);
+    mh->setContentsMargins(0, 0, 0, 0);
+    mh->setSpacing(8);
+    for (int p = 0; p < 3; ++p) {
+        auto *col = new QVBoxLayout();
+        m_multiCaption[p] = new QLabel(QStringLiteral("-"), m_multiWrap);
+        m_multiCaption[p]->setWordWrap(true);
+        m_multiCaption[p]->setStyleSheet("font-size:11px;");
+        m_multiCanvas[p] = new FieldCanvas(m_multiWrap);
+        m_multiCanvas[p]->setMinimumSize(140, 140);
+        col->addWidget(m_multiCaption[p]);
+        col->addWidget(m_multiCanvas[p], 1);
+        mh->addLayout(col, 1);
+    }
+    m_multiWrap->setVisible(false);
+    ph->addWidget(m_multiWrap, 3);
     auto *barCol = new QVBoxLayout();
     m_barMax = new QLabel("-", m_previewBox);
     m_barMin = new QLabel("-", m_previewBox);
@@ -749,9 +808,11 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_secValue = new QLabel("15", sx);
     xrow->addWidget(m_secValue);
     sx->vbox()->addLayout(xrow);
-    auto *ckMulti = new QCheckBox(I18n::tr("h5_sec_multi"), sx);
-    ofd::tabhelp::markNotImplemented(ckMulti);
-    sx->vbox()->addWidget(ckMulti);
+    // 3 面ビュー — 伝搬時系列 (3 次元) のときだけ有効 (updateSliceControls)
+    m_multiChk = new QCheckBox(I18n::tr("h5_sec_multi"), sx);
+    m_multiChk->setEnabled(false);
+    m_multiChk->setToolTip(I18n::tr("h5_multi_tip_off"));
+    sx->vbox()->addWidget(m_multiChk);
     m_secNote = new QLabel(I18n::tr("h5_sec_note_off"), sx);
     m_secNote->setWordWrap(true);
     m_secNote->setStyleSheet("color:palette(mid); font-size:11px;");
@@ -772,6 +833,12 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
         erow->addWidget(b);
     erow->addStretch(1);
     se->vbox()->addLayout(erow);
+    // 3 面ビュー時に「何が書き出されるか」を明示する注記 (既定は非表示)
+    m_expMultiNote = new QLabel(se);
+    m_expMultiNote->setWordWrap(true);
+    m_expMultiNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_expMultiNote->setVisible(false);
+    se->vbox()->addWidget(m_expMultiNote);
     m_expStatus = new QLabel(se);
     m_expStatus->setWordWrap(true);
     se->vbox()->addWidget(m_expStatus);
@@ -925,12 +992,15 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     });
     connect(m_cmap, &QComboBox::currentIndexChanged, this, [this](int i) {
         m_canvas->setColormap(i);
+        for (FieldCanvas *c : m_multiCanvas) c->setColormap(i);
         m_bar->setColormap(i);
     });
     connect(m_autoScale, &QCheckBox::toggled, this, [this](bool on) {
         m_scaleMin->setEnabled(!on);
         m_scaleMax->setEnabled(!on);
-        if (on) {
+        if (multiActive()) {
+            loadMultiFrames();       // 3 面共通スケールを取り直す
+        } else if (on) {
             // 自動へ戻したら現在データの min/max へ再スケール
             if (!m_data.isEmpty())
                 showData(m_data, m_rows, m_cols);
@@ -942,17 +1012,27 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     connect(m_scaleMax, &QLineEdit::editingFinished, this, [this] { applyScale(); });
     connect(ckGrid, &QCheckBox::toggled, this, [this](bool on) {
         m_canvas->setShowGrid(on);
+        for (FieldCanvas *c : m_multiCanvas) c->setShowGrid(on);
     });
     connect(ckAxes, &QCheckBox::toggled, this, [this](bool on) {
         m_canvas->setShowAxes(on);
+        for (FieldCanvas *c : m_multiCanvas) c->setShowAxes(on);
     });
     connect(m_secSlider, &QSlider::valueChanged, this, [this](int val) {
         m_secValue->setText(QStringLiteral("%1 / %2")
                                 .arg(val).arg(m_secSlider->maximum()));
-        if (m_seriesMode) loadCurrentFrame();
+        // 位置スライダは主断面 (planeBox の選択) の軸を編集する
+        if (m_seriesMode) {
+            m_secPos[sliceAxis()] = val;
+            loadCurrentFrame();
+        }
     });
     connect(m_planeBox, &QComboBox::currentIndexChanged, this, [this](int) {
         updateSliceControls();
+        if (m_seriesMode) loadCurrentFrame();
+    });
+    connect(m_multiChk, &QCheckBox::toggled, this, [this](bool) {
+        updateMultiVisibility();
         if (m_seriesMode) loadCurrentFrame();
     });
     connect(m_tree, &QTreeWidget::itemClicked, this,
@@ -983,6 +1063,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
         m_reloadBtn->setEnabled(false);
         m_tree->setEnabled(false);
         m_canvas->setMessage(I18n::tr("h5_disabled"));
+        for (FieldCanvas *c : m_multiCanvas)
+            c->setMessage(I18n::tr("h5_disabled"));
     }
 }
 
@@ -1000,6 +1082,7 @@ void H5ViewerTab::loadFile()
     m_data.clear();
     m_rows = m_cols = 0;
     m_nframes = 0;
+    m_seriesMode = false;
     m_filePath = path;
 
     QString err;
@@ -1008,6 +1091,7 @@ void H5ViewerTab::loadFile()
         m_selected->setText(I18n::tr("h5_selected") + " -");
         m_canvas->setDatasetName({});
         m_canvas->setMessage(I18n::tr("h5_load_error") + " " + err);
+        updateSliceControls();      // 3 面ビューを解除して単一表示へ戻す
         clearStats();
         setPlaybackEnabled(false);
         m_previewBox->setTitle(I18n::tr("h5_preview"));
@@ -1015,14 +1099,27 @@ void H5ViewerTab::loadFile()
     }
     rebuildTree();
 
-    // 伝搬時系列 (/timeseries/E) → 最初の 2D/3D の順で自動選択
-    // (無ければ未読込表示のまま)
+    // 伝搬時系列 → 最初の 2D/3D の順で自動選択 (無ければ未読込表示のまま)。
+    // 新レイアウトの /timeseries/E が最優先。旧レイアウト (/data%06d/E) は
+    // 4D なので 2D/3D の候補に入らず、そのままだと同じグループの
+    // /data%06d/P (3D) が選ばれて再生も 3 面ビューも無効のままになる。
     int first = -1;
     for (int i = 0; i < m_dsets.size(); ++i) {
         if (m_dsets[i].path == QLatin1String("/timeseries/E")) {
             first = i;
             break;
         }
+    }
+    if (first < 0) {
+        // 旧レイアウトの先頭フレームの E (selectDataset が全グループを
+        // フレーム列として扱う)
+        static const QRegularExpression oldSeriesRe(
+            QStringLiteral("^/data\\d+/E$"));
+        for (int i = 0; i < m_dsets.size(); ++i)
+            if (oldSeriesRe.match(m_dsets[i].path).hasMatch()) {
+                first = i;
+                break;
+            }
     }
     for (int i = 0; first < 0 && i < m_dsets.size(); ++i) {
         const int nd = m_dsets[i].dims.size();
@@ -1036,6 +1133,7 @@ void H5ViewerTab::loadFile()
         m_canvas->setMessage({});
         clearStats();
         setPlaybackEnabled(false);
+        updateSliceControls();      // 3 面ビューを解除して単一表示へ戻す
         m_previewBox->setTitle(I18n::tr("h5_preview"));
     }
 }
@@ -1130,6 +1228,9 @@ void H5ViewerTab::selectDataset(int idx)
             m_seriesComp = sm.captured(1);
             m_seriesInfo = info;
             m_nframes = info.frames;
+            // 断面位置は各軸とも未設定 (= 中央) から始める
+            m_secPos[0] = m_secPos[1] = m_secPos[2] = -1;
+            loadSliceCoords();
             m_frameSlider->blockSignals(true);
             m_frameSlider->setRange(0, std::max(0, m_nframes - 1));
             m_frameSlider->blockSignals(false);
@@ -1182,13 +1283,15 @@ void H5ViewerTab::selectDataset(int idx)
 // 3D データセット / 伝搬時系列の現在フレームを読み込んで表示する
 void H5ViewerTab::loadCurrentFrame()
 {
+    if (multiActive()) { loadMultiFrames(); return; }
+
     QVector<double> d;
     int rows = 0, cols = 0;
     QString err;
     if (m_seriesMode) {
         QString label;
         if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, m_frame,
-                                          sliceAxis(), m_secSlider->value(),
+                                          sliceAxis(), m_secPos[sliceAxis()],
                                           d, rows, cols, &label, &err)) {
             m_canvas->setMessage(I18n::tr("h5_load_error") + " " + err);
             clearStats();
@@ -1225,34 +1328,188 @@ int H5ViewerTab::sliceAxis() const
     }
 }
 
-// 断面 UI の範囲と有効状態 (伝搬時系列のときだけ効く)
+// 断面 UI の範囲と有効状態 (伝搬時系列のときだけ効く)。
+// 位置スライダは planeBox で選んだ面 (主断面) の軸の位置を編集する
 void H5ViewerTab::updateSliceControls()
 {
     const bool on = m_seriesMode;
     m_planeBox->setEnabled(on);
     m_secSlider->setEnabled(on);
-    m_secNote->setText(I18n::tr(on ? "h5_sec_note_on" : "h5_sec_note_off"));
-    if (!on) return;
+    // 3 面ビューは直交 3 断面が定義できる伝搬時系列でのみ有効
+    m_multiChk->setEnabled(on);
+    m_multiChk->setToolTip(I18n::tr(on ? "h5_multi_tip_on"
+                                       : "h5_multi_tip_off"));
+    if (!on) {
+        if (m_multiChk->isChecked()) m_multiChk->setChecked(false);
+        m_secNote->setText(I18n::tr("h5_sec_note_off"));
+        updateMultiVisibility();
+        return;
+    }
     const int n[3] = { m_seriesInfo.nx1, m_seriesInfo.ny1, m_seriesInfo.nz1 };
     const int axis = sliceAxis();
     const int maxIdx = std::max(0, n[axis] - 1);
+    if (m_secPos[axis] < 0) m_secPos[axis] = maxIdx / 2;   // 既定は中央断面
+    m_secPos[axis] = qBound(0, m_secPos[axis], maxIdx);
     m_secSlider->blockSignals(true);
     m_secSlider->setRange(0, maxIdx);
-    m_secSlider->setValue(maxIdx / 2);      // 既定は中央断面
+    m_secSlider->setValue(m_secPos[axis]);
     m_secSlider->blockSignals(false);
     m_secValue->setText(QStringLiteral("%1 / %2")
-                            .arg(maxIdx / 2).arg(maxIdx));
+                            .arg(m_secPos[axis]).arg(maxIdx));
+    updateMultiVisibility();
 }
 
-// 現在フレームの表示画像を PNG 保存 (軸・カラーバーごと見た目のまま)
+// 3 面ビュー表示中か (チェック ON かつ伝搬時系列)
+bool H5ViewerTab::multiActive() const
+{
+    return m_seriesMode && m_multiChk && m_multiChk->isChecked();
+}
+
+// 単一断面キャンバス ⇄ 3 面ビューの表示切替と、注記類の更新
+void H5ViewerTab::updateMultiVisibility()
+{
+    const bool multi = multiActive();
+    m_canvas->setVisible(!multi);
+    m_multiWrap->setVisible(multi);
+    if (m_seriesMode)
+        m_secNote->setText(I18n::tr(multi ? "h5_sec_note_multi"
+                                          : "h5_sec_note_on"));
+    // 主断面 (位置スライダの対象) の見出しを太字にする
+    const int prim = qBound(0, m_planeBox->currentIndex(), 2);
+    for (int p = 0; p < 3; ++p) {
+        QFont f = m_multiCaption[p]->font();
+        f.setBold(p == prim);
+        m_multiCaption[p]->setFont(f);
+    }
+    updateExportNote();
+}
+
+// 3 面ビュー時に「何が書き出されるか」を明示する
+void H5ViewerTab::updateExportNote()
+{
+    const bool multi = multiActive();
+    m_expMultiNote->setVisible(multi);
+    if (multi)
+        m_expMultiNote->setText(I18n::tr("h5_multi_exp_note")
+                                    .arg(m_planeBox->currentText()));
+}
+
+// /metadata/Xn|Yn|Zn (ノード座標 [m]) を読む。無いファイルでは空のまま
+// (キャプションはノード番号だけになる — 座標を捏造しない)
+void H5ViewerTab::loadSliceCoords()
+{
+    static const char *const kName[3] = { "Xn", "Yn", "Zn" };
+    const int n[3] = { m_seriesInfo.nx1, m_seriesInfo.ny1, m_seriesInfo.nz1 };
+    for (int a = 0; a < 3; ++a) {
+        m_coord[a].clear();
+        const QString p = QStringLiteral("/metadata/%1")
+                              .arg(QLatin1String(kName[a]));
+        bool exists = false;
+        for (const H5DatasetInfo &ds : m_dsets)
+            if (ds.path == p) { exists = true; break; }
+        if (!exists) continue;
+        QVector<double> v;
+        QVector<qlonglong> dims;
+        if (H5Reader::readAll(m_filePath, p, v, dims) && v.size() == n[a])
+            m_coord[a] = v;
+    }
+}
+
+// 断面のキャプション: 面名 + 固定軸のノード番号 (座標があれば [m] も)
+QString H5ViewerTab::sliceCaption(int axis) const
+{
+    axis = qBound(0, axis, 2);
+    const int n[3] = { m_seriesInfo.nx1, m_seriesInfo.ny1, m_seriesInfo.nz1 };
+    const int maxIdx = std::max(0, n[axis] - 1);
+    const int idx = qBound(0, (m_secPos[axis] < 0) ? maxIdx / 2
+                                                   : m_secPos[axis], maxIdx);
+    const QString ax = QString::fromLatin1(kAxisName[axis]);
+    QString s = QStringLiteral("%1  %2 = %3 / %4")
+                    .arg(I18n::tr(QLatin1String(kPlaneKey[axis])), ax)
+                    .arg(idx).arg(maxIdx);
+    if (idx < m_coord[axis].size())
+        s += QStringLiteral("  (%1 = %2 m)")
+                 .arg(ax, QString::number(m_coord[axis][idx], 'g', 4));
+    return s;
+}
+
+// XY / XZ / YZ の 3 断面を読み、3 面共通のカラースケールで同時に描画する。
+// 統計 (min/max/平均) も 3 面の合成。CSV 出力用の m_data は主断面を保持する
+void H5ViewerTab::loadMultiFrames()
+{
+    QVector<double> d[3];
+    int rows[3] = { 0, 0, 0 }, cols[3] = { 0, 0, 0 };
+    QString label, err;
+    for (int p = 0; p < 3; ++p) {
+        const int axis = kPlaneAxis[p];
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, m_frame,
+                                          axis, m_secPos[axis], d[p], rows[p],
+                                          cols[p], p == 0 ? &label : nullptr,
+                                          &err)) {
+            for (FieldCanvas *c : m_multiCanvas)
+                c->setMessage(I18n::tr("h5_load_error") + " " + err);
+            clearStats();
+            return;
+        }
+    }
+
+    // 3 面をまとめた min / max / 平均 (面ごとに正規化すると強度が比較できない)
+    double lo = 0.0, hi = 0.0, sum = 0.0;
+    qsizetype cnt = 0;
+    bool first = true;
+    for (int p = 0; p < 3; ++p) {
+        for (const double v : d[p]) {
+            if (first) { lo = hi = v; first = false; }
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+            sum += v;
+            ++cnt;
+        }
+    }
+    const double mean = cnt ? sum / double(cnt) : 0.0;
+    m_statMin->setText(QString("min: %1").arg(lo, 0, 'g', 4));
+    m_statMax->setText(QString("max: %1").arg(hi, 0, 'g', 4));
+    m_statMean->setText(QString("%1: %2").arg(I18n::tr("h5_stat_mean"))
+                            .arg(mean, 0, 'g', 4));
+
+    // 表示スケール: 自動 = 合成 min/max、手動 = 入力値 (単一断面と同じ規則)
+    double slo = lo, shi = hi;
+    if (!m_autoScale->isChecked()) {
+        const double mlo = m_scaleMin->text().toDouble();
+        const double mhi = m_scaleMax->text().toDouble();
+        if (mlo < mhi) { slo = mlo; shi = mhi; }
+    }
+    setScaleLabels(slo, shi);
+
+    for (int p = 0; p < 3; ++p) {
+        m_multiCanvas[p]->setDatasetName(
+            QString::fromLatin1(kPlaneShort[p]));
+        m_multiCanvas[p]->setScale(slo, shi);
+        m_multiCanvas[p]->setData(d[p], rows[p], cols[p]);
+        m_multiCaption[p]->setText(sliceCaption(kPlaneAxis[p]));
+    }
+
+    // CSV 出力・自動/手動スケール切替の対象は主断面 (planeBox の選択)
+    const int prim = qBound(0, m_planeBox->currentIndex(), 2);
+    m_data = d[prim];
+    m_rows = rows[prim];
+    m_cols = cols[prim];
+
+    m_previewBox->setTitle(I18n::tr("h5_multi_title").arg(m_seriesComp, label));
+}
+
+// 現在フレームの表示画像を PNG 保存 (軸・見出しごと見た目のまま)。
+// 3 面ビュー時は 3 面を並べたまま (キャプション付き) 保存する
 void H5ViewerTab::exportPngCurrent()
 {
-    if (!m_canvas->hasData()) return;
+    const bool multi = multiActive();
+    QWidget *src = multi ? static_cast<QWidget *>(m_multiWrap) : m_canvas;
+    if (multi ? !m_multiCanvas[0]->hasData() : !m_canvas->hasData()) return;
     const QString path = QFileDialog::getSaveFileName(
         this, I18n::tr("h5_exp_png"), QStringLiteral("h5_frame.png"),
         QStringLiteral("PNG (*.png)"));
     if (path.isEmpty()) return;
-    m_expStatus->setText(m_canvas->grab().save(path)
+    m_expStatus->setText(src->grab().save(path)
         ? I18n::tr("h5_exp_done").arg(QFileInfo(path).fileName())
         : I18n::tr("h5_exp_fail").arg(path));
 }
@@ -1365,16 +1622,92 @@ void H5ViewerTab::exportPythonScript(bool notebook)
                               .toJson(QJsonDocument::Indented)));
 }
 
+// 全フレーム走査 (自動スケール決定) 用に frame の値を集める。
+// 3 面ビュー時は 3 面を連結して返す (スケールを 3 面共通にするため)
+bool H5ViewerTab::scanFrameValues(int frame, QVector<double> &out)
+{
+    out.clear();
+    int rows = 0, cols = 0;
+    if (multiActive()) {
+        for (int p = 0; p < 3; ++p) {
+            const int axis = kPlaneAxis[p];
+            QVector<double> d;
+            if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, frame,
+                                              axis, m_secPos[axis], d, rows,
+                                              cols))
+                return false;
+            out += d;
+        }
+        return true;
+    }
+    if (m_seriesMode)
+        return H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, frame,
+                                            sliceAxis(), m_secPos[sliceAxis()],
+                                            out, rows, cols);
+    return H5Reader::readFrame(m_filePath, m_dataset, frame, out, rows, cols);
+}
+
+// 3 面 (XY / XZ / YZ) を横に並べ、上にキャプションを載せた 1 枚の画像を作る。
+// カラースケール (lo, hi) は 3 面共通 — 面どうしの強度が比較できる
+QImage H5ViewerTab::multiImage(int frame, double lo, double hi, bool *ok)
+{
+    QImage panes[3];
+    QString caps[3];
+    int totW = 0, maxH = 0;
+    for (int p = 0; p < 3; ++p) {
+        const int axis = kPlaneAxis[p];
+        QVector<double> d;
+        int rows = 0, cols = 0;
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, frame,
+                                          axis, m_secPos[axis], d, rows,
+                                          cols)) {
+            if (ok) *ok = false;
+            return QImage();
+        }
+        const int cellPx = qMax(1, 360 / qMax(rows, cols));
+        panes[p] = m_canvas->renderImage(d, rows, cols, cellPx, lo, hi);
+        caps[p] = sliceCaption(axis);
+        if (panes[p].isNull()) {
+            if (ok) *ok = false;
+            return QImage();
+        }
+        totW += panes[p].width();
+        maxH = qMax(maxH, panes[p].height());
+    }
+    const int margin = 10, gap = 10, capH = 20;
+    QImage out(totW + 2 * margin + 2 * gap, maxH + 2 * margin + capH,
+               QImage::Format_RGB32);
+    out.fill(Qt::black);
+    QPainter p(&out);
+    QFont f = p.font();
+    f.setPixelSize(12);
+    p.setFont(f);
+    const QFontMetrics fm(f);
+    int x = margin;
+    for (int i = 0; i < 3; ++i) {
+        p.setPen(Qt::white);
+        p.drawText(QRect(x, margin, panes[i].width(), capH),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   fm.elidedText(caps[i], Qt::ElideRight, panes[i].width()));
+        p.drawImage(QPoint(x, margin + capH), panes[i]);
+        x += panes[i].width() + gap;
+    }
+    if (ok) *ok = true;
+    return out;
+}
+
 // frame 番目のフレームを読み込んで指定スケールで画像化する
 QImage H5ViewerTab::frameImage(int frame, double lo, double hi, bool *ok)
 {
+    if (multiActive()) return multiImage(frame, lo, hi, ok);
+
     QVector<double> d;
     int rows = 0, cols = 0;
     bool loaded = false;
     if (m_seriesMode)
         loaded = H5Reader::readOfdSeriesFrame(
             m_filePath, m_seriesComp, frame, sliceAxis(),
-            m_secSlider->value(), d, rows, cols);
+            m_secPos[sliceAxis()], d, rows, cols);
     else
         loaded = H5Reader::readFrame(m_filePath, m_dataset, frame, d, rows,
                                      cols);
@@ -1424,15 +1757,9 @@ void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
     if (m_autoScale->isChecked()) {
         bool first = true;
         for (int f = 0; f < m_nframes; ++f) {
+            // 3 面ビュー時は 3 面すべてを走査する (共通スケールのため)
             QVector<double> d;
-            int rows = 0, cols = 0;
-            bool okF = m_seriesMode
-                ? H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f,
-                                               sliceAxis(),
-                                               m_secSlider->value(), d, rows,
-                                               cols)
-                : H5Reader::readFrame(m_filePath, m_dataset, f, d, rows,
-                                      cols);
+            const bool okF = scanFrameValues(f, d);
             if (okF) {
                 for (const double v : d) {
                     if (first) { lo = hi = v; first = false; }
@@ -1566,6 +1893,8 @@ void H5ViewerTab::setFrame(int f)
 
 void H5ViewerTab::applyScale()
 {
+    // 3 面ビューは 3 面へまとめて反映する (loadMultiFrames が共通スケール)
+    if (multiActive()) { loadMultiFrames(); return; }
     const double lo = m_scaleMin->text().toDouble();
     const double hi = m_scaleMax->text().toDouble();
     if (lo >= hi) return;

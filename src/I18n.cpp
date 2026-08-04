@@ -63,8 +63,12 @@ void I18n::loadTables() {
         "before a run, the source-waveform preview. Kernel-drawn figures "
         "(ev.ev2) open via the ev2d button at the bottom");
     add("tb_plot3d_tip",
-        "3D シーン (形状・メッシュのビューポート) へ切替",
-        "Switch to the 3D scene (geometry / mesh viewport)");
+        "3D シーン (形状・メッシュのビューポート) へ切替 — 結果 HDF5 を"
+        "読み込むとツールバーの「結果断面を重ねる」で計算結果の断面を"
+        "3D 空間に重ねられる",
+        "Switch to the 3D scene (geometry / mesh viewport) — once a result "
+        "HDF5 is loaded, \"Overlay result slice\" in the toolbar draws the "
+        "computed slice in the 3D scene");
     add("tb_stop", "停止", "Stop");
     add("tb_cloud", "クラウド送信", "Cloud");
     add("tb_cloud_optical_only", "クラウド送信 (光のみ)", "Cloud (optical only)");
@@ -1031,6 +1035,15 @@ void I18n::loadTables() {
         "既存の HDF5 結果を検出し H5アニメタブへセットしました: %1",
         "Found an existing HDF5 result and set it on the H5 Animation "
         "tab: %1");
+    add("log_slice3d",
+        "3D シーンに結果断面を重ねられます "
+        "(「3D シーン」タブ → ツールバーの「結果断面を重ねる」)",
+        "The result slice can now be overlaid on the 3D scene (3D scene tab "
+        "→ \"Overlay result slice\" in the toolbar)");
+    add("log_slice3d_skip",
+        "結果断面は 3D シーンへ重ねられません (2D 断面表示のみ): %1",
+        "The result slice cannot be overlaid on the 3D scene (2D slice view "
+        "only): %1");
     add("log_h5_anime",
         "伝搬の時系列は「H5アニメ」タブで再生できます (実行結果を読込済み)",
         "Play the propagation time series in the H5 Animation tab (this "

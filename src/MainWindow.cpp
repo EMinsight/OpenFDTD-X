@@ -147,6 +147,13 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_project, &Project::domainChanged, this, &MainWindow::onDomainChanged);
     connect(m_project, &Project::changed, this, &MainWindow::onProjectChanged);
 
+    // 3D シーンへの結果断面の反映結果をログに出す (ドック生成後に接続)
+    connect(m_center, &CenterPane::result3DSliceStatus, this,
+            [this](bool ok, const QString &detail) {
+        m_rightDock->appendLog(ok ? I18n::tr("log_slice3d")
+                                  : I18n::tr("log_slice3d_skip").arg(detail));
+    });
+
     connect(m_runner, &Runner::progress, this, &MainWindow::onRunnerProgress);
     connect(m_runner, &Runner::logLine, this, &MainWindow::onRunnerLog);
     connect(m_runner, &Runner::finished, this, &MainWindow::onRunnerFinished);
@@ -872,6 +879,8 @@ void MainWindow::updateWindowTitle()
 
 void MainWindow::newProject()
 {
+    // 前の実行の結果 (3D の結果断面など) を新しいプロジェクトへ持ち越さない
+    m_center->clearResultField();
     m_project->clear();
     emit m_project->loaded();
     emit m_project->changed();
@@ -892,6 +901,9 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
+    // 前のプロジェクトの結果を残さない (別プロジェクトの結果断面が
+    // そのまま 3D シーンに残るのを防ぐ — .claude/rules/gui.md)
+    m_center->clearResultField();
     // プロジェクトのディレクトリに既存の HDF5 結果があれば H5 アニメタブへ
     // 自動セットする (どのファイルを見ているかは同タブに常に明示される。
     // 「この実行の結果」とは扱わない — 2D 断面への反映は実行時の mtime
@@ -902,6 +914,10 @@ void MainWindow::openProject(const QString &path)
         if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer))
             viewer->openFile(h5);
         m_rightDock->appendLog(I18n::tr("log_h5_found").arg(h5));
+        // 3D シーンへは重ねられる (どのファイルの結果かは断面の凡例に出る)。
+        // 2D 断面と違い実行ゲートを掛けないのは、H5 アニメタブと同じく
+        // 「開いたファイルの中身」を出所付きで見せるだけだから。
+        m_center->loadResult3DSlice(h5);
     }
     updateWindowTitle();
 }
