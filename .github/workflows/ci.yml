@@ -125,12 +125,17 @@ jobs:
       # CMake から見つけるには prefix を CMAKE_PREFIX_PATH に渡す必要がある
       # (keg-only ではないが、Qt6Config.cmake は opt/qt/lib/cmake 配下)。
       - name: Install Qt6
-        run: brew install qt
+        run: brew install qt hdf5
 
+      # macOS も USE_HDF5=ON でビルドする。結果表示 (2D 断面 / 3D 断面 /
+      # H5 アニメ) は HDF5 必須で README も -DUSE_HDF5=ON を案内しているのに、
+      # 以前は Linux でしかこの経路をコンパイルしていなかった
+      # (Apple clang / Homebrew HDF5 固有の問題を CI で拾えない状態だった)。
       - name: Configure
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_HDF5=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+            -DHDF5_ROOT="$(brew --prefix hdf5)"
 
       - name: Build
         run: cmake --build build -j"$(sysctl -n hw.ncpu)"
