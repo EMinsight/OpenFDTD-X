@@ -3,7 +3,10 @@
 // OpenGL context is required (works in headless / remote sessions too).
 //
 // Mouse: left-drag = orbit, middle-drag = pan, wheel = zoom, double = fit.
+// Drop  : コンポーネントライブラリ (ComponentsTab) のカードを落とすと、
+//         その位置にジオメトリ / 給電点 / 観測点を追加する。
 #pragma once
+#include <QByteArray>
 #include <QImage>
 #include <QString>
 #include <QVector>
@@ -11,9 +14,34 @@
 #include <QPointF>
 #include "../core/Domain.h"
 
+class QDragEnterEvent;
+class QDragLeaveEvent;
+class QDragMoveEvent;
+class QDropEvent;
+
 namespace ofd {
 
 class Project;
+
+// ── コンポーネントのドラッグ&ドロップ契約 (ComponentsTab → Viewport3D) ─────
+// アプリ内専用の独自 MIME タイプでカテゴリと名前を運ぶ。ドロップ側の
+// 配置仕様 (どの形状コードを作るか) は Viewport3D.cpp が持つ。
+namespace ComponentDrop {
+
+// MIME タイプ ("application/x-openfdtd-component")
+const char *mimeType();
+
+// カテゴリ + 名前 → MIME データ (UTF-8 / TAB 区切り)
+QByteArray encode(const QString &cat, const QString &name);
+
+// MIME データ → カテゴリ + 名前。壊れたデータでは false。
+bool decode(const QByteArray &data, QString *cat, QString *name);
+
+// ドロップ配置に対応しているコンポーネントか。
+// false のとき why に理由 (I18n 済み。取込モデルなど位置だけでは作れないもの)。
+bool canPlace(const QString &cat, const QString &name, QString *why = nullptr);
+
+} // namespace ComponentDrop
 
 // モックの TweaksPanel「3D ビュー / Viewport」に対応する描画スタイル。
 //   Wireframe — 形状を薄い線画で
@@ -77,11 +105,43 @@ protected:
     void mouseMoveEvent(QMouseEvent *) override;
     void wheelEvent(QWheelEvent *) override;
     void mouseDoubleClickEvent(QMouseEvent *) override;
+    // コンポーネントのドラッグ&ドロップ配置
+    void dragEnterEvent(QDragEnterEvent *) override;
+    void dragMoveEvent(QDragMoveEvent *) override;
+    void dragLeaveEvent(QDragLeaveEvent *) override;
+    void dropEvent(QDropEvent *) override;
 
 private:
     QPointF projectPoint(double x, double y, double z) const;
     // 面内座標 (u, v) [m] → 画面座標 (m_sliceAxis の平面上)
     QPointF projectSlicePoint(double u, double v) const;
+
+    // ── シーンの範囲と投影変換 (paintEvent とドロップ処理で共用) ───────────
+    // メッシュ領域 [lo, hi]。1 軸も広がりが無ければ既定の箱を入れて false。
+    bool sceneBounds(double lo[3], double hi[3]) const;
+    // m_cx/m_cy/m_cz/m_scale を現在のメッシュ・ウィジェット寸法から更新する
+    void updateSceneTransform() const;
+    // 3 軸すべてに広がりがあるか (ドロップ配置の前提条件)
+    bool meshDefined() const;
+    // ドロップで作る要素の既定寸法 = メッシュ最小スパンの 1/10 [m]
+    double defaultSize() const;
+    // 画面座標 → シーン座標 (正射影 projectPoint の逆変換)。
+    // 床面 (メッシュ領域の z 最小面) との交点を基本とし、交点が求まらない
+    // /領域外になるときはシーン中心を通る視線垂直面へ落とす (onFloor=false)。
+    bool unprojectToScene(const QPointF &screen, double out[3],
+                          bool *onFloor) const;
+
+    void drawWireBox(QPainter &p, const double a[3], const double b[3],
+                     const QPen &pen) const;
+    void drawDropPreview(QPainter &p);   // ドラッグ中の配置プレビュー
+    void drawDropMessage(QPainter &p);   // ドロップ結果 / 拒否理由の一時表示
+    // ドラッグ位置 → プレビュー状態を更新。配置可能なら true。
+    bool updateDragTarget(const QPointF &pos);
+    // ドロップされたコンポーネントをモデルへ反映する。
+    // 追加できたら true (msg に追加内容)、できなければ false (msg に理由)。
+    bool placeComponent(const QString &cat, const QString &name,
+                        const double pos[3], bool onFloor, QString *msg);
+    void showDropMessage(const QString &msg, bool ok);
 
     void drawResultSlice(QPainter &p);   // 実データ断面 (無ければ未読込の明示)
     void drawSliceLegend(QPainter &p, int decim);
@@ -107,6 +167,18 @@ private:
     QString  m_sliceLabel;
     QImage   m_sliceImg;             // 断面の色画像 (setResultSlice で作る)
     int      m_sliceDecim = 1;       // 画像化で束ねたセル数 (1 = 等倍)
+
+    // ── ドラッグ&ドロップ配置の状態 ──
+    bool     m_dragHover = false;      // コンポーネントをドラッグ中か
+    QString  m_dragCat, m_dragName;    // ドラッグ中のコンポーネント
+    QPointF  m_dragPos;                // ドラッグ位置 (ウィジェット座標)
+    double   m_dragScene[3] = { 0, 0, 0 };  // 配置先 [m]
+    bool     m_dragOnFloor = false;    // 床面との交点を使ったか
+    bool     m_dragOk = false;         // 配置可能か
+    QString  m_dragWhy;                // 配置できない理由
+    QString  m_dropMsg;                // ドロップ結果の一時メッセージ
+    bool     m_dropMsgOk = false;
+    int      m_dropMsgSeq = 0;         // 古いタイマーが新しい表示を消さない用
 
     double   m_azimuthDeg = -60;
     double   m_elevationDeg = 25;

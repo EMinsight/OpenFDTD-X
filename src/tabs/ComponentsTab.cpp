@@ -3,13 +3,19 @@
 #include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
+#include "../widgets/Viewport3D.h"   // ComponentDrop (3D ビューへの D&D 契約)
 #include "../I18n.h"
 
+#include <QApplication>
+#include <QDrag>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMimeData>
+#include <QMouseEvent>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
 #include <QVBoxLayout>
@@ -34,8 +40,14 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_monitor",   "モニター",                    "Monitors");
     ofd::I18n::reg("cl_imported",  "取込モデル",                  "Imported models");
     ofd::I18n::reg("cl_components","コンポーネント",              "Components");
-    ofd::I18n::reg("cl_drag_hint", "ビューポートへのドラッグ配置は未実装",
-                   "Drag-into-viewport placement is not implemented yet");
+    ofd::I18n::reg("cl_drag_hint",
+        "カードを中央の「🧊 3D シーン」へドラッグすると、その位置に "
+        "形状 / 波源 / 観測点を追加します (床面との交点に配置)",
+        "Drag a card onto the centre \"🧊 3D scene\" to add a shape / source "
+        "/ observation point there (placed where the view hits the floor)");
+    ofd::I18n::reg("cl_drag_tip",
+        "3D シーンへドラッグして配置",
+        "Drag onto the 3D scene to place it");
     ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
     ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
@@ -178,6 +190,90 @@ QStringList priorityCats(const QString &d)
     return { "basic" };
 }
 
+// 名前からコンポーネント定義を引く (お気に入りチップはカテゴリを持たない)
+// 名前には非 ASCII を含むもの ("TFSF (全/散乱場)" 等) があるので UTF-8 で比較する
+const Component *findComponent(const QString &name)
+{
+    for (const Component &c : kComponents)
+        if (name == QString::fromUtf8(c.name)) return &c;
+    return nullptr;
+}
+
+// ── 3D ビューへのドラッグ元 ────────────────────────────────────────────────
+// 押下位置からしきい値以上動いたら QDrag を開始する。運ぶのは
+// ComponentDrop の MIME (カテゴリ + 名前) だけで、実際に何を作るかは
+// ドロップ先 (Viewport3D) が決める。
+void beginComponentDrag(QWidget *src, const QString &cat, const QString &name,
+                        const QPoint &hotSpot)
+{
+    if (cat.isEmpty() || name.isEmpty()) return;
+    // ドロップしても配置できないものは掴めないようにする (空振りを作らない)
+    if (!ofd::ComponentDrop::canPlace(cat, name)) return;
+
+    auto *mime = new QMimeData();
+    mime->setData(ofd::ComponentDrop::mimeType(),
+                  ofd::ComponentDrop::encode(cat, name));
+    mime->setText(name);                       // 他アプリへは名前だけ渡る
+    auto *drag = new QDrag(src);
+    drag->setMimeData(mime);
+    drag->setPixmap(src->grab());              // カードの見た目をカーソルに
+    drag->setHotSpot(hotSpot);
+    drag->exec(Qt::CopyAction);
+}
+
+// ドラッグ元になる小さな入れ物 (カード = QFrame / チップ = QLabel)。
+// 子ラベルは WA_TransparentForMouseEvents にしてあるので押下はここへ届く。
+template <class Base>
+class DragSource : public Base {
+public:
+    DragSource(const QString &cat, const QString &name, QWidget *parent)
+        : Base(parent), m_cat(cat), m_name(name) {}
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton) {
+            m_press = e->position().toPoint();
+            e->accept();                        // 以降の move をここで受ける
+            return;
+        }
+        Base::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (!(e->buttons() & Qt::LeftButton)) { Base::mouseMoveEvent(e); return; }
+        if ((e->position().toPoint() - m_press).manhattanLength()
+            < QApplication::startDragDistance())
+            return;
+        beginComponentDrag(this, m_cat, m_name, m_press);
+    }
+
+private:
+    QString m_cat, m_name;
+    QPoint  m_press;
+};
+
+using DragCard = DragSource<QFrame>;
+using DragChip = DragSource<QLabel>;
+
+// ドラッグ元ウィジェットの見た目 (カーソル) とツールチップ。
+// 配置できないコンポーネントは掴める見た目にせず、理由をツールチップに出す。
+void applyDragAffordance(QWidget *w, const QString &cat, const QString &name)
+{
+    QString why;
+    if (cat.isEmpty() || name.isEmpty()) {   // 対応表に無い項目 (ドラッグ不可)
+        w->setCursor(Qt::ArrowCursor);
+        return;
+    }
+    if (ofd::ComponentDrop::canPlace(cat, name, &why)) {
+        w->setCursor(Qt::OpenHandCursor);
+        w->setToolTip(ofd::I18n::tr("cl_drag_tip"));
+    } else {
+        w->setCursor(Qt::ArrowCursor);
+        w->setToolTip(why);
+    }
+}
+
 // お気に入りの QSettings 永続化キー (アプリ再起動をまたいで保持する)
 const char kFavSettingsKey[] = "components/favorites";
 
@@ -267,10 +363,14 @@ void ComponentsTab::rebuildFavorites()
         m_favRow->addWidget(hint);
     } else {
         for (const QString &name : m_favorites) {
-            // クリック動作は無いため「押せる見た目」(手カーソル) にしない
-            auto *chip = new QLabel(QStringLiteral("★ ") + name, m_favSection);
+            // カードと同じくドラッグ元になる (カテゴリは名前から引く)
+            const Component *c = findComponent(name);
+            const QString cat = c ? QString::fromUtf8(c->cat) : QString();
+            auto *chip = new DragChip(cat, name, m_favSection);
+            chip->setText(QStringLiteral("★ ") + name);
             chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                                 "padding:1px 6px; font-size:11px;");
+            applyDragAffordance(chip, cat, name);
             m_favRow->addWidget(chip);
         }
     }
@@ -320,24 +420,38 @@ void ComponentsTab::rebuildRecent()
         delete it->widget();
         delete it;
     }
-    static const char *const kRecEm[] = { "cl_rec_em_1", "cl_rec_em_2",
-                                          "cl_rec_em_3" };
-    static const char *const kRecOp[] = { "cl_rec_op_1", "cl_rec_op_2",
-                                          "cl_rec_op_3" };
-    static const char *const kRecAc[] = { "cl_rec_ac_1", "cl_rec_ac_2",
-                                          "cl_rec_ac_3" };
-    static const char *const kRecUw[] = { "cl_rec_uw_1", "cl_rec_uw_2",
-                                          "cl_rec_uw_3" };
+    // チップの表示ラベル (i18n キー) と、対応するコンポーネント
+    // (カード同様 3D ビューへドラッグできるようにする)
+    struct Rec { const char *key, *cat, *name; };
+    static const Rec kRecEm[] = {
+        { "cl_rec_em_1", "antenna", "Patch antenna" },
+        { "cl_rec_em_2", "antenna", "Dipole" },
+        { "cl_rec_em_3", "antenna", "Horn" } };
+    static const Rec kRecOp[] = {
+        { "cl_rec_op_1", "photonic", "Ring resonator" },
+        { "cl_rec_op_2", "photonic", "Bragg grating (DBR)" },
+        { "cl_rec_op_3", "photonic", "Grating coupler" } };
+    static const Rec kRecAc[] = {
+        { "cl_rec_ac_1", "acoustic", "Absorber panel" },
+        { "cl_rec_ac_2", "acoustic", "Diffuser (QRD)" },
+        { "cl_rec_ac_3", "acoustic", "Audience block" } };
+    static const Rec kRecUw[] = {
+        { "cl_rec_uw_1", "source",  "Dipole source" },
+        { "cl_rec_uw_2", "monitor", "Point monitor" },
+        { "cl_rec_uw_3", "monitor", "Point monitor" } };
     const QString domain = domainKey(m_p->activeDomain());
-    const char *const *keys = kRecEm;
-    if (domain == "optical")         keys = kRecOp;
-    else if (domain == "acoustic")   keys = kRecAc;
-    else if (domain == "underwater") keys = kRecUw;
+    const Rec *recs = kRecEm;
+    if (domain == "optical")         recs = kRecOp;
+    else if (domain == "acoustic")   recs = kRecAc;
+    else if (domain == "underwater") recs = kRecUw;
     for (int i = 0; i < 3; ++i) {
-        // クリックしても何も起きないため「押せる見た目」(手カーソル) にしない
-        auto *b = new QLabel(I18n::tr(QLatin1String(keys[i])), m_recentSection);
+        const QString cat  = QString::fromUtf8(recs[i].cat);
+        const QString name = QString::fromUtf8(recs[i].name);
+        auto *b = new DragChip(cat, name, m_recentSection);
+        b->setText(I18n::tr(QLatin1String(recs[i].key)));
         b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                          "padding:1px 6px; font-size:11px;");
+        applyDragAffordance(b, cat, name);
         m_recentRow->addWidget(b);
     }
     m_recentRow->addStretch(1);
@@ -379,10 +493,11 @@ void ComponentsTab::rebuildGrid()
     const int cols = 4;
     for (int i = 0; i < filtered.size(); ++i) {
         const Component &c = *filtered[i];
-        // ドラッグ配置は未実装のため OpenHandCursor (掴める見た目) にしない
-        auto *card = new QFrame(m_gridSection);
+        const QString name = QString::fromUtf8(c.name);
+        // 3D シーンへのドラッグ元。掴める見た目にするのは配置できるものだけ。
+        auto *card = new DragCard(QString::fromUtf8(c.cat), name, m_gridSection);
         card->setFrameShape(QFrame::StyledPanel);
-        card->setCursor(Qt::ArrowCursor);
+        applyDragAffordance(card, QString::fromUtf8(c.cat), name);
         auto *cv = new QVBoxLayout(card);
         cv->setContentsMargins(8, 6, 8, 6);
         cv->setSpacing(2);
@@ -390,9 +505,11 @@ void ComponentsTab::rebuildGrid()
         top->setSpacing(6);
         auto *ic = new QLabel(QString::fromUtf8(c.icon), card);
         ic->setStyleSheet(QStringLiteral("font-size:16px; color:%1;").arg(acc));
-        const QString name = QString::fromUtf8(c.name);
         auto *nm = new QLabel(name, card);
         nm->setStyleSheet("font-size:11px; font-weight:600;");
+        // ラベルはマウスを素通りさせ、カード本体でドラッグを開始させる
+        ic->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        nm->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         top->addWidget(ic);
         top->addWidget(nm, 1);
         // ☆ / ★ = お気に入り登録トグル
@@ -419,6 +536,7 @@ void ComponentsTab::rebuildGrid()
         auto *sub = new QLabel(QString::fromUtf8(c.sub), card);
         sub->setStyleSheet("font-size:10px; color:gray;");
         sub->setWordWrap(true);
+        sub->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         cv->addWidget(sub);
         m_grid->addWidget(card, i / cols, i % cols);
     }

@@ -753,6 +753,86 @@ static void testOperaAcousticSettings()
     }
 }
 
+// ── 音響テンプレートの吸音バジェット期待値 ────────────────────────────────
+// 中音域 (500 Hz / 1 kHz の平均) RT60 [s] の期待レンジ。
+// **この表はテンプレート実装から読み取った値ではなく、用途ごとの目標残響時間
+// から独立に決めた期待値である** (ProjectTemplates.cpp 側は「この目標に入る
+// ように」吸音バジェットを組んである)。根拠はテンプレート側のコメント参照。
+//   ac_hall/ac_raytrace : 交響楽ホール V≈7200m³ の推奨 1.6〜2.1 s
+//   ac_office           : 事務室・教室の慣行 0.4〜0.6 s (STI 確保)
+//   ac_studio           : EBU Tech 3276 / ITU-R BS.1116 の 0.25·(V/100)^(1/3)
+//                         = 0.21 s ± 0.05 s (V = 60 m³)
+//   ac_aural            : 多目的小ホール V≈900m³ の 1.0 s 級
+//   ac_imagesource      : 剛壁シューボックス (設計値ではなく検証用の長残響)
+//   ac_noise            : 住宅居室 0.4〜0.6 s
+//   ac_cinema           : SMPTE ST 202 系の劇場 V≈3200m³ で 0.5 s 前後
+//   ac_livehouse        : 拡声音楽会場 0.6〜1.0 s
+//   ac_gym              : **未対策の現状** を再現するケース (推奨値ではない)
+//   ac_church           : オルガン/聖歌隊のための礼拝堂 2.0〜3.0 s
+//   ac_restaurant       : 飲食店 0.6 s 以下 (会話明瞭度)
+// ac_outdoor は屋外伝搬で室内残響の概念を持たない (吸音バジェット未設定)
+// ため対象外。
+struct AcRtExpect { const char *id; double lo; double hi; };
+static const AcRtExpect kAcRtExpect[] = {
+    { "ac_hall",         1.70, 2.00 },
+    { "ac_raytrace",     1.70, 2.00 },   // ac_hall と同一の室構成
+    { "ac_office",       0.40, 0.60 },
+    { "ac_studio",       0.16, 0.26 },
+    { "ac_aural",        0.90, 1.20 },
+    { "ac_imagesource",  2.40, 3.40 },
+    { "ac_noise",        0.35, 0.55 },
+    { "ac_cinema",       0.45, 0.60 },
+    { "ac_livehouse",    0.65, 0.95 },
+    { "ac_gym",          3.00, 4.20 },
+    { "ac_church",       2.20, 3.00 },
+    { "ac_restaurant",   0.35, 0.55 },
+};
+
+// 音響テンプレートの吸音バジェット自己整合:
+//   1) 各テンプレートが吸音バジェットを持つこと
+//   2) roomac::rt60() の中音域が上表の期待レンジに入ること
+//   3) 面の合計面積が室の総表面積 S と桁で乖離していないこと
+//      (V/S を上書きして budget だけ既定のまま、という取り違えの検出)
+static void testAcousticBudgets()
+{
+    for (const AcRtExpect &e : kAcRtExpect) {
+        g_file = QStringLiteral("acbudget:%1").arg(QLatin1String(e.id));
+        Project p;
+        if (!templates::apply(p, "acoustic", QLatin1String(e.id))) {
+            check(false, "acoustic template applies");
+            continue;
+        }
+        const AcousticOpts &a = p.acoustic();
+        check(!a.absorption.isEmpty(), "template has an absorption budget");
+        if (a.absorption.isEmpty()) continue;
+
+        const double t500 = roomac::rt60(a, 2, a.rtFormula);
+        const double t1k  = roomac::rt60(a, 3, a.rtFormula);
+        const double mid  = 0.5 * (t500 + t1k);
+        const bool inRange = (mid >= e.lo && mid <= e.hi);
+        if (!inRange)
+            std::fprintf(stderr,
+                         "  (%s: mid RT60 = %.3f s, expected %.2f..%.2f)\n",
+                         e.id, mid, e.lo, e.hi);
+        check(inRange, "mid-band RT60 within the intended range");
+        // 帯域ごとに有限かつ正であること (バジェット行の抜けを検出)
+        bool allPositive = true;
+        for (int b = 0; b < 6; ++b) {
+            const double t = roomac::rt60(a, b, a.rtFormula);
+            allPositive = allPositive && (t > 0.0) && (t < 30.0);
+        }
+        check(allPositive, "all six bands give a finite positive RT60");
+
+        // 面の合計面積 vs 室の総表面積 (Air 行と Other 行は面積に数えるが、
+        // Other は付加物なので上振れを許す)
+        double areaSum = 0;
+        for (const AbsorptionRow &r : a.absorption)
+            if (r.enabled && r.role != AbsorptionRow::Air) areaSum += r.area;
+        check(areaSum > 0.5 * a.surface && areaSum < 2.0 * a.surface,
+              "absorption areas are consistent with the room surface");
+    }
+}
+
 // プロジェクトテンプレート (core/ProjectTemplates — 応用ギャラリー)。
 // 全テンプレートが「保存すればカーネルへ渡せる」状態を作ることを検証する:
 // メッシュ妥当・波源あり・周波数正・.ofd 往復一致 + ドメイン設定の抜き取り。
@@ -784,6 +864,28 @@ static void testProjectTemplates()
             check(!p.feeds().isEmpty() || p.planewave().enabled ||
                   isValidRcwaStack(p.optical().rcwaLayerList),
                   "template has a source");
+            // 障害物ジオメトリはメッシュ領域の内側に収まっていること。
+            // (領域外へはみ出した形状はボクセル化で丸ごと落ちるため無意味。
+            //  室内音響の障害物 = 客席ブロック・間仕切り等でとくに起きやすい)
+            bool geomInside = true;
+            for (const Geometry &gm : p.geometries()) {
+                if (Geometry::paramCount(gm.shape) != 6) continue;
+                for (int ax = 0; ax < 3; ++ax) {
+                    const double lo = p.mesh(ax).min(), hi = p.mesh(ax).max();
+                    const double tol = 1e-9 * std::max(hi - lo, 1e-30);
+                    const double g1 = std::min(gm.g[2 * ax], gm.g[2 * ax + 1]);
+                    const double g2 = std::max(gm.g[2 * ax], gm.g[2 * ax + 1]);
+                    if (g1 < lo - tol || g2 > hi + tol) {
+                        geomInside = false;
+                        std::fprintf(stderr,
+                                     "  (%s: geometry \"%s\" axis %d "
+                                     "[%g,%g] outside mesh [%g,%g])\n",
+                                     qPrintable(id), qPrintable(gm.name), ax,
+                                     g1, g2, lo, hi);
+                    }
+                }
+            }
+            check(geomInside, "template geometry fits inside the mesh");
             // 実保存経路の往復 (.ofd + .ofdx — 光ソルバ種別等はサイドカー側)
             QTemporaryDir dir;
             if (dir.isValid()) {
@@ -803,7 +905,35 @@ static void testProjectTemplates()
         }
     }
     g_file = "templates";
-    check(total == 37, "37 templates registered");
+    // 8 EM + 10 光 + 13 音響 + 7 水中 + 4 tidy3d
+    check(total == 42, "42 templates registered");
+
+    // 室内音響テンプレートの障害物ジオメトリ (会場の実構成が入っていること)。
+    // ac_imagesource だけは鏡像法の解析解が空の直方体でしか成立しないため
+    // 意図的にジオメトリを持たない — 逆にジオメトリが増えたら失敗させる。
+    {
+        const char *withGeom[] = { "ac_hall", "ac_office", "ac_studio",
+                                   "ac_aural", "ac_cinema", "ac_livehouse",
+                                   "ac_gym", "ac_church", "ac_restaurant",
+                                   "ac_noise", "ac_outdoor" };
+        for (const char *id : withGeom) {
+            g_file = QStringLiteral("acgeom:%1").arg(QLatin1String(id));
+            Project p;
+            check(templates::apply(p, "acoustic", QLatin1String(id)),
+                  "acoustic template applies");
+            check(!p.geometries().isEmpty(),
+                  "acoustic template has obstacle geometry");
+            check(!p.materials().isEmpty(),
+                  "acoustic obstacles reference materials");
+        }
+        g_file = "acgeom:ac_imagesource";
+        Project p;
+        check(templates::apply(p, "acoustic", "ac_imagesource"),
+              "imagesource template applies");
+        check(p.geometries().isEmpty(),
+              "image-source template stays an empty shoebox");
+        g_file = "templates";
+    }
 
     // ドメイン設定の抜き取り検証 (シナリオが実際に反映されていること)
     {
@@ -3261,6 +3391,7 @@ int main(int argc, char *argv[])
     testRoomAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
+    testAcousticBudgets();
     testKernelResultReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();

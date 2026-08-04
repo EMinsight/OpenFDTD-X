@@ -13,7 +13,10 @@
 #include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
 #include <QFileDialog>
+#include <QMimeData>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -299,7 +302,27 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
 
     onTabChanged(0);
     updateDomainVisibility(m_p->activeDomain());   // 初回反映
+
+    // コンポーネントのドラッグを受け取れるようにする (下の dragEnterEvent。
+    // 実際のドロップ先は Viewport3D で、ここは 3D シーンへの切替だけを行う)
+    setAcceptDrops(true);
 }
+
+// コンポーネントライブラリのカードを 2D 断面などへドラッグしてきたときに、
+// 配置先の「🧊 3D シーン」へ自動で切り替える (Ansys 系と同じ挙動)。
+// 切り替えるだけでドロップは受けない — 受けるのは Viewport3D。
+void CenterPane::handleComponentDragOver(QDragMoveEvent *e)
+{
+    if (!e->mimeData()->hasFormat(ComponentDrop::mimeType())) {
+        e->ignore();
+        return;
+    }
+    if (m_tabs->currentIndex() != 0) m_tabs->setCurrentIndex(0);
+    e->ignore();   // カーソルが 3D シーンへ入った時点で Viewport3D が受ける
+}
+
+void CenterPane::dragEnterEvent(QDragEnterEvent *e) { handleComponentDragOver(e); }
+void CenterPane::dragMoveEvent(QDragMoveEvent *e)   { handleComponentDragOver(e); }
 
 // ドメインで意味を持たない UI 項目の出し分け。
 // 現状は 3D ビュースタイル「+ Rays」のみ — 光 (ビーム経路) と

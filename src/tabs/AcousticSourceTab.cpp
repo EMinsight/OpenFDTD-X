@@ -725,20 +725,30 @@ QWidget *AcousticSourceTab::buildSignalPage()
     setupTable(m_libTable, { "", I18n::tr("asrc_col_material"),
                              I18n::tr("asrc_col_len"),
                              I18n::tr("asrc_col_use") }, 200);
+    // レイアウトへの追加漏れがあると、表が親の左上に素置きされて
+    // 上のヒントラベルに重なる (実際に表示崩れを起こしていた)
+    sl->vbox()->addWidget(m_libTable);
+    // 収録音源そのものは同梱していない — 一覧は想定内容の見本
+    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
     v->addWidget(sl);
 
     auto *sp = new SectionBox(I18n::tr("asrc_preview_section"), page);
     m_wavePlot = new MiniPlot(sp);
     m_wavePlot->setLabels("t [s]", "amplitude");
     m_wavePlot->setMinimumHeight(110);
-    // mock: env·sin(2π·440·t)·(0.5+0.4·sin(2π·3·t)),  env = exp(-((t-1.5)/0.6)²)
+    // ファイル未選択時のプレースホルダ波形。
+    // モックは 440 Hz 搬送波だったが、5 s を 200 点 (= 40 Hz) で描くと
+    // sin(2π·440·t) は全サンプルが節に当たって恒等的に 0 になり (実測 1e-13)、
+    // 数値誤差だけの意味のない線が出ていた。描画点数で表現できる搬送波
+    // (12 Hz) と点数 (1000) にして、波形として読める見本にする。
     MiniSeries wave;
     wave.color = kAcc;
-    for (int i = 0; i < 200; ++i) {
-        const double t = i / 200.0 * 5.0;
+    const int kPts = 1000;
+    for (int i = 0; i < kPts; ++i) {
+        const double t = i / double(kPts) * 5.0;
         const double env = std::exp(-std::pow((t - 1.5) / 0.6, 2.0));
-        const double y = env * std::sin(2 * M_PI * 440 * t)
-                       * (0.5 + 0.4 * std::sin(2 * M_PI * 3 * t));
+        const double y = env * std::sin(2 * M_PI * 12 * t)
+                       * (0.5 + 0.4 * std::sin(2 * M_PI * 1.5 * t));
         wave.pts.push_back({ t, y });
     }
     m_wavePlot->setSeries({ wave });

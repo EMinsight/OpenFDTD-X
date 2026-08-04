@@ -77,7 +77,12 @@ const Item kAcousticItems[] = {
     { "ac_aural",       "オーラリゼーション",         "バイノーラル/Ambisonics再生" },
     { "ac_raytrace",    "幾何音響レイトレース",       "Odeon/CATT-Acoustic相当" },
     { "ac_imagesource", "鏡像法 (Image-Source)",     "初期反射の高速計算" },
-    { "ac_noise",       "騒音解析 / 防音設計",       "壁透過・床衝撃音" }
+    { "ac_noise",       "騒音解析 / 防音設計",       "壁透過・床衝撃音" },
+    { "ac_cinema",      "映画館 / シネマ",           "段床客席・スクリーン・RT 0.5s" },
+    { "ac_livehouse",   "ライブハウス / クラブ",     "拡声音楽・PAスタック・立見客" },
+    { "ac_gym",         "体育館 / 屋内運動場",       "残響過多・吸音改修の検討" },
+    { "ac_church",      "教会 / チャペル",           "長残響・オルガン・聖歌隊" },
+    { "ac_restaurant",  "レストラン / カフェ",       "暗騒音・会話明瞭度 (STI)" }
 };
 const Item kUnderwaterItems[] = {
     { "uw_sofar",  "海洋音響伝搬 (SOFAR)",      "Bellhop型レイトレース" },
