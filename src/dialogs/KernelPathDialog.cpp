@@ -1,6 +1,7 @@
 // KernelPathDialog.cpp
 #include "KernelPathDialog.h"
 #include "../I18n.h"
+#include "../core/Project.h"
 #include "../kernel/AcousticRunner.h"
 
 #include <QDialogButtonBox>
@@ -31,7 +32,7 @@ const bool s_i18n = [] {
         "PATH.\nThe setting persists across restarts and also applies when "
         "the app is launched from Finder / Dock (where environment "
         "variables do not reach).");
-    ofd::I18n::reg("kp_em",       "電磁 FDTD (ofd)",        "EM FDTD (ofd)");
+    ofd::I18n::reg("kp_em",       "OpenFDTD (ofd)",         "OpenFDTD (ofd)");
     ofd::I18n::reg("kp_rcwa",     "光 RCWA/FMM (orcwa)",    "Optical RCWA/FMM (orcwa)");
     ofd::I18n::reg("kp_bpm",      "光 BPM (obpm)",          "Optical BPM (obpm)");
     ofd::I18n::reg("kp_bellhop",  "水中音響 (bellhopcxx)",  "Underwater (bellhopcxx)");
@@ -39,12 +40,31 @@ const bool s_i18n = [] {
     ofd::I18n::reg("kp_found",    "✓ %1",                   "✓ %1");
     ofd::I18n::reg("kp_notfound", "未検出 (環境変数・PATH でも見つかりません)",
                    "Not found (also missing from env vars and PATH)");
-    // ドメイン見出し (行がどのドメインで使われるかを示す)
-    ofd::I18n::reg("kp_grp_em",       "電磁波", "Electromagnetic");
-    ofd::I18n::reg("kp_grp_optical",  "光",     "Optical");
-    ofd::I18n::reg("kp_grp_acoustic", "室内音響", "Room acoustics");
+    // 見出し: 基幹カーネルとドメイン専用ソルバを分ける
+    // (ofd は電磁波専用ではない — 下の kp_em_note の 3 用途を参照)
+    ofd::I18n::reg("kp_grp_core",     "基幹カーネル (全ドメイン共通)",
+                                      "Core kernel (all domains)");
+    ofd::I18n::reg("kp_grp_optical",  "光 — 専用ソルバ", "Optical — dedicated solvers");
+    ofd::I18n::reg("kp_grp_acoustic", "室内音響 — 専用ソルバ",
+                                      "Room acoustics — dedicated solver");
     ofd::I18n::reg("kp_grp_uw",       "水中音響", "Underwater acoustics");
-    ofd::I18n::reg("kp_grp_active",   " (現在のドメイン)", " (current domain)");
+    ofd::I18n::reg("kp_em_note",
+        "▸ OpenFDTD は電磁波専用ではありません。<b>電磁波は常に</b>、"
+        "<b>光はソルバに FDTD を選んだとき</b> (既定)、"
+        "<b>室内音響の「計算」も</b>これを起動します "
+        "(室内音響の専用ソルバは下の行)。無いと 3 ドメインで計算できません。",
+        "OpenFDTD is not EM-only. It runs for <b>every EM project</b>, for "
+        "<b>optical projects whose solver is FDTD</b> (the default), and for "
+        "the <b>Run button in room acoustics</b> (the dedicated acoustic "
+        "solver is listed below). Without it those three domains cannot "
+        "compute.");
+    ofd::I18n::reg("kp_opt_note",
+        "▸ 光は「光解析」タブのソルバ選択で起動先が変わります "
+        "(RCWA / FMM → orcwa、BPM → obpm、FDTD → 上の OpenFDTD)。",
+        "The optical domain picks its kernel from the solver setting "
+        "(RCWA / FMM → orcwa, BPM → obpm, FDTD → OpenFDTD above).");
+    ofd::I18n::reg("kp_active", "▶ このプロジェクトはこれを起動します",
+                   "▶ This project launches this one");
     // 室内音響: 外部ソルバーは実行ファイル指定 + プロジェクト個別指定が優先
     ofd::I18n::reg("kp_acoustic", "外部音響ソルバー", "External acoustic solver");
     ofd::I18n::reg("kp_acoustic_ph", "$OFDX_ACOUSTIC_SOLVER",
@@ -74,42 +94,40 @@ const char *rowLabelKey(Kernel k)
     }
     return "kp_em";
 }
-
-const char *groupLabelKey(Domain d)
-{
-    switch (d) {
-        case Domain::EM:         return "kp_grp_em";
-        case Domain::Optical:    return "kp_grp_optical";
-        case Domain::Acoustic:   return "kp_grp_acoustic";
-        case Domain::Underwater: return "kp_grp_uw";
-    }
-    return "kp_grp_em";
-}
 } // namespace
 
-KernelPathDialog::KernelPathDialog(QWidget *parent, Domain activeDomain,
-                                   bool markActiveDomain)
+KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
     : QDialog(parent)
 {
     setWindowTitle(I18n::tr("kp_title"));
     setModal(true);
     setMinimumWidth(660);
 
-    // ドメイン順に並べる (電磁 → 光 2 本 → 室内音響 → 水中音響)
-    const struct { Domain domain; bool acoustic; Kernel kernel; } kDefs[] = {
-        { Domain::EM,         false, Kernel::FDTD    },
-        { Domain::Optical,    false, Kernel::RCWA    },
-        { Domain::Optical,    false, Kernel::BPM     },
-        { Domain::Acoustic,   true,  Kernel::FDTD    },   // kernel は未使用
-        { Domain::Underwater, false, Kernel::Bellhop },
+    // 並びは「基幹カーネル」→ 光専用 → 室内音響専用 → 水中音響。
+    // ofd をドメイン別に置くと「電磁波専用」と誤解されるため独立させ、
+    // 実際の 3 用途を kp_em_note で明示する。
+    const struct { const char *group, *note; bool acoustic; Kernel kernel; }
+    kDefs[] = {
+        { "kp_grp_core",     "kp_em_note",  false, Kernel::FDTD    },
+        { "kp_grp_optical",  nullptr,       false, Kernel::RCWA    },
+        { nullptr,           "kp_opt_note", false, Kernel::BPM     },
+        { "kp_grp_acoustic", nullptr,       true,  Kernel::FDTD    }, // kernel 未使用
+        { "kp_grp_uw",       nullptr,       false, Kernel::Bellhop },
     };
     for (const auto &d : kDefs) {
         Row r;
-        r.domain = d.domain;
+        r.groupKey = d.group;
+        r.noteKey = d.note;
         r.acoustic = d.acoustic;
         r.kernel = d.kernel;
         m_rows.push_back(r);
     }
+
+    // このプロジェクトが実際に起動するカーネル (印を付ける行の判定)
+    const bool haveProject = (project != nullptr);
+    const Kernel activeKernel =
+        haveProject ? Runner::kernelForProject(*project) : Kernel::FDTD;
+    const bool activeIsAcoustic = false;   // 「計算」ボタンは常に Runner 側
 
     auto *v = new QVBoxLayout(this);
     auto *hint = new QLabel(I18n::tr("kp_hint"), this);
@@ -121,27 +139,16 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, Domain activeDomain,
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     v->addLayout(form);
 
-    Domain lastGroup = Domain::EM;
-    bool haveGroup = false;
     for (int i = 0; i < m_rows.size(); ++i) {
         Row &row = m_rows[i];
 
-        // ドメインが変わったら見出しを挟む (タブで隠さず 1 画面に並べる)
-        if (!haveGroup || row.domain != lastGroup) {
-            QString text = I18n::tr(groupLabelKey(row.domain));
-            if (markActiveDomain && row.domain == activeDomain)
-                text += I18n::tr("kp_grp_active");
-            auto *head = new QLabel(text, this);
+        if (row.groupKey) {
+            auto *head = new QLabel(I18n::tr(row.groupKey), this);
             QFont f = head->font();
             f.setBold(true);
             head->setFont(f);
-            const bool active = markActiveDomain && row.domain == activeDomain;
-            head->setStyleSheet(active
-                ? QStringLiteral("color:%1; margin-top:6px;").arg(accentColor(row.domain))
-                : QStringLiteral("margin-top:6px;"));
+            head->setStyleSheet("margin-top:6px;");
             form->addRow(head);
-            lastGroup = row.domain;
-            haveGroup = true;
         }
 
         auto *cell = new QVBoxLayout();
@@ -169,6 +176,17 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, Domain activeDomain,
         row.status = new QLabel(this);
         row.status->setStyleSheet("font-size:11px;");
         cell->addWidget(row.status);
+
+        // 現在のプロジェクトが起動する行に印を付ける (どれが要るのかを示す)
+        if (haveProject && !row.acoustic && row.kernel == activeKernel
+            && !activeIsAcoustic) {
+            auto *act = new QLabel(I18n::tr("kp_active"), this);
+            act->setStyleSheet(QStringLiteral(
+                "font-size:11px; font-weight:600; color:%1;")
+                    .arg(accentColor(project->activeDomain())));
+            cell->addWidget(act);
+        }
+
         form->addRow(row.acoustic ? I18n::tr("kp_acoustic")
                                   : I18n::tr(rowLabelKey(row.kernel)), cell);
 
@@ -176,10 +194,13 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, Domain activeDomain,
                 [this, i] { updateStatus(i); });
         updateStatus(i);
 
-        // 室内音響の但し書き (指定の粒度と優先順位が他と違うため)
-        if (row.acoustic) {
-            auto *note = new QLabel(I18n::tr("kp_acoustic_note"), this);
+        // 行の補足 (ofd の 3 用途 / 光のソルバ選択で起動先が変わること /
+        // 室内音響の指定粒度)
+        if (row.noteKey || row.acoustic) {
+            auto *note = new QLabel(
+                I18n::tr(row.acoustic ? "kp_acoustic_note" : row.noteKey), this);
             note->setWordWrap(true);
+            note->setTextFormat(Qt::RichText);   // <b> を効かせる
             note->setStyleSheet("font-size:11px; color:palette(mid);");
             form->addRow(note);
         }

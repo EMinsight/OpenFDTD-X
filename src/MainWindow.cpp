@@ -293,7 +293,7 @@ void MainWindow::buildMenu()
     // カーネルの場所を GUI から設定 (Finder / Dock 起動では環境変数が
     // 届かないため。QSettings に永続化 — kernel/Runner が探索時に参照)
     mTools->addAction(I18n::tr("m_kernel_paths"), this, [this] {
-        KernelPathDialog dlg(this, m_project->activeDomain(), true);
+        KernelPathDialog dlg(this, m_project);
         dlg.exec();
         updateKernelWarn();
     });
@@ -743,7 +743,7 @@ void MainWindow::buildStatusBar()
     m_sbKernelWarn->setStyleSheet("QToolButton { color: #B8860B; }");
     m_sbKernelWarn->setVisible(false);
     connect(m_sbKernelWarn, &QToolButton::clicked, this, [this] {
-        KernelPathDialog dlg(this, m_project->activeDomain(), true);
+        KernelPathDialog dlg(this, m_project);
         dlg.exec();
         updateKernelWarn();
     });
