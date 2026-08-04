@@ -21,6 +21,7 @@
 #include <QLocale>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSlider>
 #include <QStringList>
 #include <QTimer>
@@ -43,11 +44,15 @@ const bool s_i18n = [] {
                    "e.g. time_series_data.h5");
     ofd::I18n::reg("h5_formats", "対応形式", "Supported formats");
     ofd::I18n::reg("h5_file_hint",
-        "▸ 2D / 3D (frames×rows×cols) データセットのヒートマップ表示に対応。"
-        "1D や ofd の 4D データセット (/data*/E 等) は表示未対応。",
-        "▸ Displays 2D and 3D (frames×rows×cols) datasets as heatmaps. "
-        "1D and 4D datasets (e.g. ofd's /data*/E) are not supported for "
-        "display.");
+        "▸ 2D / 3D (frames×rows×cols) データセットのヒートマップ表示と、"
+        "ofd の伝搬時系列 (/timeseries/E|H の瞬時値、旧 /data*/E|H) の"
+        "z 中央断面アニメ再生に対応。1D 等は表示未対応。",
+        "▸ Displays 2D and 3D (frames×rows×cols) datasets as heatmaps, and "
+        "plays ofd propagation series (instantaneous /timeseries/E|H, legacy "
+        "/data*/E|H) as z-mid-slice animations. 1D etc. are not supported.");
+    ofd::I18n::reg("h5_series_title",
+        "伝搬アニメ |%1| z 中央断面 — %2",
+        "Propagation |%1| z-mid slice — %2");
     ofd::I18n::reg("h5_disabled",
         "HDF5 読取はこのビルドでは無効です (-DUSE_HDF5=ON でビルドしてください)",
         "HDF5 reading is disabled in this build (rebuild with -DUSE_HDF5=ON)");
@@ -710,9 +715,16 @@ void H5ViewerTab::loadFile()
     }
     rebuildTree();
 
-    // 最初の 2D/3D データセットを自動選択 (無ければ未読込表示のまま)
+    // 伝搬時系列 (/timeseries/E) → 最初の 2D/3D の順で自動選択
+    // (無ければ未読込表示のまま)
     int first = -1;
     for (int i = 0; i < m_dsets.size(); ++i) {
+        if (m_dsets[i].path == QLatin1String("/timeseries/E")) {
+            first = i;
+            break;
+        }
+    }
+    for (int i = 0; first < 0 && i < m_dsets.size(); ++i) {
         const int nd = m_dsets[i].dims.size();
         if (nd == 2 || nd == 3) { first = i; break; }
     }
@@ -805,6 +817,29 @@ void H5ViewerTab::selectDataset(int idx)
         if (found) { m_tree->setCurrentItem(found); break; }
     }
 
+    // ofd の伝搬時系列 (新 /timeseries/E|H, 旧 /data%06d/E|H) は
+    // z 中央断面のフレーム列として再生する (io/H5Reader が再構成)
+    static const QRegularExpression seriesRe(
+        QStringLiteral("^(?:/timeseries|/data\\d+)/(E|H)$"));
+    const QRegularExpressionMatch sm = seriesRe.match(ds.path);
+    if (sm.hasMatch()) {
+        H5OfdSeriesInfo info;
+        if (H5Reader::ofdSeriesInfo(m_filePath, sm.captured(1), info)
+            && info.frames > 0) {
+            m_seriesMode = true;
+            m_seriesComp = sm.captured(1);
+            m_nframes = info.frames;
+            m_frameSlider->blockSignals(true);
+            m_frameSlider->setRange(0, std::max(0, m_nframes - 1));
+            m_frameSlider->blockSignals(false);
+            setPlaybackEnabled(true);
+            m_frame = 0;
+            setFrame(0);
+            return;
+        }
+    }
+    m_seriesMode = false;
+
     const int nd = ds.dims.size();
     if (nd == 2) {
         // 2D → read2D して描画、時間スライダ無効
@@ -841,12 +876,25 @@ void H5ViewerTab::selectDataset(int idx)
     }
 }
 
-// 3D データセットの現在フレームを読み込んで表示する
+// 3D データセット / 伝搬時系列の現在フレームを読み込んで表示する
 void H5ViewerTab::loadCurrentFrame()
 {
     QVector<double> d;
     int rows = 0, cols = 0;
     QString err;
+    if (m_seriesMode) {
+        QString label;
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, m_frame,
+                                          d, rows, cols, &label, &err)) {
+            m_canvas->setMessage(I18n::tr("h5_load_error") + " " + err);
+            clearStats();
+            return;
+        }
+        m_previewBox->setTitle(
+            I18n::tr("h5_series_title").arg(m_seriesComp, label));
+        showData(d, rows, cols);
+        return;
+    }
     if (!H5Reader::readFrame(m_filePath, m_dataset, m_frame, d, rows, cols,
                              &err)) {
         m_canvas->setMessage(I18n::tr("h5_load_error") + " " + err);
@@ -854,6 +902,13 @@ void H5ViewerTab::loadCurrentFrame()
         return;
     }
     showData(d, rows, cols);
+}
+
+// 実行完了時などに外部からファイルを渡して読み込む (MainWindow から)
+void H5ViewerTab::openFile(const QString &path)
+{
+    m_file->setText(path);
+    loadFile();
 }
 
 // 行列をキャンバスへ渡し、min / max / 平均 を実計算して統計・スケールを更新

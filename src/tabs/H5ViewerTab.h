@@ -79,6 +79,9 @@ class H5ViewerTab : public QScrollArea {
 public:
     explicit H5ViewerTab(Project *project, QWidget *parent = nullptr);
 
+    // 実行完了時に MainWindow から実行出力の .h5 を渡して読み込む
+    void openFile(const QString &path);
+
 private:
     void loadFile();                  // m_file のパスを列挙してツリー再構築
     void rebuildTree();               // m_dsets → パス階層ツリー
@@ -103,6 +106,8 @@ private:
 
     // 選択中データセットの状態
     QString      m_dataset;                   // 例 "/field/Ixz"
+    bool         m_seriesMode = false;        // ofd 伝搬時系列を再生中か
+    QString      m_seriesComp;                // "E" / "H"
     int          m_nframes = 0;               // 3D のフレーム数 (2D は 0)
     QVector<double> m_data;                   // 表示中の行列
     int          m_rows = 0, m_cols = 0;

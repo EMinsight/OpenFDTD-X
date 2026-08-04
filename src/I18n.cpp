@@ -1015,6 +1015,10 @@ void I18n::loadTables() {
         "far1d.log の遠方界パターン (%1 面) を結果プロットに反映しました",
         "Loaded the far-field pattern from far1d.log (%1 cuts) into the "
         "result plot");
+    add("log_h5_anime",
+        "伝搬の時系列は「H5アニメ」タブで再生できます (実行結果を読込済み)",
+        "Play the propagation time series in the H5 Animation tab (this "
+        "run's output is already loaded)");
     add("log_ev_ready",
         "作図出力 %1 を確認 — 下部の「ev2d を開く / ev3d を開く」で表示できます",
         "Plot output %1 is ready — open it with the ev2d / ev3d buttons at "

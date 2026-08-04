@@ -21,6 +21,14 @@ struct H5DatasetInfo {
     QString typeName;           // "float32" / "float64" / "int…" / "other"
 };
 
+// ofd 系の伝搬時系列 (z 中央断面のフレーム列) の情報
+struct H5OfdSeriesInfo {
+    int  frames = 0;
+    int  rows = 0, cols = 0;      // Ny+1, Nx+1
+    bool instantaneous = false;   // true = /timeseries (瞬時値スナップショット)
+                                  // false = /data%06d (DFT 蓄積の経過)
+};
+
 class H5Reader {
 public:
     // ビルドに HDF5 読み取りが含まれるか (USE_HDF5)
@@ -60,6 +68,21 @@ public:
                                 int &rows, int &cols,
                                 QString *groupName = nullptr,
                                 QString *err = nullptr);
+
+    // ofd 系の伝搬時系列。comp は "E" か "H"。2 レイアウト対応:
+    //  (a) 新: /timeseries/<comp> {Nt, Nx+1, Ny+1, Nz+1, 3} — 瞬時値
+    //      スナップショット (hdf5 キーの interval / solver nout ごと)。
+    //      ラベルは /timeseries/time (E) / time_H (H) の時刻 [s]
+    //  (b) 旧: /data%06d/<comp> {1,NFreq2,NN,6} のグループ列 — DFT 蓄積の
+    //      経過。ラベルはグループ名
+    // いずれも z 中央断面の振幅 (成分の RSS) をフレームとして返す
+    static bool ofdSeriesInfo(const QString &path, const QString &comp,
+                              H5OfdSeriesInfo &out, QString *err = nullptr);
+    static bool readOfdSeriesFrame(const QString &path, const QString &comp,
+                                   int frame, QVector<double> &cells,
+                                   int &rows, int &cols,
+                                   QString *label = nullptr,
+                                   QString *err = nullptr);
 };
 
 } // namespace ofd
