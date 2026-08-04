@@ -10,6 +10,7 @@
 class QCheckBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTreeWidget;
 
 namespace ofd {
@@ -23,6 +24,7 @@ public:
 
 private slots:
     void rebuildTree();     // 作業ディレクトリの結果ファイルを再列挙
+    void updateDomainVisibility();  // ドメイン別の出し分け (式の既定例 / Touchstone)
 
 private:
     Project     *m_p;
@@ -31,6 +33,7 @@ private:
     QLabel      *m_wdLabel = nullptr;
     QLineEdit   *m_name, *m_expr, *m_unit;
     QCheckBox   *m_autoRecalc;
+    QPushButton *m_expTouchstone = nullptr;  // Touchstone .s2p (音響系では非表示)
 };
 
 } // namespace ofd

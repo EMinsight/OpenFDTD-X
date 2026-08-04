@@ -79,6 +79,20 @@ const GroupRow kUnderwater[] = {
     { "Eigenray finder","point monitors", "τ, θ, E" },
     { "Beam pattern",   "sphere monitor", "ソナー指向性 B(θ,φ)" },
 };
+
+// 新規作成フォームの入力モニター候補 (ドメイン別の固定サンプル — unwiredNote 済み)
+const char *const kMonEm[] = {
+    "port1 (feed monitor)", "farfield_box (6 box monitors)",
+    "E_field_3D (volume monitor)" };
+const char *const kMonOptical[] = {
+    "T_drop (plane monitor)", "thru_mode (mode monitor)",
+    "E_field_3D (volume monitor)" };
+const char *const kMonAcoustic[] = {
+    "mic_1 (point monitor)", "mic_2 (point monitor)",
+    "binaural_LR (binaural monitor)" };
+const char *const kMonUnderwater[] = {
+    "rx_line (range monitors)", "hydrophone_1 (point monitor)",
+    "beam_sphere (sphere monitor)" };
 } // namespace
 
 AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
@@ -134,14 +148,12 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     auto *sc = new SectionBox(I18n::tr("ag_create"), body);
     m_name = new QLineEdit("my_analysis", sc);
     sc->form()->addRow(I18n::tr("ag_name"), m_name);
+    // モニター候補とスクリプト言語はドメイン別サンプル (refresh で構築)
     m_monitors = new QListWidget(sc);
-    m_monitors->addItems({ "T_drop (plane monitor)", "thru_mode (mode monitor)",
-                           "E_field_3D (volume monitor)" });
     m_monitors->setSelectionMode(QAbstractItemView::MultiSelection);
     m_monitors->setFixedHeight(80);
     sc->form()->addRow(I18n::tr("ag_input_monitors"), m_monitors);
     m_script = new QComboBox(sc);
-    m_script->addItems({ "LSF", "Python" });
     sc->form()->addRow(I18n::tr("ag_script"), m_script);
     auto *crow = new QHBoxLayout();
     auto *createBtn = new QPushButton(I18n::tr("ag_create_btn"), sc);
@@ -169,11 +181,17 @@ void AnalysisGroupsTab::refresh()
     m_updating = true;
     const GroupRow *rows = kEm;
     int n = 4;
+    const char *const *mons = kMonEm;
+    bool lsf = false;   // LSF (Lumerical スクリプト) は光ドメインのみ意味を持つ
     switch (m_p->activeDomain()) {
-        case Domain::Optical:    rows = kOptical;    n = 6; break;
-        case Domain::Acoustic:   rows = kAcoustic;   n = 4; break;
-        case Domain::Underwater: rows = kUnderwater; n = 3; break;
-        default:                 rows = kEm;         n = 4; break;
+        case Domain::Optical:
+            rows = kOptical;    n = 6; mons = kMonOptical;    lsf = true; break;
+        case Domain::Acoustic:
+            rows = kAcoustic;   n = 4; mons = kMonAcoustic;   break;
+        case Domain::Underwater:
+            rows = kUnderwater; n = 3; mons = kMonUnderwater; break;
+        default:
+            rows = kEm;         n = 4; mons = kMonEm;         break;
     }
 
     m_groups->clearSpans();
@@ -209,5 +227,16 @@ void AnalysisGroupsTab::refresh()
     m_groups->setItem(n, 1, add);
 
     m_groups->setMinimumHeight(30 * (n + 1) + 38);
+
+    // 新規作成フォームのモニター候補 / スクリプト言語もドメイン別サンプルへ
+    // 差し替える (どこにも読まれない固定サンプル — unwiredNote 済み)
+    m_monitors->clear();
+    for (int i = 0; i < 3; ++i)
+        m_monitors->addItem(QString::fromUtf8(mons[i]));
+    m_script->clear();
+    if (lsf)
+        m_script->addItem(QStringLiteral("LSF"));
+    m_script->addItem(QStringLiteral("Python"));
+
     m_updating = false;
 }

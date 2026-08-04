@@ -87,6 +87,51 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     connect(m_csvBtn, &QToolButton::clicked, this, &PlotPanel::saveCsvDialog);
     connect(m_pngBtn, &QToolButton::clicked, this, &PlotPanel::savePngDialog);
     updateModeButtons();
+
+    // ドメイン切替でモードボタンの出し分けを更新 (初回は下で直接反映)
+    connect(project, &Project::domainChanged, this,
+            [this] { setDomain(m_project->activeDomain()); });
+    setDomain(project->activeDomain());
+}
+
+void PlotPanel::setDomain(Domain d)
+{
+    m_domain = d;
+    updateDomainVisibility();
+    update();
+}
+
+// 現在のドメインで意味を持つモードか (ドメイン監査の結果に基づく出し分け)
+bool PlotPanel::modeAllowed(Mode m) const
+{
+    switch (m) {
+    case Waveform:
+        // ガウシアン励振の時間波形 — BELLHOP (水中音響) は周波数領域で
+        // 時間波形励振が無い
+        return m_domain != Domain::Underwater;
+    case FreqChar:
+        // 給電点 Rin/Xin/Ref — EM 専用
+        return m_domain == Domain::EM;
+    case Pattern:
+        // far1d.log の放射パターン — 音響/水中には無い
+        return m_domain == Domain::EM || m_domain == Domain::Optical;
+    case Convergence:
+    default:
+        return true;    // 収束履歴は全ドメイン共通
+    }
+}
+
+// ドメインで意味を持たないモードのボタンを隠す (削除はしない)。
+// 結果が無い間の無効化は従来どおり updateModeButtons() が行う。
+void PlotPanel::updateDomainVisibility()
+{
+    m_btnWave->setVisible(modeAllowed(Waveform));
+    m_btnFreq->setVisible(modeAllowed(FreqChar));
+    m_btnFar->setVisible(modeAllowed(Pattern));
+    // 隠したモードが選択中だった場合は表示可能なモードへフォールバック
+    if (!modeAllowed(m_mode))
+        m_mode = modeAllowed(Waveform) ? Waveform : Convergence;
+    updateModeButtons();
 }
 
 void PlotPanel::setMode(Mode m)
@@ -131,9 +176,10 @@ void PlotPanel::setRunResults(const QVector<FeedSweep> &sweeps,
 {
     m_sweeps = sweeps;
     m_patterns = patterns;
-    // 新しい結果が届いたら周波数特性を前面に (無ければパターン)
-    if (hasFreqChar()) m_mode = FreqChar;
-    else if (hasFarPattern()) m_mode = Pattern;
+    // 新しい結果が届いたら周波数特性を前面に (無ければパターン)。
+    // ただし現在のドメインで非表示のモードには切り替えない
+    if (hasFreqChar() && modeAllowed(FreqChar)) m_mode = FreqChar;
+    else if (hasFarPattern() && modeAllowed(Pattern)) m_mode = Pattern;
     updateModeButtons();
     update();
 }
@@ -204,7 +250,10 @@ bool PlotPanel::exportCsv(const QString &path) const
                 out << pat.plane << ',' << pat.freqHz << ',' << pat.deg[i]
                     << ',' << pat.eAbsDb[i] << '\n';
     } else {
-        out << "step,Eavg,Havg\n";
+        // 音響/水中は電磁界 (E/H) ではなく音圧/粒子速度 (p/v) の平均
+        const bool acoustic = (m_domain == Domain::Acoustic
+                               || m_domain == Domain::Underwater);
+        out << (acoustic ? "step,pavg,vavg\n" : "step,Eavg,Havg\n");
         for (int i = 0; i < m_steps.size(); ++i)
             out << m_steps[i] << ',' << m_eAvg[i] << ',' << m_hAvg[i] << '\n';
     }
@@ -405,10 +454,15 @@ void PlotPanel::paintEvent(QPaintEvent *)
         drawSeries(m_eAvg, accent);
         drawSeries(m_hAvg, QColor("#888888"));
 
+        // 凡例: 音響/水中は音圧/粒子速度 (p/v)、それ以外は電磁界 (E/H)
+        const bool acoustic = (m_domain == Domain::Acoustic
+                               || m_domain == Domain::Underwater);
         p.setPen(accent);
-        p.drawText(QPointF(plot.right() - 110, plot.top() + 16), "⟨E⟩");
+        p.drawText(QPointF(plot.right() - 110, plot.top() + 16),
+                   acoustic ? QStringLiteral("⟨p⟩") : QStringLiteral("⟨E⟩"));
         p.setPen(QColor("#888888"));
-        p.drawText(QPointF(plot.right() - 70, plot.top() + 16), "⟨H⟩");
+        p.drawText(QPointF(plot.right() - 70, plot.top() + 16),
+                   acoustic ? QStringLiteral("⟨v⟩") : QStringLiteral("⟨H⟩"));
         p.setPen(palette().text().color());
         p.drawText(QPointF(plot.left(), plot.bottom() + 16),
                    QStringLiteral("step: 0 … %1").arg(smax));

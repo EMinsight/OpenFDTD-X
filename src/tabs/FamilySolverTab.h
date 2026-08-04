@@ -2,6 +2,8 @@
 //   OpenFDTD / OpenRTM / OpenTHFD / OpenMOM / OpenSTF / マイクロ波トモグラフィー
 //   のカード選択 + ソルバ別詳細設定 + ソルバ間連携チェックリスト。
 //   カードは現在のドメイン (EM / 光) でフィルタ表示される。
+//   音響 / 水中ドメインでは姉妹ソルバが 1 枚も無いため、一覧・詳細・
+//   ソルバ間連携のセクションごと非表示にする (空グリッドの混乱防止)。
 #pragma once
 #include <QScrollArea>
 #include <QFrame>
@@ -60,8 +62,10 @@ private:
     QGridLayout    *m_cardGrid;
     QVector<FamilyCard*> m_cards;         // visible cards (rebuild on domain)
     QVector<int>    m_cardIndex;          // card slot → kFamily[] index
+    SectionBox     *m_listSection;        // 姉妹ソルバ一覧 (音響/水中では非表示)
     SectionBox     *m_detailSection;
     QStackedWidget *m_detailStack;
+    SectionBox     *m_crossSection;       // ソルバ間連携 (音響/水中では非表示)
 };
 
 } // namespace ofd

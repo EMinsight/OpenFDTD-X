@@ -30,6 +30,7 @@ private slots:
 
 private:
     void rebuildFavorites(); // お気に入りチップ行を再構築
+    void rebuildRecent();    // 最近使用チップをドメイン別サンプルで再構築
 
     Project     *m_p;
     QLineEdit   *m_search;
@@ -38,6 +39,8 @@ private:
     QGridLayout *m_grid;
     SectionBox  *m_favSection = nullptr;   // お気に入り
     QHBoxLayout *m_favRow     = nullptr;
+    SectionBox  *m_recentSection = nullptr; // 最近使用 (ドメイン別の固定サンプル)
+    QHBoxLayout *m_recentRow     = nullptr;
     QStringList  m_favorites;              // ☆ で登録したコンポーネント名
     QString      m_cat = "all";
     QVector<QPushButton *> m_catButtons;

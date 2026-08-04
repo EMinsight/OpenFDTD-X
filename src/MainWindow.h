@@ -183,6 +183,11 @@ private:
     QAction   *m_deviceBoxAction = nullptr;
     QAction   *m_cloudAction = nullptr;
     QAction   *m_cloudMenuAction = nullptr;   // ツールメニュー側 (同じ制約)
+    // ドメインで意味を持たないエクスポートは無効化する (S2P = EM の
+    // S パラメータ、tidy3d py = 光専用クラウドバックエンド)
+    QAction   *m_s2pMenuAction = nullptr;     // ポストメニュー側
+    QAction   *m_s2pExportAction = nullptr;   // ツールバーのエクスポート側
+    QAction   *m_t3ExportAction = nullptr;
     QAction   *m_levelStandard = nullptr;
     QAction   *m_levelExpert = nullptr;
 

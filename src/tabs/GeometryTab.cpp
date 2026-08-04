@@ -169,6 +169,14 @@ const Tr kTr[] = {
     { "geoc_map_m2", "2 — 誘電体 (εr=3.5)", "2 — dielectric (εr=3.5)" },
     { "geoc_map_m1", "1 — PEC", "1 — PEC" },
     { "geoc_map_m3", "3 — FR-4", "3 — FR-4" },
+    // 音響 (室内) / 水中: εr 系ではなく ρ/c 系の材料名 (ラベルのみ — 未配線)
+    { "geoc_map_ac2", "2 — 空気 (ρ=1.2, c=343)", "2 — air (ρ=1.2, c=343)" },
+    { "geoc_map_ac1", "1 — 剛壁 (rigid)", "1 — rigid wall" },
+    { "geoc_map_ac3", "3 — 多孔質吸音材", "3 — porous absorber" },
+    { "geoc_map_uw2", "2 — 海水 (ρ=1025, c=1500)",
+      "2 — seawater (ρ=1025, c=1500)" },
+    { "geoc_map_uw3", "3 — 堆積層 (ρ=1600, c=1600)",
+      "3 — sediment (ρ=1600, c=1600)" },
 
     // ── 取込プレビュー / Preview ────────────────────────────────────────────
     { "geoc_prev_section", "取込プレビュー / Preview", "Import preview" },
@@ -212,6 +220,10 @@ const Tr kTr[] = {
       "voxel runs FDTD can handle." },
     { "geoc_vox_delta", "分解度 Δ", "Resolution Δ" },
     { "geoc_vox_delta_hint", "→ λ/22 @ 2.5 GHz", "→ λ/22 @ 2.5 GHz" },
+    // 分解度Δ の評価点はドメインの代表波長/周波数で切り替える
+    { "geoc_vox_delta_hint_opt", "→ λ/22 @ 1550 nm", "→ λ/22 @ 1550 nm" },
+    { "geoc_vox_delta_hint_ac",  "→ λ/22 @ 1 kHz",   "→ λ/22 @ 1 kHz" },
+    { "geoc_vox_delta_hint_uw",  "→ λ/22 @ 3.5 kHz", "→ λ/22 @ 3.5 kHz" },
     { "geoc_vox_inout", "内外判定", "Inside/outside test" },
     { "geoc_vox_ray", "レイキャスト", "Ray cast" },
     { "geoc_vox_winding", "巻数 (Winding)", "Winding number" },
@@ -226,6 +238,13 @@ const Tr kTr[] = {
       "▸ Staircase: fast, simple, large shape error　▸ Conformal: deformed Yee "
       "boundary, more accurate (recommended)　▸ Sub-cell: best for zero-"
       "thickness films and thin PEC plates" },
+    // 音響 (室内) では PEC 薄板ではなく剛壁 (rigid) の表現にする
+    { "geoc_vox_surf_hint_ac",
+      "▸ 階段: 高速・実装容易・形状誤差大　▸ 共形: 境界変形で精度向上・推奨　"
+      "▸ サブセル: 厚さ0の剛壁 (rigid) 薄板・薄い仕切りに最適",
+      "▸ Staircase: fast, simple, large shape error　▸ Conformal: deformed "
+      "boundary, more accurate (recommended)　▸ Sub-cell: best for zero-"
+      "thickness rigid plates and thin partitions" },
     { "geoc_vox_pvf_label", "部分容積判定", "Partial volume" },
     { "geoc_vox_pvf", "PVF (Partial Volume Fraction)",
       "PVF (partial volume fraction)" },
@@ -281,6 +300,9 @@ const Tr kTr[] = {
     { "geoc_ref_curve", "湾曲面", "Curved surfaces" },
     { "geoc_ref_thin", "薄膜・薄板", "Thin films / plates" },
     { "geoc_ref_higheps", "高εr 領域", "High-εr regions" },
+    // 音響/水中では εr ではなく音速コントラストが細分化の対象になる
+    { "geoc_ref_highc", "高音速コントラスト領域",
+      "High sound-speed-contrast regions" },
     { "geoc_ref_ratio", "細分化比率", "Refinement ratio" },
     { "geoc_ref_ratio_hint", "x (1セルを3x3x3に分割)",
       "x (one cell → 3×3×3)" },
@@ -457,9 +479,10 @@ QSpinBox *makeIntSpin(QWidget *parent, int lo, int hi, int value)
     return w;
 }
 
-// 「値 + 単位 (+ 補足)」の行 (mock の <input> + <span className="muted">)
+// 「値 + 単位 (+ 補足)」の行 (mock の <input> + <span className="muted">)。
+// outHint に補足ラベルを返せる (ドメイン別に文言を差し替える行で使用)。
 QWidget *valueRow(QWidget *parent, QWidget *field, const QString &unit,
-                  const QString &hint = QString())
+                  const QString &hint = QString(), QLabel **outHint = nullptr)
 {
     auto *w = new QWidget(parent);
     auto *h = new QHBoxLayout(w);
@@ -467,7 +490,11 @@ QWidget *valueRow(QWidget *parent, QWidget *field, const QString &unit,
     h->setSpacing(6);
     h->addWidget(field);
     if (!unit.isEmpty()) h->addWidget(makeHint(unit, w));
-    if (!hint.isEmpty()) h->addWidget(makeHint(hint, w));
+    if (!hint.isEmpty()) {
+        auto *hl = makeHint(hint, w);
+        h->addWidget(hl);
+        if (outHint) *outHint = hl;
+    }
     h->addStretch(1);
     return w;
 }
@@ -667,8 +694,12 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
     v->addWidget(buildMaterialMapSection());
     v->addWidget(buildPreviewSection());
     v->addWidget(buildImportedSection());
-    v->addWidget(buildVoxelSection());
-    v->addWidget(buildVoxelStatsSection());
+    // ボクセル化〜ボクセル統計は Yee 格子 (FDTD) 前提のため、ドメインに
+    // よっては隠す (updateDomainVisibility) — ポインタを保持しておく
+    m_voxSection = buildVoxelSection();
+    v->addWidget(m_voxSection);
+    m_voxStatsSection = buildVoxelStatsSection();
+    v->addWidget(m_voxStatsSection);
     v->addWidget(buildRefineSection());
     v->addWidget(buildRefinedRegionsSection());
 
@@ -711,7 +742,67 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
     connect(m_voxBtn, &QPushButton::clicked, this, &GeometryTab::voxelizeImported);
 
     connect(project, &Project::loaded, this, &GeometryTab::refresh);
+
+    // ドメイン切替 → FDTD 前提セクション/文言の出し分け (表示のみ)
+    connect(project, &Project::domainChanged, this,
+            [this] { updateDomainVisibility(); });
+    updateDomainVisibility();
+
     refresh();
+}
+
+// ── ドメイン別の出し分け ────────────────────────────────────────────────────
+// Yee 格子 (FDTD) を前提とするセクション/文言を、選択中ドメインに合わせて
+// 隠す・切り替える。**表示のみ**で、モデルへの書き込み・.ofd/.ofdx の
+// シリアライズは一切変えない (隠れていても従来どおり動作する)。
+void GeometryTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+
+    // ボクセル化〜ボクセル統計: 水中音響 (BELLHOP) はレイトレースで
+    // Yee 格子を使わないため Underwater では非表示
+    const bool useVoxel = (d != Domain::Underwater);
+    if (m_voxSection)      m_voxSection->setVisible(useVoxel);
+    if (m_voxStatsSection) m_voxStatsSection->setVisible(useVoxel);
+
+    // 分解度Δ の補足 (λ/22 の評価点) はドメインの代表波長/周波数で切替
+    if (m_voxDeltaHint) {
+        const char *key = "geoc_vox_delta_hint";           // EM: 2.5 GHz
+        switch (d) {
+            case Domain::Optical:    key = "geoc_vox_delta_hint_opt"; break;
+            case Domain::Acoustic:   key = "geoc_vox_delta_hint_ac";  break;
+            case Domain::Underwater: key = "geoc_vox_delta_hint_uw";  break;
+            default:                 break;
+        }
+        m_voxDeltaHint->setText(I18n::tr(QLatin1String(key)));
+    }
+
+    // 表面処理の解説: Acoustic では PEC 薄板ではなく剛壁 (rigid) の表現
+    if (m_voxSurfHint)
+        m_voxSurfHint->setText(I18n::tr(
+            d == Domain::Acoustic ? "geoc_vox_surf_hint_ac"
+                                  : "geoc_vox_surf_hint"));
+
+    // 物性値割当のデフォルト材質: Acoustic/Underwater は εr 系 (PEC/誘電体/
+    // FR-4) ではなく ρ/c 系の材料名にする (セクションは未配線 — ラベルのみ)
+    if (m_mapDefault) {
+        const char *k0 = "geoc_map_m2", *k1 = "geoc_map_m1",
+                   *k2 = "geoc_map_m3";
+        if (d == Domain::Acoustic) {
+            k0 = "geoc_map_ac2"; k1 = "geoc_map_ac1"; k2 = "geoc_map_ac3";
+        } else if (d == Domain::Underwater) {
+            k0 = "geoc_map_uw2"; k1 = "geoc_map_ac1"; k2 = "geoc_map_uw3";
+        }
+        m_mapDefault->setItemText(0, I18n::tr(QLatin1String(k0)));
+        m_mapDefault->setItemText(1, I18n::tr(QLatin1String(k1)));
+        m_mapDefault->setItemText(2, I18n::tr(QLatin1String(k2)));
+    }
+
+    // メッシュ細分化の対象: 高εr → 高音速コントラスト (Acoustic/Underwater)
+    if (m_refHighEps)
+        m_refHighEps->setText(I18n::tr(
+            (d == Domain::Acoustic || d == Domain::Underwater)
+                ? "geoc_ref_highc" : "geoc_ref_higheps"));
 }
 
 // ── ユニット編集 / Unit transform ───────────────────────────────────────────
@@ -1232,9 +1323,11 @@ QWidget *GeometryTab::buildVoxelSection()
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_vox_hint"), s));
 
     m_voxDelta = makeSpin(s, 0.001, 1000.0, 3, 0.5, 0.1);
+    // 補足ラベルはドメイン別に文言を差し替える (updateDomainVisibility)
     s->form()->addRow(I18n::tr("geoc_vox_delta"),
                       valueRow(s, m_voxDelta, "mm",
-                               I18n::tr("geoc_vox_delta_hint")));
+                               I18n::tr("geoc_vox_delta_hint"),
+                               &m_voxDeltaHint));
     s->form()->addRow(I18n::tr("geoc_vox_inout"),
                       segRow(s, &m_voxInside,
                              { I18n::tr("geoc_vox_ray"),
@@ -1247,7 +1340,9 @@ QWidget *GeometryTab::buildVoxelSection()
                                I18n::tr("geoc_vox_conformal"),
                                I18n::tr("geoc_vox_subcell") }, 0));
     // 行順を守るため、フォーム内に全幅行として差し込む
-    s->form()->addRow(makeHint(I18n::tr("geoc_vox_surf_hint"), s));
+    // (Acoustic では剛壁 (rigid) の文言に切り替える — updateDomainVisibility)
+    m_voxSurfHint = makeHint(I18n::tr("geoc_vox_surf_hint"), s);
+    s->form()->addRow(m_voxSurfHint);
 
     m_voxPvf = makeCheck(I18n::tr("geoc_vox_pvf"), true, s);
     s->form()->addRow(I18n::tr("geoc_vox_pvf_label"),

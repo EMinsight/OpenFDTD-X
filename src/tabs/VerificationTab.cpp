@@ -23,18 +23,20 @@ namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
     I18n::reg("ver_title", "精度検証", "Result Verification");
-    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 未実装であることを明記する
+    // 誇大ヒントの是正 (CLAUDE.md 絶対規則 5): 未実装であることを明記する。
+    // 文言は全ドメイン共通表示のためドメイン非依存 (「ソルバ結果」) にする
     I18n::reg("ver_hint",
-              "FDTD結果の信頼性を3つの観点からチェックする画面 (未実装)。",
-              "Screen for checking FDTD result reliability from three angles "
+              "ソルバ結果の信頼性を複数の観点からチェックする画面 (未実装)。",
+              "Screen for checking solver result reliability from several angles "
               "(not implemented).");
-    // タブ全体がモックであることの強い注記 (このタブは全出力が固定サンプル)
+    // タブ全体がモックであることの強い注記 (このタブは全出力が固定サンプル)。
+    // 列挙もドメイン非依存の表現 (PML→境界吸収) にする
     I18n::reg("ver_mock_note",
-              "⚠ このタブの表示は設計モックです — 検証機能 (収束テスト/PML 反射/"
+              "⚠ このタブの表示は設計モックです — 検証機能 (収束テスト/境界吸収/"
               "エネルギー減衰/自動診断) は未実装で、表示中の数値・判定はすべて"
               "サンプルです",
               "⚠ This tab is a design mock — the verification features "
-              "(convergence test / PML reflection / energy decay / "
+              "(convergence test / boundary absorption / energy decay / "
               "auto-diagnostics) are not implemented, and every value and "
               "verdict shown is sample data");
 
@@ -75,6 +77,10 @@ const bool s_i18n = [] {
               "Solve the same problem with a different solver (FEM/RCWA…) and compare");
     I18n::reg("ver_cross_solver", "比較ソルバ", "Comparison solver");
     I18n::reg("ver_cross_run", "▶ クロスバリデーション実行", "▶ Run cross-validation");
+    // ドメイン別の比較ソルバ名 (モック表示。実行連携は未実装)
+    I18n::reg("ver_cross_ism", "ISM (鏡像法)", "ISM (image source)");
+    I18n::reg("ver_cross_ray", "レイトレース", "Ray tracing");
+    I18n::reg("ver_cross_pe", "PE (放物型方程式)", "PE (parabolic equation)");
 
     I18n::reg("ver_diag_title", "自動診断", "Auto-diagnostics");
     I18n::reg("ver_h_item", "項目", "Item");
@@ -199,8 +205,9 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     sMesh->vbox()->addWidget(tabhelp::sampleNote(sMesh));
     v->addWidget(sMesh);
 
-    // ② PML吸収品質
+    // ② PML吸収品質 (FDTD 系のみ — 水中ドメインでは refreshDomain が隠す)
     auto *sPml = new SectionBox(I18n::tr("ver_pml_title"), body);
+    m_pmlSection = sPml;
     sPml->vbox()->addWidget(hintLabel(I18n::tr("ver_pml_hint"), sPml));
     auto *pmlTbl = new QTableWidget(5, 3, sPml);
     pmlTbl->setHorizontalHeaderLabels({
@@ -238,8 +245,9 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     sPml->vbox()->addWidget(tabhelp::sampleNote(sPml));
     v->addWidget(sPml);
 
-    // ③ 時間精度
+    // ③ 時間精度 (時間領域ソルバのみ — 水中ドメインでは refreshDomain が隠す)
     auto *sTime = new SectionBox(I18n::tr("ver_time_title"), body);
+    m_timeSection = sTime;
     sTime->vbox()->addWidget(hintLabel(I18n::tr("ver_time_hint"), sTime));
     m_energyPlot = new MiniPlot(sTime);
     {
@@ -270,10 +278,9 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     // ④ クロスバリデーション
     auto *sCross = new SectionBox(I18n::tr("ver_cross_title"), body);
     sCross->vbox()->addWidget(hintLabel(I18n::tr("ver_cross_hint"), sCross));
-    auto *crossBox = new QComboBox(sCross);
-    crossBox->addItems({ "FEM (Frequency)", "RCWA", "STACK", "tidy3d (Cloud)" });
-    crossBox->setCurrentIndex(1);
-    sCross->form()->addRow(I18n::tr("ver_cross_solver"), crossBox);
+    // 項目はドメイン別 (refreshDomain が入れる)
+    m_crossBox = new QComboBox(sCross);
+    sCross->form()->addRow(I18n::tr("ver_cross_solver"), m_crossBox);
     // 比較ソルバの選択はどこにも読まれない
     sCross->form()->addRow(tabhelp::unwiredNote(sCross));
     auto *crossRow = new QHBoxLayout();
@@ -326,11 +333,47 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
 void VerificationTab::refreshDomain()
 {
     const Domain d = m_p->activeDomain();
+    const bool uw = (d == Domain::Underwater);
     m_qtyBox->clear();
     m_qtyBox->addItem(QString::fromUtf8(meshQuantity(d)));
-    // 自動診断 行0: λ/Δx = 22 @ 1550nm | 2.5GHz
+
+    // ② PML吸収品質 / ③ 時間精度は FDTD 系 (時間領域 + PML) 前提の画面。
+    // 水中ドメイン (BELLHOP レイトレース) には対応概念が無い → セクションごと隠す
+    m_pmlSection->setVisible(!uw);
+    m_timeSection->setVisible(!uw);
+
+    // ④ 比較ソルバ: ドメインごとの妥当な候補だけを見せる (モック表示・未配線)
+    m_crossBox->clear();
+    switch (d) {
+        case Domain::Optical:
+            m_crossBox->addItems({ "RCWA", "STACK", "tidy3d (Cloud)" });
+            break;
+        case Domain::Acoustic:
+            m_crossBox->addItems({ I18n::tr("ver_cross_ism"),
+                                   I18n::tr("ver_cross_ray") });
+            break;
+        case Domain::Underwater:
+            m_crossBox->addItems({ I18n::tr("ver_cross_pe"), "BEM" });
+            break;
+        default:   // EM
+            m_crossBox->addItem("FEM (Frequency)");
+            break;
+    }
+
+    // 自動診断: CFL (行1)・PML 反射 (行2)・サブピクセル平均化 (行6) は
+    // FDTD 系の項目で水中では無意味 → 行を隠す
+    m_diag->setRowHidden(1, uw);
+    m_diag->setRowHidden(2, uw);
+    m_diag->setRowHidden(6, uw);
+
+    // 自動診断 行0 備考: 例示周波数をドメインに合わせる
+    QString freq;
+    switch (d) {
+        case Domain::Optical:    freq = QStringLiteral("1550nm"); break;
+        case Domain::Acoustic:   freq = QStringLiteral("1kHz");   break;
+        case Domain::Underwater: freq = QStringLiteral("3.5kHz"); break;
+        default:                 freq = QStringLiteral("2.5GHz"); break;
+    }
     if (auto *it = m_diag->item(0, 2))
-        it->setText(QString("λ/Δx = 22 @ %1")
-            .arg(d == Domain::Optical ? QStringLiteral("1550nm")
-                                      : QStringLiteral("2.5GHz")));
+        it->setText(QString("λ/Δx = 22 @ %1").arg(freq));
 }

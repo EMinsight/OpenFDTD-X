@@ -43,6 +43,7 @@ private slots:
 
 private:
     void applyTable();
+    void updateDomainVisibility();   // ドメイン別の出し分け (表示のみ)
 
     // ── ユニット編集 (mock tabs.jsx:409-494) ────────────────────────────────
     QWidget *buildTransformSection();
@@ -118,6 +119,10 @@ private:
     QTableWidget   *m_modelTable = nullptr;
     int             m_liveModelRow = -1;   // 実際に取り込んだ STL の行 (-1 = 無し)
     // ボクセル化
+    QWidget        *m_voxSection = nullptr;       // Underwater で非表示
+    QWidget        *m_voxStatsSection = nullptr;  // 同上
+    QLabel         *m_voxDeltaHint = nullptr;     // 分解度Δ の補足 (ドメイン別)
+    QLabel         *m_voxSurfHint = nullptr;      // 表面処理の解説 (ドメイン別)
     QDoubleSpinBox *m_voxDelta = nullptr;
     QButtonGroup   *m_voxInside = nullptr;
     QButtonGroup   *m_voxSurface = nullptr;

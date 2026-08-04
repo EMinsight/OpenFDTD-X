@@ -539,7 +539,9 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     tr0->addWidget(rangeLo);
     tr0->addWidget(new QLabel(QString::fromUtf8("〜"), sp));
     tr0->addWidget(rangeHi);
-    tr0->addWidget(new QLabel("ps", sp));
+    // 単位はドメイン別 (EM/光: ps、室内音響: ms、水中: s) — updateDomainVisibility
+    m_timeUnit = new QLabel("ps", sp);
+    tr0->addWidget(m_timeUnit);
     auto *ckRangeOnly = new QCheckBox(I18n::tr("h5_range_only"), sp);
     ofd::tabhelp::markNotImplemented(ckRangeOnly);
     tr0->addWidget(ckRangeOnly);
@@ -645,6 +647,9 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
                              "h5_stat_fft", "h5_stat_lineint" }) {
         auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
         ofd::tabhelp::markNotImplemented(b);
+        // Schroeder 減衰は室内音響の指標 — ドメイン別に表示を切り替える
+        if (qstrcmp(key, "h5_stat_schroeder") == 0)
+            m_schroederBtn = b;
         srow->addWidget(b);
     }
     srow->addStretch(1);
@@ -746,6 +751,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     });
 
     setPlaybackEnabled(false);
+
+    // ドメイン別の出し分け (時間範囲の単位ラベル / Schroeder 減衰ボタン)
+    connect(m_p, &Project::domainChanged, this,
+            &H5ViewerTab::updateDomainVisibility);
+    connect(m_p, &Project::loaded, this,
+            &H5ViewerTab::updateDomainVisibility);
+    updateDomainVisibility();
 
     // HDF5 無効ビルド: 注記をタブ先頭に出し、読込 UI を無効化する
     if (!H5Reader::available()) {
@@ -1300,4 +1312,18 @@ void H5ViewerTab::clearStats()
     m_statMean->setText(I18n::tr("h5_stat_mean") + ": -");
     m_barMax->setText("-");
     m_barMin->setText("-");
+}
+
+// ドメインに応じた出し分け:
+//   - 時間範囲の単位ラベル (EM/光: ps、室内音響: ms、水中: s)。値の換算は
+//     しない — 時間範囲入力は再生に反映されない飾り (unwiredNote 済み)。
+//   - Schroeder 減衰ボタンは室内音響でのみ意味を持つため他ドメインでは隠す。
+void H5ViewerTab::updateDomainVisibility()
+{
+    const Domain d = m_p->activeDomain();
+    const char *unit = "ps";                       // EM / 光
+    if (d == Domain::Acoustic)        unit = "ms"; // 室内音響
+    else if (d == Domain::Underwater) unit = "s";  // 水中音響
+    m_timeUnit->setText(QLatin1String(unit));
+    m_schroederBtn->setVisible(d == Domain::Acoustic);
 }

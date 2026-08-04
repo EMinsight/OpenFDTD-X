@@ -51,6 +51,10 @@ private slots:
     void saveSnapshot();
 
 private:
+    // ドメインで意味を持たない UI 項目の出し分け (setDomain から呼ばれる)
+    void updateDomainVisibility(Domain d);
+
+private:
     Project        *m_p;
     QTabBar        *m_tabs;
     QStackedWidget *m_stack;

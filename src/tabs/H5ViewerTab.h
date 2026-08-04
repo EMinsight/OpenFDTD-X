@@ -98,6 +98,7 @@ private:
     void setScaleLabels(double lo, double hi);
     void setPlaybackEnabled(bool on); // 3D のときだけ再生 UI を有効化
     void clearStats();
+    void updateDomainVisibility();    // ドメイン別の出し分け (時間単位 / Schroeder)
     void updateSliceControls();       // 断面 UI の範囲/有効化 (series のみ)
     int  sliceAxis() const;           // planeBox → 0=X/1=Y/2=Z
     void exportPngCurrent();          // 現在フレームを PNG 保存
@@ -138,6 +139,7 @@ private:
 
     // 統計 (実計算)
     QLabel      *m_statMin, *m_statMax, *m_statMean;
+    QPushButton *m_schroederBtn = nullptr;    // Schroeder 減衰 (室内音響のみ表示)
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
@@ -146,6 +148,7 @@ private:
     QComboBox   *m_speed;
     QTimer      *m_timer;
     int          m_frame = 0;
+    QLabel      *m_timeUnit = nullptr;        // 時間範囲の単位 (ドメイン別 ps/ms/s)
 
     // 断面 (伝搬時系列でのみ有効 — 軸と位置を選ぶ)
     QComboBox   *m_planeBox = nullptr;

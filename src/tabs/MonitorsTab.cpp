@@ -93,6 +93,19 @@ const bool s_i18n = [] {
                    "S-parameter extraction (.s2p)");
     ofd::I18n::reg("mon_d_radeff", "放射効率", "Radiation efficiency");
     ofd::I18n::reg("mon_d_sar", "人体局所SAR", "Local SAR in tissue");
+
+    // 音響/水中ドメイン用の差し替え名称 (E/H 場 → 音圧場)。
+    // 電磁の「E/H 場」表記は音響では意味を持たないため rebuildDomain で切替える。
+    ofd::I18n::reg("mon_ac_field_time", "時間領域 音圧場",
+                   "Time-domain pressure field");
+    ofd::I18n::reg("mon_ac_field_freq", "周波数領域 音圧場",
+                   "Frequency-domain pressure field");
+    ofd::I18n::reg("mon_ac_line", "Line — 音圧 freq", "Line — pressure freq");
+    ofd::I18n::reg("mon_ac_volume", "Volume — 音圧 3D", "Volume — pressure 3D");
+    ofd::I18n::reg("mon_ac_d_point", "音圧 時間応答 1点",
+                   "Pressure time response at one point");
+    ofd::I18n::reg("mon_ac_d_plane", "面上 周波数領域 音圧",
+                   "Frequency-domain pressure on a plane");
     return true;
 }();
 
@@ -121,13 +134,19 @@ const MonRow kEmRows[] = {
 
 // ── タイプ追加グリッド (ドメインでフィルタ) ─────────────────────────────────
 enum { D_EM = 1, D_OPT = 2, D_AC = 4, D_UW = 8, D_ALL = 15 };
-struct AddType { const char *ic, *name, *desc; unsigned domains; };
+// acName / acDesc は音響/水中ドメインでの差し替えキー (nullptr = 共通のまま)
+struct AddType { const char *ic, *name, *desc; unsigned domains;
+                 const char *acName = nullptr, *acDesc = nullptr; };
 
 const AddType kAddTypes[] = {
-    { "⊙",  "mn_field_time",       "mon_d_point",    D_ALL },
-    { "━",  "Line — E/H freq",     "mon_d_line",     D_ALL },
-    { "▭",  "mn_field_freq",       "mon_d_plane",    D_ALL },
-    { "▦",  "Volume — E/H 3D",     "mon_d_volume",   D_ALL },
+    { "⊙",  "mn_field_time",       "mon_d_point",    D_ALL,
+            "mon_ac_field_time",   "mon_ac_d_point" },
+    { "━",  "Line — E/H freq",     "mon_d_line",     D_ALL,
+            "mon_ac_line" },
+    { "▭",  "mn_field_freq",       "mon_d_plane",    D_ALL,
+            "mon_ac_field_freq",   "mon_ac_d_plane" },
+    { "▦",  "Volume — E/H 3D",     "mon_d_volume",   D_ALL,
+            "mon_ac_volume" },
     { "⊛",  "mn_mode_exp",         "mon_d_mode",     D_EM | D_OPT },
     { "▶",  "mn_movie",            "mon_d_movie",    D_ALL },
     { "≡",  "mn_flux",             "mon_d_flux",     D_EM | D_OPT },
@@ -135,7 +154,8 @@ const AddType kAddTypes[] = {
     { "⊚",  "mn_index",            "mon_d_index",    D_EM | D_OPT },
     { "⌬",  "mn_qanalysis",        "mon_d_q",        D_EM | D_OPT },
     { "⌛",  "Global time monitor", "mon_d_global",   D_ALL },
-    { "⌟",  "mn_pml",              "mon_d_pml",      D_ALL },
+    // PML は水中音響 (BELLHOP は開境界を自前処理) には存在しないので出さない
+    { "⌟",  "mn_pml",              "mon_d_pml",      D_EM | D_OPT | D_AC },
     // 音響専用
     { "♪",  "SPL Meter",           "mon_d_spl",      D_AC | D_UW },
     { "⏱",  "IRF (Impulse resp.)", "mon_d_irf",      D_AC | D_UW },
@@ -339,9 +359,12 @@ void MonitorsTab::rebuildDomain()
     int idx = 0;
     for (const AddType &t : kAddTypes) {
         if (!(t.domains & bit)) continue;
+        // 音響/水中では「E/H 場」の名称・説明を「音圧場」系へ差し替える
+        const char *nameKey = (isAcoustic && t.acName) ? t.acName : t.name;
+        const char *descKey = (isAcoustic && t.acDesc) ? t.acDesc : t.desc;
         auto *b = new QPushButton(
-            QString::fromUtf8(t.ic) + " " + I18n::tr(QString::fromUtf8(t.name))
-            + "\n" + I18n::tr(QString::fromUtf8(t.desc)), m_addHost);
+            QString::fromUtf8(t.ic) + " " + I18n::tr(QString::fromUtf8(nameKey))
+            + "\n" + I18n::tr(QString::fromUtf8(descKey)), m_addHost);
         b->setStyleSheet("text-align:left; padding:4px 8px;");
         b->setMinimumHeight(36);
         tabhelp::markNotImplemented(b);   // モニター追加は未配線

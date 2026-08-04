@@ -8,6 +8,8 @@
 
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QSlider;
@@ -17,6 +19,7 @@ class QTableWidget;
 namespace ofd {
 
 class Project;
+class SectionBox;
 
 class SolverRegionTab : public QScrollArea {
     Q_OBJECT
@@ -29,10 +32,19 @@ private slots:
 private:
     void apply();
     void updateMeshDerived();   // メッシュ精度 → 推定セル数/メモリ/時間/ヒント
-    void updateDomainDeps();    // ドメイン → 基準波長・周波数表示と時間単位
+    void updateDomainDeps();    // ドメイン → 基準波長・周波数表示/時間単位/項目の出し分け
 
     Project   *m_p;
     bool       m_updating = false;
+
+    // ドメイン出し分け用 (音響系では FDTD 固有項目を隠す)
+    QLabel      *m_hint;        // 冒頭ヒント (ドメイン別に文言切替)
+    QFormLayout *m_meshForm;    // メッシュ設定セクションのフォーム
+    QFormLayout *m_timeForm;    // シミュレーション時間セクションのフォーム
+    QHBoxLayout *m_dtRow;       // Δt (CFL) 行
+    QLabel      *m_dtNote;      // Δt 行のサンプル注記
+    QHBoxLayout *m_cflRow;      // CFL 係数行
+    SectionBox  *m_bcBox;       // 境界条件セクション (PML は音響系で無意味)
 
     // シミュレーション領域 / Simulation region
     QComboBox *m_dim;

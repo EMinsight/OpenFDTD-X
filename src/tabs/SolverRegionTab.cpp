@@ -32,6 +32,13 @@ const bool s_i18n = [] {
         "The central Lumerical-FDTD object: simulation time, region, mesh and "
         "boundary conditions managed in one place.\n"
         "Geometry, sources and monitors are placed inside this region.");
+    // 音響/水中音響用: FDTD/Lumerical 前提を含まないドメイン中立の文言
+    ofd::I18n::reg("sreg_hint_ac",
+        "シミュレーション時間・領域・メッシュを一括管理する中心オブジェクト。\n"
+        "形状・音源・受音点はこの領域内に配置されます。",
+        "The central object managing simulation time, region and mesh "
+        "in one place.\n"
+        "Geometry, sources and receivers are placed inside this region.");
     ofd::I18n::reg("sreg_region", "シミュレーション領域", "Simulation region");
     ofd::I18n::reg("sreg_dim", "次元", "Dimension");
     ofd::I18n::reg("sreg_dim_cyl", "円筒対称 (2.5D)", "Cylindrical (2.5D)");
@@ -135,9 +142,9 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── ソルバ領域 / FDTD Solver Region (説明) ──────────────────────────────
     auto *st = new SectionBox(I18n::tr("sreg_title"), body);
-    auto *hint = new QLabel(I18n::tr("sreg_hint"), st);
-    hint->setWordWrap(true);
-    st->vbox()->addWidget(hint);
+    m_hint = new QLabel(I18n::tr("sreg_hint"), st);   // 文言はドメイン別に切替
+    m_hint->setWordWrap(true);
+    st->vbox()->addWidget(m_hint);
     v->addWidget(st);
 
     // ── シミュレーション領域 / Simulation region ────────────────────────────
@@ -173,6 +180,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── メッシュ設定 / Mesh ─────────────────────────────────────────────────
     auto *sm = new SectionBox(I18n::tr("sreg_mesh"), body);
+    m_meshForm = sm->form();             // ドメイン別の行出し分けに使う
     auto *accRow = new QHBoxLayout();
     m_meshAcc = new QSlider(Qt::Horizontal, sm);
     m_meshAcc->setRange(1, 8);
@@ -242,6 +250,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
 
     // ── シミュレーション時間 / Simulation time ──────────────────────────────
     auto *ss = new SectionBox(I18n::tr("sreg_simtime"), body);
+    m_timeForm = ss->form();             // ドメイン別の行出し分けに使う
     auto *timeRow = new QHBoxLayout();
     m_simTime = new QLineEdit("1000", ss);
     m_simTime->setMaximumWidth(100);
@@ -262,29 +271,31 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     shutRow->addStretch(1);
     ss->form()->addRow(I18n::tr("sreg_shutoff"), shutRow);
 
-    auto *dtRow = new QHBoxLayout();
-    dtRow->addWidget(new QLabel("9.31e-13 s", ss));
-    dtRow->addWidget(new QLabel(I18n::tr("sreg_dt_steps"), ss));
+    m_dtRow = new QHBoxLayout();
+    m_dtRow->addWidget(new QLabel("9.31e-13 s", ss));
+    m_dtRow->addWidget(new QLabel(I18n::tr("sreg_dt_steps"), ss));
     auto *stable = new QLabel(I18n::tr("sreg_stable"), ss);
     stable->setStyleSheet("color:#2E8B57; font-weight:600;");   // badge ok
-    dtRow->addWidget(stable);
-    dtRow->addStretch(1);
-    ss->form()->addRow(QString::fromUtf8("Δt (CFL)"), dtRow);
+    m_dtRow->addWidget(stable);
+    m_dtRow->addStretch(1);
+    ss->form()->addRow(QString::fromUtf8("Δt (CFL)"), m_dtRow);
     // Δt / ステップ数 / 「安定」バッジはモックの固定値 (CFL 計算は未実装)
-    ss->form()->addRow(tabhelp::sampleNote(ss));
+    m_dtNote = tabhelp::sampleNote(ss);   // Δt 行と一緒に出し分ける
+    ss->form()->addRow(m_dtNote);
 
-    auto *cflRow = new QHBoxLayout();
+    m_cflRow = new QHBoxLayout();
     m_cfl = new QLineEdit("0.99", ss);
     m_cfl->setMaximumWidth(70);
-    cflRow->addWidget(m_cfl);
-    cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
-    cflRow->addStretch(1);
-    ss->form()->addRow(I18n::tr("sreg_cfl"), cflRow);
+    m_cflRow->addWidget(m_cfl);
+    m_cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
+    m_cflRow->addStretch(1);
+    ss->form()->addRow(I18n::tr("sreg_cfl"), m_cflRow);
     ss->form()->addRow(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
     // ── 境界条件 / Boundary conditions ──────────────────────────────────────
     auto *sb = new SectionBox(I18n::tr("sreg_bc"), body);
+    m_bcBox = sb;                        // PML/PEC は音響系ではセクション毎隠す
     auto *bcHint = new QLabel(I18n::tr("sreg_bc_hint"), sb);
     bcHint->setWordWrap(true);
     sb->form()->addRow(bcHint);
@@ -379,10 +390,33 @@ void SolverRegionTab::updateMeshDerived()
 
 void SolverRegionTab::updateDomainDeps()
 {
-    const bool optical = (m_p->activeDomain() == Domain::Optical);
+    const Domain d = m_p->activeDomain();
     const int a = m_meshAcc->value();
+
+    // セル数注記の基準周波数/波長と時間単位 (ドメイン別の代表値)
+    QString ref, unit;
+    switch (d) {
+    case Domain::Optical:
+        ref = QStringLiteral("1550nm");  unit = QStringLiteral("fs"); break;
+    case Domain::Acoustic:               // 室内音響: 可聴帯域の代表値
+        ref = QStringLiteral("1kHz");    unit = QStringLiteral("ms"); break;
+    case Domain::Underwater:             // 水中音響: ソナー帯域の代表値
+        ref = QStringLiteral("3.5kHz");  unit = QStringLiteral("s");  break;
+    default:                             // EM
+        ref = QStringLiteral("2.5GHz");  unit = QStringLiteral("ns"); break;
+    }
     m_cellsNote->setText(QStringLiteral("(λ/%1 @ %2)")
-        .arg(kLambdaDiv[a - 1])
-        .arg(optical ? QStringLiteral("1550nm") : QStringLiteral("2.5GHz")));
-    m_simTimeUnit->setText(optical ? QStringLiteral("fs") : QStringLiteral("ns"));
+        .arg(kLambdaDiv[a - 1]).arg(ref));
+    m_simTimeUnit->setText(unit);
+
+    // 電磁 FDTD (EM/光) 固有の項目は音響系ドメインでは隠す (混乱防止)。
+    // 隠すだけでモデル書き込み (apply の pmlL) は従来どおり行う。
+    const bool em = (d == Domain::EM || d == Domain::Optical);
+    m_hint->setText(I18n::tr(em ? "sreg_hint" : "sreg_hint_ac"));
+    m_meshForm->setRowVisible(m_meshRefine, em);   // Conformal/Yu-Mittra
+    m_meshForm->setRowVisible(m_subpixel, em);     // サブピクセル平均
+    m_timeForm->setRowVisible(m_dtRow, em);        // Δt (CFL) + 安定バッジ
+    m_timeForm->setRowVisible(m_dtNote, em);       // Δt 行のサンプル注記
+    m_timeForm->setRowVisible(m_cflRow, em);       // CFL 係数
+    m_bcBox->setVisible(em);                       // PML/PEC 境界条件セクション
 }
