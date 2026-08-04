@@ -1858,6 +1858,76 @@ static void testH5Reader()
           "h5: read2D rejects 3-D dataset");
     check(!H5Reader::readFrame(path, "/field/frames", 9, m, r, c),
           "h5: readFrame rejects out-of-range frame");
+
+    // readAll: スカラーと 2D (float→double 変換込み)
+    QVector<double> flat;
+    QVector<qlonglong> dims;
+    check(H5Reader::readAll(path, "/field/Ixz", flat, dims),
+          "h5: readAll 2D ok");
+    check(dims == (QVector<qlonglong>{ 3, 4 }) && flat.size() == 12 &&
+          flat[6] == 12.0, "h5: readAll dims/values");
+
+    // ofd レイアウトの空間再構成: 2×2×2 セル (ノード 3×3×3, 余白なし)。
+    // node = 9i + 3j + k。全 6 成分 = node → |E| = node·√6。
+    // /data000000 はゼロ、/data000100 に実値 — 最終グループが選ばれること
+    const QString ofdPath = dir.filePath("ofd.h5");
+    {
+        const hid_t file = H5Fcreate(ofdPath.toLocal8Bit().constData(),
+                                     H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        check(file >= 0, "h5: ofd fixture created");
+        auto writeScalarInt = [&](const char *name, long long v) {
+            const hid_t sp = H5Screate(H5S_SCALAR);
+            const hid_t ds = H5Dcreate2(file,
+                (QByteArray("/metadata/") + name).constData(),
+                H5T_NATIVE_LLONG, sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v);
+            H5Dclose(ds); H5Sclose(sp);
+        };
+        H5Gclose(H5Gcreate2(file, "/metadata", H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT));
+        writeScalarInt("Nx", 2); writeScalarInt("Ny", 2);
+        writeScalarInt("Nz", 2);
+        writeScalarInt("Ni", 9); writeScalarInt("Nj", 3);
+        writeScalarInt("Nk", 1); writeScalarInt("N0", 0);
+        writeScalarInt("NN", 27);
+        auto writeE = [&](const char *group, bool zeros) {
+            H5Gclose(H5Gcreate2(file, group, H5P_DEFAULT, H5P_DEFAULT,
+                                H5P_DEFAULT));
+            QVector<double> e(27 * 6);
+            for (int n = 0; n < 27; ++n)
+                for (int cc = 0; cc < 6; ++cc)
+                    e[n * 6 + cc] = zeros ? 0.0 : double(n);
+            const hsize_t d4[4] = { 1, 1, 27, 6 };
+            const hid_t sp = H5Screate_simple(4, d4, nullptr);
+            const hid_t ds = H5Dcreate2(file,
+                (QByteArray(group) + "/E").constData(),
+                H5T_NATIVE_DOUBLE, sp, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     e.constData());
+            H5Dclose(ds); H5Sclose(sp);
+        };
+        writeE("/data000000", true);
+        writeE("/data000100", false);
+        H5Fclose(file);
+    }
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(ofdPath, cells, rows, cols, &group),
+              "h5: ofd mid-slice ok");
+        check(rows == 3 && cols == 3, "h5: ofd slice dims (Ny+1, Nx+1)");
+        check(group == QLatin1String("data000100"),
+              "h5: ofd latest group selected");
+        // k = Nz/2 = 1。行 0 = +y (j=2)。|E|(i,j) = (9i+3j+1)·√6
+        const double s6 = std::sqrt(6.0);
+        check(std::fabs(cells[2 * 3 + 0] - (9 * 0 + 3 * 0 + 1) * s6) < 1e-9,
+              "h5: ofd slice value (i=0,j=0)");
+        check(std::fabs(cells[0 * 3 + 2] - (9 * 2 + 3 * 2 + 1) * s6) < 1e-9,
+              "h5: ofd slice value (i=2,j=2 → row 0)");
+        check(std::fabs(cells[1 * 3 + 1] - (9 * 1 + 3 * 1 + 1) * s6) < 1e-9,
+              "h5: ofd slice center value");
+    }
 #endif
 }
 
@@ -1896,6 +1966,22 @@ static void testOfdIntegration(const QString &sampleDir)
         KernelResultReader::readFeedSweeps(dir.filePath("ofd.log"));
     check(sweeps.size() == 1 && sweeps.first().points.size() == 21,
           "ofd: feed sweep parsed from real log");
+#ifdef OFD_USE_HDF5
+    // 実カーネルの time_series_data.h5 から z 中央断面が再構成できること。
+    // dipole は 30×30×31 セル → 断面は 31×31 ノード
+    {
+        QVector<double> cells;
+        int rows = 0, cols = 0;
+        QString group;
+        check(H5Reader::readOfdMidSlice(dir.filePath("time_series_data.h5"),
+                                        cells, rows, cols, &group),
+              "ofd: h5 mid-slice from real kernel output");
+        check(rows == 31 && cols == 31, "ofd: h5 slice dims 31x31");
+        double vmax = 0.0;
+        for (double v : cells) vmax = std::max(vmax, v);
+        check(vmax > 0.0, "ofd: h5 slice has non-zero field");
+    }
+#endif
 
     // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
     // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)

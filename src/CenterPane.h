@@ -41,8 +41,9 @@ public:
     void showPlot();          // 結果プロットへ切替 (図形表示2D)
 
     // カーネルの HDF5 出力 (time_series_data.h5) から 2D 断面へ実データを
-    // 反映する。/field/Ixz (obpm 伝搬マップ) → |Efinal| の順に試し、読めたら
-    // デモ表示を置き換えて true (HDF5 無効ビルド・該当データ無しは false)。
+    // 反映する。/field/Ixz (obpm 伝搬マップ) → |Efinal| → ofd/orcwa の
+    // ノード場 (/data%06d/E + /metadata 格子から z 中央断面を再構成) の順に
+    // 試し、読めたらデモ表示を置き換えて true。
     bool loadResultField(const QString &h5Path);
 
 private slots:
