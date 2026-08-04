@@ -788,8 +788,9 @@ void MainWindow::onDomainChanged(Domain d)
 // 現在の (スタイル, テーマ, 密度, ドメイン) で QSS を生成し直して適用する
 void MainWindow::applyTheme()
 {
-    qApp->setStyleSheet(Theme::qss(m_uiStyle, m_uiTheme, m_density,
-                                   m_project->activeDomain()));
+    // QSS だけでなくパレット / カラースキームも揃える (Theme::apply に集約)。
+    // QSS が触らない要素が OS の外観を拾って配色が混ざるのを防ぐ。
+    Theme::apply(m_uiStyle, m_uiTheme, m_density, m_project->activeDomain());
     // QPainter 描画のウィジェットは QSS の対象外なので明示的に伝える
     m_viewport->setDarkPalette(Theme::isDarkPalette(m_uiStyle, m_uiTheme));
 }

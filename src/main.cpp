@@ -87,7 +87,10 @@ int main(int argc, char *argv[])
     }
     const ofd::Domain startDomain = cli.isSet(domainOpt)
         ? ofd::domainFromKey(cli.value(domainOpt)) : ofd::Domain::EM;
-    app.setStyleSheet(ofd::Theme::qss(uiStyle, uiTheme, uiDens, startDomain));
+    // QSS + パレット + カラースキームをまとめて適用する。QSS だけだと
+    // スタイルが自前で描く部分が OS の外観 (macOS のライト/ダーク) に従い、
+    // 暗色テーマに白い枠が混ざる。
+    ofd::Theme::apply(uiStyle, uiTheme, uiDens, startDomain);
 
     ofd::MainWindow w;
     if (themeOverridden) w.setThemeOverride(uiStyle, uiTheme, uiDens);

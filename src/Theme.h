@@ -6,6 +6,7 @@
 // Palette (CSS 変数相当) を組み立ててから QSS 文字列を生成するので、
 // スタイル / テーマ / 密度 / ドメインの組み合わせが実際に見た目へ反映される。
 #pragma once
+#include <QPalette>
 #include <QString>
 #include "core/Domain.h"
 
@@ -20,6 +21,16 @@ public:
     // Build the full application stylesheet for this combination.
     // (この組み合わせのアプリ全体スタイルシートを生成する)
     static QString qss(UiStyle style, UiTheme theme, Density density, Domain domain);
+
+    // QSS と同じ配色の QPalette。**QSS だけでは不十分**なので必ず併用する:
+    // QSS が触らない要素 (スタイルが自前で描く枠・フォーカスリング・
+    // プレースホルダ・無効表示など) は OS の外観 (macOS のライト/ダーク) を
+    // そのまま拾うため、暗色テーマなのに白い箱が出るといった混在になる。
+    static QPalette palette(UiStyle style, UiTheme theme, Domain domain);
+
+    // qApp へ QSS + パレット + (Qt 6.8+) カラースキームをまとめて適用する。
+    // テーマ切替と起動時の両方から呼ぶ (適用漏れを作らないため 1 箇所に集約)。
+    static void apply(UiStyle style, UiTheme theme, Density density, Domain domain);
 
     // Persisted settings helpers ("ui/style", "ui/theme", "ui/density").
     static UiStyle styleFromKey(const QString &key);     // "classic"|"modern"|"scientific"
