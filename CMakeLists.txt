@@ -48,6 +48,11 @@ set(CORE_SOURCES
     src/core/GlassCatalog.h
     src/core/RoomAcoustics.cpp
     src/core/RoomAcoustics.h
+    # 受音点別 RIR WAV の自動割当 (可聴化タブ⑤の補助) — Qt Core のみ。
+    # 対応規則 (完全一致 / rir 接頭接尾 / 唯一の rir.wav) を selftest から
+    # テーブル駆動で検証する
+    src/core/RirAutoAssign.cpp
+    src/core/RirAutoAssign.h
     src/core/OperaHalls.h
     src/core/ProjectTemplates.cpp
     src/core/ProjectTemplates.h

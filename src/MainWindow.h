@@ -77,6 +77,7 @@ public slots:
     void setViewStyle(int index);        // CLI --view-style / 表示メニュー用
     void setThemeOverride(UiStyle style, UiTheme theme, Density density);
     void selectLeftTab(const QString &titlePart);
+    void selectCenterTab(const QString &titlePart);  // CLI --center-tab 用
     void showGallery();
     void showResources();
     void showGettingStarted();

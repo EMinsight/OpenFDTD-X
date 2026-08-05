@@ -1,12 +1,14 @@
 // AuralizationTab.cpp
 #include "AuralizationTab.h"
 #include "../core/Project.h"
+#include "../core/RirAutoAssign.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -114,6 +116,52 @@ const bool s_i18nBatch = [] {
                    "(%1 samples clipped)");
     ofd::I18n::reg("aurb_row_error", "失敗: %1", "Failed: %1");
     ofd::I18n::reg("aurb_row_cancelled", "中断 (未実行)", "Cancelled (not run)");
+    // 📂 フォルダから自動割当 (core/RirAutoAssign)
+    ofd::I18n::reg("aurb_auto_btn", "📂 フォルダから自動割当",
+                   "📂 Auto-assign from folder");
+    ofd::I18n::reg("aurb_auto_btn_tip",
+        "選択したフォルダ直下の *.wav を、受音点名との対応規則で各行の RIR に"
+        "割り当てます。規則: (1) 完全一致 <名前>.wav、(2) rir_<名前>.wav / "
+        "<名前>_rir.wav、(3) rir.wav が 1 個だけで対象行が 1 行だけならその行。"
+        "比較は拡張子・大文字小文字・記号を無視します。候補が複数の行は"
+        "割り当てず、理由を状態欄に表示します。",
+        "Assigns the *.wav files directly inside the chosen folder to the "
+        "receivers by name. Rules: (1) exact match <name>.wav, "
+        "(2) rir_<name>.wav / <name>_rir.wav, (3) a single rir.wav goes to a "
+        "single eligible row. Matching ignores extension, case and symbols. "
+        "Ambiguous rows are left unassigned with the reason in the status "
+        "column.");
+    ofd::I18n::reg("aurb_auto_only_unset", "未設定の行のみ",
+                   "Only rows without an RIR");
+    ofd::I18n::reg("aurb_auto_only_unset_tip",
+        "ON (既定): RIR が未設定の行だけに割り当て、既存の設定を守ります。"
+        "OFF: 既存の割当も上書きします。",
+        "On (default): assign only to rows without an RIR, keeping existing "
+        "settings. Off: existing assignments are overwritten too.");
+    ofd::I18n::reg("aurb_auto_dir_title", "RIR フォルダの選択",
+                   "Choose RIR folder");
+    ofd::I18n::reg("aurb_auto_summary",
+                   "自動割当: %1 行割当 / %2 行未割当 (%3)",
+                   "Auto-assign: %1 assigned, %2 not assigned (%3)");
+    ofd::I18n::reg("aurb_auto_row_assigned", "自動割当 — %1",
+                   "Auto-assigned — %1");
+    ofd::I18n::reg("aurb_auto_row_ambiguous",
+                   "自動割当なし: 候補が複数 (%1)",
+                   "Not assigned: multiple candidates (%1)");
+    ofd::I18n::reg("aurb_auto_row_nomatch",
+                   "自動割当なし: 一致する WAV がありません",
+                   "Not assigned: no matching WAV");
+    ofd::I18n::reg("aurb_auto_nowav",
+                   "自動割当: フォルダに WAV ファイルがありません (%1)",
+                   "Auto-assign: no WAV files in the folder (%1)");
+    ofd::I18n::reg("aurb_auto_rule_exact", "完全一致 <名前>.wav",
+                   "Exact match <name>.wav");
+    ofd::I18n::reg("aurb_auto_rule_affix",
+                   "rir_<名前>.wav / <名前>_rir.wav",
+                   "rir_<name>.wav / <name>_rir.wav");
+    ofd::I18n::reg("aurb_auto_rule_single",
+                   "唯一の rir.wav → 唯一の対象行",
+                   "The only rir.wav → the only eligible row");
     return true;
 }();
 
@@ -245,6 +293,20 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
     m_batchTable->setMinimumHeight(4 * 26 + 40);
     sBatch->vbox()->addWidget(m_batchTable);
 
+    // 📂 フォルダから自動割当 — ソルバ実行が生成した RIR 群を行ごとに手動で
+    //    選ばなくて済む導線。対応規則は core/RirAutoAssign (説明はツールチップ)
+    auto *autoRow = new QHBoxLayout();
+    m_autoAssignBtn = new QPushButton(I18n::tr("aurb_auto_btn"), sBatch);
+    m_autoAssignBtn->setObjectName(QStringLiteral("aurAutoAssignBtn"));
+    m_autoAssignBtn->setToolTip(I18n::tr("aurb_auto_btn_tip"));
+    m_autoOnlyUnset = new QCheckBox(I18n::tr("aurb_auto_only_unset"), sBatch);
+    m_autoOnlyUnset->setToolTip(I18n::tr("aurb_auto_only_unset_tip"));
+    m_autoOnlyUnset->setChecked(true);   // 既定 ON = 既存設定を守る
+    autoRow->addWidget(m_autoAssignBtn);
+    autoRow->addWidget(m_autoOnlyUnset);
+    autoRow->addStretch(1);
+    sBatch->vbox()->addLayout(autoRow);
+
     QPushButton *outDirBrowse = nullptr;
     sBatch->form()->addRow(I18n::tr("aurb_out_dir"),
         pathRow(m_batchOutDir, outDirBrowse, sBatch,
@@ -285,6 +347,8 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
             this, &AuralizationTab::runConvolution);
     connect(outDirBrowse, &QPushButton::clicked,
             this, &AuralizationTab::browseBatchOutDir);
+    connect(m_autoAssignBtn, &QPushButton::clicked,
+            this, &AuralizationTab::autoAssignRirs);
     connect(m_batchRunBtn, &QPushButton::clicked,
             this, &AuralizationTab::runBatch);
     connect(m_batchCancelBtn, &QPushButton::clicked,
@@ -539,12 +603,103 @@ void AuralizationTab::browseBatchOutDir()
     m_batchOutDir->setText(dir);
 }
 
+// ── ⑤ RIR の自動割当 (フォルダスキャン) ─────────────────────────────────────
+// ダイアログの初期フォルダ: 直近のソルバ実行が分かる場合はその出力フォルダ
+// (AcousticSolverTab が契約検証済み rir.wav の絶対パスを rirPath へ書く —
+// 実測 WAV を指定していた場合もその置き場で妥当)。無ければプロジェクトの
+// フォルダ (→ ドライ WAV のフォルダ) = batchOutputDir と同じ解決。
+QString AuralizationTab::autoAssignDefaultDir() const
+{
+    const QString rir = m_p->operaAcoustic().rirPath.trimmed();
+    if (!rir.isEmpty()) {
+        const QFileInfo fi(rir);
+        if (fi.absoluteDir().exists()) return fi.absolutePath();
+    }
+    return batchOutputDir();
+}
+
+void AuralizationTab::autoAssignRirs()
+{
+    if (m_runBusy || m_batchBusy) return;
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, I18n::tr("aurb_auto_dir_title"), autoAssignDefaultDir());
+    if (dir.isEmpty()) return;
+    autoAssignFromDir(dir);
+}
+
+// フォルダ直下の *.wav を受音点名との対応規則 (core/RirAutoAssign) で
+// 各行へ割り当てる。割当はモデル (ReceiverRow::rirFile) へ書いて
+// Project::touch() (.ofdx acoustic.receivers[].rir_file に永続化)。
+// 曖昧・不一致の行は割り当てず、理由を行の状態欄に表示する。
+int AuralizationTab::autoAssignFromDir(const QString &dirPath)
+{
+    if (m_runBusy || m_batchBusy) return 0;
+    const QStringList wavs = rirauto::listWavFiles(dirPath);
+    if (wavs.isEmpty()) {
+        m_batchStatus->setText(
+            I18n::tr("aurb_auto_nowav").arg(QDir::toNativeSeparators(dirPath)));
+        return 0;
+    }
+
+    AcousticOpts &a = m_p->acoustic();
+    const bool onlyUnset = m_autoOnlyUnset->isChecked();
+    QStringList names;
+    QVector<bool> eligible;
+    for (const ReceiverRow &r : a.receivers) {
+        names << r.name;
+        // 無効行は常に対象外。既定 (未設定の行のみ ON) では設定済みも守る
+        eligible << (r.enabled &&
+                     (!onlyUnset || r.rirFile.trimmed().isEmpty()));
+    }
+    const QVector<rirauto::Assignment> res =
+        rirauto::assign(wavs, names, eligible);
+
+    const QDir dir(dirPath);
+    int assigned = 0, unassigned = 0;
+    for (int i = 0; i < res.size(); ++i) {
+        if (!eligible.at(i)) continue;   // 対象外の行は表示も変えない
+        const rirauto::Assignment &as = res.at(i);
+        if (as.fileIndex >= 0) {
+            a.receivers[i].rirFile =
+                dir.absoluteFilePath(wavs.at(as.fileIndex));
+            ++assigned;
+            // 状態欄: 割り当てたファイル名 + 根拠 (どの規則で一致したか)
+            const char *ruleKey =
+                (as.rule == rirauto::Rule::Exact) ? "aurb_auto_rule_exact"
+                : (as.rule == rirauto::Rule::Affix) ? "aurb_auto_rule_affix"
+                                                    : "aurb_auto_rule_single";
+            setBatchRowStatus(i,
+                I18n::tr("aurb_auto_row_assigned").arg(wavs.at(as.fileIndex)),
+                I18n::tr(ruleKey) + QStringLiteral("\n")
+                    + a.receivers.at(i).rirFile);
+        } else {
+            ++unassigned;
+            if (as.rule == rirauto::Rule::Ambiguous)
+                setBatchRowStatus(i,
+                    I18n::tr("aurb_auto_row_ambiguous")
+                        .arg(as.candidates.join(QStringLiteral(", "))),
+                    as.candidates.join(QStringLiteral("\n")));
+            else
+                setBatchRowStatus(i, I18n::tr("aurb_auto_row_nomatch"));
+        }
+    }
+
+    m_batchStatus->setText(I18n::tr("aurb_auto_summary")
+                               .arg(assigned).arg(unassigned)
+                               .arg(QDir::toNativeSeparators(dirPath)));
+    if (assigned > 0) m_p->touch();   // → changed → refresh → rebuild (表示反映)
+    else              rebuildBatchTable();
+    return assigned;
+}
+
 // 単発実行 / 一括実行の排他とボタン状態を 1 か所で更新する
 void AuralizationTab::updateBusyUi()
 {
     const bool idle = !m_runBusy && !m_batchBusy;
     m_runBtn->setEnabled(idle);
     m_batchRunBtn->setEnabled(idle);
+    // 一括実行中は状態表示・モデルを書き換えないよう自動割当も止める
+    m_autoAssignBtn->setEnabled(idle);
     m_batchCancelBtn->setEnabled(m_batchBusy && !m_batchCancel);
 }
 

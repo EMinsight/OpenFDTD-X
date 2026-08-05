@@ -10,6 +10,7 @@
 
 #include "../acoustics/core/ConvolutionEngine.h"
 #include "../acoustics/core/Fft.h"
+#include "../acoustics/core/Resampler.h"
 
 namespace ofd {
 namespace audioedit {
@@ -81,6 +82,8 @@ struct Biquad {
     }
 };
 
+Biquad rbjHighShelf(double f0, double q, double gainDb, double fs);
+
 // RBJ Audio EQ Cookbook
 Biquad rbjBiquad(BiquadKind kind, double f0, double q, double gainDb,
                  double fs)
@@ -88,6 +91,8 @@ Biquad rbjBiquad(BiquadKind kind, double f0, double q, double gainDb,
     Biquad bq;
     if (fs <= 0.0 || f0 <= 0.0 || f0 >= fs * 0.5 || q <= 0.0)
         return bq;  // 不正パラメータは素通し
+    if (kind == BiquadKind::HighShelf)
+        return rbjHighShelf(f0, q, gainDb, fs);   // 既存実装 (BS.1770) を共用
     const double w0 = 2.0 * kPi * f0 / fs;
     const double cw = std::cos(w0), sw = std::sin(w0);
     const double alpha = sw / (2.0 * q);
@@ -102,6 +107,27 @@ Biquad rbjBiquad(BiquadKind kind, double f0, double q, double gainDb,
     case BiquadKind::HighPass:
         b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2;
         a0 = 1 + alpha;    a1 = -2 * cw;   a2 = 1 - alpha;
+        break;
+    case BiquadKind::LowShelf: {
+        // 低域を gainDb 持ち上げ/下げ、Nyquist 側は 0 dB (Cookbook 閉形式)
+        const double A = std::pow(10.0, gainDb / 40.0);
+        const double sqA2a = 2.0 * std::sqrt(A) * alpha;
+        b0 = A * ((A + 1) - (A - 1) * cw + sqA2a);
+        b1 = 2 * A * ((A - 1) - (A + 1) * cw);
+        b2 = A * ((A + 1) - (A - 1) * cw - sqA2a);
+        a0 = (A + 1) + (A - 1) * cw + sqA2a;
+        a1 = -2 * ((A - 1) + (A + 1) * cw);
+        a2 = (A + 1) + (A - 1) * cw - sqA2a;
+        break;
+    }
+    case BiquadKind::Notch:
+        b0 = 1;         b1 = -2 * cw; b2 = 1;
+        a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha;
+        break;
+    case BiquadKind::BandPass:
+        // constant 0 dB peak gain 型: f0 で 0 dB、遠方 ±6 dB/oct スカート
+        b0 = alpha;     b1 = 0;       b2 = -alpha;
+        a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha;
         break;
     case BiquadKind::LowPass:
     default:
@@ -420,6 +446,111 @@ AudioBuffer smoothRange(const AudioBuffer &in, std::size_t a, std::size_t z)
             const double next = (i + 1 < src.size()) ? src[i + 1] : src[i];
             return (src[i] + next) / 2.0;
         });
+}
+
+// ── 範囲編集の補完 ──────────────────────────────────────────────────────────
+AudioBuffer insertSilence(const AudioBuffer &in, std::size_t at,
+                          double durationSec)
+{
+    const std::size_t n = in.sampleCount();
+    at = std::min(at, n);
+    const std::size_t ins =
+        (in.sampleRateHz > 0.0 && durationSec > 0.0)
+            ? static_cast<std::size_t>(
+                  std::llround(durationSec * in.sampleRateHz))
+            : 0;
+    if (ins == 0) return in;
+    AudioBuffer out = makeLike(in, n + ins);
+    for (std::size_t c = 0; c < in.channelCount(); ++c) {
+        const std::vector<double> &s = in.channels[c];
+        std::vector<double> &t = out.channels[c];
+        std::copy(s.begin(), s.begin() + at, t.begin());
+        // [at, at+ins) は makeLike の 0 のまま (厳密な無音)
+        std::copy(s.begin() + at, s.end(), t.begin() + at + ins);
+    }
+    return out;
+}
+
+AudioBuffer repeatRange(const AudioBuffer &in, std::size_t a, std::size_t z,
+                        int count)
+{
+    clampRange(in, a, z);
+    if (count < 1 || a >= z) return in;
+    const std::size_t seg = z - a;
+    const std::size_t n =
+        in.sampleCount() + seg * static_cast<std::size_t>(count - 1);
+    AudioBuffer out = makeLike(in, n);
+    for (std::size_t c = 0; c < in.channelCount(); ++c) {
+        const std::vector<double> &s = in.channels[c];
+        std::vector<double> &t = out.channels[c];
+        std::copy(s.begin(), s.begin() + a, t.begin());
+        for (int k = 0; k < count; ++k)   // 各コピーはビット一致
+            std::copy(s.begin() + a, s.begin() + z,
+                      t.begin() + a + static_cast<std::size_t>(k) * seg);
+        std::copy(s.begin() + z, s.end(),
+                  t.begin() + a + static_cast<std::size_t>(count) * seg);
+    }
+    return out;
+}
+
+AudioBuffer crossfadeConcat(const AudioBuffer &a, const AudioBuffer &b,
+                            double overlapSec)
+{
+    if (a.sampleCount() == 0) return b;
+    if (b.sampleCount() == 0) return a;
+    // fs が異なる場合は b を a の fs へ変換して結合する。変換不能な fs
+    // (非整数等) のみ b のサンプルをそのまま用いる (resampleTo は失敗時に
+    // 入力を変更せず返す)
+    AudioBuffer bb;
+    const AudioBuffer *pb = &b;
+    if (a.sampleRateHz > 0.0 && b.sampleRateHz > 0.0 &&
+        a.sampleRateHz != b.sampleRateHz) {
+        bb = resampleTo(b, a.sampleRateHz);
+        pb = &bb;
+    }
+    const double sr = (a.sampleRateHz > 0.0) ? a.sampleRateHz
+                                             : pb->sampleRateHz;
+    const std::size_t na = a.sampleCount(), nb = pb->sampleCount();
+    std::size_t ov =
+        (sr > 0.0 && overlapSec > 0.0)
+            ? static_cast<std::size_t>(std::llround(overlapSec * sr))
+            : 0;
+    ov = std::min(ov, std::min(na, nb));
+    const std::size_t n = na + nb - ov;
+    const std::size_t nch = std::max(a.channelCount(), pb->channelCount());
+    AudioBuffer out;
+    out.sampleRateHz = sr;
+    out.channels.assign(nch, std::vector<double>(n, 0.0));
+    for (std::size_t c = 0; c < nch; ++c) {
+        const std::vector<double> &xa =
+            a.channels[std::min(c, a.channelCount() - 1)];
+        const std::vector<double> &xb =
+            pb->channels[std::min(c, pb->channelCount() - 1)];
+        std::vector<double> &y = out.channels[c];
+        std::copy(xa.begin(), xa.begin() + (na - ov), y.begin());
+        for (std::size_t i = 0; i < ov; ++i) {
+            // 等パワー: gA = cos θ, gB = sin θ (gA² + gB² = 1)
+            const double th = 0.5 * kPi * (i + 0.5) / ov;
+            y[na - ov + i] = xa[na - ov + i] * std::cos(th)
+                           + xb[i] * std::sin(th);
+        }
+        std::copy(xb.begin() + ov, xb.end(), y.begin() + na);
+    }
+    return out;
+}
+
+// ── サンプルレート変換 (音響コアへ委譲 — 再実装しない) ──────────────────────
+AudioBuffer resampleTo(const AudioBuffer &in, double dstRateHz,
+                       std::string *error)
+{
+    if (error) error->clear();
+    const acoustics::AcousticResult<AudioBuffer> r =
+        acoustics::resampleBuffer(in, dstRateHz);
+    if (!r.success()) {
+        if (error) *error = r.message();
+        return in;   // 失敗時は入力を変更しない (呼び出し側は error で判定)
+    }
+    return r.value();
 }
 
 // ── エフェクト ──────────────────────────────────────────────────────────────

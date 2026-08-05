@@ -140,6 +140,48 @@ const bool s_i18n = [] {
     I18n::reg("ae_st_gain", "ゲイン %1dB", "Gain %1 dB");
     I18n::reg("ae_st_dc", "DCオフセット除去", "DC offset removed");
     I18n::reg("ae_st_smooth", "スムージング", "Smoothed");
+    I18n::reg("ae_ins_dur", "無音挿入", "Insert silence");
+    I18n::reg("ae_ins_go", "➕ 挿入 (選択開始/末尾)",
+              "➕ Insert (at selection start / end)");
+    I18n::reg("ae_st_ins", "無音 %1s を挿入", "Inserted %1 s of silence");
+    I18n::reg("ae_rep_count", "回数", "Count");
+    I18n::reg("ae_repeat", "🔁 選択範囲をリピート", "🔁 Repeat selection");
+    I18n::reg("ae_st_repeat", "選択範囲を %1 回リピート",
+              "Repeated selection %1 times");
+
+    // クロスフェード連結
+    I18n::reg("ae_sec_concat", "クロスフェード連結 / Crossfade append",
+              "Crossfade append");
+    I18n::reg("ae_concat_overlap", "重なり", "Overlap");
+    I18n::reg("ae_concat_load", "📁 WAVを読込んで末尾に連結",
+              "📁 Load WAV & append");
+    I18n::reg("ae_concat_note",
+        "▸ 現在のバッファ末尾へ読込WAVを等パワー (sin/cos) クロスフェードで"
+        "連結。fs が異なる場合は自動でサンプルレート変換します。",
+        "▸ Appends the loaded WAV to the current buffer with an equal-power "
+        "(sin/cos) crossfade. Sample rates are converted automatically when "
+        "they differ.");
+    I18n::reg("ae_st_concat", "クロスフェード連結: %1",
+              "Crossfaded append: %1");
+
+    // サンプルレート変換
+    I18n::reg("ae_sec_src", "サンプルレート変換 / Sample-rate conversion",
+              "Sample-rate conversion");
+    I18n::reg("ae_src_rate", "変換先", "Target rate");
+    I18n::reg("ae_src_custom", "任意…", "Custom…");
+    I18n::reg("ae_src_go", "変換", "Convert");
+    I18n::reg("ae_src_note",
+        "▸ ポリフェーズ Kaiser sinc (阻止域 ~90 dB、群遅延補正) の高品質変換。"
+        "音高は変わりません。速度変更 (ピッチ連動) は「エフェクト > 時間軸」。",
+        "▸ High-quality polyphase Kaiser sinc (~90 dB stopband, group-delay "
+        "compensated). Pitch is preserved; for speed change use Effects > "
+        "Time.");
+    I18n::reg("ae_st_src", "サンプルレート変換 %1 → %2 Hz",
+              "Sample rate converted %1 -> %2 Hz");
+    I18n::reg("ae_st_src_fail", "サンプルレート変換失敗: %1",
+              "Sample-rate conversion failed: %1");
+    I18n::reg("ae_st_src_same", "変換不要 (同一サンプルレート)",
+              "No conversion needed (same sample rate)");
 
     // 信号生成
     I18n::reg("ae_sec_gen", "信号生成 / Signal generator", "Signal generator");
@@ -188,9 +230,17 @@ const bool s_i18n = [] {
     I18n::reg("ae_fx_eq", "ピーキングEQ", "Peaking EQ");
     I18n::reg("ae_fx_hp", "ハイパス", "High-pass");
     I18n::reg("ae_fx_lp", "ローパス", "Low-pass");
+    I18n::reg("ae_fx_ls", "ローシェルフ", "Low shelf");
+    I18n::reg("ae_fx_hs", "ハイシェルフ", "High shelf");
+    I18n::reg("ae_fx_notch", "ノッチ", "Notch");
+    I18n::reg("ae_fx_bp", "バンドパス", "Band-pass");
     I18n::reg("ae_st_eq", "EQ %1Hz %2dB", "EQ %1 Hz %2 dB");
     I18n::reg("ae_st_hp", "ハイパス %1Hz", "High-pass %1 Hz");
     I18n::reg("ae_st_lp", "ローパス %1Hz", "Low-pass %1 Hz");
+    I18n::reg("ae_st_ls", "ローシェルフ %1Hz %2dB", "Low shelf %1 Hz %2 dB");
+    I18n::reg("ae_st_hs", "ハイシェルフ %1Hz %2dB", "High shelf %1 Hz %2 dB");
+    I18n::reg("ae_st_notch", "ノッチ %1Hz", "Notch %1 Hz");
+    I18n::reg("ae_st_bp", "バンドパス %1Hz", "Band-pass %1 Hz");
     I18n::reg("ae_sec_dyn", "ダイナミクス / Dynamics", "Dynamics");
     I18n::reg("ae_fx_thr", "閾値", "Threshold");
     I18n::reg("ae_fx_ratio", "レシオ", "Ratio");
@@ -482,12 +532,150 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
         r4->addWidget(btnDc); r4->addWidget(btnSm);
         r4->addStretch(1);
         s->vbox()->addLayout(r4);
+        // 無音挿入 (選択開始位置、未選択時は末尾) + 選択範囲のリピート展開
+        auto *r5 = new QHBoxLayout();
+        r5->addWidget(new QLabel(I18n::tr("ae_ins_dur") + QStringLiteral(":"),
+                                 s));
+        auto *insDur = spin(s, 0.01, 600, 1.0, 2, 0.1);
+        r5->addWidget(insDur);
+        r5->addWidget(new QLabel(QStringLiteral("s"), s));
+        auto *btnIns = new QPushButton(I18n::tr("ae_ins_go"), s);
+        r5->addWidget(btnIns);
+        r5->addSpacing(12);
+        r5->addWidget(new QLabel(I18n::tr("ae_rep_count") +
+                                 QStringLiteral(":"), s));
+        auto *repCount = spin(s, 2, 99, 4, 0, 1);
+        r5->addWidget(repCount);
+        auto *btnRep = new QPushButton(I18n::tr("ae_repeat"), s);
+        r5->addWidget(btnRep);
+        r5->addStretch(1);
+        s->vbox()->addLayout(r5);
         ve->addWidget(s);
+
+        // クロスフェード連結 (2 つ目の WAV を読込んで末尾へ結合)
+        auto *sx = new SectionBox(I18n::tr("ae_sec_concat"), pageEdit);
+        auto *xr = new QHBoxLayout();
+        xr->addWidget(new QLabel(I18n::tr("ae_concat_overlap"), sx));
+        auto *xfOv = spin(sx, 0.0, 10.0, 0.05, 2, 0.01);
+        xr->addWidget(xfOv);
+        xr->addWidget(new QLabel(QStringLiteral("s"), sx));
+        auto *btnConcat = new QPushButton(I18n::tr("ae_concat_load"), sx);
+        xr->addWidget(btnConcat);
+        xr->addStretch(1);
+        sx->vbox()->addLayout(xr);
+        auto *xNote = new QLabel(I18n::tr("ae_concat_note"), sx);
+        xNote->setWordWrap(true);
+        sx->vbox()->addWidget(xNote);
+        ve->addWidget(sx);
+
+        // サンプルレート変換 (音響コアのポリフェーズ Kaiser sinc)
+        auto *ssr = new SectionBox(I18n::tr("ae_sec_src"), pageEdit);
+        auto *rr = new QHBoxLayout();
+        auto *srcCombo = new QComboBox(ssr);
+        for (int fs : { 44100, 48000, 88200, 96000 })
+            srcCombo->addItem(QStringLiteral("%1 Hz").arg(fs), fs);
+        srcCombo->addItem(I18n::tr("ae_src_custom"), 0);
+        srcCombo->setCurrentIndex(1);   // 48 kHz 既定
+        rr->addWidget(srcCombo);
+        auto *srcSpin = spin(ssr, 1000, 384000, 48000, 0, 1000);
+        srcSpin->setEnabled(false);
+        rr->addWidget(srcSpin);
+        rr->addWidget(new QLabel(QStringLiteral("Hz"), ssr));
+        auto *btnSrc = new QPushButton(I18n::tr("ae_src_go"), ssr);
+        rr->addWidget(btnSrc);
+        rr->addStretch(1);
+        ssr->form()->addRow(I18n::tr("ae_src_rate"), rr);
+        auto *srcNote = new QLabel(I18n::tr("ae_src_note"), ssr);
+        srcNote->setWordWrap(true);
+        ssr->vbox()->addWidget(srcNote);
+        ve->addWidget(ssr);
         ve->addStretch(1);
 
-        m_needSel.insert(m_needSel.end(), { btnTrim, btnDel });
+        m_needSel.insert(m_needSel.end(), { btnTrim, btnDel, btnRep });
         m_needBuf.insert(m_needBuf.end(),
-            { btnSil, btnRev, btnNorm, btnFi, btnFo, btnDc, btnSm });
+            { btnSil, btnRev, btnNorm, btnFi, btnFo, btnDc, btnSm,
+              btnIns, btnConcat, btnSrc });
+
+        connect(btnIns, &QPushButton::clicked, this, [this, insDur] {
+            if (!hasBuf()) return;
+            // 挿入位置 = 選択開始 (未選択時は末尾)
+            const std::size_t at = m_view->hasSelection()
+                ? m_view->selectionStart() : m_buf.sampleCount();
+            pushBuffer(insertSilence(m_buf, at, insDur->value()),
+                       I18n::tr("ae_st_ins").arg(insDur->value(), 0, 'f', 2));
+        });
+        connect(btnRep, &QPushButton::clicked, this, [this, repCount] {
+            if (!hasBuf() || !m_view->hasSelection()) return;
+            const auto [a, z] = range();
+            const int cnt = static_cast<int>(repCount->value());
+            pushBuffer(repeatRange(m_buf, a, z, cnt),
+                       I18n::tr("ae_st_repeat").arg(cnt));
+            m_view->clearSelection();
+        });
+        connect(btnConcat, &QPushButton::clicked, this, [this, xfOv] {
+            if (!hasBuf() || m_busy) return;
+            const QString path = QFileDialog::getOpenFileName(this,
+                I18n::tr("ae_concat_load"), QString(),
+                QStringLiteral("WAV (*.wav)"));
+            if (path.isEmpty()) return;
+            const acoustics::AcousticResult<acoustics::AudioBuffer> res =
+                acoustics::readWavFile(path.toStdString());
+            if (!res.success()) {
+                setStatus(I18n::tr("ae_status_load_fail")
+                              .arg(QString::fromStdString(res.message())));
+                return;
+            }
+            // fs 不一致時のリサンプルは秒単位になり得る — 非同期で実行
+            const audioedit::AudioBuffer bufA = m_buf;
+            const audioedit::AudioBuffer bufB = res.value();
+            const double ov = xfOv->value();
+            runHeavy([bufA, bufB, ov] {
+                         return crossfadeConcat(bufA, bufB, ov);
+                     },
+                     I18n::tr("ae_st_concat").arg(QFileInfo(path).fileName()));
+        });
+        connect(srcCombo, &QComboBox::currentIndexChanged, this,
+                [srcCombo, srcSpin](int) {
+            srcSpin->setEnabled(srcCombo->currentData().toInt() == 0);
+        });
+        connect(btnSrc, &QPushButton::clicked, this,
+                [this, srcCombo, srcSpin] {
+            if (!hasBuf() || m_busy) return;
+            const int preset = srcCombo->currentData().toInt();
+            const double dst =
+                (preset > 0) ? double(preset) : srcSpin->value();
+            const double src = m_buf.sampleRateHz;
+            if (dst == src) {   // 恒等変換は undo を積まない
+                setStatus(I18n::tr("ae_st_src_same"));
+                return;
+            }
+            // resampleTo は失敗時に入力を変更せず error を返す —
+            // 成功したときだけバッファを差し替える (成功と偽らない)
+            m_busy = true;
+            setStatus(I18n::tr("ae_status_processing"));
+            updateInfo();
+            auto result = std::make_shared<audioedit::AudioBuffer>();
+            auto err = std::make_shared<std::string>();
+            const audioedit::AudioBuffer buf = m_buf;
+            QThread *th = QThread::create([buf, dst, result, err] {
+                *result = audioedit::resampleTo(buf, dst, err.get());
+            });
+            connect(th, &QThread::finished, this,
+                    [this, th, result, err, src, dst] {
+                th->deleteLater();
+                m_busy = false;
+                if (!err->empty()) {
+                    setStatus(I18n::tr("ae_st_src_fail")
+                                  .arg(QString::fromStdString(*err)));
+                    updateInfo();
+                } else {
+                    pushBuffer(std::move(*result),
+                               I18n::tr("ae_st_src")
+                                   .arg(src, 0, 'f', 0).arg(dst, 0, 'f', 0));
+                }
+            });
+            th->start();
+        });
 
         connect(btnTrim, &QPushButton::clicked, this, [this] {
             if (!hasBuf() || !m_view->hasSelection()) return;
@@ -646,8 +834,52 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
         br->addWidget(btnEq); br->addWidget(btnHp); br->addWidget(btnLp);
         br->addStretch(1);
         s->vbox()->addLayout(br);
+        // RBJ Cookbook の補完分 (シェルフ / ノッチ / バンドパス)
+        auto *br2 = new QHBoxLayout();
+        auto *btnLs = new QPushButton(I18n::tr("ae_fx_ls"), s);
+        auto *btnHs = new QPushButton(I18n::tr("ae_fx_hs"), s);
+        auto *btnNotch = new QPushButton(I18n::tr("ae_fx_notch"), s);
+        auto *btnBp = new QPushButton(I18n::tr("ae_fx_bp"), s);
+        br2->addWidget(btnLs); br2->addWidget(btnHs);
+        br2->addWidget(btnNotch); br2->addWidget(btnBp);
+        br2->addStretch(1);
+        s->vbox()->addLayout(br2);
         vf->addWidget(s);
-        m_needBuf.insert(m_needBuf.end(), { btnEq, btnHp, btnLp });
+        m_needBuf.insert(m_needBuf.end(),
+            { btnEq, btnHp, btnLp, btnLs, btnHs, btnNotch, btnBp });
+        // ゲイン表示の符号付き整形 (+6 / -6)
+        auto fmtDb = [](double v) {
+            return v > 0 ? QStringLiteral("+%1").arg(v, 0, 'f', 0)
+                         : QString::number(v, 'f', 0);
+        };
+        connect(btnLs, &QPushButton::clicked, this, [this, fmtDb] {
+            if (!hasBuf()) return;
+            pushBuffer(applyBiquad(m_buf, BiquadKind::LowShelf,
+                                   m_eqF->value(), m_eqQ->value(),
+                                   m_eqG->value()),
+                I18n::tr("ae_st_ls").arg(m_eqF->value(), 0, 'f', 0)
+                                    .arg(fmtDb(m_eqG->value())));
+        });
+        connect(btnHs, &QPushButton::clicked, this, [this, fmtDb] {
+            if (!hasBuf()) return;
+            pushBuffer(applyBiquad(m_buf, BiquadKind::HighShelf,
+                                   m_eqF->value(), m_eqQ->value(),
+                                   m_eqG->value()),
+                I18n::tr("ae_st_hs").arg(m_eqF->value(), 0, 'f', 0)
+                                    .arg(fmtDb(m_eqG->value())));
+        });
+        connect(btnNotch, &QPushButton::clicked, this, [this] {
+            if (!hasBuf()) return;
+            pushBuffer(applyBiquad(m_buf, BiquadKind::Notch, m_eqF->value(),
+                                   m_eqQ->value(), 0),
+                       I18n::tr("ae_st_notch").arg(m_eqF->value(), 0, 'f', 0));
+        });
+        connect(btnBp, &QPushButton::clicked, this, [this] {
+            if (!hasBuf()) return;
+            pushBuffer(applyBiquad(m_buf, BiquadKind::BandPass, m_eqF->value(),
+                                   m_eqQ->value(), 0),
+                       I18n::tr("ae_st_bp").arg(m_eqF->value(), 0, 'f', 0));
+        });
         connect(btnEq, &QPushButton::clicked, this, [this] {
             if (!hasBuf()) return;
             pushBuffer(applyBiquad(m_buf, BiquadKind::Peaking, m_eqF->value(),

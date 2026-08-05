@@ -54,10 +54,12 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **6918 checks,
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **6982 checks,
   0 failures** (2026-08-05 更新: リサンプラ (負債 #12) +47 checks で
   6859 → 6906、受音点ごとの RIR (`receivers[].rir_file` — 一括可聴化)
-  +12 checks で 6906 → 6918。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
+  +12 checks で 6906 → 6918、音声加工処理の拡充 (RBJ biquad 補完 /
+  resampleTo / 範囲編集) +35 checks で 6918 → 6953、RIR 自動割当
+  (`core/RirAutoAssign` の対応規則) +29 checks で 6953 → 6982。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
   一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
@@ -69,6 +71,18 @@
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
+
+### 音声加工処理の拡充 (2026-08-05)
+
+音響編集エンジン (`src/audio/AudioEditEngine`) に RBJ Cookbook biquad の補完
+(LowShelf / HighShelf / Notch / BandPass)、高品質サンプルレート変換
+`resampleTo` (音響コア `acoustics::resampleBuffer` への委譲 — 再実装なし、
+失敗時は入力不変 + 理由返却)、範囲編集の補完 (`insertSilence` /
+`repeatRange` / 等パワー sin/cos の `crossfadeConcat`、fs 不一致は自動変換)
+を追加し、AudioEditorTab へ配線 (SRC は非同期実行、既存 applyRate =
+速度変更とは別導線)。selftest +35 checks (シェルフの DC/Nyquist 恒等式・
+Notch 零点・BandPass 0 dB を正弦波の定常振幅比で検証、恒等変換のビット一致、
+無音部の厳密 0、コピーのビット一致、sin²+cos²=1)。
 
 ### 複数受音点の一括可聴化 (2026-08-05)
 
@@ -82,6 +96,11 @@ fs 不一致の RIR は負債 #12 のリサンプラで自動変換し行の結�
 RIR 未指定の行はスキップ理由を表示する (受聴位置が違えば RIR は異なるため、
 単一 RIR を全受音点へ使い回す導線は置かない)。完了行には外部プレイヤーでの
 試聴ボタンを付ける。selftest +12 checks (ラウンドトリップ / 旧ファイル既定値)。
+「📂 フォルダから自動割当」も追加: フォルダ直下の *.wav を対応規則
+(`core/RirAutoAssign` — (1) 完全一致 <名前>.wav / (2) rir_<名前>.wav・
+<名前>_rir.wav / (3) 唯一の rir.wav → 唯一の対象行。拡張子・大小・記号無視) で
+各行へ一括割当する。既定「未設定の行のみ」で既存設定を守り、候補が複数の行は
+割り当てず理由を状態欄に表示する (selftest +29 checks のテーブル駆動検証)。
 
 ### 未実装マーカー棚卸し (2026-08-04)
 

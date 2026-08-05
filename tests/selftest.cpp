@@ -30,6 +30,7 @@
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
 #include "optics/ThinFilmStack.h"
+#include "core/RirAutoAssign.h"
 #include "core/RoomAcoustics.h"
 #include "core/FdtdVerification.h"
 #include "core/ToleranceStats.h"
@@ -1635,6 +1636,199 @@ static void testAudioEditEngine()
             rmsOf(hi);
         check(std::fabs(loRatio - 1.0) < 0.02, "LP passes 100Hz");
         check(hiRatio < 0.05, "LP attenuates 8kHz > 26dB");
+    }
+
+    // ── RBJ biquad の補完 (LowShelf/HighShelf/Notch/BandPass) ──────────────
+    // 期待値は RBJ の閉形式から独立な恒等式:
+    //   シェルフは DC で厳密に gainDb・Nyquist で厳密に 0 dB (HighShelf は逆)、
+    //   Notch は f0 の零点が単位円上 (完全消去)、BandPass は f0 で厳密に 0 dB。
+    // 正弦波を流して定常振幅を最小二乗フィットで測る (係数の再計算で検算しない)
+    {
+        // 定常振幅 (両端 1/4・1/8 を過渡/端効果として除外した LS フィット)
+        auto steadyAmp = [](const std::vector<double> &x, double f,
+                            double fs) {
+            const double w = 2.0 * 3.14159265358979323846 * f / fs;
+            const std::size_t a = x.size() / 4;
+            const std::size_t b = x.size() - x.size() / 8;
+            double Sss = 0, Scc = 0, Ssc = 0, s1 = 0, c1 = 0;
+            for (std::size_t n = a; n < b; ++n) {
+                const double sn = std::sin(w * double(n));
+                const double cn = std::cos(w * double(n));
+                Sss += sn * sn; Scc += cn * cn; Ssc += sn * cn;
+                s1 += x[n] * sn; c1 += x[n] * cn;
+            }
+            const double det = Sss * Scc - Ssc * Ssc;
+            const double A = (s1 * Scc - c1 * Ssc) / det;
+            const double B = (c1 * Sss - s1 * Ssc) / det;
+            return std::sqrt(A * A + B * B);
+        };
+        auto gainDbAt = [&](BiquadKind kind, double f0, double q,
+                            double gainDb, double toneHz) {
+            const AudioBuffer tone =
+                generateSignal(SignalKind::Sine, toneHz, 0, 1.0, 0.5, sr);
+            const AudioBuffer y = applyBiquad(tone, kind, f0, q, gainDb);
+            return 20.0 * std::log10(steadyAmp(y.channels[0], toneHz, sr)
+                                     / 0.5);
+        };
+        // LowShelf +6 dB @1kHz: DC 側 +6、Nyquist 側 0
+        check(std::fabs(gainDbAt(BiquadKind::LowShelf, 1000, 0.707, 6.0,
+                                 20.0) - 6.0) < 0.1,
+              "low shelf +6dB at DC side");
+        check(std::fabs(gainDbAt(BiquadKind::LowShelf, 1000, 0.707, 6.0,
+                                 22000.0)) < 0.1,
+              "low shelf 0dB near Nyquist");
+        // 負ゲイン (-9 dB) も閉じる
+        check(std::fabs(gainDbAt(BiquadKind::LowShelf, 1000, 0.707, -9.0,
+                                 20.0) + 9.0) < 0.1,
+              "low shelf -9dB at DC side");
+        // HighShelf は逆: DC 側 0、Nyquist 側 +6
+        check(std::fabs(gainDbAt(BiquadKind::HighShelf, 1000, 0.707, 6.0,
+                                 20.0)) < 0.1,
+              "high shelf 0dB at DC side");
+        check(std::fabs(gainDbAt(BiquadKind::HighShelf, 1000, 0.707, 6.0,
+                                 22000.0) - 6.0) < 0.1,
+              "high shelf +6dB near Nyquist");
+        // Notch: f0 の正弦はほぼ消える (零点が単位円上 → ≤ -40 dB)、
+        // 2 オクターブ離れた正弦は ±0.5 dB (解析値 -0.30 dB @Q=1)
+        check(gainDbAt(BiquadKind::Notch, 1000, 1.0, 0, 1000.0) < -40.0,
+              "notch kills f0 tone <= -40dB");
+        check(std::fabs(gainDbAt(BiquadKind::Notch, 1000, 1.0, 0, 250.0))
+                  < 0.5,
+              "notch passes 2 octaves below +-0.5dB");
+        check(std::fabs(gainDbAt(BiquadKind::Notch, 1000, 1.0, 0, 4000.0))
+                  < 0.5,
+              "notch passes 2 octaves above +-0.5dB");
+        // BandPass (0 dB peak): f0 で厳密に 0 dB、4 オクターブ下で減衰
+        // (スカート ±6 dB/oct → 解析値 -24 dB @Q=1)
+        check(std::fabs(gainDbAt(BiquadKind::BandPass, 1000, 1.0, 0, 1000.0))
+                  < 0.1,
+              "bandpass 0dB at f0");
+        check(gainDbAt(BiquadKind::BandPass, 1000, 1.0, 0, 62.5) < -18.0,
+              "bandpass attenuates 4 octaves below");
+
+        // ── サンプルレート変換 (resampleTo — 音響コアへの委譲) ─────────────
+        // 恒等 (同一 fs はビット一致)
+        const AudioBuffer same = resampleTo(sine, 48000.0);
+        check(same.sampleRateHz == 48000.0 &&
+              same.channels[0] == sine.channels[0],
+              "resampleTo identity bit-exact");
+        // 1 kHz 正弦 44.1k→48k (2ch): 長さ round(N·L/M)、振幅 ±0.1 dB、
+        // 全 ch に同一設計が適用される (ch 毎の振幅を独立に確認)
+        {
+            AudioBuffer st441;
+            st441.sampleRateHz = 44100.0;
+            st441.channels.assign(2, std::vector<double>(44100, 0.0));
+            for (std::size_t i = 0; i < 44100; ++i) {
+                const double v = std::sin(2.0 * 3.14159265358979323846
+                                          * 1000.0 * double(i) / 44100.0);
+                st441.channels[0][i] = 0.5 * v;
+                st441.channels[1][i] = 0.25 * v;
+            }
+            const AudioBuffer up = resampleTo(st441, 48000.0);
+            check(up.sampleRateHz == 48000.0, "resampleTo sets output fs");
+            check(up.channelCount() == 2 && up.sampleCount() == 48000,
+                  "resampleTo length round(N*L/M) all channels");
+            check(std::fabs(20.0 * std::log10(
+                      steadyAmp(up.channels[0], 1000.0, 48000.0) / 0.5))
+                      < 0.1,
+                  "resampleTo ch0 amplitude +-0.1dB");
+            check(std::fabs(20.0 * std::log10(
+                      steadyAmp(up.channels[1], 1000.0, 48000.0) / 0.25))
+                      < 0.1,
+                  "resampleTo ch1 amplitude +-0.1dB");
+        }
+        // 失敗時 (非整数 fs) は入力を変更せず error に理由を返す
+        {
+            std::string err;
+            const AudioBuffer bad = resampleTo(sine, 44100.5, &err);
+            check(!err.empty(), "resampleTo reports non-integer fs error");
+            check(bad.sampleRateHz == sine.sampleRateHz &&
+                  bad.channels[0] == sine.channels[0],
+                  "resampleTo failure keeps input unchanged");
+        }
+    }
+
+    // ── 範囲編集の補完: 無音挿入 / リピート / クロスフェード連結 ────────────
+    {
+        // insertSilence: 長さ +round(dur·fs)、無音部は厳密 0、前後はビット一致
+        const AudioBuffer ins = insertSilence(sine, 1000, 0.1);  // +4800
+        check(ins.sampleCount() == 48000 + 4800, "insert silence length");
+        check(ins.channels[0][999] == sine.channels[0][999],
+              "insert keeps head bit-exact");
+        bool zero = true;
+        for (std::size_t i = 1000; i < 5800; ++i)
+            if (ins.channels[0][i] != 0.0) zero = false;
+        check(zero, "inserted region exactly zero");
+        check(ins.channels[0][5800] == sine.channels[0][1000] &&
+              ins.channels[0].back() == sine.channels[0].back(),
+              "insert shifts tail bit-exact");
+        // at > N は末尾へクランプ / dur <= 0 は不変
+        const AudioBuffer app = insertSilence(sine, std::size_t(1) << 30,
+                                              0.01);
+        check(app.sampleCount() == 48480 && app.channels[0][48000] == 0.0 &&
+              app.channels[0][47999] == sine.channels[0][47999],
+              "insert clamps position to end");
+        check(insertSilence(sine, 0, 0.0).channels[0] == sine.channels[0],
+              "insert dur<=0 is identity");
+
+        // repeatRange: 長さ N+(count-1)·seg、各コピーがビット一致
+        const AudioBuffer rep = repeatRange(sine, 1000, 2000, 3);
+        check(rep.sampleCount() == 48000 + 2000,
+              "repeat length N+(count-1)*seg");
+        bool copies = true;
+        for (int k = 0; k < 3; ++k)
+            for (std::size_t i = 0; i < 1000; ++i)
+                if (rep.channels[0][1000 + std::size_t(k) * 1000 + i] !=
+                    sine.channels[0][1000 + i]) copies = false;
+        check(copies, "each repeat copy bit-exact");
+        check(rep.channels[0][999] == sine.channels[0][999] &&
+              rep.channels[0][4000] == sine.channels[0][2000],
+              "repeat keeps head/tail bit-exact");
+        check(repeatRange(sine, 1000, 2000, 1).channels[0] ==
+                  sine.channels[0],
+              "repeat count=1 is identity");
+
+        // crossfadeConcat: 等パワー則 sin²+cos²=1 を 1/0 定数信号対で直接検証
+        // (crossfade(1,0) = cosθ、crossfade(0,1) = sinθ になるため)
+        AudioBuffer ones, zeros;
+        ones.sampleRateHz = zeros.sampleRateHz = 1000.0;
+        ones.channels.assign(1, std::vector<double>(500, 1.0));
+        zeros.channels.assign(1, std::vector<double>(500, 0.0));
+        const AudioBuffer ca = crossfadeConcat(ones, zeros, 0.1);  // ov=100
+        const AudioBuffer cb = crossfadeConcat(zeros, ones, 0.1);
+        check(ca.sampleCount() == 900 && cb.sampleCount() == 900,
+              "crossfade length Na+Nb-overlap");
+        check(ca.channels[0][399] == 1.0 && ca.channels[0][899] == 0.0,
+              "crossfade keeps non-overlap regions");
+        bool powOk = true, monoDec = true;
+        for (std::size_t i = 0; i < 100; ++i) {
+            const double gA = ca.channels[0][400 + i];
+            const double gB = cb.channels[0][400 + i];
+            if (std::fabs(gA * gA + gB * gB - 1.0) > 1e-12) powOk = false;
+            if (i > 0 && gA > ca.channels[0][400 + i - 1]) monoDec = false;
+        }
+        check(powOk, "equal-power crossfade sin^2+cos^2=1");
+        check(monoDec, "crossfade fade-out monotonic");
+        check(cb.channels[0][899] == 1.0, "crossfade tail from b bit-exact");
+        // fs 不一致は b を a の fs へ変換して結合 (長さは変換後の算術)
+        const AudioBuffer a48 =
+            generateSignal(SignalKind::Sine, 1000, 0, 0.1, 0.5, 48000.0);
+        const AudioBuffer b441 =
+            generateSignal(SignalKind::Sine, 1000, 0, 0.1, 0.5, 44100.0);
+        const AudioBuffer cc = crossfadeConcat(a48, b441, 0.01);
+        check(cc.sampleRateHz == 48000.0,
+              "crossfade resamples b to a's fs");
+        // 4800 + round(4410·160/147) − 480 = 9120
+        check(std::llabs((long long)cc.sampleCount() - 9120) <= 1,
+              "crossfade length after resampling");
+        // チャンネル数不一致は多い方に合わせ、モノは複製する
+        AudioBuffer st2;
+        st2.sampleRateHz = 1000.0;
+        st2.channels.assign(2, std::vector<double>(300, 0.5));
+        const AudioBuffer cm = crossfadeConcat(st2, ones, 0.0);
+        check(cm.channelCount() == 2 && cm.sampleCount() == 800 &&
+              cm.channels[1][799] == 1.0,
+              "crossfade mono b duplicated to stereo");
     }
 
     // ── レベル指標: 単位正弦の RMS = -3.01 dBFS / crest = 3.01 dB ──────────
@@ -7944,6 +8138,157 @@ static void testDisplayIlluminationSettings()
     }
 }
 
+// ── 受音点別 RIR WAV の自動割当 (core/RirAutoAssign) ────────────────────────
+// 可聴化タブ⑤「📂 フォルダから自動割当」の対応規則を検証する。期待値は
+// 実装と独立に、規則の定義 (ヘッダ記載の 3 段: 完全一致 / rir 接頭・接尾 /
+// 唯一の rir.wav、比較は拡張子・大小・記号無視) から手で決めた対応表。
+static void testRirAutoAssign()
+{
+    g_file = "rir_auto_assign";
+    using namespace ofd::rirauto;
+    const QVector<bool> both  = { true, true };
+    const QVector<bool> one   = { true };
+
+    // 1) 正規化キー: 大文字小文字・記号・空白を無視 (英数字と文字のみ残す)
+    check(normalizeKey("RIR_R-1") == QStringLiteral("rirr1"),
+          "auto: key ignores case/symbols");
+    check(normalizeKey("  r 1 ") == QStringLiteral("r1"),
+          "auto: key ignores spaces");
+    check(normalizeKey(QString::fromUtf8("受音点A")) ==
+              QString::fromUtf8("受音点a"),
+          "auto: key keeps non-ascii letters");
+    check(normalizeKey("!!!").isEmpty(), "auto: symbol-only key is empty");
+
+    // 2) 規則(1) 完全一致 — 無関係ファイルは割り当てない
+    {
+        const QStringList wavs = { "R1.wav", "R2.wav",
+                                   QString::fromUtf8("無関係.wav") };
+        const auto r = assign(wavs, { "R1", "R2" }, both);
+        check(r.size() == 2, "auto: result size == receivers");
+        check(r[0].fileIndex == 0 && r[0].rule == Rule::Exact,
+              "auto: exact match R1.wav");
+        check(r[1].fileIndex == 1 && r[1].rule == Rule::Exact,
+              "auto: exact match R2.wav");
+    }
+    // 3) 完全一致は拡張子・大小・記号を無視して照合する
+    {
+        const auto r = assign({ "r-1.WAV" }, { "R1" }, one);
+        check(r[0].fileIndex == 0 && r[0].rule == Rule::Exact,
+              "auto: exact match is case/symbol-insensitive");
+    }
+    // 4) 規則(2) rir_ 接頭 / _rir 接尾
+    {
+        const auto r = assign({ "rir_R1.wav" }, { "R1" }, one);
+        check(r[0].fileIndex == 0 && r[0].rule == Rule::Affix,
+              "auto: rir_<name> prefix");
+    }
+    {
+        const auto r = assign({ "R2_rir.wav" }, { "R2" }, one);
+        check(r[0].fileIndex == 0 && r[0].rule == Rule::Affix,
+              "auto: <name>_rir suffix");
+    }
+    // 5) 上位規則 (完全一致) が接頭/接尾より優先
+    {
+        const auto r = assign({ "rir_R1.wav", "R1.wav" }, { "R1" }, one);
+        check(r[0].fileIndex == 1 && r[0].rule == Rule::Exact,
+              "auto: exact wins over affix");
+    }
+    // 6) 同一規則内の複数候補は割り当てない (候補一覧が理由)
+    {
+        const auto r = assign({ "R1.wav", "r1.wav" }, { "R1" }, one);
+        check(r[0].fileIndex == -1 && r[0].rule == Rule::Ambiguous,
+              "auto: ambiguous exact not assigned");
+        check(r[0].candidates.size() == 2 &&
+              r[0].candidates.contains("R1.wav") &&
+              r[0].candidates.contains("r1.wav"),
+              "auto: ambiguous candidates listed");
+    }
+    {
+        const auto r = assign({ "rir_R1.wav", "R1_rir.wav" }, { "R1" }, one);
+        check(r[0].fileIndex == -1 && r[0].rule == Rule::Ambiguous,
+              "auto: ambiguous affix not assigned");
+    }
+    // 7) 規則(3) 唯一の rir.wav → 唯一の対象行
+    {
+        const auto r = assign({ "rir.wav",
+                                QString::fromUtf8("無関係.wav") },
+                              { "A" }, one);
+        check(r[0].fileIndex == 0 && r[0].rule == Rule::SingleRir,
+              "auto: single rir.wav to single row");
+    }
+    {   // 対象行が 2 行なら適用しない (どちらか選べない)
+        const auto r = assign({ "rir.wav" }, { "A", "B" }, both);
+        check(r[0].rule == Rule::None && r[1].rule == Rule::None,
+              "auto: single rir.wav needs single eligible row");
+    }
+    {   // rir.wav が 2 個 (大小違い) でも適用しない
+        const auto r = assign({ "rir.wav", "RIR.wav" }, { "A" }, one);
+        check(r[0].fileIndex == -1 && r[0].rule == Rule::None,
+              "auto: two rir.wav files -> none");
+    }
+    // 8) eligible = false の行は照合されず None のまま
+    {
+        const auto r = assign({ "R1.wav", "R2.wav" }, { "R1", "R2" },
+                              { false, true });
+        check(r[0].fileIndex == -1 && r[0].rule == Rule::None,
+              "auto: ineligible row untouched");
+        check(r[1].fileIndex == 1 && r[1].rule == Rule::Exact,
+              "auto: eligible row still assigned");
+        // 対象外の行は規則(3) の「唯一の対象行」の数にも入らない
+        const auto s = assign({ "rir.wav" }, { "A", "B" }, { false, true });
+        check(s[1].fileIndex == 0 && s[1].rule == Rule::SingleRir,
+              "auto: ineligible row not counted for single-rir rule");
+    }
+    // 9) 空名は一括レンダリングの既定名 P<行番号> (1 始まり) として照合
+    {
+        const auto r = assign({ "P2.wav" }, { "X", "" }, both);
+        check(r[1].fileIndex == 0 && r[1].rule == Rule::Exact,
+              "auto: empty name matches default P<row>");
+    }
+    // 10) 一致するものが無ければ None (無関係ファイルを割り当てない)
+    {
+        const auto r = assign({ "hall.wav" }, { "R3" }, one);
+        check(r[0].fileIndex == -1 && r[0].rule == Rule::None,
+              "auto: unrelated wav not assigned");
+    }
+    // 11) eligible の要素数不一致は契約違反 → 全行 None (安全側)
+    {
+        const auto r = assign({ "R1.wav" }, { "R1", "R2" }, one);
+        check(r.size() == 2 && r[0].fileIndex == -1 && r[1].fileIndex == -1,
+              "auto: eligible size mismatch -> no assignment");
+    }
+
+    // 12) フォルダ列挙 + 割当のヘッドレス実操作 (一時ディレクトリ):
+    //     rir_R1.wav / R2.wav / 無関係.wav / R3.WAV / readme.txt を置き、
+    //     受音点 R1・R2 で 2 行とも正しく割当、無関係ファイルは選ばれない
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "auto: temp dir");
+        const QStringList mk = { "rir_R1.wav", "R2.wav",
+                                 QString::fromUtf8("無関係.wav"),
+                                 "R3.WAV", "readme.txt" };
+        for (const QString &n : mk) {
+            QFile f(QDir(tmp.path()).filePath(n));
+            f.open(QIODevice::WriteOnly);
+            f.write("x", 1);
+        }
+        const QStringList wavs = listWavFiles(tmp.path());
+        check(wavs.size() == 4, "auto: listWavFiles finds 4 wavs");
+        check(!wavs.contains("readme.txt"), "auto: non-wav excluded");
+        check(wavs.contains("R3.WAV"), "auto: .WAV (uppercase) included");
+
+        const auto r = assign(wavs, { "R1", "R2" }, both);
+        check(r[0].fileIndex >= 0 &&
+              wavs.at(r[0].fileIndex) == "rir_R1.wav" &&
+              r[0].rule == Rule::Affix,
+              "auto: e2e R1 -> rir_R1.wav");
+        check(r[1].fileIndex >= 0 &&
+              wavs.at(r[1].fileIndex) == "R2.wav" &&
+              r[1].rule == Rule::Exact,
+              "auto: e2e R2 -> R2.wav");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -8017,6 +8362,7 @@ int main(int argc, char *argv[])
     testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();
+    testRirAutoAssign();
     testFdeModeSolver();
     testSoundInsulation();
     testRoomModes();

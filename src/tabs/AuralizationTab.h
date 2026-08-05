@@ -18,7 +18,11 @@
 //               追加キー) を割り当て、有効かつ RIR 指定済みの行を順に畳み込んで
 //               <ドライ名>_<受音点名>.wav を出力先フォルダへ書き出す。
 //               行ごとに QThread で非同期・行間で中断可能。受聴位置が違えば
-//               RIR は異なるため「全受音点へ同じ RIR」の導線は置かない
+//               RIR は異なるため「全受音点へ同じ RIR」の導線は置かない。
+//               「📂 フォルダから自動割当」でフォルダ直下の *.wav を
+//               受音点名との対応規則 (core/RirAutoAssign — 完全一致 /
+//               rir_ 接頭・_rir 接尾 / 唯一の rir.wav) で各行へ一括割当できる
+//               (既定では未設定の行のみ。曖昧な行は割り当てず理由を表示)
 // 設定は .ofdx の acoustic/opera_analysis/auralization (+ 受音点ごとの RIR は
 // acoustic.receivers[].rir_file) に永続化される。
 #pragma once
@@ -27,6 +31,7 @@
 #include <QStringList>
 #include <QVector>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -50,6 +55,12 @@ public:
     static QStringList batchOutputNames(const QString &dryPath,
                                         const QStringList &receiverNames);
 
+    // ⑤ フォルダ直下の *.wav を受音点へ自動割当 (core/RirAutoAssign の規則)。
+    // 「未設定の行のみ」チェックの状態に従い、割当結果をモデル
+    // (ReceiverRow::rirFile) へ書いて Project::touch() する。戻り値は
+    // 割り当てた行数。ダイアログを開かないのでヘッドレス検証からも呼べる。
+    int autoAssignFromDir(const QString &dirPath);
+
 private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
@@ -59,6 +70,7 @@ private slots:
     void runConvolution();
     // ⑤ 複数受音点の一括可聴化
     void browseBatchOutDir();
+    void autoAssignRirs();     // 📂 フォルダから自動割当 (ディレクトリ選択)
     void runBatch();
     void cancelBatch();
 
@@ -71,6 +83,7 @@ private:
     void setBatchRowStatus(int row, const QString &text,
                            const QString &tooltip = QString());
     QString batchOutputDir() const;        // 出力先 (空なら既定の解決)
+    QString autoAssignDefaultDir() const;  // 自動割当ダイアログの初期フォルダ
     void updateBusyUi();                   // 単発/一括の実行ボタン排他
 
     Project *m_p;
@@ -104,6 +117,8 @@ private:
         QString outPath;   // 書き出し先 (出力先フォルダ + 命名規則)
     };
     QTableWidget *m_batchTable  = nullptr;
+    QPushButton  *m_autoAssignBtn = nullptr;  // 📂 フォルダから自動割当
+    QCheckBox    *m_autoOnlyUnset = nullptr;  // 未設定の行のみ (既定 ON)
     QLineEdit    *m_batchOutDir = nullptr;
     QPushButton  *m_batchRunBtn = nullptr;
     QPushButton  *m_batchCancelBtn = nullptr;
