@@ -345,6 +345,10 @@ struct ReceiverRow {
     double  x = 0.0, y = 1.2, z = 0.0;   // 位置 [m]
     int     type = 0;                    // 0=Omni 1=Stereo 2=Binaural
     QString name;
+    // この受音点の RIR WAV パス (可聴化タブの一括レンダリング入力)。
+    // .ofdx "acoustic.receivers[].rir_file" — 追加キーのみ。欠落時は空
+    // (未指定 = 一括レンダリングの対象外。ソルバ実行か実測 WAV を指定する)
+    QString rirFile;
 };
 
 // 受音点リストの既定値 (count 点)。先頭 4 点は mock (tabs.jsx AcousticTab)

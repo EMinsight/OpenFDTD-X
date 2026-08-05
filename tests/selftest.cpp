@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "audio/AudioEditEngine.h"
@@ -33,6 +34,9 @@
 #include "core/FdtdVerification.h"
 #include "core/ToleranceStats.h"
 #include "acoustics/core/SoundInsulation.h"
+#include "acoustics/core/Fft.h"
+#include "acoustics/core/Resampler.h"
+#include "acoustics/io/WavWriter.h"
 #include "acoustics/core/RoomModes.h"
 #include "acoustics/core/EnvironmentalNoise.h"
 #include "acoustics/core/FocusedField.h"
@@ -575,6 +579,74 @@ static void testRoomAcoustics()
             check(qs.size() == 1 && p5.acoustic().micCount == 1,
                   "broken ofdx: mic count follows receivers");
             check(qs[0].type == 2, "broken ofdx: receiver type clamped");
+        }
+    }
+
+    // 受音点ごとの RIR ファイル (可聴化タブの一括レンダリング入力) —
+    // ReceiverRow::rirFile / .ofdx "acoustic.receivers[].rir_file" 追加キー
+    {
+        // 既定値は空 (未指定 = 一括レンダリングの対象外)
+        const ReceiverRow rdef;
+        check(rdef.rirFile.isEmpty(), "receiver rir_file: default empty");
+
+        Project ps;
+        auto &rc = ps.acoustic().receivers;
+        rc = defaultReceivers(2);
+        rc[0].rirFile = QString::fromUtf8("/tmp/rir_中央 48k.wav");
+        rc[1].rirFile.clear();
+        ps.acoustic().micCount = rc.size();
+
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_rir_XXXXXX.ofdx");
+        if (f.open()) {
+            check(OfdxIO::save(f.fileName(), ps), "receiver rir_file save");
+            Project pl;
+            check(OfdxIO::load(f.fileName(), pl), "receiver rir_file load");
+            const auto &qs = pl.acoustic().receivers;
+            check(qs.size() == 2, "receiver rir_file row count");
+            if (qs.size() == 2) {
+                check(qs[0].rirFile == QString::fromUtf8("/tmp/rir_中央 48k.wav"),
+                      "receiver rir_file round-trip (非 ASCII パス込み)");
+                check(qs[1].rirFile.isEmpty(),
+                      "receiver rir_file empty round-trip");
+            }
+            // JSON 側: 追加キー rir_file が書かれ、既存キーは保全される
+            QFile jf(f.fileName());
+            check(jf.open(QIODevice::ReadOnly), "receiver rir_file reopen");
+            const QJsonArray recvArr =
+                QJsonDocument::fromJson(jf.readAll()).object()
+                    .value("acoustic").toObject()
+                    .value("receivers").toArray();
+            check(recvArr.size() == 2 &&
+                  recvArr[0].toObject().contains("rir_file"),
+                  "receiver rir_file json key");
+            check(recvArr[0].toObject().contains("enabled") &&
+                  recvArr[0].toObject().contains("pos_m") &&
+                  recvArr[0].toObject().contains("type") &&
+                  recvArr[0].toObject().contains("name"),
+                  "receiver rir_file keeps existing row keys");
+        }
+
+        // 旧 .ofdx (rir_file 無しの receivers): 既定値 = 空のまま読める
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_rir_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"mic_count\": 1,"
+                "    \"receivers\": [ { \"enabled\": true,"
+                "      \"pos_m\": [0.0, 1.2, 8.0], \"type\": 0,"
+                "      \"name\": \"P1\" } ] } }";
+            old.write(legacy);
+            old.flush();
+            Project p6;
+            check(OfdxIO::load(old.fileName(), p6),
+                  "legacy receiver (no rir_file) load");
+            const auto &qs = p6.acoustic().receivers;
+            check(qs.size() == 1 && qs[0].rirFile.isEmpty(),
+                  "legacy receiver rir_file defaults to empty");
+            check(qs[0].name == QStringLiteral("P1") && qs[0].enabled,
+                  "legacy receiver other keys intact");
         }
     }
 
@@ -1778,6 +1850,270 @@ static void testCalibrationOffsetGate()
         const OperaAcousticSettings d;
         check(QtAcousticAdapter::toAnalyzerConfig(d).calibrationOffsetDb == 0.0,
               "gate: default settings keep offset 0");
+    }
+}
+
+// ── 有理比 Kaiser 窓 sinc リサンプラ (負債 #12) ─────────────────────────────
+// 期待値は全て実装から独立に決める: 恒等性 (ビット一致)、正弦波の振幅/位相
+// (最小二乗フィット)、折り返し抑圧 (FFT の帯域内最大値)、出力長の算術、
+// インパルスのピーク位置 (群遅延補正)、決定性 (2 回実行のビット一致)。
+static void testResampler()
+{
+    using namespace acoustics;
+    g_file = "resampler";
+    const double PI = 3.14159265358979323846;
+
+    // 1) 恒等: 同一 fs → 入力とビット一致 (フィルタを通さないこと)
+    {
+        std::vector<double> x(4096);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(0.001 * double(i)) +
+                   0.5 * std::sin(0.013 * double(i) + 0.3);
+        ResampleInfo info;
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), 48000.0, 48000.0, &info);
+        check(r.success(), "resample identity ok");
+        check(info.identity, "resample identity flagged");
+        check(r.value().size() == x.size(), "resample identity length");
+        check(std::memcmp(r.value().data(), x.data(),
+                          x.size() * sizeof(double)) == 0,
+              "resample identity bit-exact");
+    }
+
+    // 2) 1 kHz 正弦 44.1k→48k: 振幅偏差 < 0.1 dB、位相 (時間原点) 保持。
+    //    閾値の根拠: Kaiser 90 dB 設計の通過帯域リプルは
+    //    δ = 10^(-90/20) ≈ 3.2e-5 → ±0.00028 dB。測定 (最小二乗フィット) の
+    //    残差を含めても 0.1 dB は 2 桁以上の余裕がある。
+    std::vector<double> sine48;   // 3) の往復で再利用
+    {
+        const double fsIn = 44100.0, fsOut = 48000.0, f0 = 1000.0;
+        std::vector<double> x(44100);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(2.0 * PI * f0 * double(i) / fsIn);
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), fsIn, fsOut);
+        check(r.success(), "resample 44.1k->48k ok");
+        sine48 = r.value();
+        check(sine48.size() == 48000, "resample 44.1k->48k length 48000");
+
+        // 端点の過渡 (フィルタ半長 ≈ 115 出力サンプル) を除いた内部区間で
+        // y ≈ A·sin(wn) + B·cos(wn) を最小二乗フィット (実装から独立な測定)
+        const double w = 2.0 * PI * f0 / fsOut;
+        const std::size_t a = 2000, b = sine48.size() - 2000;
+        double Sss = 0, Scc = 0, Ssc = 0, s1 = 0, c1 = 0;
+        for (std::size_t n = a; n < b; ++n) {
+            const double sn = std::sin(w * double(n));
+            const double cn = std::cos(w * double(n));
+            Sss += sn * sn; Scc += cn * cn; Ssc += sn * cn;
+            s1 += sine48[n] * sn; c1 += sine48[n] * cn;
+        }
+        const double det = Sss * Scc - Ssc * Ssc;
+        const double A = (s1 * Scc - c1 * Ssc) / det;
+        const double B = (c1 * Sss - s1 * Ssc) / det;
+        const double amp = std::sqrt(A * A + B * B);
+        check(std::fabs(20.0 * std::log10(amp)) < 0.1,
+              "passband amplitude deviation < 0.1 dB");
+        // 位相 = 時間原点。0.01 rad @1 kHz = 1.6 μs (出力 1 サンプルの 8%)
+        check(std::fabs(std::atan2(B, A)) < 0.01,
+              "passband phase preserved (group delay compensated)");
+    }
+
+    // 3) 往復 44.1k→48k→44.1k: 内部区間で元信号と一致、相互相関ピークが
+    //    ラグ 0 (時間原点が往復でもずれない)
+    {
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(sine48), 48000.0, 44100.0);
+        check(r.success(), "resample roundtrip ok");
+        const std::vector<double> &z = r.value();
+        check(z.size() == 44100, "resample roundtrip length 44100");
+        double maxErr = 0.0;
+        for (std::size_t n = 3000; n + 3000 < z.size(); ++n) {
+            const double ref =
+                std::sin(2.0 * PI * 1000.0 * double(n) / 44100.0);
+            maxErr = std::max(maxErr, std::fabs(z[n] - ref));
+        }
+        check(maxErr < 1e-3, "roundtrip max interior error < 1e-3");
+        int bestLag = -99;
+        double bestCorr = -1e300;
+        for (int lag = -3; lag <= 3; ++lag) {
+            double corr = 0.0;
+            for (std::size_t n = 3000; n + 3000 < z.size(); ++n)
+                corr += z[std::size_t((long long)n + lag)] *
+                        std::sin(2.0 * PI * 1000.0 * double(n) / 44100.0);
+            if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
+        }
+        check(bestLag == 0, "roundtrip cross-correlation peak at lag 0");
+    }
+
+    // 4) 折り返し抑圧: 入力ナイキスト直下の 23 kHz @48k を 44.1k へ間引くと
+    //    21.1 kHz (= 44.1k − 23k) に折り返すはずの成分が、阻止域仕様
+    //    (~90 dB − 測定余裕 5 dB) 以上に抑圧されている。基準は同時に入れた
+    //    通過帯域 1 kHz 成分 (同一処理・同一測定なので比は較正不要)。
+    {
+        const double fsIn = 48000.0, fsOut = 44100.0;
+        std::vector<double> x(48000);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = 0.5 * std::sin(2.0 * PI * 1000.0 * double(i) / fsIn) +
+                   0.5 * std::sin(2.0 * PI * 23000.0 * double(i) / fsIn);
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), fsIn, fsOut);
+        check(r.success(), "resample 48k->44.1k ok");
+        const std::vector<double> &y = r.value();
+        const std::size_t nfft = 32768, off = 4096;
+        check(y.size() >= off + nfft, "alias test output long enough");
+        std::vector<double> seg(nfft);
+        for (std::size_t i = 0; i < nfft; ++i)   // Hann 窓 (漏れ抑制)
+            seg[i] = y[off + i] *
+                     0.5 * (1.0 - std::cos(2.0 * PI * double(i) /
+                                           double(nfft - 1)));
+        const AcousticResult<std::vector<std::complex<double>>> sp =
+            realFft(ArrayView<const double>(seg));
+        check(sp.success() && sp.value().size() == nfft, "alias test FFT");
+        auto maxMag = [&](double f1, double f2) {
+            const std::size_t k1 = std::size_t(f1 / fsOut * double(nfft));
+            const std::size_t k2 = std::size_t(f2 / fsOut * double(nfft));
+            double m = 0.0;
+            for (std::size_t k = k1; k <= k2 && k < nfft / 2; ++k)
+                m = std::max(m, std::abs(sp.value()[k]));
+            return m;
+        };
+        const double ref = maxMag(990.0, 1010.0);       // 通過帯域基準
+        const double al  = maxMag(20600.0, 21600.0);    // 折り返し帯域
+        check(ref > 0.0, "alias test reference tone present");
+        check(20.0 * std::log10(al / ref) < -85.0,
+              "alias suppressed to ~90 dB stopband spec");
+    }
+
+    // 5) 出力長: round(N·L/M) ±1 (代表的な fs の組で確認)
+    {
+        struct LenCase { std::size_t n; double src, dst; };
+        const LenCase cases[] = { { 44100, 44100.0, 48000.0 },
+                                  { 48000, 48000.0, 44100.0 },
+                                  { 12345, 44100.0, 48000.0 },
+                                  {  9600, 96000.0, 44100.0 },
+                                  {  1000, 44100.0, 88200.0 } };
+        for (const LenCase &c : cases) {
+            std::vector<double> x(c.n, 0.25);
+            const AcousticResult<std::vector<double>> r =
+                resampleSignal(ArrayView<const double>(x), c.src, c.dst);
+            check(r.success(), "length case ok");
+            const long long expect =
+                (long long)std::llround(double(c.n) * c.dst / c.src);
+            check(std::llabs((long long)r.value().size() - expect) <= 1,
+                  "output length round(N*L/M) +-1");
+        }
+    }
+
+    // 6) 群遅延補正: インパルスのピークが時間原点対応サンプルに残る
+    {
+        // 44.1k→48k (格子に乗らない比): 入力 1000 → round(1000·160/147)=1088
+        std::vector<double> x(4000, 0.0);
+        x[1000] = 1.0;
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), 44100.0, 48000.0);
+        check(r.success(), "impulse 44.1k->48k ok");
+        std::size_t argmax = 0;
+        for (std::size_t n = 1; n < r.value().size(); ++n)
+            if (std::fabs(r.value()[n]) > std::fabs(r.value()[argmax]))
+                argmax = n;
+        check(std::llabs((long long)argmax - 1088) <= 1,
+              "impulse peak at round(n0*L/M) (44.1k->48k)");
+
+        // 48k→96k (L=2, 格子に厳密に乗る): ピークは正確に 2×500 = 1000。
+        // 線形位相なら左右対称になる
+        std::vector<double> x2(2000, 0.0);
+        x2[500] = 1.0;
+        const AcousticResult<std::vector<double>> r2 =
+            resampleSignal(ArrayView<const double>(x2), 48000.0, 96000.0);
+        check(r2.success(), "impulse 48k->96k ok");
+        const std::vector<double> &y2 = r2.value();
+        std::size_t argmax2 = 0;
+        for (std::size_t n = 1; n < y2.size(); ++n)
+            if (std::fabs(y2[n]) > std::fabs(y2[argmax2])) argmax2 = n;
+        check(argmax2 == 1000, "impulse peak exactly at 2*n0 (48k->96k)");
+        // 帯域制限インパルス (カットオフ 0.95×ナイキスト) のピーク値
+        check(y2[1000] > 0.9 && y2[1000] <= 1.0,
+              "band-limited impulse peak magnitude");
+        check(nearlyEq(y2[999], y2[1001]), "linear phase (symmetric response)");
+    }
+
+    // 7) 決定性: 同じ入力の 2 回実行がビット一致 (乱数・時刻に依存しない)
+    {
+        std::vector<double> x(10000);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(0.07 * double(i)) * std::cos(0.011 * double(i));
+        const AcousticResult<std::vector<double>> r1 =
+            resampleSignal(ArrayView<const double>(x), 44100.0, 48000.0);
+        const AcousticResult<std::vector<double>> r2 =
+            resampleSignal(ArrayView<const double>(x), 44100.0, 48000.0);
+        check(r1.success() && r2.success(), "determinism runs ok");
+        check(r1.value().size() == r2.value().size() &&
+                  std::memcmp(r1.value().data(), r2.value().data(),
+                              r1.value().size() * sizeof(double)) == 0,
+              "resample deterministic (bit-identical)");
+    }
+
+    // 8) 可聴化への配線: fs 不一致の dry(48k) × RIR(44.1k) が
+    //    「RIR をドライ側 fs へ変換して」成功し、変換が通知される。
+    //    fs 一致なら変換しない。
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "resample wiring temp dir");
+        if (tmp.isValid()) {
+            AudioBuffer dry;
+            dry.sampleRateHz = 48000.0;
+            dry.channels.assign(1, std::vector<double>(9600, 0.0));
+            for (std::size_t i = 0; i < 9600; ++i)
+                dry.channels[0][i] =
+                    0.5 * std::sin(2.0 * PI * 1000.0 * double(i) / 48000.0);
+            AudioBuffer rir;
+            rir.sampleRateHz = 44100.0;
+            rir.channels.assign(1, std::vector<double>(2205, 0.0));
+            rir.channels[0][0] = 1.0;   // 単位インパルス
+
+            const QString dryPath = tmp.filePath("dry48k.wav");
+            const QString rirPath = tmp.filePath("rir44k.wav");
+            const QString outPath = tmp.filePath("wet.wav");
+            check(writeWavFile(dryPath.toStdString(), dry).success(),
+                  "resample wiring write dry");
+            check(writeWavFile(rirPath.toStdString(), rir).success(),
+                  "resample wiring write rir");
+
+            QtAcousticAdapter::RirResampleNote note;
+            double fs = 0.0;
+            const AcousticResult<ConvolutionInfo> res =
+                QtAcousticAdapter::convolveFiles(dryPath, rirPath, outPath, 0,
+                                                 nullptr, nullptr, &fs, &note);
+            check(res.success(),
+                  "convolveFiles succeeds on fs mismatch (rir resampled)");
+            check(note.resampled, "resample note reported");
+            check(nearlyEq(note.fromHz, 44100.0) &&
+                      nearlyEq(note.toHz, 48000.0),
+                  "resample note 44100 -> 48000");
+            check(nearlyEq(fs, 48000.0), "output fs follows dry (not rir)");
+
+            const AcousticResult<AudioBuffer> wet =
+                readWavFile(outPath.toStdString());
+            check(wet.success(), "resample wiring read wet");
+            if (wet.success()) {
+                check(nearlyEq(wet.value().sampleRateHz, 48000.0),
+                      "wet WAV fs = dry fs");
+                // RIR 2205@44.1k → 2205·160/147 = 2400@48k (厳密)。
+                // 出力長 = dry + rir − 1
+                check(wet.value().sampleCount() == 9600 + 2400 - 1,
+                      "wet length = dry + resampled rir - 1");
+            }
+
+            // fs 一致 (dry×dry) では変換しない
+            QtAcousticAdapter::RirResampleNote note2;
+            const QString outPath2 = tmp.filePath("wet2.wav");
+            const AcousticResult<ConvolutionInfo> res2 =
+                QtAcousticAdapter::convolveFiles(dryPath, dryPath, outPath2, 0,
+                                                 nullptr, nullptr, nullptr,
+                                                 &note2);
+            check(res2.success(), "convolveFiles matched fs ok");
+            check(!note2.resampled, "matched fs is not resampled");
+        }
     }
 }
 
@@ -7670,6 +8006,7 @@ int main(int argc, char *argv[])
     testKernelResultReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();
+    testResampler();
     testOnnActivation();
     testRcwaCore();
     testOpticsMaterials();

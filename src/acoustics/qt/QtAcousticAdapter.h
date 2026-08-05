@@ -67,13 +67,25 @@ public:
     analyzeVocalFile(const QString &path, const OperaAcousticSettings &settings);
 
     // ── 可聴化 (フェーズ4) ──────────────────────────────────────────────────
+    // fs 不一致で RIR をドライ側 fs へリサンプリングしたことの通知 (UI 表示用。
+    // 黙って変換しない — 呼び出し側は resampled のとき必ずユーザーに明示する)
+    struct RirResampleNote {
+        bool   resampled;   // RIR をリサンプリングしたか
+        double fromHz;      // 変換前の RIR fs
+        double toHz;        // 変換後の fs (= ドライの fs)
+        RirResampleNote() : resampled(false), fromHz(0.0), toHz(0.0) {}
+    };
+
     // dry WAV × rir WAV を畳み込み、outputPath に float32 WAV で書き出す。
     // gainMode: 0=そのまま 1=推奨ゲイン (suggestedGainDb) を適用。
     // gainMode=1 のとき、返す ConvolutionInfo の outputPeak /
     // outputPeakDbfs / clippedSampleCount / clipped は「書き出した
     // (ゲイン適用後の) サンプル」で測り直した値。suggestedGainDb は
     // 適用したゲイン量を保持する。
-    // 自動正規化はしない。サンプルレート不一致はリサンプリングせずエラー。
+    // 自動正規化はしない。サンプルレート不一致は RIR をドライ側 fs へ
+    // リサンプリング (acoustics::resampleBuffer — Kaiser 窓 sinc、負債 #12)
+    // して続行し、outResample で通知する (音源素材のドライは変えない)。
+    // fs 自体が不正で変換できない場合は従来どおりエラー。
     // outDry / outWet / outSampleRate が非 null なら A/B 波形プロット用に
     // ドライ (選択後モノ) / ウェット先頭チャンネル (書き出し値) を返す。
     static acoustics::AcousticResult<acoustics::ConvolutionInfo>
@@ -81,7 +93,8 @@ public:
                   const QString &outputPath, int gainMode,
                   std::vector<double> *outDry = nullptr,
                   std::vector<double> *outWet = nullptr,
-                  double *outSampleRate = nullptr);
+                  double *outSampleRate = nullptr,
+                  RirResampleNote *outResample = nullptr);
 };
 
 } // namespace ofd

@@ -8,14 +8,25 @@
 #include "TabHelpers.h"
 
 #include <QComboBox>
+#include <QDesktopServices>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QSet>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QThread>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 using namespace ofd;
@@ -24,6 +35,87 @@ using namespace ofd::acoustics;
 using namespace ofd::tabhelp;
 
 namespace {
+
+// ⑤ 複数受音点の一括可聴化 — タブ専用語彙 (接頭辞 aurb_) の file-local 登録
+const bool s_i18nBatch = [] {
+    ofd::I18n::reg("aurb_section", "複数受音点の一括可聴化",
+                   "Batch auralization (all receivers)");
+    ofd::I18n::reg("aurb_hint",
+        "受音点リスト (音響タブと共有) の各受音点に、その位置の RIR WAV を"
+        "割り当てて、①のドライ WAV を受音点ごとに一括で畳み込みます。"
+        "受聴位置が違えば RIR は異なるため、単一 RIR の使い回しは行いません "
+        "(RIR 未指定の行はスキップされます)。有効チェックが OFF の受音点は"
+        "対象外です。fs が異なる RIR は自動でドライ側 fs へリサンプリングし、"
+        "変換した旨を行の結果に明示します。",
+        "Assigns each receiver in the receiver list (shared with the Acoustic "
+        "tab) the RIR WAV measured/simulated at that position, then convolves "
+        "the dry WAV from section 1 for every receiver in one run. A different "
+        "listening position means a different RIR, so a single RIR is never "
+        "reused across receivers (rows without an RIR are skipped). Receivers "
+        "with their enabled checkbox off are excluded. RIRs at a different "
+        "sample rate are resampled to the dry file's rate automatically, and "
+        "the conversion is reported in the row result.");
+    ofd::I18n::reg("aurb_col_receiver", "受音点", "Receiver");
+    ofd::I18n::reg("aurb_col_rir", "RIR WAV", "RIR WAV");
+    ofd::I18n::reg("aurb_col_status", "状態", "Status");
+    ofd::I18n::reg("aurb_name_disabled", "(無効)", "(disabled)");
+    ofd::I18n::reg("aurb_listen", "▶ 試聴", "▶ Play");
+    ofd::I18n::reg("aurb_listen_tip",
+                   "書き出した WAV を外部プレイヤーで開く (アプリ内再生は未対応)",
+                   "Open the exported WAV in an external player "
+                   "(in-app playback is not supported)");
+    ofd::I18n::reg("aurb_out_dir", "出力先フォルダ", "Output folder");
+    ofd::I18n::reg("aurb_out_dir_placeholder",
+                   "既定: プロジェクトのフォルダ", "Default: project folder");
+    ofd::I18n::reg("aurb_naming",
+        "命名規則: <ドライ名>_<受音点名>.wav (空名は P行番号、使えない文字と"
+        "空白は「_」、重複名は _2, _3… で一意化)",
+        "Naming: <dry name>_<receiver name>.wav (empty names become P<row>, "
+        "illegal characters and spaces become \"_\", duplicates are made "
+        "unique with _2, _3…)");
+    ofd::I18n::reg("aurb_run", "▶ 一括レンダリング", "▶ Render all");
+    ofd::I18n::reg("aurb_cancel", "中断", "Cancel");
+    ofd::I18n::reg("aurb_status_idle",
+        "受音点ごとに RIR WAV を割り当てて一括レンダリングしてください。",
+        "Assign an RIR WAV per receiver, then render all.");
+    ofd::I18n::reg("aurb_status_nodry",
+        "ドライ WAV が選択されていません (①で指定してください)。",
+        "No dry WAV selected (choose one in section 1).");
+    ofd::I18n::reg("aurb_status_nodir",
+        "出力先フォルダを決められません (プロジェクト未保存かつドライ WAV "
+        "未指定)。出力先フォルダを指定してください。",
+        "Cannot resolve an output folder (project not saved and no dry WAV). "
+        "Choose an output folder.");
+    ofd::I18n::reg("aurb_status_nojobs",
+        "レンダリング対象がありません (有効かつ RIR 指定済みの受音点が必要です)。",
+        "Nothing to render (needs at least one enabled receiver with an RIR).");
+    ofd::I18n::reg("aurb_status_running", "一括レンダリング中… (%1/%2)",
+                   "Rendering… (%1/%2)");
+    ofd::I18n::reg("aurb_status_cancelling", "中断します (実行中の行の完了後)…",
+                   "Cancelling (after the current row finishes)…");
+    ofd::I18n::reg("aurb_status_done",
+                   "完了 — %1/%2 件を書き出しました。",
+                   "Done — %1 of %2 files written.");
+    ofd::I18n::reg("aurb_status_cancelled",
+                   "中断しました — %1/%2 件を書き出し済み。",
+                   "Cancelled — %1 of %2 files written.");
+    ofd::I18n::reg("aurb_row_disabled", "対象外 (受音点が無効)",
+                   "Excluded (receiver disabled)");
+    ofd::I18n::reg("aurb_row_norir",
+                   "スキップ: RIR 未指定 — ソルバ実行か実測 WAV の指定が必要",
+                   "Skipped: no RIR — run a solver or set a measured WAV");
+    ofd::I18n::reg("aurb_row_ready", "レンダリング可能", "Ready");
+    ofd::I18n::reg("aurb_row_pending", "待機中", "Queued");
+    ofd::I18n::reg("aurb_row_running", "レンダリング中…", "Rendering…");
+    ofd::I18n::reg("aurb_row_done", "完了 — %1", "Done — %1");
+    ofd::I18n::reg("aurb_row_resampled", "(RIR %1→%2 Hz 変換)",
+                   "(RIR resampled %1→%2 Hz)");
+    ofd::I18n::reg("aurb_row_clipped", "(クリップ %1 サンプル)",
+                   "(%1 samples clipped)");
+    ofd::I18n::reg("aurb_row_error", "失敗: %1", "Failed: %1");
+    ofd::I18n::reg("aurb_row_cancelled", "中断 (未実行)", "Cancelled (not run)");
+    return true;
+}();
 
 QVector<MiniSeries> waveformSeries(const std::vector<double> &x, double fs,
                                    const QColor &color)
@@ -60,7 +152,8 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(8);
 
-    // 概要: 畳み込み可聴化。自動正規化・リサンプリングは行わない。
+    // 概要: 畳み込み可聴化。自動正規化は行わない。fs 不一致は RIR を
+    // ドライ側 fs へリサンプリングして続行する (変換した旨を結果に明示)。
     auto *hint = new QLabel(I18n::tr("aur_model_hint"), body);
     hint->setWordWrap(true);
     v->addWidget(hint);
@@ -130,6 +223,51 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
     sAb->vbox()->addWidget(playbackNote);
     v->addWidget(sAb);
 
+    // ⑤ 複数受音点の一括可聴化 — 受音点リスト (AcousticTab と共有) の各行に
+    //    受音点ごとの RIR を割り当てて順に畳み込む。単一 RIR の使い回しは
+    //    物理的に無意味 (受聴位置が違えば RIR は違う) なので導線を置かない。
+    auto *sBatch = new SectionBox(I18n::tr("aurb_section"), body);
+    auto *batchHint = new QLabel(I18n::tr("aurb_hint"), sBatch);
+    batchHint->setWordWrap(true);
+    sBatch->vbox()->addWidget(batchHint);
+
+    m_batchTable = new QTableWidget(0, 5, sBatch);
+    m_batchTable->setObjectName(QStringLiteral("aurBatchTable"));
+    m_batchTable->setHorizontalHeaderLabels(
+        { I18n::tr("aurb_col_receiver"), I18n::tr("aurb_col_rir"),
+          QString(), I18n::tr("aurb_col_status"), QString() });
+    m_batchTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_batchTable->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    m_batchTable->horizontalHeader()->setSectionResizeMode(
+        4, QHeaderView::ResizeToContents);
+    m_batchTable->verticalHeader()->setVisible(false);
+    m_batchTable->setMinimumHeight(4 * 26 + 40);
+    sBatch->vbox()->addWidget(m_batchTable);
+
+    QPushButton *outDirBrowse = nullptr;
+    sBatch->form()->addRow(I18n::tr("aurb_out_dir"),
+        pathRow(m_batchOutDir, outDirBrowse, sBatch,
+                I18n::tr("aurb_out_dir_placeholder")));
+    m_batchOutDir->setObjectName(QStringLiteral("aurBatchOutDir"));
+    auto *nameRule = new QLabel(I18n::tr("aurb_naming"), sBatch);
+    nameRule->setWordWrap(true);
+    nameRule->setStyleSheet(QStringLiteral("color:#888888;"));
+    sBatch->vbox()->addWidget(nameRule);
+
+    auto *batchRow = new QHBoxLayout();
+    m_batchRunBtn = new QPushButton(I18n::tr("aurb_run"), sBatch);
+    m_batchCancelBtn = new QPushButton(I18n::tr("aurb_cancel"), sBatch);
+    m_batchCancelBtn->setEnabled(false);
+    m_batchStatus = new QLabel(I18n::tr("aurb_status_idle"), sBatch);
+    m_batchStatus->setObjectName(QStringLiteral("aurBatchStatus"));
+    m_batchStatus->setWordWrap(true);
+    batchRow->addWidget(m_batchRunBtn);
+    batchRow->addWidget(m_batchCancelBtn);
+    batchRow->addWidget(m_batchStatus, 1);
+    sBatch->vbox()->addLayout(batchRow);
+    v->addWidget(sBatch);
+
     v->addStretch(1);
     setWidget(body);
     setWidgetResizable(true);
@@ -145,6 +283,23 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
             this, &AuralizationTab::apply);
     connect(m_runBtn, &QPushButton::clicked,
             this, &AuralizationTab::runConvolution);
+    connect(outDirBrowse, &QPushButton::clicked,
+            this, &AuralizationTab::browseBatchOutDir);
+    connect(m_batchRunBtn, &QPushButton::clicked,
+            this, &AuralizationTab::runBatch);
+    connect(m_batchCancelBtn, &QPushButton::clicked,
+            this, &AuralizationTab::cancelBatch);
+    // RIR 列 (列1) の編集を ReceiverRow::rirFile へ反映 (.ofdx に永続化)
+    connect(m_batchTable, &QTableWidget::cellChanged,
+            this, [this](int row, int col) {
+        if (m_updating || col != 1) return;
+        AcousticOpts &a = m_p->acoustic();
+        if (row < 0 || row >= a.receivers.size()) return;
+        const QTableWidgetItem *it = m_batchTable->item(row, 1);
+        if (!it) return;
+        a.receivers[row].rirFile = it->text().trimmed();
+        m_p->touch();   // → changed → refresh (rebuild は m_updating ガード)
+    });
 
     connect(project, &Project::loaded, this, &AuralizationTab::refresh);
     // rirPath は実測RIR分析タブでも編集されるため、変更にも追従する
@@ -162,6 +317,9 @@ void AuralizationTab::refresh()
     m_outPath->setText(s.auralizationOutputFile);
     m_gainMode->setCurrentIndex(qBound(0, s.auralizationGainMode, 1));
     m_updating = false;
+    // ⑤ 受音点表は AcousticTab の編集にも追従する。一括実行中は実行中の
+    //    状態表示を上書きしないよう作り直しを保留する (モデル編集は反映済み)
+    if (!m_batchBusy) rebuildBatchTable();
 }
 
 void AuralizationTab::apply()
@@ -210,8 +368,13 @@ void AuralizationTab::browseOutput()
 }
 
 // ── convolution ─────────────────────────────────────────────────────────────
+// 畳み込み + WAV 書き出しは QThread::create + busy ガードで非同期に実行する
+// (gui.md: 秒単位の処理を GUI スレッドで同期実行しない。リサンプリングが
+// 加わり所要時間が伸び得るため、AcousticSourceTab::loadWavPreview と同じ
+// パターンに揃えた)。
 void AuralizationTab::runConvolution()
 {
+    if (m_runBusy || m_batchBusy) return;   // 一括実行とは排他
     apply();
     const OperaAcousticSettings &s = m_p->operaAcoustic();
     if (s.auralizationDryFile.trimmed().isEmpty() ||
@@ -228,53 +391,88 @@ void AuralizationTab::runConvolution()
         }
     }
 
-    std::vector<double> dry, wet;
-    double fs = 0.0;
-    const AcousticResult<ConvolutionInfo> res =
-        QtAcousticAdapter::convolveFiles(
-            s.auralizationDryFile, s.rirPath, m_outPath->text(),
-            s.auralizationGainMode, &dry, &wet, &fs);
-    if (!res.success()) {
-        // fs 不一致 (UnsupportedSampleRate) はリサンプリングしない旨も明示
-        QString msg = I18n::tr("aur_status_error")
-                          .arg(QString::fromUtf8(
-                                   acousticErrorCodeName(res.errorCode())),
-                               QString::fromStdString(res.message()));
-        if (res.errorCode() == kSampleRateMismatch)
-            msg += QStringLiteral("\n") + I18n::tr("aur_no_resample_note");
-        clearResult(msg);
-        return;
-    }
+    struct RunData {
+        AcousticResult<ConvolutionInfo> res;
+        QtAcousticAdapter::RirResampleNote note;
+        std::vector<double> dry, wet;
+        double fs = 0.0;
+    };
+    auto d = std::make_shared<RunData>();
+    const QString dryPath = s.auralizationDryFile;
+    const QString rirPath = s.rirPath;
+    const QString outPath = m_outPath->text();
+    const int gainMode = s.auralizationGainMode;
 
-    // ③ 結果表示。ピーク / クリップ数は書き出した WAV のサンプルで測った値
-    // (ゲイン適用時はアダプター側で適用後に測り直している)。
-    const bool gainApplied = (s.auralizationGainMode == 1);
-    const ConvolutionInfo &info = res.value();
-    m_peakLabel->setText(QStringLiteral("%1 (%2 dBFS)")
-        .arg(QString::number(info.outputPeak, 'f', 4),
-             QString::number(info.outputPeakDbfs, 'f', 1)));
-    m_gainLabel->setText(QStringLiteral("%1 dB")
-            .arg(QString::number(info.suggestedGainDb, 'f', 1))
-        + (gainApplied ? QStringLiteral(" ") + I18n::tr("aur_gain_applied")
-                       : QString()));
-    m_clipLabel->setText(info.clipped
-        ? I18n::tr("aur_clipped_yes")
-              .arg(QString::number(qulonglong(info.clippedSampleCount)))
-        : I18n::tr("aur_clipped_no"));
+    m_runBusy = true;
+    updateBusyUi();
+    m_status->setText(I18n::tr("aur_status_running"));
 
-    QStringList warn;
-    if (gainApplied)
-        warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
-    for (const std::string &w : info.warnings)
-        warn << QStringLiteral("• ") + QString::fromStdString(w);
-    m_warnings->setText(warn.join(QStringLiteral("\n")));
-    m_warnings->setVisible(!warn.isEmpty());
+    QThread *th = QThread::create([d, dryPath, rirPath, outPath, gainMode] {
+        d->res = QtAcousticAdapter::convolveFiles(
+            dryPath, rirPath, outPath, gainMode,
+            &d->dry, &d->wet, &d->fs, &d->note);
+    });
+    connect(th, &QThread::finished, this, [this, th, d, outPath, gainMode] {
+        th->deleteLater();
+        m_runBusy = false;
+        updateBusyUi();
 
-    // ④ A/B 波形
-    m_dryPlot->setSeries(waveformSeries(dry, fs, QColor("#0078D4")));
-    m_wetPlot->setSeries(waveformSeries(wet, fs, QColor("#2E8B57")));
+        const AcousticResult<ConvolutionInfo> &res = d->res;
+        const QtAcousticAdapter::RirResampleNote &note = d->note;
+        const std::vector<double> &dry = d->dry;
+        const std::vector<double> &wet = d->wet;
+        const double fs = d->fs;
 
-    m_status->setText(I18n::tr("aur_status_ok").arg(m_outPath->text()));
+        if (!res.success()) {
+            // UnsupportedSampleRate は「fs が不正で自動変換もできない」場合
+            // のみ (単なる不一致は RIR のリサンプリングで続行される —
+            // 負債 #12 解消)
+            QString msg = I18n::tr("aur_status_error")
+                              .arg(QString::fromUtf8(
+                                       acousticErrorCodeName(res.errorCode())),
+                                   QString::fromStdString(res.message()));
+            if (res.errorCode() == kSampleRateMismatch)
+                msg += QStringLiteral("\n") + I18n::tr("aur_no_resample_note");
+            clearResult(msg);
+            return;
+        }
+
+        // ③ 結果表示。ピーク / クリップ数は書き出した WAV のサンプルで
+        // 測った値 (ゲイン適用時はアダプター側で適用後に測り直している)。
+        const bool gainApplied = (gainMode == 1);
+        const ConvolutionInfo &info = res.value();
+        m_peakLabel->setText(QStringLiteral("%1 (%2 dBFS)")
+            .arg(QString::number(info.outputPeak, 'f', 4),
+                 QString::number(info.outputPeakDbfs, 'f', 1)));
+        m_gainLabel->setText(QStringLiteral("%1 dB")
+                .arg(QString::number(info.suggestedGainDb, 'f', 1))
+            + (gainApplied ? QStringLiteral(" ") + I18n::tr("aur_gain_applied")
+                           : QString()));
+        m_clipLabel->setText(info.clipped
+            ? I18n::tr("aur_clipped_yes")
+                  .arg(QString::number(qulonglong(info.clippedSampleCount)))
+            : I18n::tr("aur_clipped_no"));
+
+        QStringList warn;
+        // RIR をリサンプリングした場合は必ず明示する (黙って変換しない)
+        if (note.resampled)
+            warn << QStringLiteral("• ") + I18n::tr("aur_resampled_note")
+                        .arg(QString::number(qRound64(note.fromHz)),
+                             QString::number(qRound64(note.toHz)));
+        if (gainApplied)
+            warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
+        for (const std::string &w : info.warnings)
+            warn << QStringLiteral("• ") + QString::fromStdString(w);
+        m_warnings->setText(warn.join(QStringLiteral("\n")));
+        m_warnings->setVisible(!warn.isEmpty());
+
+        // ④ A/B 波形
+        m_dryPlot->setSeries(waveformSeries(dry, fs, QColor("#0078D4")));
+        m_wetPlot->setSeries(waveformSeries(wet, fs, QColor("#2E8B57")));
+
+        m_status->setText(I18n::tr("aur_status_ok").arg(outPath));
+    });
+    th->start();
 }
 
 void AuralizationTab::clearResult(const QString &statusText)
@@ -287,4 +485,290 @@ void AuralizationTab::clearResult(const QString &statusText)
     m_dryPlot->setSeries({});
     m_wetPlot->setSeries({});
     m_status->setText(statusText);
+}
+
+// ── ⑤ 複数受音点の一括可聴化 ────────────────────────────────────────────────
+// 命名規則 <ドライ名>_<受音点名>.wav — 決定的な純関数 (ヘッドレス検証用に public)
+QStringList AuralizationTab::batchOutputNames(const QString &dryPath,
+                                              const QStringList &receiverNames)
+{
+    QString base = QFileInfo(dryPath).completeBaseName();
+    if (base.isEmpty()) base = QStringLiteral("auralized");
+    // ファイル名に使えない文字 (Windows 予約文字) と空白を '_' へ
+    static const QRegularExpression kBad(
+        QStringLiteral("[\\\\/:*?\"<>|\\s]+"));
+    QStringList out;
+    QSet<QString> used;
+    for (int i = 0; i < receiverNames.size(); ++i) {
+        QString n = receiverNames.at(i).trimmed();
+        n.replace(kBad, QStringLiteral("_"));
+        while (n.startsWith(QLatin1Char('_'))) n.remove(0, 1);
+        while (n.endsWith(QLatin1Char('_'))) n.chop(1);
+        if (n.isEmpty()) n = QStringLiteral("P%1").arg(i + 1);
+        const QString candidate = base + QLatin1Char('_') + n;
+        // 大文字小文字を区別しないファイルシステム (Windows/macOS) でも
+        // 衝突しないよう小文字化した名前で一意性を判定する
+        QString uniq = candidate;
+        int k = 2;
+        while (used.contains(uniq.toLower()))
+            uniq = candidate + QLatin1Char('_') + QString::number(k++);
+        used.insert(uniq.toLower());
+        out << uniq + QStringLiteral(".wav");
+    }
+    return out;
+}
+
+// 出力先フォルダ: 指定があればそれ、無ければプロジェクトのフォルダ、
+// 未保存プロジェクトはドライ WAV のフォルダ。どれも無ければ空 (エラー)。
+QString AuralizationTab::batchOutputDir() const
+{
+    const QString dir = m_batchOutDir->text().trimmed();
+    if (!dir.isEmpty()) return dir;
+    if (!m_p->filePath().isEmpty())
+        return QFileInfo(m_p->filePath()).absolutePath();
+    const QString dry = m_p->operaAcoustic().auralizationDryFile.trimmed();
+    if (!dry.isEmpty()) return QFileInfo(dry).absolutePath();
+    return QString();
+}
+
+void AuralizationTab::browseBatchOutDir()
+{
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, I18n::tr("aurb_out_dir"), batchOutputDir());
+    if (dir.isEmpty()) return;
+    m_batchOutDir->setText(dir);
+}
+
+// 単発実行 / 一括実行の排他とボタン状態を 1 か所で更新する
+void AuralizationTab::updateBusyUi()
+{
+    const bool idle = !m_runBusy && !m_batchBusy;
+    m_runBtn->setEnabled(idle);
+    m_batchRunBtn->setEnabled(idle);
+    m_batchCancelBtn->setEnabled(m_batchBusy && !m_batchCancel);
+}
+
+// model → 受音点表。直近の一括実行の結果 (m_batchRow*) は行番号で引き継ぐ
+void AuralizationTab::rebuildBatchTable()
+{
+    const bool wasUpdating = m_updating;
+    m_updating = true;
+    const QVector<ReceiverRow> &rows = m_p->acoustic().receivers;
+    m_batchTable->setRowCount(rows.size());
+    for (int i = 0; i < rows.size(); ++i) {
+        const ReceiverRow &r = rows.at(i);
+        // 受音点名 (空名は既定名) — 無効の受音点は対象外と明示
+        QString name = r.name.trimmed().isEmpty()
+                           ? QStringLiteral("P%1").arg(i + 1)
+                           : r.name;
+        if (!r.enabled)
+            name += QStringLiteral(" ") + I18n::tr("aurb_name_disabled");
+        m_batchTable->setItem(i, 0, roItem(name));
+
+        // RIR ファイル (編集可) + 参照ボタン
+        m_batchTable->setItem(i, 1, new QTableWidgetItem(r.rirFile));
+        auto *browse = new QPushButton(QStringLiteral("…"), m_batchTable);
+        connect(browse, &QPushButton::clicked, this, [this, i] {
+            AcousticOpts &a = m_p->acoustic();
+            if (i < 0 || i >= a.receivers.size()) return;
+            const QString path = QFileDialog::getOpenFileName(
+                this, I18n::tr("aurb_col_rir"), a.receivers.at(i).rirFile,
+                I18n::tr("rir_wav_filter"));
+            if (path.isEmpty()) return;
+            a.receivers[i].rirFile = path;
+            m_p->touch();   // → refresh → rebuildBatchTable
+        });
+        m_batchTable->setCellWidget(i, 2, browse);
+
+        // 状態: 直近の結果 > 対象外 (無効) > RIR 未指定 (スキップ理由) > 可能
+        QString status, tip;
+        if (m_batchRowText.contains(i)) {
+            status = m_batchRowText.value(i);
+            tip = m_batchRowTip.value(i);
+        } else if (!r.enabled) {
+            status = I18n::tr("aurb_row_disabled");
+        } else if (r.rirFile.trimmed().isEmpty()) {
+            status = I18n::tr("aurb_row_norir");
+        } else {
+            status = I18n::tr("aurb_row_ready");
+        }
+        QTableWidgetItem *st = roItem(status);
+        st->setToolTip(tip);
+        m_batchTable->setItem(i, 3, st);
+
+        // 試聴 (外部プレイヤー) — この一括実行で書き出した行のみ有効
+        auto *listen = new QPushButton(I18n::tr("aurb_listen"), m_batchTable);
+        listen->setToolTip(I18n::tr("aurb_listen_tip"));
+        listen->setEnabled(m_batchOutFiles.contains(i));
+        connect(listen, &QPushButton::clicked, this, [this, i] {
+            const QString path = m_batchOutFiles.value(i);
+            if (!path.isEmpty())
+                QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        });
+        m_batchTable->setCellWidget(i, 4, listen);
+    }
+    m_updating = wasUpdating;
+}
+
+void AuralizationTab::setBatchRowStatus(int row, const QString &text,
+                                        const QString &tooltip)
+{
+    m_batchRowText.insert(row, text);
+    if (tooltip.isEmpty()) m_batchRowTip.remove(row);
+    else                   m_batchRowTip.insert(row, tooltip);
+    if (row < 0 || row >= m_batchTable->rowCount()) return;
+    QTableWidgetItem *it = m_batchTable->item(row, 3);
+    if (!it) return;
+    const bool wasUpdating = m_updating;
+    m_updating = true;
+    it->setText(text);
+    it->setToolTip(tooltip);
+    m_updating = wasUpdating;
+}
+
+void AuralizationTab::runBatch()
+{
+    if (m_runBusy || m_batchBusy) return;   // 単発実行とは排他
+    apply();
+    const QString dryPath = m_p->operaAcoustic().auralizationDryFile.trimmed();
+    if (dryPath.isEmpty()) {
+        m_batchStatus->setText(I18n::tr("aurb_status_nodry"));
+        return;
+    }
+    const QString outDir = batchOutputDir();
+    if (outDir.isEmpty()) {
+        m_batchStatus->setText(I18n::tr("aurb_status_nodir"));
+        return;
+    }
+
+    // 前回の結果表示を消し、有効かつ RIR 指定済みの行だけをジョブにする。
+    // 対象外の行にはスキップ理由を先に表示する。
+    m_batchRowText.clear();
+    m_batchRowTip.clear();
+    m_batchOutFiles.clear();
+    m_batchJobs.clear();
+    m_batchDone = 0;
+    m_batchCancel = false;
+
+    const QVector<ReceiverRow> &rows = m_p->acoustic().receivers;
+    QStringList names;
+    for (const ReceiverRow &r : rows) names << r.name;
+    const QStringList files = batchOutputNames(dryPath, names);
+    for (int i = 0; i < rows.size(); ++i) {
+        if (!rows.at(i).enabled) {
+            m_batchRowText.insert(i, I18n::tr("aurb_row_disabled"));
+            continue;
+        }
+        if (rows.at(i).rirFile.trimmed().isEmpty()) {
+            m_batchRowText.insert(i, I18n::tr("aurb_row_norir"));
+            continue;
+        }
+        BatchJob job;
+        job.row = i;
+        job.rirPath = rows.at(i).rirFile;
+        job.outPath = QDir(outDir).filePath(files.at(i));
+        m_batchJobs.push_back(job);
+        m_batchRowText.insert(i, I18n::tr("aurb_row_pending"));
+        m_batchRowTip.insert(i, job.outPath);
+    }
+    rebuildBatchTable();
+    if (m_batchJobs.isEmpty()) {
+        m_batchStatus->setText(I18n::tr("aurb_status_nojobs"));
+        return;
+    }
+    m_batchBusy = true;
+    updateBusyUi();
+    startBatchJob(0);
+}
+
+// m_batchJobs[jobIdx] を QThread で実行し、完了時に次の行へ進む
+// (行間で中断可能。実行中の行は完了まで走る)
+void AuralizationTab::startBatchJob(int jobIdx)
+{
+    if (m_batchCancel || jobIdx >= m_batchJobs.size()) {
+        finishBatch(jobIdx);
+        return;
+    }
+    const BatchJob job = m_batchJobs.at(jobIdx);
+    m_batchStatus->setText(I18n::tr("aurb_status_running")
+                               .arg(jobIdx + 1).arg(m_batchJobs.size()));
+    setBatchRowStatus(job.row, I18n::tr("aurb_row_running"), job.outPath);
+
+    struct RunData {
+        AcousticResult<ConvolutionInfo> res;
+        QtAcousticAdapter::RirResampleNote note;
+    };
+    auto d = std::make_shared<RunData>();
+    const QString dryPath = m_p->operaAcoustic().auralizationDryFile;
+    const int gainMode = qBound(0, m_p->operaAcoustic().auralizationGainMode, 1);
+
+    QThread *th = QThread::create([d, dryPath, job, gainMode] {
+        d->res = QtAcousticAdapter::convolveFiles(
+            dryPath, job.rirPath, job.outPath, gainMode,
+            nullptr, nullptr, nullptr, &d->note);
+    });
+    connect(th, &QThread::finished, this, [this, th, d, job, jobIdx] {
+        th->deleteLater();
+        if (d->res.success()) {
+            const ConvolutionInfo &info = d->res.value();
+            // 行ごとの結果ログ: 出力名 + リサンプリングの明示 + クリップ警告
+            QString txt = I18n::tr("aurb_row_done")
+                              .arg(QFileInfo(job.outPath).fileName());
+            QStringList tip;
+            tip << job.outPath;
+            if (d->note.resampled) {
+                const QString rs = I18n::tr("aurb_row_resampled")
+                    .arg(QString::number(qRound64(d->note.fromHz)),
+                         QString::number(qRound64(d->note.toHz)));
+                txt += QStringLiteral(" ") + rs;
+                tip << rs;
+            }
+            if (info.clipped) {
+                const QString cl = I18n::tr("aurb_row_clipped")
+                    .arg(QString::number(qulonglong(info.clippedSampleCount)));
+                txt += QStringLiteral(" ") + cl;
+                tip << cl;
+            }
+            for (const std::string &w : info.warnings)
+                tip << QString::fromStdString(w);
+            setBatchRowStatus(job.row, txt, tip.join(QStringLiteral("\n")));
+            m_batchOutFiles.insert(job.row, job.outPath);
+            if (QWidget *w = m_batchTable->cellWidget(job.row, 4))
+                w->setEnabled(true);   // 試聴ボタン
+            ++m_batchDone;
+        } else {
+            setBatchRowStatus(job.row,
+                I18n::tr("aurb_row_error")
+                    .arg(QString::fromUtf8(
+                        acousticErrorCodeName(d->res.errorCode()))),
+                QString::fromStdString(d->res.message()));
+        }
+        startBatchJob(jobIdx + 1);
+    });
+    th->start();
+}
+
+void AuralizationTab::finishBatch(int nextIdx)
+{
+    // 中断時: 未実行のまま残った行へ明示する
+    for (int k = nextIdx; k < m_batchJobs.size(); ++k)
+        setBatchRowStatus(m_batchJobs.at(k).row,
+                          I18n::tr("aurb_row_cancelled"));
+    const int total = m_batchJobs.size();
+    const bool cancelled = (nextIdx < total);
+    m_batchBusy = false;
+    m_batchCancel = false;
+    updateBusyUi();
+    m_batchStatus->setText(
+        (cancelled ? I18n::tr("aurb_status_cancelled")
+                   : I18n::tr("aurb_status_done"))
+            .arg(m_batchDone).arg(total));
+}
+
+void AuralizationTab::cancelBatch()
+{
+    if (!m_batchBusy || m_batchCancel) return;
+    m_batchCancel = true;   // 実行中の行の完了後、次の行へ進まず終了する
+    updateBusyUi();
+    m_batchStatus->setText(I18n::tr("aurb_status_cancelling"));
 }

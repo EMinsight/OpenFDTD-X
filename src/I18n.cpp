@@ -861,11 +861,15 @@ void I18n::loadTables() {
     add("aur_model_hint",
         "ドライ (無響/近接収録) 歌唱 WAV と実測 RIR WAV を畳み込み、ホールで"
         "歌ったときの音をウェット WAV (float32) として書き出します。自動正規化"
-        "とリサンプリングは行いません (fs 不一致はエラーになります)。",
+        "は行いません。fs が異なる場合は RIR をドライ側の fs へリサンプリング"
+        "(Kaiser 窓 sinc、阻止域 ~90 dB) して続行し、変換した旨を結果に"
+        "明示します (ドライ音源は変換しません)。",
         "Convolves a dry (anechoic/close-mic) singing WAV with a measured RIR "
         "WAV and writes the wet result as a float32 WAV. No automatic "
-        "normalization or resampling is performed (a sample-rate mismatch is "
-        "an error).");
+        "normalization is performed. On a sample-rate mismatch the RIR is "
+        "resampled to the dry file's rate (Kaiser-windowed sinc, ~90 dB "
+        "stopband) and the conversion is reported in the results (the dry "
+        "source is never resampled).");
     add("aur_input_section", "入力", "Input");
     add("aur_dry_file", "ドライ歌唱 WAV", "Dry singing WAV");
     add("aur_rir_file", "RIR WAV (実測RIR分析タブと共用)",
@@ -889,10 +893,17 @@ void I18n::loadTables() {
     add("aur_status_error", "畳み込み失敗: %1 — %2",
         "Convolution failed: %1 — %2");
     add("aur_no_resample_note",
-        "サンプルレートが一致していません。本機能はリサンプリングを行わない"
-        "ため、外部ツールで fs を揃えてから再実行してください。",
-        "Sample rates do not match. This feature does not resample; convert "
-        "the files to a common rate externally and retry.");
+        "サンプルレートを自動変換できませんでした (fs が不正または非対応)。"
+        "外部ツールで fs を揃えてから再実行してください。",
+        "The sample rate could not be converted automatically (invalid or "
+        "unsupported fs). Convert the files to a common rate externally and "
+        "retry.");
+    add("aur_resampled_note",
+        "RIR を %1 Hz → %2 Hz へリサンプリングしました "
+        "(ドライ音源に合わせるため。Kaiser 窓 sinc、阻止域 ~90 dB)。",
+        "The RIR was resampled from %1 Hz to %2 Hz to match the dry source "
+        "(Kaiser-windowed sinc, ~90 dB stopband).");
+    add("aur_status_running", "畳み込みを実行中…", "Convolving…");
     add("aur_status_ok", "完了 — 出力: %1", "Done — output: %1");
     add("aur_result_section", "結果", "Results");
     add("aur_output_peak", "出力ピーク", "Output peak");

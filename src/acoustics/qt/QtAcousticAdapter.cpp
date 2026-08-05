@@ -1,5 +1,6 @@
 // QtAcousticAdapter.cpp
 #include "QtAcousticAdapter.h"
+#include "../core/Resampler.h"
 #include "../io/WavWriter.h"
 
 #include <QFile>
@@ -185,10 +186,12 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
                                  const QString &outputPath, int gainMode,
                                  std::vector<double> *outDry,
                                  std::vector<double> *outWet,
-                                 double *outSampleRate)
+                                 double *outSampleRate,
+                                 RirResampleNote *outResample)
 {
     typedef AcousticResult<ConvolutionInfo> Result;
 
+    if (outResample) *outResample = RirResampleNote();
     const AcousticResult<AudioBuffer> dry = readWav(dryPath);
     if (!dry.success())
         return Result::error(dry.errorCode(),
@@ -201,10 +204,31 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
         return Result::error(AcousticErrorCode::InvalidArgument,
                              "empty output path");
 
-    // 畳み込み (fs 不一致はコアがリサンプリングせずエラーにする)
+    // fs 不一致は RIR をドライ側 fs へリサンプリングして続行する (負債 #12)。
+    // 音源素材 (ドライ) は変えない。変換の事実は outResample で通知し、
+    // 呼び出し側 UI が必ず表示する (黙って変換しない)。fs 自体が不正
+    // (非正・非整数など) で変換できない場合はここでエラーになる。
+    AudioBuffer rirUsed = rir.value();
+    if (dry.value().sampleRateHz > 0.0 && rirUsed.sampleRateHz > 0.0 &&
+        rirUsed.sampleRateHz != dry.value().sampleRateHz) {
+        const double fromHz = rirUsed.sampleRateHz;
+        AcousticResult<AudioBuffer> rs =
+            resampleBuffer(rirUsed, dry.value().sampleRateHz);
+        if (!rs.success())
+            return Result::error(rs.errorCode(),
+                                 std::string("rir resample: ") + rs.message());
+        rirUsed = std::move(rs.value());
+        if (outResample) {
+            outResample->resampled = true;
+            outResample->fromHz = fromHz;
+            outResample->toHz = rirUsed.sampleRateHz;
+        }
+    }
+
+    // 畳み込み (fs はここで一致済み。コアは不一致を引き続きエラーにする)
     const ConvolutionEngine engine;
     AcousticResult<ConvolvedAudio> conv =
-        engine.convolve(dry.value(), rir.value());
+        engine.convolve(dry.value(), rirUsed);
     if (!conv.success())
         return Result::error(conv.errorCode(), conv.message());
 

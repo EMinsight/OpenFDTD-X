@@ -424,6 +424,9 @@ add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/AcousticMetrics.cpp
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/ConvolutionEngine.cpp
+    # 有理比ポリフェーズ Kaiser 窓 sinc リサンプラ (負債 #12) —
+    # 可聴化の fs 不一致時に RIR をドライ側 fs へ変換する実体
+    src/acoustics/core/Resampler.cpp
     src/acoustics/core/Fft.cpp
     src/acoustics/core/FormantEstimator.cpp
     src/acoustics/core/VocalAnalyzer.cpp

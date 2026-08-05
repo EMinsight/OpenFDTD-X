@@ -751,7 +751,8 @@ void AcousticTab::applySurfaces()
 }
 
 // 「⊕ 畳み込み」— 実装済みの可聴化経路 (可聴化タブと同じ
-// QtAcousticAdapter::convolveFiles、同期実行も同タブと同じ契約) へ委譲する。
+// QtAcousticAdapter::convolveFiles。fs 不一致は RIR をドライ側 fs へ
+// リサンプリングして続行し、変換した旨を完了ダイアログに明示する) へ委譲する。
 // 入力は可聴化タブと共通の OperaAcousticSettings (ドライ WAV / RIR WAV /
 // 出力先 / ゲインモード)。未設定なら実行せず可聴化タブへ案内する
 // (未設定のまま「完了」を装う虚偽表示をしない — CLAUDE.md 絶対規則 5)。
@@ -777,11 +778,14 @@ void AcousticTab::runConvolve()
         s.auralizationOutputFile = outPath;
         m_p->touch();
     }
+    QtAcousticAdapter::RirResampleNote note;
     const AcousticResult<ConvolutionInfo> res =
         QtAcousticAdapter::convolveFiles(s.auralizationDryFile, s.rirPath,
-                                         outPath, s.auralizationGainMode);
+                                         outPath, s.auralizationGainMode,
+                                         nullptr, nullptr, nullptr, &note);
     if (!res.success()) {
-        // fs 不一致はリサンプリングしない旨も明示 (可聴化タブと同じ文言)
+        // fs が不正で自動変換もできない場合のみここに来る
+        // (単なる不一致は RIR のリサンプリングで続行 — 可聴化タブと同じ)
         QString msg = I18n::tr("aur_status_error")
                           .arg(QString::fromUtf8(
                                    acousticErrorCodeName(res.errorCode())),
@@ -793,10 +797,15 @@ void AcousticTab::runConvolve()
     }
     // 結果は書き出した WAV のサンプルで測った実測値 (アダプター契約)。
     const ConvolutionInfo &info = res.value();
-    QMessageBox::information(this, I18n::tr("ac2_convolve"),
-        I18n::tr("ac2_convolve_done")
-            .arg(outPath,
-                 QString::number(info.outputPeakDbfs, 'f', 1),
-                 QString::number(info.suggestedGainDb, 'f', 1),
-                 I18n::tr("t_auralization")));
+    QString done = I18n::tr("ac2_convolve_done")
+                       .arg(outPath,
+                            QString::number(info.outputPeakDbfs, 'f', 1),
+                            QString::number(info.suggestedGainDb, 'f', 1),
+                            I18n::tr("t_auralization"));
+    // RIR をリサンプリングした場合は必ず明示する (黙って変換しない)
+    if (note.resampled)
+        done += QStringLiteral("\n\n") + I18n::tr("aur_resampled_note")
+                    .arg(QString::number(qRound64(note.fromHz)),
+                         QString::number(qRound64(note.toHz)));
+    QMessageBox::information(this, I18n::tr("ac2_convolve"), done);
 }
