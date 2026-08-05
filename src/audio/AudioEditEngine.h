@@ -75,10 +75,39 @@ AudioBuffer removeDcRange(const AudioBuffer &in, std::size_t a, std::size_t z);
 // クリック除去 (隣接 2 点平均の平滑)
 AudioBuffer smoothRange(const AudioBuffer &in, std::size_t a, std::size_t z);
 
-// ── エフェクト (全体に適用 — mock と同じ) ───────────────────────────────────
-enum class BiquadKind { Peaking, HighPass, LowPass };
+// ── 範囲編集の補完 ──────────────────────────────────────────────────────────
+// 位置 at (サンプル。全長へクランプ) へ durationSec 分の無音を挿入する。
+// 長さは +round(durationSec·fs)。durationSec <= 0 は入力のまま
+AudioBuffer insertSilence(const AudioBuffer &in, std::size_t at,
+                          double durationSec);
+// 選択範囲 [a, z) を count 回連結してその場に展開する (ループ素材作成)。
+// 長さは +（count−1)·(z−a)。count < 1 は入力のまま
+AudioBuffer repeatRange(const AudioBuffer &in, std::size_t a, std::size_t z,
+                        int count);
+// 2 バッファを等パワー (sin/cos) クロスフェードで結合する。
+// 重なりは min(round(overlapSec·fs), 両者の長さ)、出力長 = Na + Nb − 重なり。
+// fs が異なる場合は b を a の fs へリサンプルしてから結合する
+// (変換不能な fs の場合のみ b のサンプルをそのまま用いる)。
+// チャンネル数が異なる場合は多い方に合わせ、モノは複製する
+AudioBuffer crossfadeConcat(const AudioBuffer &a, const AudioBuffer &b,
+                            double overlapSec);
 
-// RBJ Audio EQ Cookbook の biquad。gainDb は Peaking のみ使用。
+// ── サンプルレート変換 (音響コアのポリフェーズ Kaiser sinc へ委譲) ──────────
+// acoustics::resampleBuffer (阻止域 ~90 dB、群遅延補正済み、全 ch 同一設計)
+// による高品質変換。同一 fs は入力とビット一致。失敗時 (非整数 fs 等) は
+// 入力を変更せず返し、error に理由を入れる。
+// ピッチ連動の速度変更 (applyRate) とは用途が異なる (こちらは音高を保つ)
+AudioBuffer resampleTo(const AudioBuffer &in, double dstRateHz,
+                       std::string *error = nullptr);
+
+// ── エフェクト (全体に適用 — mock と同じ) ───────────────────────────────────
+enum class BiquadKind {
+    Peaking, HighPass, LowPass,
+    LowShelf, HighShelf, Notch, BandPass   // RBJ Cookbook の補完分
+};
+
+// RBJ Audio EQ Cookbook の biquad。gainDb は Peaking / LowShelf / HighShelf
+// のみ使用。BandPass は「constant 0 dB peak gain」型 (f0 で 0 dB)。
 AudioBuffer applyBiquad(const AudioBuffer &in, BiquadKind kind,
                         double freqHz, double q, double gainDb);
 
