@@ -34,6 +34,10 @@ public:
 
 private:
     void updateResolution();   // 探索順どおりの解決結果をライブ表示
+    // 実行前の入力準備: 現在のプロジェクトを作業ディレクトリへ .ofd + .ofdx
+    // で書き出し、その .ofd の絶対パスを返す (失敗時は空 + err に理由)。
+    // 併せて前回実行の契約ファイルを消す (残骸を今回の結果として拾わない)。
+    QString prepareRunInput(QString *workingDir, QString *err);
     void startSolver();
     void stopSolver();
 
