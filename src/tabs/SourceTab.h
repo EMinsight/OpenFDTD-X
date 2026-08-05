@@ -54,6 +54,8 @@ private:
     QFormLayout  *m_pwForm = nullptr;
     QTableWidget *m_points;
     QLabel       *m_warning;
+    // 音響ドメインのみ表示: 励振波形と音源リスト WAV の役割分担の注記
+    QLabel       *m_acWaveNote = nullptr;
 
     // ── 波源の種類 (mock: 波源の種類 / Source type) ──────────────────────────
     // 表示フィルタのみのローカル状態。モデルの平面波 ON/OFF は従来どおり

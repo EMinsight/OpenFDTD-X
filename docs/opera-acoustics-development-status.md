@@ -75,6 +75,26 @@
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
 
+### 計算ボタンと ADR-0004 の整合 (2026-08-05)
+
+音響ドメインの 計算 ボタンは ofd (電磁 FDTD) を波動アナロジーとして起動する
+だけで音響指標の定量値は得られない (ADR-0004 — 音響 FDTD は外部専用ソルバー)。
+定量計算と誤解させないため (絶対規則 5)、以下を追加:
+
+- 計算実行前の確認ダイアログ (`MainWindow::runSimulation`、音響ドメインのみ。
+  定量的な代替 3 経路 — 統計推定 / 実測 RIR 分析 / 外部音響ソルバー — へ誘導。
+  「今後表示しない」は QSettings `run/acousticAnalogyWarned` に永続化)。
+- 結果プロットの収束モード (⟨p⟩/⟨v⟩ 表示) に「波動アナロジー — 定量的な
+  音響量ではありません」の注記 (`ppb_conv_ac_note`)、④音源の波形セクションに
+  「励振は解析用波形で、音源リストの WAV は可聴化タブで RIR と畳み込む」の
+  注記 (`sox_ac_wave_note`)、音響ソルバ連携タブに「ExternalFDTD ≠ OpenFDTD
+  (ofd)」の明記とソルバー未検出時の具体的な導入案内。
+- ofd の HDF5 `/metadata/VPoint` 波形からの RIR 抽出は**実装しない**:
+  Maxwell の解 (ベクトル場・電磁境界/材料モデル) であり音響 RIR として
+  書き出すと数値の捏造になるため (ADR-0004 の採択理由そのまま)。
+- selftest +6 checks (確認ダイアログの I18n キーと文言の要点) で
+  7158 → 7164。
+
 ### 音源リスト → ソルバ波源 (feed) の反映 (2026-08-05)
 
 音源リスト (AcousticSourceTab、`.ofdx` `acoustic.sources`) に「⚡ 有効な

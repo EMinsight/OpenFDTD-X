@@ -45,6 +45,12 @@ const bool s_i18n = [] {
         "* The solver is excited with a Gaussian pulse (impulse-response "
         "measurement). Source-list audio files are convolved with the RIR "
         "in the Auralization tab");
+    // 室内音響の収束表示: 実行カーネルは ofd (電磁 FDTD) の波動アナロジーで、
+    // ⟨p⟩/⟨v⟩ は定量的な音響量ではない (ADR-0004 — 絶対規則 5)
+    ofd::I18n::reg("ppb_conv_ac_note",
+        "※ 波動アナロジー (電磁 FDTD) — 定量的な音響量ではありません",
+        "* Wave analogy (electromagnetic FDTD) — not quantitative "
+        "acoustic quantities");
     return true;
 }();
 } // namespace
@@ -466,6 +472,25 @@ void PlotPanel::paintEvent(QPaintEvent *)
         }
     } else {
         p.drawText(QPointF(plot.left(), titleY), I18n::tr("pp_convergence"));
+
+        // 室内音響: ⟨p⟩/⟨v⟩ は ofd (電磁 FDTD) の波動アナロジー表示で、
+        // 定量的な音響量ではないことを明示する (ADR-0004 — 絶対規則 5)。
+        // データ有無に関わらず描く (実行前でも何が得られるかを示す)。
+        if (m_domain == Domain::Acoustic) {
+            QFont f = p.font();
+            const QFont keep = f;
+            // QSS 適用時はポイントではなくピクセル指定のことがある
+            if (f.pointSizeF() > 0)
+                f.setPointSizeF(f.pointSizeF() * 0.85);
+            else if (f.pixelSize() > 0)
+                f.setPixelSize(qMax(1, int(f.pixelSize() * 0.85)));
+            p.setFont(f);
+            QRectF noteRect(plot.left() + 8, plot.top() + 6,
+                            plot.width() - 16, 60);
+            p.drawText(noteRect, Qt::TextWordWrap,
+                       I18n::tr("ppb_conv_ac_note"));
+            p.setFont(keep);
+        }
         if (m_steps.isEmpty()) {
             p.drawText(plot, Qt::AlignCenter,
                        QStringLiteral("no data — run the solver"));

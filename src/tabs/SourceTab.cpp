@@ -67,6 +67,18 @@ const bool s_i18n = [] {
     I18n::reg("sox_f0_khz", "中心周波数 [kHz]", "Center frequency [kHz]");
     I18n::reg("sox_fmin_khz", "fmin [kHz]", "fmin [kHz]");
     I18n::reg("sox_fmax_khz", "fmax [kHz]", "fmax [kHz]");
+    // 音響ドメインの波形注記: ソルバ励振は解析用波形であって、音源リストの
+    // 音声ファイル (WAV) ではない (WAV は可聴化タブで RIR と畳み込む)
+    I18n::reg("sox_ac_wave_note",
+              "※ ソルバ励振は選択した解析用波形 (既定ガウシアンパルス = "
+              "インパルス応答の計測)。音源リストの音声ファイル (WAV) は"
+              "ソルバへは入らず、可聴化タブで RIR と畳み込んで聞こえ方を"
+              "作ります。",
+              "* The solver is excited with the selected analysis waveform "
+              "(default Gaussian pulse = impulse-response measurement). "
+              "Source-list audio files (WAV) never enter the solver; the "
+              "Auralization tab convolves them with the RIR to render "
+              "the listening result.");
     return true;
 }();
 
@@ -208,6 +220,14 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
     auto *whint = new QLabel(I18n::tr("sox_wave_hint"), sw);
     whint->setWordWrap(true);
     sw->vbox()->addWidget(whint);
+
+    // 音響ドメインのみ: 励振波形と音源リストの WAV の役割分担の注記
+    // (「スピーカーなら音声ファイルの波形になるのでは」という誤解への対応)
+    m_acWaveNote = new QLabel(I18n::tr("sox_ac_wave_note"), sw);
+    m_acWaveNote->setWordWrap(true);
+    m_acWaveNote->setStyleSheet("color:#888888; font-size:11px;");
+    m_acWaveNote->setVisible(false);
+    sw->vbox()->addWidget(m_acWaveNote);
     v->addWidget(sw);
 
     // observation points
@@ -360,6 +380,10 @@ void SourceTab::updateDomainVisibility()
     if (m_fmaxLabel)
         m_fmaxLabel->setText(ac ? I18n::tr("sox_fmax_khz")
                                 : I18n::tr("sox_fmax"));
+
+    // 室内音響のみ: 励振波形 (解析用) と音源リスト WAV (可聴化用) の注記
+    if (m_acWaveNote)
+        m_acWaveNote->setVisible(d == Domain::Acoustic);
 
     updateSourceType();
 }

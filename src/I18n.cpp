@@ -507,6 +507,28 @@ void I18n::loadTables() {
         "Cannot run: the RCWA / FMM layer stack is empty or invalid.\n"
         "Define at least two valid layers under \"Layer stack\" on the "
         "Optical tab (no orcwa kernel input can be generated).");
+    // 音響ドメインの計算ボタン: ofd (電磁 FDTD) の波動アナロジー実行で
+    // あることの確認 (ADR-0004 — 音響 FDTD は外部専用ソルバー。絶対規則 5)
+    add("run_acoustic_analogy",
+        "計算ボタンは OpenFDTD (ofd, 電磁 FDTD) を波動アナロジーとして"
+        "実行します。\n時間軸は電磁波基準 (c₀ ≈ 3×10⁸ m/s) のため、"
+        "RT60 等の音響指標の定量値は得られません (ADR-0004)。\n\n"
+        "定量的な室内音響には次を使ってください:\n"
+        "・統計推定 — ホール解析タブ\n"
+        "・実測 RIR の分析 — RIR分析タブ\n"
+        "・外部音響ソルバー — 音響ソルバ連携タブ\n\n"
+        "続行しますか？",
+        "The Run button launches OpenFDTD (ofd, an electromagnetic FDTD) "
+        "as a wave analogy.\nIts time axis is electromagnetic "
+        "(c0 ≈ 3×10⁸ m/s), so quantitative acoustic metrics such as RT60 "
+        "cannot be obtained (ADR-0004).\n\n"
+        "For quantitative room acoustics use:\n"
+        "- Statistical estimation — Hall analysis tab\n"
+        "- Measured RIR analysis — RIR analysis tab\n"
+        "- External acoustic solver — Acoustic solver tab\n\n"
+        "Continue?");
+    add("run_aa_continue", "続行", "Continue");
+    add("run_aa_dont_show", "今後表示しない", "Don't show again");
     add("sb_ready", "準備完了", "Ready");
     add("sb_running", "実行中…", "Running…");
     add("sb_failed", "失敗", "Failed");

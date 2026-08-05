@@ -104,6 +104,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSpinBox>
@@ -1068,6 +1069,23 @@ void MainWindow::runSimulation()
                                  I18n::tr("run_rcwa_stack_err"));
             return;
         }
+    }
+    // 音響ドメイン: 計算ボタンは ofd (電磁 FDTD) の波動アナロジー実行で、
+    // 音響指標の定量値は得られない (ADR-0004 — 音響 FDTD は外部専用ソルバー)。
+    // 定量計算と誤解しないよう初回に確認する (絶対規則 5)。ユーザー操作から
+    // しか到達しないので、ヘッドレスのスクリーンショット実行では出ない。
+    if (m_project->activeDomain() == Domain::Acoustic &&
+        !QSettings().value("run/acousticAnalogyWarned", false).toBool()) {
+        QMessageBox box(QMessageBox::Question, I18n::tr("tb_calc"),
+                        I18n::tr("run_acoustic_analogy"),
+                        QMessageBox::Ok | QMessageBox::Cancel, this);
+        if (auto *ok = box.button(QMessageBox::Ok))
+            ok->setText(I18n::tr("run_aa_continue"));
+        auto *dontShow = new QCheckBox(I18n::tr("run_aa_dont_show"), &box);
+        box.setCheckBox(dontShow);
+        if (box.exec() != QMessageBox::Ok) return;
+        if (dontShow->isChecked())
+            QSettings().setValue("run/acousticAnalogyWarned", true);
     }
     m_plotPanel->clearConvergence();
     // 前回実行の結果カーブを消し、実行中は収束履歴を前面にする
