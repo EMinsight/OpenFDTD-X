@@ -754,6 +754,12 @@ void I18n::loadTables() {
     add("rir_browse", "参照…", "Browse…");
     add("rir_wav_filter", "WAV ファイル (*.wav);;すべてのファイル (*)",
         "WAV files (*.wav);;All files (*)");
+    // 音響ソルバ連携の実行結果 (契約検証済み rir.wav) を設定したときのヒント
+    add("rir_solver_assigned",
+        "✔ 音響ソルバ連携の実行結果 (%1) を実測RIRに設定しました — "
+        "下の「▶ RIR を分析」で分析できます。",
+        "✔ The result of the acoustic solver run (%1) has been set as the "
+        "measured RIR — press “▶ Analyze RIR” below to analyze it.");
     add("rir_channel", "チャンネル", "Channel");
     add("rir_ch_left", "L", "L");
     add("rir_ch_right", "R", "R");

@@ -16,8 +16,10 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -131,6 +133,39 @@ const bool s_i18nBatch = [] {
         "single eligible row. Matching ignores extension, case and symbols. "
         "Ambiguous rows are left unassigned with the reason in the status "
         "column.");
+    // ① 🎵 音源リストからドライ音源を取り込む導線 (接頭辞 aurd_)
+    ofd::I18n::reg("aurd_from_source", "🎵 音源リストから",
+                   "🎵 From source list");
+    ofd::I18n::reg("aurd_from_source_tip",
+        "「🎤 音源/WAV/指向性」タブの音源一覧で信号 (WAV) を設定した有効な"
+        "音源から 1 つ選び、ドライ音源に取り込みます (1 音源 = 1 ドライ音源)。",
+        "Picks one of the enabled sources that have a signal (WAV) assigned in "
+        "the Source/WAV/Directivity tab and uses it as the dry source "
+        "(one source = one dry file).");
+    ofd::I18n::reg("aurd_from_source_disabled_tip",
+        "「🎤 音源/WAV/指向性」タブで音源に信号 (WAV) を設定してください "
+        "(信号が設定された有効な音源がありません)。",
+        "Assign a signal (WAV) to a source in the Source/WAV/Directivity tab "
+        "first (no enabled source has a signal).");
+    ofd::I18n::reg("aurd_title", "音源リストからドライ音源を選択",
+                   "Choose the dry source from the source list");
+    ofd::I18n::reg("aurd_prompt",
+        "ドライ音源として使う音源を選んでください (1 音源 = 1 ドライ音源):",
+        "Choose the source to use as the dry signal "
+        "(one source = one dry file):");
+    ofd::I18n::reg("aurd_missing_mark", "(ファイルが見つかりません)",
+                   "(file not found)");
+    ofd::I18n::reg("aurd_applied",
+                   "ドライ音源に音源 %1 の信号を設定しました — 「▶ 実行」で"
+                   "畳み込めます。",
+                   "Dry source set from source %1 — press “▶ Run” to convolve.");
+    ofd::I18n::reg("aurd_note",
+        "▸ ドライ音源は 1 音源 = 1 ファイルです。複数音源の同時再生 "
+        "(ミックス) は未実装 — 混ぜたい場合は「🎚 音響編集・解析」タブで"
+        "合成してから、その WAV を選んでください。",
+        "▸ The dry source is one file for one source. Simultaneous playback of "
+        "several sources (mixing) is not implemented — mix them in the Audio "
+        "Editor tab first and choose the resulting WAV here.");
     ofd::I18n::reg("aurb_auto_only_unset", "未設定の行のみ",
                    "Only rows without an RIR");
     ofd::I18n::reg("aurb_auto_only_unset_tip",
@@ -209,8 +244,23 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
     // ① 入力
     auto *sIn = new SectionBox(I18n::tr("aur_input_section"), body);
     QPushButton *dryBrowse = nullptr, *rirBrowse = nullptr, *outBrowse = nullptr;
+    // ドライ WAV: ファイル選択に加えて、音源リスト (音源/WAV/指向性タブ) で
+    // 信号を設定済みの音源から取り込む導線を並べる
     sIn->form()->addRow(I18n::tr("aur_dry_file"),
         pathRow(m_dryPath, dryBrowse, sIn, I18n::tr("rir_file_placeholder")));
+    // 取り込みボタンは別の行に置く (パス欄と並べると左ペインの幅では
+    // ファイル名が読めなくなるため)
+    m_dryFromSrcBtn = new QPushButton(I18n::tr("aurd_from_source"), sIn);
+    m_dryFromSrcBtn->setObjectName(QStringLiteral("aurDryFromSourceBtn"));
+    auto *dryBtnRow = new QHBoxLayout();
+    dryBtnRow->addWidget(m_dryFromSrcBtn);
+    dryBtnRow->addStretch(1);
+    sIn->form()->addRow(QString(), dryBtnRow);
+    // 1 音源 = 1 ドライ音源 (ミックスは未実装) を UI に明記する
+    auto *dryNote = new QLabel(I18n::tr("aurd_note"), sIn);
+    dryNote->setWordWrap(true);
+    dryNote->setStyleSheet(QStringLiteral("color:#888888;"));
+    sIn->form()->addRow(QString(), dryNote);
     sIn->form()->addRow(I18n::tr("aur_rir_file"),
         pathRow(m_rirPath, rirBrowse, sIn, I18n::tr("rir_file_placeholder")));
     sIn->form()->addRow(I18n::tr("aur_output_file"),
@@ -337,6 +387,8 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
 
     connect(dryBrowse, &QPushButton::clicked,
             this, &AuralizationTab::browseDry);
+    connect(m_dryFromSrcBtn, &QPushButton::clicked,
+            this, &AuralizationTab::chooseDryFromSource);
     connect(rirBrowse, &QPushButton::clicked,
             this, &AuralizationTab::browseRir);
     connect(outBrowse, &QPushButton::clicked,
@@ -380,6 +432,14 @@ void AuralizationTab::refresh()
     m_rirPath->setText(s.rirPath);
     m_outPath->setText(s.auralizationOutputFile);
     m_gainMode->setCurrentIndex(qBound(0, s.auralizationGainMode, 1));
+    // 🎵 音源リストから: 信号が設定された有効な音源が 1 つも無ければ無効化し、
+    // 理由をツールチップで示す (押しても何も起きないボタンにしない)
+    const bool hasSrcSignal =
+        !drySourceCandidates(m_p->acoustic().sources).isEmpty();
+    m_dryFromSrcBtn->setEnabled(hasSrcSignal);
+    m_dryFromSrcBtn->setToolTip(I18n::tr(hasSrcSignal
+                                             ? "aurd_from_source_tip"
+                                             : "aurd_from_source_disabled_tip"));
     m_updating = false;
     // ⑤ 受音点表は AcousticTab の編集にも追従する。一括実行中は実行中の
     //    状態表示を上書きしないよう作り直しを保留する (モデル編集は反映済み)
@@ -406,6 +466,49 @@ void AuralizationTab::browseDry()
     m_dryPath->setText(path);
     m_p->operaAcoustic().enabled = true;
     apply();
+}
+
+// ① 音源リスト (.ofdx acoustic.sources) の信号をドライ音源として取り込む。
+// 音源が「スピーカーから流れる音」を持っていても可聴化に効かなければ
+// 意味が無いため、ここで 1 音源を選んで auralizationDryFile に入れる。
+// ミックスは行わない (1 音源 = 1 ドライ音源 — 規則 5: 未実装を実装済みに
+// 見せない)。合成が要る場合は音響編集・解析タブで作った WAV を選ぶ。
+void AuralizationTab::chooseDryFromSource()
+{
+    const QVector<AcousticSourceRow> &src = m_p->acoustic().sources;
+    const QVector<int> cand = drySourceCandidates(src);
+    if (cand.isEmpty()) {   // ボタンは無効化済み — 念のための保険
+        QMessageBox::information(this, I18n::tr("aurd_title"),
+                                 I18n::tr("aurd_from_source_disabled_tip"));
+        return;
+    }
+    // 表示は「#行番号 名前 — ファイル名」。行番号を付けて一意にしてある
+    // (同名の音源でも選択結果を取り違えない)。
+    QStringList items;
+    for (int i : cand) {
+        const QString sig = src[i].signal.trimmed();
+        const QFileInfo fi(sig);
+        const QString shown = fi.fileName().isEmpty() ? sig : fi.fileName();
+        QString label = QStringLiteral("#%1 %2 — %3")
+                            .arg(i + 1)
+                            .arg(src[i].name.isEmpty() ? QStringLiteral("-")
+                                                       : src[i].name,
+                                 shown);
+        // 実在しないファイルは印を付ける (選べるが嘘の表示はしない)
+        if (!fi.exists() || !fi.isFile())
+            label += QLatin1Char(' ') + I18n::tr("aurd_missing_mark");
+        items << label;
+    }
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(
+        this, I18n::tr("aurd_title"), I18n::tr("aurd_prompt"), items, 0,
+        /*editable=*/false, &ok);
+    if (!ok) return;
+    const int sel = items.indexOf(chosen);
+    if (sel < 0 || sel >= cand.size()) return;
+    if (!setDryFromSource(*m_p, cand[sel])) return;
+    m_p->touch();   // → changed → refresh() がドライ欄を更新する
+    m_status->setText(I18n::tr("aurd_applied").arg(cand[sel] + 1));
 }
 
 void AuralizationTab::browseRir()

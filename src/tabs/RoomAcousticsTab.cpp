@@ -37,6 +37,20 @@ using namespace ofd::roomac;
 namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
+    // このタブの役割 (どこで何が決まるか — 操作が分かりにくいという報告への対応)
+    I18n::reg("rah_role_note",
+              "▸ このタブで室の吸音を決めます — 「残響計算 (Sabine)」サブタブの"
+              "吸音バジェット (面ごとの α と面積) が残響時間と"
+              "「音響解析」タブの材質設定に直結します。\n"
+              "▸ 吸音バジェットは .ofdx に保存され、「🔌 音響ソルバ連携」の"
+              "実行時に入力としてソルバーへ渡されます (利用は外部ソルバー次第)。",
+              "▸ This tab defines the room's absorption — the absorption "
+              "budget (per-surface α and area) on the \"Reverb (Sabine)\" "
+              "sub-tab drives the reverberation time and the surface "
+              "materials on the \"Acoustic\" tab.\n"
+              "▸ The budget is stored in the .ofdx sidecar and handed to the "
+              "solver as input when you run \"🔌 Acoustic Solver\" (whether "
+              "it is used is up to that solver).");
     // ホールプリセット
     I18n::reg("rah_hall_section", "ホールモデル / Hall preset (実測データ)",
               "Hall preset (measured data)");
@@ -908,6 +922,12 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     auto *hint = new QLabel(I18n::tr("ra_model_hint"), body);
     hint->setWordWrap(true);
     v->addWidget(hint);
+
+    // このタブの役割 (吸音率をどこで決め、どこへ効くか) を先頭に明示する
+    auto *role = new QLabel(I18n::tr("rah_role_note"), body);
+    role->setWordWrap(true);
+    role->setStyleSheet("font-size:11px; color:palette(mid);");
+    v->addWidget(role);
 
     // ホールモデル / Hall preset (サブタブ全体の前提 → タブの外に置く)
     v->addWidget(buildHallPresetSection());

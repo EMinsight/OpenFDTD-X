@@ -587,6 +587,27 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabPost1        = new Post1Tab(P);
     m_tabPost2        = new Post2Tab(P);
 
+    // 音響ソルバ連携が契約検証済み RIR を設定したら、実測RIR分析タブの
+    // WAV 欄へ反映する。RirAnalysisTab は Project::loaded にしか繋いで
+    // いない (他タブの touch() で編集中の入力欄を上書きしないため) ので、
+    // 「実行完了」という単発イベントだけをここで橋渡しする — タブ同士が
+    // 直接依存しないよう、両方を持つ MainWindow が中継役になる。
+    if (auto *acSolver = qobject_cast<AcousticSolverTab *>(m_tabAcSolver)) {
+        if (auto *rirTab = qobject_cast<RirAnalysisTab *>(m_tabRirAnalysis)) {
+            connect(acSolver, &AcousticSolverTab::rirAssigned,
+                    rirTab, &RirAnalysisTab::applySolverRir);
+        }
+    }
+    // 音響解析タブの「進め方」パネルの行クリック → 左ナビの該当タブへ移動。
+    // AcousticTab はナビのキーを投げるだけで、切替はナビを持つ MainWindow が
+    // 行う (タブ同士が直接依存しない)。標準表示で隠れているタブは selectKey が
+    // 見つけられないので、その場合は何もしない (行の「対応タブ」列に名前が
+    // 出ているので利用者は自分で辿れる)。
+    if (auto *acTab = qobject_cast<AcousticTab *>(m_tabAcoustic)) {
+        connect(acTab, &AcousticTab::navigateRequested, this,
+                [this](const QString &key) { m_nav->selectKey(key); });
+    }
+
     using D = Domain;
     const QVector<D> ALL;                       // 空 = 全ドメイン
     struct Def {

@@ -40,6 +40,12 @@ public:
     bool hasResult() const { return m_hasResult; }
     const acoustics::RirAnalysisResult &result() const { return m_result; }
 
+    // 音響ソルバ連携タブが契約検証済みの rir.wav を
+    // operaAcoustic().rirPath へ設定したときに MainWindow が呼ぶ
+    // (AcousticSolverTab::rirAssigned の中継先)。WAV 欄を最新化し、
+    // 次に「▶ 分析」を押せばよいことをヒントで示す。
+    void applySolverRir(const QString &path);
+
 private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
@@ -59,6 +65,7 @@ private:
 
     // ① 入力
     QLineEdit      *m_rirPath = nullptr;
+    QLabel         *m_solverHint = nullptr;   // ソルバ実行結果を設定した旨
     QComboBox      *m_channel = nullptr;
     QComboBox      *m_calibration = nullptr;
     QDoubleSpinBox *m_calibOffset = nullptr;

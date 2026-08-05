@@ -2,6 +2,7 @@
 #include "AcousticTab.h"
 #include "../core/Project.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
+#include "../kernel/AcousticRunner.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -11,12 +12,14 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
@@ -30,6 +33,55 @@ using namespace ofd;
 namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
+    // ── 音響解析の進め方 (acw_) — 手順パネル ────────────────────────────────
+    I18n::reg("acw_section", "音響解析の進め方", "How to run an acoustic analysis");
+    I18n::reg("acw_hint",
+              "室内音響の設定は複数のタブに分かれています。上から順に進めて"
+              "ください。「現在の状態」はプロジェクトの実データから判定した"
+              "もので、行をクリックすると対応するタブへ移動します。",
+              "Room-acoustics settings are spread over several tabs. Work "
+              "through them top to bottom. \"Status\" is derived from the "
+              "actual project data; clicking a row jumps to the matching tab.");
+    I18n::reg("acw_col_step", "#", "#");
+    I18n::reg("acw_col_todo", "やること", "Task");
+    I18n::reg("acw_col_tab", "対応タブ", "Tab");
+    I18n::reg("acw_col_state", "現在の状態", "Status");
+    I18n::reg("acw_do1", "部屋の形状とメッシュ", "Room shape and mesh");
+    I18n::reg("acw_do2", "音源の位置", "Source positions");
+    I18n::reg("acw_do3", "受音点の位置", "Receiver positions");
+    I18n::reg("acw_do4", "壁の吸音率", "Wall absorption");
+    I18n::reg("acw_do5", "計算の実行 (RIR 生成)", "Run the analysis (generate RIR)");
+    I18n::reg("acw_do6", "指標の分析 (T30 等)", "Analyse metrics (T30 etc.)");
+    I18n::reg("acw_do7", "聞こえ方の生成 (可聴化)", "Auralization");
+    // 各ステップの状態文 (数値はプロジェクトの実データ)
+    I18n::reg("acw_s1_nomesh", "メッシュ未定義", "Mesh not defined");
+    I18n::reg("acw_s1_nogeom", "メッシュ %1 セル · 形状 0 個",
+              "Mesh %1 cells · 0 shapes");
+    I18n::reg("acw_s1_ok", "メッシュ %1 セル · 形状 %2 個",
+              "Mesh %1 cells · %2 shape(s)");
+    I18n::reg("acw_s2_no", "波源 (feed) 未設定", "No feed defined");
+    I18n::reg("acw_s2_ok", "波源 (feed) %1 個", "%1 feed(s)");
+    I18n::reg("acw_s3_no", "観測点 (point) 未設定", "No observation point");
+    I18n::reg("acw_s3_ok", "観測点 (point) %1 個", "%1 observation point(s)");
+    I18n::reg("acw_s4_empty", "吸音表が空", "Absorption table is empty");
+    I18n::reg("acw_s4_none", "有効な行なし (全 %1 行)",
+              "No enabled row (%1 rows)");
+    I18n::reg("acw_s4_ok", "有効 %1 / 全 %2 行", "%1 of %2 rows enabled");
+    I18n::reg("acw_s5_unresolved", "ソルバー未解決 (実行ファイル未設定)",
+              "Solver not resolved (no executable)");
+    I18n::reg("acw_s5_ready", "実行可能 (RIR は未生成)",
+              "Ready to run (no RIR yet)");
+    I18n::reg("acw_s5_notused", "外部ソルバー不使用 (実測/統計)",
+              "No external solver (measured/statistical)");
+    I18n::reg("acw_s5_done", "実行済み (RIR あり)", "Done (RIR available)");
+    I18n::reg("acw_s6_no", "RIR 未設定", "No RIR set");
+    I18n::reg("acw_s6_ok", "RIR 設定済み: %1", "RIR set: %1");
+    I18n::reg("acw_s7_no", "ドライ音源 未設定", "No dry source set");
+    I18n::reg("acw_s7_ok", "ドライ音源: %1", "Dry source: %1");
+    // 対応タブ列 (③ は観測点 = ④音源、位置の確認は ⑤モニターでも行う)
+    I18n::reg("acw_tab3", "%1 の観測点 / %2", "%1 (observation points) / %2");
+    I18n::reg("acw_row_tip", "クリックすると「%1」タブへ移動します",
+              "Click to jump to the \"%1\" tab");
     // ソルバー / Solver
     I18n::reg("ac2_solver_section", "ソルバー", "Solver");
     I18n::reg("ac2_sv_fdtd", "FDTD (波動)", "FDTD (wave)");
@@ -294,6 +346,42 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(8);
 
+    // ── 音響解析の進め方 (手順パネル) ───────────────────────────────────────
+    // 室内音響はタブが 10 個以上あり順序が分かりにくい、という報告への対応。
+    // 「現在の状態」列はプロジェクトの実データから判定する (refreshWorkflow)。
+    auto *wf = new SectionBox(I18n::tr("acw_section"), body);
+    m_stepHint = mutedLabel(I18n::tr("acw_hint"), wf);
+    wf->vbox()->addWidget(m_stepHint);
+    m_stepTable = new QTableWidget(AcousticTab::kWorkflowSteps, 4, wf);
+    m_stepTable->setHorizontalHeaderLabels({ I18n::tr("acw_col_step"),
+                                             I18n::tr("acw_col_todo"),
+                                             I18n::tr("acw_col_tab"),
+                                             I18n::tr("acw_col_state") });
+    m_stepTable->verticalHeader()->setVisible(false);
+    m_stepTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_stepTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_stepTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // 左ペインは狭いので、番号列だけ内容幅・残り 3 列は等分して折り返す
+    // (横スクロールを出すと肝心の「現在の状態」列が隠れてしまう)。
+    m_stepTable->setWordWrap(true);
+    m_stepTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_stepTable->setStyleSheet("font-size:11px;");
+    // 幅は表示領域に合わせて fitStepTable() が決める。このタブは他の表の
+    // 都合で本体が表示領域より広くなることがあり、素直に伸ばすと肝心の
+    // 「現在の状態」列が横スクロールの向こうへ隠れてしまう。
+    m_stepTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    for (int c = 1; c < 4; ++c)
+        m_stepTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::Stretch);
+    wf->vbox()->addWidget(m_stepTable);
+    // 行クリック → 左ナビの切替を MainWindow へ依頼する (タブ間の直接依存なし)
+    connect(m_stepTable, &QTableWidget::cellClicked, this, [this](int row, int) {
+        if (const char *key = AcousticTab::workflowNavKey(row + 1))
+            emit navigateRequested(QString::fromLatin1(key));
+    });
+    v->addWidget(wf);
+
     auto *hint = new QLabel(I18n::tr("ac_mapping_hint"), body);
     hint->setWordWrap(true);
     v->addWidget(hint);
@@ -547,6 +635,149 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     refresh();
 }
 
+// ── 音響解析の進め方 (手順パネル) ───────────────────────────────────────────
+// ステップ 5 の前提条件。外部ソルバーを起動するバックエンド
+// (3=ExternalFDTD / 4=ExternalGeometric) のときだけバイナリの解決を見る。
+int AcousticTab::solverReadiness() const
+{
+    const OperaAcousticSettings &s = m_p->operaAcoustic();
+    const bool external =
+        s.solverBackend == int(AcousticBackend::ExternalFDTD) ||
+        s.solverBackend == int(AcousticBackend::ExternalGeometric);
+    if (!external) return SolverNotUsed;
+    AcousticRunConfig cfg;
+    cfg.backend = static_cast<AcousticBackend>(s.solverBackend);
+    cfg.executable = s.solverExecutable;
+    cfg.threads = s.solverThreads;
+    cfg.processes = s.solverProcesses;
+    return AcousticRunner::resolveSolver(cfg).isEmpty() ? SolverUnresolved
+                                                        : SolverResolved;
+}
+
+// model → 手順パネル。数値は全てプロジェクトの実データから作る
+// (「設定済み」と書くのは実際に値がある行だけ — CLAUDE.md 絶対規則 5)。
+void AcousticTab::refreshWorkflow()
+{
+    if (!m_stepTable) return;
+    static const char *kTodo[AcousticTab::kWorkflowSteps] = {
+        "acw_do1", "acw_do2", "acw_do3", "acw_do4",
+        "acw_do5", "acw_do6", "acw_do7",
+    };
+    // 状態 0/1/2 の記号と色 (tabhelp::qualityColor と同じ 3 色)
+    static const char *kMark[3] = { "—", "▲", "✔" };
+    const QColor kColor[3] = { QColor(0x88, 0x88, 0x88),
+                               QColor(0xB8, 0x86, 0x0B),
+                               QColor(0x2E, 0x8B, 0x57) };
+    const QLocale loc;
+    const int readiness = solverReadiness();
+    const OperaAcousticSettings &os = m_p->operaAcoustic();
+
+    for (int i = 0; i < AcousticTab::kWorkflowSteps; ++i) {
+        const int step = i + 1;
+        const StepStatus st =
+            AcousticTab::workflowStatus(*m_p, step, readiness);
+
+        // 「対応タブ」列は左ナビの表記そのまま (探す手間を作らない)
+        QString tabName;
+        switch (step) {
+        case 1: tabName = I18n::tr("nav_geometry") + QStringLiteral(" / ")
+                          + I18n::tr("nav_mesh"); break;
+        case 2: tabName = I18n::tr("nav_source_ac"); break;
+        case 3: tabName = I18n::tr("acw_tab3").arg(I18n::tr("nav_source_ac"),
+                                                   I18n::tr("nav_monitors"));
+                break;
+        case 4: tabName = I18n::tr("nav_roomac"); break;
+        case 5: tabName = I18n::tr("nav_acsolver"); break;
+        case 6: tabName = I18n::tr("t_riranalysis"); break;
+        default: tabName = I18n::tr("t_auralization"); break;
+        }
+
+        QString state;
+        switch (step) {
+        case 1:
+            state = (st.n1 <= 0) ? I18n::tr("acw_s1_nomesh")
+                  : (st.n2 <= 0) ? I18n::tr("acw_s1_nogeom").arg(loc.toString(st.n1))
+                                 : I18n::tr("acw_s1_ok")
+                                       .arg(loc.toString(st.n1),
+                                            QString::number(st.n2));
+            break;
+        case 2:
+            state = st.n1 > 0 ? I18n::tr("acw_s2_ok").arg(st.n1)
+                              : I18n::tr("acw_s2_no");
+            break;
+        case 3:
+            state = st.n1 > 0 ? I18n::tr("acw_s3_ok").arg(st.n1)
+                              : I18n::tr("acw_s3_no");
+            break;
+        case 4:
+            state = (st.n2 <= 0) ? I18n::tr("acw_s4_empty")
+                  : (st.n1 <= 0) ? I18n::tr("acw_s4_none").arg(st.n2)
+                                 : I18n::tr("acw_s4_ok").arg(st.n1).arg(st.n2);
+            break;
+        case 5:
+            state = (st.n2 > 0)                    ? I18n::tr("acw_s5_done")
+                  : (st.n1 == SolverNotUsed)       ? I18n::tr("acw_s5_notused")
+                  : (st.n1 == SolverResolved)      ? I18n::tr("acw_s5_ready")
+                                                   : I18n::tr("acw_s5_unresolved");
+            break;
+        case 6:
+            state = st.n1 > 0
+                ? I18n::tr("acw_s6_ok")
+                      .arg(QFileInfo(os.rirPath.trimmed()).fileName())
+                : I18n::tr("acw_s6_no");
+            break;
+        default:
+            state = st.n1 > 0
+                ? I18n::tr("acw_s7_ok")
+                      .arg(QFileInfo(os.auralizationDryFile.trimmed()).fileName())
+                : I18n::tr("acw_s7_no");
+            break;
+        }
+
+        const int si = qBound(0, st.state, 2);
+        auto *num = tabhelp::roItem(QString::number(step));
+        num->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_stepTable->setItem(i, 0, num);
+        m_stepTable->setItem(i, 1, tabhelp::roItem(I18n::tr(kTodo[i])));
+        m_stepTable->setItem(i, 2, tabhelp::roItem(tabName));
+        auto *stItem = tabhelp::roItem(QString::fromUtf8(kMark[si])
+                                       + QStringLiteral(" ") + state);
+        stItem->setForeground(kColor[si]);
+        m_stepTable->setItem(i, 3, stItem);
+
+        const QString tip = I18n::tr("acw_row_tip").arg(tabName);
+        for (int c = 0; c < 4; ++c)
+            if (auto *it = m_stepTable->item(i, c)) it->setToolTip(tip);
+    }
+    fitStepTable();
+}
+
+// 行の高さは折り返し後の内容に合わせ、表自体はスクロールさせない
+// (タブ全体が QScrollArea なので二重スクロールを作らない)。列幅は
+// レイアウト後に決まるため、表示サイズが変わるたびに測り直す。
+void AcousticTab::fitStepTable()
+{
+    if (!m_stepTable) return;
+    // 表示領域 (縦スクロールバーを除く) に収まる幅へ制限する。余白は
+    // タブ本体 8px + SectionBox の内側マージンぶん。
+    const int avail = viewport()->width() - 40;
+    if (avail >= 240) {
+        m_stepTable->setMaximumWidth(avail);
+        if (m_stepHint) m_stepHint->setMaximumWidth(avail);
+    }
+    m_stepTable->resizeRowsToContents();
+    int h = m_stepTable->horizontalHeader()->height() + 2;
+    for (int r = 0; r < m_stepTable->rowCount(); ++r)
+        h += m_stepTable->rowHeight(r);
+    m_stepTable->setFixedHeight(h + 4);
+}
+
+void AcousticTab::resizeEvent(QResizeEvent *e)
+{
+    QScrollArea::resizeEvent(e);
+    fitStepTable();
+}
+
 void AcousticTab::updateSolverView()
 {
     static const char *kDesc[4] = { "ac2_sv_desc_fdtd", "ac2_sv_desc_ray",
@@ -622,6 +853,7 @@ void AcousticTab::refresh()
     m_updating = false;
     refreshReceivers();
     refreshSurfaces();
+    refreshWorkflow();
 }
 
 // ── 受音点リスト (AcousticOpts::receivers) ─────────────────────────────────

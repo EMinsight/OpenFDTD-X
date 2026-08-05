@@ -379,6 +379,9 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         // 契約検証済み RIR を実測 RIR 分析の入力へ (単一ソース原則)
         m_p->operaAcoustic().rirPath = p;
         m_p->touch();
+        // 実測RIR分析タブの WAV 欄へ即座に反映させる (touch() だけでは
+        // あちらの refresh は走らない — MainWindow が中継する)
+        emit rirAssigned(p);
     });
     connect(m_runner, &AcousticRunner::finished, this, [this](bool ok) {
         m_btnStop->setEnabled(false);

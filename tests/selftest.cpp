@@ -60,6 +60,12 @@
 // リンクしないため、ヘッダ内 inline 定義の static メソッドを直接検証する
 // (クラス自体は instantiate しない — moc 不要)。
 #include "tabs/AcousticSourceTab.h"
+// 音源リストの信号 → 可聴化のドライ音源。同じくヘッダ内 inline の
+// static メソッド (drySourceCandidates / setDryFromSource) だけを使う。
+#include "tabs/AuralizationTab.h"
+// 「音響解析の進め方」パネルの状態判定 (workflowStatus / workflowNavKey)。
+// 同じくヘッダ内 inline の static メソッドだけを検証する。
+#include "tabs/AcousticTab.h"
 // ナビの音響/水中向けラベル (nav_source_ac) の検証用 — I18n.cpp は
 // CMakeLists が selftest に個別追加している (GUI_SOURCES 側)。
 #include "I18n.h"
@@ -963,6 +969,210 @@ static void testRoomAcoustics()
               nearlyEq(pz.feeds()[0].x, 99.0) &&
               nearlyEq(pz.feeds()[0].volt, 2.0),
               "src->feed sync: zero enabled keeps feeds unchanged");
+    }
+
+    // ── 音源リストの信号 (WAV) → 可聴化のドライ音源 ──────────────────────────
+    // AuralizationTab::drySourceCandidates / setDryFromSource:
+    // 「有効かつ信号が非空の行」だけがドライ音源の候補で、選んだ 1 行の
+    // signal が auralizationDryFile に入る (1 音源 = 1 ドライ音源。
+    // ミックスは未実装なので複数行をまとめる経路は存在しない)。
+    {
+        Project p;
+        auto &sl = p.acoustic().sources;
+        sl.clear();
+        AcousticSourceRow a;                       // 有効・信号あり → 候補
+        a.name = QStringLiteral("A");
+        a.signal = QStringLiteral("/tmp/dry_a.wav");
+        AcousticSourceRow b;                       // 無効・信号あり → 候補外
+        b.name = QStringLiteral("B");
+        b.enabled = false;
+        b.signal = QStringLiteral("/tmp/dry_b.wav");
+        AcousticSourceRow c;                       // 有効・信号なし → 候補外
+        c.name = QStringLiteral("C");
+        AcousticSourceRow d;                       // 有効・空白のみ → 候補外
+        d.name = QStringLiteral("D");
+        d.signal = QStringLiteral("   ");
+        AcousticSourceRow e;                       // 有効・信号あり → 候補
+        e.name = QStringLiteral("E");
+        e.signal = QStringLiteral("  /tmp/dry_e.wav  ");   // 前後空白は落とす
+        sl.push_back(a); sl.push_back(b); sl.push_back(c);
+        sl.push_back(d); sl.push_back(e);
+
+        const QVector<int> cand =
+            AuralizationTab::drySourceCandidates(p.acoustic().sources);
+        check(cand.size() == 2 && cand[0] == 0 && cand[1] == 4,
+              "dry source: candidates are enabled rows with a signal");
+
+        // 既定では可聴化のドライ音源は空 (捏造しない)
+        check(p.operaAcoustic().auralizationDryFile.isEmpty(),
+              "dry source: empty before assignment");
+        check(AuralizationTab::setDryFromSource(p, 4),
+              "dry source: assignment from row E succeeds");
+        check(p.operaAcoustic().auralizationDryFile ==
+                  QStringLiteral("/tmp/dry_e.wav"),
+              "dry source: dry file is the source signal (trimmed)");
+        check(p.operaAcoustic().enabled,
+              "dry source: assignment marks opera acoustic as used");
+
+        // 範囲外 / 無効行 / 信号なしは false を返し、モデルを変えない
+        const QString keep = p.operaAcoustic().auralizationDryFile;
+        check(!AuralizationTab::setDryFromSource(p, -1) &&
+              !AuralizationTab::setDryFromSource(p, 99),
+              "dry source: out-of-range index rejected");
+        check(!AuralizationTab::setDryFromSource(p, 1),
+              "dry source: disabled row rejected");
+        check(!AuralizationTab::setDryFromSource(p, 2) &&
+              !AuralizationTab::setDryFromSource(p, 3),
+              "dry source: row without a signal rejected");
+        check(p.operaAcoustic().auralizationDryFile == keep,
+              "dry source: rejected assignment leaves the dry file unchanged");
+
+        // 信号なしのみのリストでは候補が 0 (ボタン無効化の根拠)
+        Project pz;
+        pz.acoustic().sources.clear();
+        AcousticSourceRow z;
+        pz.acoustic().sources.push_back(z);
+        check(AuralizationTab::drySourceCandidates(pz.acoustic().sources)
+                  .isEmpty(),
+              "dry source: no candidate without a signal");
+    }
+
+    // ── 「音響解析の進め方」パネルの状態判定 ────────────────────────────────
+    // AcousticTab::workflowStatus は 7 ステップの「現在の状態」を
+    // プロジェクトの実データだけから決める純関数 (UI に嘘を書かないための
+    // 判定本体)。期待値は仕様から手で決めたもの:
+    //   1 形状/メッシュ: メッシュ無効=0 / メッシュのみ=1 / 形状もあり=2
+    //   2 音源: feed が 1 個以上で 2
+    //   3 受音点: point (観測点) が 1 個以上で 2
+    //   4 吸音率: 有効行 1 以上で 2 / 行はあるが全て無効で 1 / 表が空で 0
+    //   5 実行: RIR ありで 2 / 外部ソルバー未解決で 0 / それ以外 1
+    //   6 分析: rirPath が非空で 2
+    //   7 可聴化: ドライ音源が非空で 2
+    {
+        using AT = AcousticTab;
+        // 既定の新規プロジェクト = メッシュのみ定義済み・形状/音源/観測点なし
+        Project p;
+        const qint64 cells = p.totalCells();
+        check(cells > 0, "workflow: default project has a valid mesh");
+
+        AT::StepStatus s = AT::workflowStatus(p, 1, AT::SolverUnresolved);
+        check(s.state == 1 && s.n1 == cells && s.n2 == 0,
+              "workflow step1: mesh only (no shape) is partial");
+        Geometry g;
+        p.geometries().push_back(g);
+        s = AT::workflowStatus(p, 1, AT::SolverUnresolved);
+        check(s.state == 2 && s.n2 == 1,
+              "workflow step1: mesh + shape is complete");
+        for (int a = 0; a < 3; ++a) {          // メッシュを壊す → 未設定
+            p.mesh(a).nodes.clear();
+            p.mesh(a).divs.clear();
+        }
+        s = AT::workflowStatus(p, 1, AT::SolverUnresolved);
+        check(s.state == 0 && s.n1 == 0 && s.n2 == 1,
+              "workflow step1: invalid mesh is not set");
+
+        // ステップ 2 / 3 — feed と point の数がそのまま状態になる
+        Project q;
+        check(AT::workflowStatus(q, 2, AT::SolverUnresolved).state == 0 &&
+              AT::workflowStatus(q, 3, AT::SolverUnresolved).state == 0,
+              "workflow step2/3: empty project has no feed and no point");
+        q.feeds().push_back(Feed{});
+        q.feeds().push_back(Feed{});
+        q.probes().push_back(Probe{});
+        s = AT::workflowStatus(q, 2, AT::SolverUnresolved);
+        check(s.state == 2 && s.n1 == 2, "workflow step2: counts feeds");
+        s = AT::workflowStatus(q, 3, AT::SolverUnresolved);
+        check(s.state == 2 && s.n1 == 1, "workflow step3: counts points");
+
+        // ステップ 4 — 既定の吸音バジェットは全行有効
+        const int nAbs = q.acoustic().absorption.size();
+        check(nAbs > 0, "workflow step4: default absorption budget is not empty");
+        s = AT::workflowStatus(q, 4, AT::SolverUnresolved);
+        check(s.state == 2 && s.n1 == nAbs && s.n2 == nAbs,
+              "workflow step4: all default rows are enabled");
+        for (AbsorptionRow &r : q.acoustic().absorption) r.enabled = false;
+        s = AT::workflowStatus(q, 4, AT::SolverUnresolved);
+        check(s.state == 1 && s.n1 == 0 && s.n2 == nAbs,
+              "workflow step4: rows present but none enabled is partial");
+        q.acoustic().absorption.clear();
+        s = AT::workflowStatus(q, 4, AT::SolverUnresolved);
+        check(s.state == 0 && s.n1 == 0 && s.n2 == 0,
+              "workflow step4: empty table is not set");
+
+        // ステップ 5 — ソルバーの解決可否と RIR の有無の組み合わせ
+        Project r;
+        check(AT::workflowStatus(r, 5, AT::SolverUnresolved).state == 0,
+              "workflow step5: unresolved external solver blocks the run");
+        check(AT::workflowStatus(r, 5, AT::SolverResolved).state == 1,
+              "workflow step5: resolved solver but no RIR is partial");
+        check(AT::workflowStatus(r, 5, AT::SolverNotUsed).state == 1,
+              "workflow step5: backend without external solver is partial");
+        r.operaAcoustic().rirPath = QStringLiteral("  /tmp/rir.wav  ");
+        s = AT::workflowStatus(r, 5, AT::SolverUnresolved);
+        check(s.state == 2 && s.n2 == 1,
+              "workflow step5: an existing RIR marks the run as done");
+        // 範囲外の readiness は「未解決」として扱う (状態を良い方へ倒さない)
+        Project r2;
+        check(AT::workflowStatus(r2, 5, 99).state == 0 &&
+              AT::workflowStatus(r2, 5, -1).state == 0,
+              "workflow step5: out-of-range readiness falls back to unresolved");
+
+        // ステップ 6 / 7 — 空白のみのパスは「未設定」
+        Project t;
+        check(AT::workflowStatus(t, 6, AT::SolverNotUsed).state == 0 &&
+              AT::workflowStatus(t, 7, AT::SolverNotUsed).state == 0,
+              "workflow step6/7: empty paths are not set");
+        t.operaAcoustic().rirPath = QStringLiteral("   ");
+        t.operaAcoustic().auralizationDryFile = QStringLiteral("   ");
+        check(AT::workflowStatus(t, 6, AT::SolverNotUsed).state == 0 &&
+              AT::workflowStatus(t, 7, AT::SolverNotUsed).state == 0,
+              "workflow step6/7: whitespace-only paths are not set");
+        t.operaAcoustic().rirPath = QStringLiteral("/tmp/rir.wav");
+        t.operaAcoustic().auralizationDryFile = QStringLiteral("/tmp/dry.wav");
+        check(AT::workflowStatus(t, 6, AT::SolverNotUsed).state == 2 &&
+              AT::workflowStatus(t, 7, AT::SolverNotUsed).state == 2,
+              "workflow step6/7: assigned paths are set");
+
+        // 範囲外のステップ番号は既定値 (誤って「設定済み」にしない)
+        check(AT::workflowStatus(t, 0, AT::SolverNotUsed).state == 0 &&
+              AT::workflowStatus(t, AT::kWorkflowSteps + 1,
+                                 AT::SolverNotUsed).state == 0,
+              "workflow: out-of-range step returns the default status");
+
+        // ナビキーは MainWindow::buildLeftNav の Def::key と一致していること
+        static const char *kExpectKey[AT::kWorkflowSteps] = {
+            "geometry", "source", "source", "roomac",
+            "acsolver", "riranalysis", "auralization",
+        };
+        bool navOk = AT::workflowNavKey(0) == nullptr &&
+                     AT::workflowNavKey(AT::kWorkflowSteps + 1) == nullptr;
+        for (int i = 0; i < AT::kWorkflowSteps; ++i) {
+            const char *k = AT::workflowNavKey(i + 1);
+            if (!k || std::strcmp(k, kExpectKey[i]) != 0) navOk = false;
+        }
+        check(navOk, "workflow: nav keys match the left-nav entry keys");
+    }
+
+    // 信号にフルパスを入れた場合の .ofdx ラウンドトリップ (ファイル選択で
+    // 入るのは絶対パス — ディレクトリごと保存・復元されること)
+    {
+        Project ps;
+        ps.acoustic().sources.clear();
+        AcousticSourceRow r;
+        r.name = QStringLiteral("SigPath");
+        r.signal = QString::fromUtf8("/tmp/音源/dry take 1.wav");
+        ps.acoustic().sources.push_back(r);
+        QTemporaryFile fs;
+        fs.setFileTemplate(QDir::tempPath() + "/ofdx_sigpath_XXXXXX.ofdx");
+        if (fs.open()) {
+            check(OfdxIO::save(fs.fileName(), ps), "signal path ofdx save");
+            Project pl;
+            check(OfdxIO::load(fs.fileName(), pl), "signal path ofdx load");
+            check(pl.acoustic().sources.size() == 1 &&
+                  pl.acoustic().sources[0].signal ==
+                      QString::fromUtf8("/tmp/音源/dry take 1.wav"),
+                  "signal path round-trip keeps the full path");
+        }
     }
 
     // 壊れた .ofdx の範囲外 int はクランプされ不正な選択を作らない
