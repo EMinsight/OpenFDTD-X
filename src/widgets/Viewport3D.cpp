@@ -68,6 +68,15 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_drop_synced_rcv",
         " + 受音点リストへ「%1」を追加",
         " + added \"%1\" to the receiver list");
+    // 室内音響: 床面ちょうどに置くと床スラブ・客席ブロック・舞台の内部に
+    // 入ってソルバーが「剛体内の点」で失敗する。実務の高さへ持ち上げる
+    // (音源 1.5 m / 受音点 1.2 m = ISO 3382-1 の座位耳高さ)
+    ofd::I18n::reg("vp_drop_ac_height",
+        "※ 室内音響の慣習に合わせて高さ z = %1 m へ配置しました "
+        "(音源 1.5 m / 受音点 1.2 m — 床や客席ブロックの内部を避けるため)",
+        "* Placed at z = %1 m per room-acoustics practice "
+        "(source 1.5 m / receiver 1.2 m — keeps it out of the floor slab "
+        "and audience blocks)");
     ofd::I18n::reg("vp_drop_nomesh",
         "メッシュ領域が未定義のため配置できません (メッシュタブで領域を設定"
         "してください)",
@@ -1138,11 +1147,31 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         : I18n::tr("vp_drop_viewplane");
     QString what;
 
+    // 室内音響では床面ぴったりに置くと、床スラブ・客席ブロック・舞台などの
+    // 剛体形状の中に入ってしまい、ソルバーが「剛体内の点」として失敗する。
+    // 実務どおりの高さへ持ち上げる: 音源 1.5 m / 受音点 1.2 m
+    // (ISO 3382-1 の座位耳高さ)。天井を突き抜けないようメッシュ内に収める。
+    double zSrc = pos[2], zRcv = pos[2];
+    QString lifted;
+    if (m_domain == Domain::Acoustic && onFloor) {
+        const double zTop = m_project->mesh(2).max();
+        auto lift = [&](double h) {
+            const double z = pos[2] + h;
+            return (z < zTop) ? z : pos[2] + (zTop - pos[2]) * 0.5;
+        };
+        zSrc = lift(1.5);
+        zRcv = lift(1.2);
+        if (sp.kind == DropKind::Feed || sp.kind == DropKind::Probe)
+            lifted = I18n::tr("vp_drop_ac_height")
+                         .arg(QString::number(
+                             sp.kind == DropKind::Feed ? zSrc : zRcv, 'g', 3));
+    }
+
     switch (sp.kind) {
     case DropKind::Feed: {
         Feed f;
         f.dir = 'Z';
-        f.x = pos[0]; f.y = pos[1]; f.z = pos[2];
+        f.x = pos[0]; f.y = pos[1]; f.z = zSrc;
         m_project->feeds().push_back(f);
         what = I18n::tr("vp_drop_feed").arg(m_project->feeds().size());
         // スピーカーは音源リスト (音源/WAV/指向性タブ) にも同じ位置の行を
@@ -1151,7 +1180,7 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         if (m_domain == Domain::Acoustic
             && name == QLatin1String("Loudspeaker")) {
             const QString nm = ComponentCatalog::addLoudspeakerSourceRow(
-                *m_project, pos[0], pos[1], pos[2]);
+                *m_project, pos[0], pos[1], zSrc);
             what += I18n::tr("vp_drop_synced_src").arg(nm);
         }
         break;
@@ -1159,7 +1188,7 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
     case DropKind::Probe: {
         Probe pr;
         pr.dir = 'Z';
-        pr.x = pos[0]; pr.y = pos[1]; pr.z = pos[2];
+        pr.x = pos[0]; pr.y = pos[1]; pr.z = zRcv;
         // 1 点目は伝搬方向を持つ (SourceTab の追加と同じ既定)
         if (m_project->probes().isEmpty()) pr.propagation = "+X";
         m_project->probes().push_back(pr);
@@ -1169,7 +1198,7 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         if (m_domain == Domain::Acoustic
             && name == QLatin1String("Microphone")) {
             const QString nm = ComponentCatalog::addMicrophoneReceiverRow(
-                *m_project, pos[0], pos[1], pos[2]);
+                *m_project, pos[0], pos[1], zRcv);
             what += I18n::tr("vp_drop_synced_rcv").arg(nm);
         }
         break;
@@ -1249,6 +1278,8 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         if (m_domain == Domain::Acoustic && sp.kind == DropKind::Shape
             && absorberLike)
             *msg += QStringLiteral("\n") + I18n::tr("vp_drop_rigid");
+        // 音源/受音点を床から持ち上げた場合はその高さを明記する
+        if (!lifted.isEmpty()) *msg += QStringLiteral("\n") + lifted;
     }
     return true;
 }
