@@ -21,6 +21,7 @@
 #include <QPainterPath>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -63,11 +64,26 @@ const bool s_i18n = [] {
     I18n::reg("asrc_kind_omni", "無指向性", "Omni");
     I18n::reg("asrc_kind_bipolar", "バイポーラ", "Bipolar");
     I18n::reg("asrc_kind_directional", "指向性", "Directional");
-    I18n::reg("asrc_kind_omniall", "全方位", "Omni");
     I18n::reg("asrc_add_row", "＋ 音源を追加…", "+ Add source…");
     I18n::reg("asrc_btn_addfile", "＋ ファイルから追加", "+ Add from file");
+    I18n::reg("asrc_btn_delrow", "− 選択行を削除", "− Remove selected");
     I18n::reg("asrc_btn_clflib", "CLF/GLL ライブラリ", "CLF/GLL library");
     I18n::reg("asrc_btn_preset", "プリセット", "Presets");
+    I18n::reg("asrc_col_spl_room", "SPL@1m [dB]", "SPL@1m [dB]");
+    I18n::reg("asrc_col_spl_uw", "SL [dB re μPa·m]", "SL [dB re μPa·m]");
+    I18n::reg("asrc_new_src", "新規音源", "New source");
+    // 音源一覧はモデル (.ofdx) に保存されるが、まだソルバー入力には
+    // 渡していない — 何が有効かを正しく述べる (絶対規則 5)
+    I18n::reg("asrc_src_model_note",
+              "▸ 音源一覧はプロジェクト (.ofdx) に保存され、次回読み込み時に"
+              "復元されます。現在の音響計算 (統計推定・ソルバー連携) は"
+              "「音響」タブの単一音源設定 (位置・基準SPL) を使うため、"
+              "この一覧はまだカーネル入力には渡されません。",
+              "▸ The source list is stored in the project (.ofdx) and restored "
+              "on reload. The present acoustic computations (statistical "
+              "estimate / solver hand-off) use the single source (position and "
+              "reference SPL) from the Acoustic tab, so this list is not passed "
+              "to the kernel input yet.");
     I18n::reg("asrc_preset_sonar", "ソナー", "Sonar");
     I18n::reg("asrc_preset_speaker", "スピーカー", "Speakers");
     I18n::reg("asrc_common_section", "共通設定", "Common");
@@ -100,8 +116,8 @@ const bool s_i18n = [] {
     I18n::reg("asrc_ch_stereo", "ステレオ → 2音源", "Stereo → 2 sources");
     I18n::reg("asrc_ch_51", "5.1ch → 6音源", "5.1ch → 6 sources");
     I18n::reg("asrc_srate", "サンプリングレート", "Sample rate");
-    // 実ファイルを解析していないため「例」であることを明示 (絶対規則 5)
-    I18n::reg("asrc_srate_sample", "例: 48000 Hz", "e.g. 48000 Hz");
+    // ファイル未選択のうちは値を出さない (実測値と誤認させない — 絶対規則 5)
+    I18n::reg("asrc_srate_none", "— (ファイル未選択)", "— (no file selected)");
     I18n::reg("asrc_resample", "自動リサンプル", "Auto resample");
     I18n::reg("asrc_loop", "ループ", "Loop");
     I18n::reg("asrc_loop_chk", "ファイル末尾でループ再生",
@@ -111,8 +127,27 @@ const bool s_i18n = [] {
     I18n::reg("asrc_hpf", "ハイパス", "High-pass");
     I18n::reg("asrc_hpf_chk", "DC除去 20Hz", "DC removal 20 Hz");
     I18n::reg("asrc_lib_section", "ライブラリ", "Library");
-    I18n::reg("asrc_lib_hint", "無響録音 (anechoic recordings) のプリセット",
-              "Anechoic recording presets");
+    I18n::reg("asrc_lib_hint",
+              "可聴化・明瞭度評価に使う無響録音 (anechoic recordings) の"
+              "推奨素材一覧 (用途の指針)。",
+              "Recommended anechoic recording material for auralization and "
+              "intelligibility work (guidance, not files).");
+    I18n::reg("asrc_col_bundled", "同梱", "Bundled");
+    // 音源データを同梱していない事実と入手先・登録方法を述べる
+    I18n::reg("asrc_lib_note",
+              "▸ 音源ファイルは同梱していません (再配布ライセンスのため) — "
+              "上表は用途別の推奨素材の一覧です。無響録音は配布元 "
+              "(EBU SQAM / Openair (Univ. of York) / Bang & Olufsen 無響録音CD / "
+              "ODEON・EASE の無響音源など) から入手し、下のボタンで登録すると"
+              "入力信号として使えます。",
+              "▸ No audio files are bundled (redistribution licences) — the "
+              "table above lists recommended material per use case. Obtain "
+              "anechoic recordings from their publishers (EBU SQAM, Openair "
+              "(Univ. of York), the Bang & Olufsen anechoic CD, the ODEON / "
+              "EASE anechoic sets, …) and register one with the button below "
+              "to use it as the input signal.");
+    I18n::reg("asrc_lib_register", "📁 ファイルを登録して入力信号にする",
+              "📁 Register a file as the input signal");
     I18n::reg("asrc_col_material", "素材", "Material");
     I18n::reg("asrc_col_len", "長さ", "Length");
     I18n::reg("asrc_col_use", "用途", "Use");
@@ -137,6 +172,17 @@ const bool s_i18n = [] {
     I18n::reg("asrc_lib8u_uw", "生物音響", "Bioacoustics");
     I18n::reg("asrc_preview_section", "信号プレビュー", "Waveform preview");
     I18n::reg("asrc_preview_fail", "読み込み失敗: %1", "Load failed: %1");
+    // 未読込時は数値を出さない ("—")
+    I18n::reg("asrc_preview_none",
+              "RMS: — · Peak: — · Crest factor: —",
+              "RMS: — · Peak: — · Crest factor: —");
+    I18n::reg("asrc_preview_placeholder",
+              "▸ ファイル未選択 — 波形は形状のプレースホルダで、実測値では"
+              "ありません。ファイルを選ぶと包絡線と RMS/Peak/Crest を"
+              "実読込値で表示します。",
+              "▸ No file selected — the waveform is a shape placeholder, not "
+              "measured data. Choose a file to show the real envelope and "
+              "RMS / Peak / crest factor.");
     // 書式は日英共通 (数値と単位のみ)
     I18n::reg("asrc_preview_stats",
               "RMS: %1 dBFS · Peak: %2 dBFS · Crest factor: %3 dB",
@@ -187,6 +233,29 @@ const bool s_i18n = [] {
     I18n::reg("asrc_angres", "角度分解能", "Angular resolution");
     I18n::reg("asrc_angres_val", "5° × 5° (球面)", "5° × 5° (spherical)");
     I18n::reg("asrc_band_section", "周波数別指向性", "Per-band directivity");
+    // 帯域表の出所を明示する (解析式の実計算 / ファイル未解析)
+    I18n::reg("asrc_band_note_model",
+              "一次指向性モデル r(θ) = a + b·cosθ は周波数非依存のため、"
+              "全帯域で同じ値になります (表の値は閉形式の実計算: "
+              "-6dB 全角 = 2·acos((10^(-6/20)(a+b)−a)/b)、"
+              "Q = (a+b)²/(a²+b²/3)、DI = 10·log10 Q)。"
+              "実機の帯域別指向性には CLF/GLL または測定 polar が必要です"
+              " (パーサ未実装)。",
+              "The first-order model r(θ) = a + b·cosθ is frequency "
+              "independent, so every band shares the same value (computed in "
+              "closed form: -6 dB full angle = 2·acos((10^(-6/20)(a+b)−a)/b), "
+              "Q = (a+b)²/(a²+b²/3), DI = 10·log10 Q). Per-band data of a real "
+              "loudspeaker needs CLF/GLL or measured polar data (parser not "
+              "implemented).");
+    I18n::reg("asrc_band_note_file",
+              "CLF/GLL・測定 polar はパーサ未実装のため、帯域別の値を算出"
+              "できません (「—」)。解析モデル (円形ピストン / ホーン / "
+              "ラインアレイ要素) を選ぶと、選択中の一次指向性モデルの理論値を"
+              "表示します。",
+              "The CLF/GLL and measured-polar parsers are not implemented, so "
+              "per-band values cannot be computed (shown as “—”). Selecting an "
+              "analytic source (circular piston / horn / line-array element) "
+              "shows the theoretical values of the selected first-order model.");
     I18n::reg("asrc_col_band", "帯域", "Band");
     I18n::reg("asrc_col_h6", "水平 -6dB", "Horizontal -6dB");
     I18n::reg("asrc_col_v6", "垂直 -6dB", "Vertical -6dB");
@@ -205,6 +274,19 @@ const bool s_i18n = [] {
               "(first-order) model.");
     I18n::reg("asrc_fr_section", "周波数特性",
               "Frequency response (on-axis)");
+    I18n::reg("asrc_fr_note_model",
+              "一次指向性モデルの軸上応答は定義上フラット (0 dB, 相対) — "
+              "周波数依存性を持ちません。実機の周波数特性を表示するには "
+              "CLF/GLL または測定データが必要です (パーサ未実装)。",
+              "The on-axis response of a first-order model is flat by "
+              "definition (0 dB, relative) — it has no frequency dependence. "
+              "Showing a real device response needs CLF/GLL or measured data "
+              "(parser not implemented).");
+    I18n::reg("asrc_fr_note_file",
+              "CLF/GLL・測定 polar は未解析のため、軸上周波数特性を表示"
+              "できません (グラフは空)。",
+              "CLF/GLL and measured polar data are not parsed, so the on-axis "
+              "frequency response cannot be shown (empty plot).");
     // array
     I18n::reg("asrc_array_section", "ラインアレイ (EASE / D&B / L-Acoustics 風)",
               "Line array (EASE / D&B / L-Acoustics style)");
@@ -319,14 +401,46 @@ const bool s_i18n = [] {
     I18n::reg("asrc_col_verdict", "判定", "Verdict");
     I18n::reg("asrc_q_irflen", "IRF長", "IRF length");
     I18n::reg("asrc_q_enough", "十分", "Sufficient");
-    I18n::reg("asrc_q_density", "初期反射密度", "Early reflection density");
-    I18n::reg("asrc_q_high", "高 (1st-50ms)", "High (1st-50ms)");
-    I18n::reg("asrc_q_natural", "自然", "Natural");
+    I18n::reg("asrc_q_short", "不足 (T30 未満)", "Too short (< T30)");
+    I18n::reg("asrc_q_density", "初期反射密度 (0–50 ms)",
+              "Early reflection density (0–50 ms)");
     I18n::reg("asrc_q_good", "良好", "Good");
     I18n::reg("asrc_q_lf", "LF (側方音エネルギー)", "LF (lateral energy)");
-    I18n::reg("asrc_q_spacious", "広がり感○", "Good spaciousness");
     I18n::reg("asrc_q_phase", "位相応答", "Phase response");
-    I18n::reg("asrc_q_minphase", "最小位相補正済", "Minimum-phase corrected");
+    // 可聴化品質指標 — 実測 RIR からの実計算 / 未算出の説明
+    I18n::reg("asrc_q_btn", "🔄 実測 RIR から算出",
+              "🔄 Compute from measured RIR");
+    I18n::reg("asrc_q_idle",
+              "▸ この表は「RIR 分析」タブで指定した実測 RIR (WAV) から算出"
+              "します — 未算出です。LF (側方音エネルギー) は ISO 3382-1 の "
+              "2ch 測定 (無指向性 + 双指向性マイク) が必要で、モノ RIR からは"
+              "算出できません。位相応答の最小位相補正は未実装です。",
+              "▸ This table is computed from the measured RIR (WAV) selected "
+              "in the RIR analysis tab — not computed yet. LF (lateral energy) "
+              "requires the ISO 3382-1 two-channel measurement (omni + "
+              "figure-of-eight) and cannot be derived from a mono RIR. "
+              "Minimum-phase correction of the phase response is not "
+              "implemented.");
+    I18n::reg("asrc_q_done",
+              "▸ 実測 RIR %1 の分析結果 (IRF長 / 初期反射密度 / ITDG は実計算)。"
+              "LF は 2ch 測定が必要、位相応答補正は未実装のため「—」です。",
+              "▸ Computed from the measured RIR %1 (IRF length / early "
+              "reflection density / ITDG are real results). LF needs a "
+              "two-channel measurement and phase correction is not "
+              "implemented, hence “—”.");
+    I18n::reg("asrc_q_norir",
+              "実測 RIR が未設定です。「RIR 分析」タブで RIR ファイル (WAV) を"
+              "指定してください。",
+              "No measured RIR is set. Select a RIR file (WAV) in the RIR "
+              "analysis tab first.");
+    I18n::reg("asrc_q_nofile", "RIR ファイルが見つかりません: %1",
+              "RIR file not found: %1");
+    I18n::reg("asrc_q_fail", "分析に失敗しました: %1", "Analysis failed: %1");
+    I18n::reg("asrc_q_busy", "分析中…", "Analysing…");
+    I18n::reg("asrc_q_title", "可聴化品質指標", "Auralization quality metrics");
+    I18n::reg("asrc_q_refl_n", "%1 個", "%1 events");
+    I18n::reg("asrc_q_lf_need", "2ch 測定が必要 (ISO 3382-1)",
+              "needs 2-channel measurement (ISO 3382-1)");
     return true;
 }();
 
@@ -357,6 +471,62 @@ void setupTable(QTableWidget *t, const QStringList &headers, int minH)
     t->verticalHeader()->setDefaultSectionSize(22);
     t->setEditTriggers(QAbstractItemView::NoEditTriggers);
     t->setMinimumHeight(minH);
+}
+
+// 値が無いことを表す表示 (捏造値を出さない箇所は必ずこれ)
+const QString kDash = QString::fromUtf8("—");
+
+// 座標セル "x, y, z" の解釈 (区切りはカンマ / 空白どちらでも)。
+// 3 個の数値として読めたときだけ true を返し、呼び出し側はそのときだけ
+// モデルを書き換える (読めない入力でモデルと表示が食い違わないように、
+// 呼び出し側は false のときセル表示をモデル値へ戻す)。
+bool parsePosText(const QString &text, double *x, double *y, double *z)
+{
+    const QStringList parts =
+        text.split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts);
+    if (parts.size() != 3) return false;
+    bool ok[3] = { false, false, false };
+    const double v0 = parts[0].toDouble(&ok[0]);
+    const double v1 = parts[1].toDouble(&ok[1]);
+    const double v2 = parts[2].toDouble(&ok[2]);
+    if (!ok[0] || !ok[1] || !ok[2]) return false;
+    *x = v0; *y = v1; *z = v2;
+    return true;
+}
+
+QString posText(const AcousticSourceRow &r)
+{
+    return QStringLiteral("%1, %2, %3")
+        .arg(QString::number(r.x_m, 'g', 6), QString::number(r.y_m, 'g', 6),
+             QString::number(r.z_m, 'g', 6));
+}
+
+// ── 一次指向性 r(θ) = a + b·cosθ の閉形式 (ポーラ図・帯域表で共用) ─────────
+// 係数は omni / cardioid / super / hyper / fig-8 の順。
+const double kAB[5][2] = {
+    { 1.0, 0.0 }, { 0.5, 0.5 }, { 0.37, 0.63 }, { 0.25, 0.75 }, { 0.0, 1.0 },
+};
+
+// |r(θ)| が軸上値から dropDb 落ちる全角 [deg]。
+// そこまで落ちない (omni 等) 場合は 0 を返し、呼び出し側は「—」を表示する。
+double beamWidthDeg(double a, double b, double dropDb)
+{
+    if (b <= 0.0) return 0.0;
+    const double c = (std::pow(10.0, -dropDb / 20.0) * (a + b) - a) / b;
+    if (c <= -1.0 || c >= 1.0) return 0.0;
+    return 2.0 * std::acos(c) * 180.0 / M_PI;
+}
+
+// 指向性係数 (回転対称 3D): Q = (a+b)² / (a² + b²/3)
+// (∫|a+b·cosθ|² dΩ / 4π = a² + b²/3 — 一次指向性の標準的な閉形式)
+double directivityFactor(double a, double b)
+{
+    return (a + b) * (a + b) / (a * a + b * b / 3.0);
+}
+
+QString beamText(double deg)
+{
+    return deg > 0.0 ? QStringLiteral("%1°").arg(qRound(deg)) : kDash;
 }
 
 // WAV を外部 CLI プレイヤで再生する (QtMultimedia は依存に追加しない —
@@ -513,10 +683,6 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     s->vbox()->addWidget(m_srcHint);
 
     m_srcTable = new QTableWidget(0, 8, s);
-    m_srcTable->setHorizontalHeaderLabels({
-        "", "#", I18n::tr("asrc_col_name"), I18n::tr("asrc_col_kind"),
-        I18n::tr("asrc_col_pos"), I18n::tr("asrc_col_dir"),
-        I18n::tr("asrc_col_sig"), "SPL/SL" });
     m_srcTable->horizontalHeader()->setSectionResizeMode(
         QHeaderView::ResizeToContents);
     m_srcTable->horizontalHeader()->setStretchLastSection(true);
@@ -524,22 +690,74 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     m_srcTable->verticalHeader()->setDefaultSectionSize(22);
     m_srcTable->setMinimumHeight(190);
     s->vbox()->addWidget(m_srcTable);
-    // 音源一覧は固定サンプル (モデル未接続) — 注記を明示 (絶対規則 5)
-    s->vbox()->addWidget(tabhelp::sampleNote(s));
+    // 音源一覧はモデル (.ofdx) と接続済み — どこまで効くかを注記する
+    m_srcModelNote = new QLabel(I18n::tr("asrc_src_model_note"), s);
+    m_srcModelNote->setWordWrap(true);
+    m_srcModelNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    s->vbox()->addWidget(m_srcModelNote);
 
     auto *row = new QHBoxLayout();
     auto *addBtn = new QPushButton(I18n::tr("asrc_btn_addfile"), s);
+    auto *delBtn = new QPushButton(I18n::tr("asrc_btn_delrow"), s);
     auto *libBtn = new QPushButton(I18n::tr("asrc_btn_clflib"), s);
     m_presetBtn = new QPushButton(s);
-    tabhelp::markNotImplemented(addBtn);
+    // CLF/GLL ライブラリはパーサ未実装のまま (ファイル名の記録のみ)
     tabhelp::markNotImplemented(libBtn);
-    tabhelp::markNotImplemented(m_presetBtn);
     row->addWidget(addBtn);
+    row->addWidget(delBtn);
     row->addWidget(libBtn);
     row->addWidget(m_presetBtn);
     row->addStretch(1);
     s->vbox()->addLayout(row);
     v->addWidget(s);
+
+    // 表の編集 → モデル (セル単位。不正入力はセル表示をモデル値へ戻す)
+    connect(m_srcTable, &QTableWidget::cellChanged, this,
+            [this](int r, int c) {
+                if (m_updating) return;
+                applySourceCell(r, c);
+            });
+    // 最終行「＋ 音源を追加…」のクリックで 1 行追加 (mock の追加行)
+    connect(m_srcTable, &QTableWidget::cellClicked, this, [this](int r, int) {
+        if (r == sourceList().size()) {
+            AcousticSourceRow n;
+            n.name = I18n::tr("asrc_new_src");
+            n.level_dB = isUnderwater() ? m_p->underwater().sonarSL_dB
+                                        : m_p->acoustic().srcSPL_dB;
+            addSourceRow(n);
+        }
+    });
+    // ファイルから追加: 実ファイルを選び、信号欄にそのファイルを持つ音源を作る
+    connect(addBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("asrc_btn_addfile"), QString(),
+            "Audio (*.wav *.flac *.aiff *.ogg);;All files (*)");
+        if (path.isEmpty()) return;
+        AcousticSourceRow n;
+        n.name = QFileInfo(path).completeBaseName();
+        n.signal = path;
+        n.level_dB = isUnderwater() ? m_p->underwater().sonarSL_dB
+                                    : m_p->acoustic().srcSPL_dB;
+        addSourceRow(n);
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this] {
+        const int r = m_srcTable->currentRow();
+        QVector<AcousticSourceRow> &list = sourceList();
+        if (r >= 0 && r < list.size()) {
+            list.removeAt(r);
+            refreshSourceTable();
+            m_p->touch();
+        }
+    });
+    // プリセット投入: ドメイン既定の構成を追記する (既存行は消さない)
+    connect(m_presetBtn, &QPushButton::clicked, this, [this] {
+        QVector<AcousticSourceRow> &list = sourceList();
+        const QVector<AcousticSourceRow> preset =
+            isUnderwater() ? defaultSonarSources() : defaultAcousticSources();
+        for (const AcousticSourceRow &r : preset) list.push_back(r);
+        refreshSourceTable();
+        m_p->touch();
+    });
 
     auto *sc = new SectionBox(I18n::tr("asrc_common_section"), page);
     auto *splRow = new QHBoxLayout();
@@ -568,65 +786,102 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     return page;
 }
 
-// 音源リスト表をドメインに合わせて再構築 (mock の isUW 分岐)
-void AcousticSourceTab::fillSourceTable(bool underwater)
+// 表示中のドメインに対応する音源リスト (室内 / 水中で別リスト)
+QVector<AcousticSourceRow> &AcousticSourceTab::sourceList()
 {
-    struct Src {
-        bool ck; const char *n; const char *kindKey;
-        const char *pos, *d, *sig, *spl;
-    };
-    static const Src kUw[] = {
-        { true,  "TX_sonar",  "asrc_kind_directional",
-          "-1200, 50, 0", "+X", "chirp 3-5kHz", "220" },
-        { false, "TX_pinger", "asrc_kind_omniall",
-          "0, 100, 0", "—", "tone 12kHz", "195" },
-    };
-    static const Src kRoom[] = {
-        { true,  "L_main",  "asrc_kind_card",
-          "-3.0, 4.5, 5.0",  "-Z 30°", "speech.wav", "94" },
-        { true,  "R_main",  "asrc_kind_card",
-          " 3.0, 4.5, 5.0",  "-Z 30°", "speech.wav", "94" },
-        { true,  "C_voice", "asrc_kind_card",
-          " 0.0, 4.0, 5.5",  "-Z",     "speech.wav", "88" },
-        { false, "SUB",     "asrc_kind_omni",
-          " 0.0, 0.5, 5.0",  "—",      "pink.wav",   "100" },
-        { false, "Surr_L",  "asrc_kind_bipolar",
-          "-5.0, 3.0, 15.0", "+X",     "speech.wav", "82" },
-        { false, "Surr_R",  "asrc_kind_bipolar",
-          " 5.0, 3.0, 15.0", "-X",     "speech.wav", "82" },
-    };
-    const Src *rows = underwater ? kUw : kRoom;
-    const int n = underwater ? 2 : 6;
+    return isUnderwater() ? m_p->underwater().sources
+                          : m_p->acoustic().sources;
+}
 
+// 1 セルの編集をモデルへ書き戻す。数値として読めない入力はモデルを変えず、
+// セル表示をモデル値へ戻す (UI と保存内容を乖離させない — gui.md)。
+void AcousticSourceTab::applySourceCell(int row, int col)
+{
+    QVector<AcousticSourceRow> &list = sourceList();
+    if (row < 0 || row >= list.size()) return;   // 最終行 = 追加行
+    AcousticSourceRow &r = list[row];
+    QTableWidgetItem *it = m_srcTable->item(row, col);
+    if (!it) return;
+    bool restore = false;
+    switch (col) {
+    case 0: r.enabled = (it->checkState() == Qt::Checked); break;
+    case 2: r.name = it->text(); break;
+    case 4: {
+        double x = 0, y = 0, z = 0;
+        if (parsePosText(it->text(), &x, &y, &z)) {
+            r.x_m = x; r.y_m = y; r.z_m = z;
+        } else {
+            restore = true;
+        }
+        break;
+    }
+    case 5: r.aim = it->text(); break;
+    case 6: r.signal = it->text(); break;
+    case 7: {
+        bool ok = false;
+        const double v = it->text().toDouble(&ok);
+        if (ok) r.level_dB = v; else restore = true;
+        break;
+    }
+    default: return;   // 3 = 種別 (QComboBox セルウィジェット)
+    }
+    if (restore) {
+        m_updating = true;
+        it->setText(col == 4 ? posText(r)
+                             : QString::number(r.level_dB, 'g', 6));
+        m_updating = false;
+        return;   // モデルは変わっていない
+    }
+    m_p->touch();
+}
+
+// 音源リスト (モデル) → 表。最終行は mock の「＋ 音源を追加…」行。
+void AcousticSourceTab::refreshSourceTable()
+{
+    const bool prevUpdating = m_updating;   // refresh() から入れ子で呼ばれる
+    m_updating = true;
+    const QVector<AcousticSourceRow> &list = sourceList();
+    const int n = list.size();
     m_srcTable->clearSpans();
     m_srcTable->setRowCount(n + 1);
     for (int i = 0; i < n; ++i) {
-        const Src &r = rows[i];
+        const AcousticSourceRow &r = list[i];
         auto *ck = new QTableWidgetItem;
-        ck->setCheckState(r.ck ? Qt::Checked : Qt::Unchecked);
+        ck->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
         ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         m_srcTable->setItem(i, 0, ck);
         auto *num = new QTableWidgetItem(QString::number(i + 1));
         num->setFlags(num->flags() & ~Qt::ItemIsEditable);
         m_srcTable->setItem(i, 1, num);
-        m_srcTable->setItem(i, 2, new QTableWidgetItem(
-            QString::fromUtf8(r.n)));                      // 名前は編集可
-        auto ro = [this, i](int col, const QString &text) {
-            auto *it = new QTableWidgetItem(text);
-            it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-            m_srcTable->setItem(i, col, it);
-        };
-        ro(3, I18n::tr(r.kindKey));
-        ro(4, QString::fromUtf8(r.pos));
-        ro(5, QString::fromUtf8(r.d));
-        ro(6, QString::fromUtf8(r.sig));
-        ro(7, QString::fromUtf8(r.spl) + " dB");
+        m_srcTable->setItem(i, 2, new QTableWidgetItem(r.name));
+        // 種別はコンボ (Omni / Cardioid / Bipolar / Directional)
+        auto *kind = new QComboBox(m_srcTable);
+        kind->addItem(I18n::tr("asrc_kind_omni"));
+        kind->addItem(I18n::tr("asrc_kind_card"));
+        kind->addItem(I18n::tr("asrc_kind_bipolar"));
+        kind->addItem(I18n::tr("asrc_kind_directional"));
+        kind->setCurrentIndex(qBound(0, r.kind, 3));
+        connect(kind, &QComboBox::currentIndexChanged, this,
+                [this, i](int idx) {
+                    if (m_updating) return;
+                    QVector<AcousticSourceRow> &l = sourceList();
+                    if (i < 0 || i >= l.size()) return;
+                    l[i].kind = idx;
+                    m_p->touch();
+                });
+        m_srcTable->setCellWidget(i, 3, kind);
+        m_srcTable->setItem(i, 4, new QTableWidgetItem(posText(r)));
+        m_srcTable->setItem(i, 5, new QTableWidgetItem(r.aim));
+        m_srcTable->setItem(i, 6, new QTableWidgetItem(r.signal));
+        auto *lv = new QTableWidgetItem(QString::number(r.level_dB, 'g', 6));
+        lv->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_srcTable->setItem(i, 7, lv);
     }
-    // 追加行 (＋ 音源を追加…)
-    auto *ck = new QTableWidgetItem;
-    ck->setCheckState(Qt::Unchecked);
-    ck->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-    m_srcTable->setItem(n, 0, ck);
+    // 追加行 (＋ 音源を追加…) — クリックで 1 行増える
+    m_srcTable->setCellWidget(n, 3, nullptr);
+    auto *blank = new QTableWidgetItem;
+    blank->setFlags(Qt::ItemIsEnabled);
+    m_srcTable->setItem(n, 0, blank);
     auto *add = new QTableWidgetItem(I18n::tr("asrc_add_row"));
     QFont f = add->font();
     f.setItalic(true);
@@ -635,6 +890,14 @@ void AcousticSourceTab::fillSourceTable(bool underwater)
     add->setFlags(Qt::ItemIsEnabled);
     m_srcTable->setItem(n, 1, add);
     m_srcTable->setSpan(n, 1, 1, 7);
+    m_updating = prevUpdating;
+}
+
+void AcousticSourceTab::addSourceRow(const AcousticSourceRow &row)
+{
+    sourceList().push_back(row);
+    refreshSourceTable();
+    m_p->touch();
 }
 
 // ── page: signal ────────────────────────────────────────────────────────────
@@ -658,7 +921,10 @@ QWidget *AcousticSourceTab::buildSignalPage()
 
     auto *sw = new SectionBox(I18n::tr("asrc_wav_section"), page);
     auto *fileRow = new QHBoxLayout();
-    m_wavFile = new QLineEdit("anechoic_speech_48k.wav", sw);
+    // 実在しないファイル名を初期値に置かない (「選択済み」に見えてしまう) —
+    // 例はプレースホルダで示す
+    m_wavFile = new QLineEdit(sw);
+    m_wavFile->setPlaceholderText("anechoic_speech_48k.wav");
     auto *browse = new QPushButton(I18n::tr("asrc_browse"), sw);
     auto *listen = new QPushButton(I18n::tr("asrc_listen"), sw);
     fileRow->addWidget(m_wavFile, 1);
@@ -680,9 +946,9 @@ QWidget *AcousticSourceTab::buildSignalPage()
     sw->form()->addRow(I18n::tr("asrc_channels"), ch);
 
     auto *srRow = new QHBoxLayout();
-    // ファイル未解析の間は固定値ではなく「例」と表示する
+    // ファイル未解析の間は値を出さない
     // (プレビューで実読込に成功したら実測値へ置き換える)
-    m_srateValue = new QLabel(I18n::tr("asrc_srate_sample"), sw);
+    m_srateValue = new QLabel(I18n::tr("asrc_srate_none"), sw);
     srRow->addWidget(m_srateValue);
     auto *resample = new QCheckBox(I18n::tr("asrc_resample"), sw);
     resample->setChecked(true);
@@ -722,14 +988,23 @@ QWidget *AcousticSourceTab::buildSignalPage()
     libHint->setWordWrap(true);
     sl->vbox()->addWidget(libHint);
     m_libTable = new QTableWidget(8, 4, sl);
-    setupTable(m_libTable, { "", I18n::tr("asrc_col_material"),
+    setupTable(m_libTable, { I18n::tr("asrc_col_bundled"),
+                             I18n::tr("asrc_col_material"),
                              I18n::tr("asrc_col_len"),
                              I18n::tr("asrc_col_use") }, 200);
     // レイアウトへの追加漏れがあると、表が親の左上に素置きされて
     // 上のヒントラベルに重なる (実際に表示崩れを起こしていた)
     sl->vbox()->addWidget(m_libTable);
-    // 収録音源そのものは同梱していない — 一覧は想定内容の見本
-    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
+    // 音源データは同梱していない — 入手先と登録方法を案内する (絶対規則 5)
+    auto *libNote = new QLabel(I18n::tr("asrc_lib_note"), sl);
+    libNote->setWordWrap(true);
+    libNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sl->vbox()->addWidget(libNote);
+    auto *libRegRow = new QHBoxLayout();
+    auto *libReg = new QPushButton(I18n::tr("asrc_lib_register"), sl);
+    libRegRow->addWidget(libReg);
+    libRegRow->addStretch(1);
+    sl->vbox()->addLayout(libRegRow);
     v->addWidget(sl);
 
     auto *sp = new SectionBox(I18n::tr("asrc_preview_section"), page);
@@ -753,12 +1028,13 @@ QWidget *AcousticSourceTab::buildSignalPage()
     }
     m_wavePlot->setSeries({ wave });
     sp->vbox()->addWidget(m_wavePlot);
-    m_wavStats = new QLabel(
-        QString::fromUtf8("RMS: -18 dBFS · Peak: -3 dBFS · Crest factor: 15 dB"),
-        sp);
+    // 未読込のうちは数値を出さない (実測値と誤認させない — 絶対規則 5)
+    m_wavStats = new QLabel(I18n::tr("asrc_preview_none"), sp);
     sp->vbox()->addWidget(m_wavStats);
-    // ファイル未選択の間は解析式による見本波形 (実読込に成功したら隠す)
-    m_previewNote = tabhelp::sampleNote(sp);
+    // ファイル未選択の状態表示 (実読込に成功したら隠す)
+    m_previewNote = new QLabel(I18n::tr("asrc_preview_placeholder"), sp);
+    m_previewNote->setWordWrap(true);
+    m_previewNote->setStyleSheet("font-size:11px; color:palette(mid);");
     sp->vbox()->addWidget(m_previewNote);
     v->addWidget(sp);
     v->addStretch(1);
@@ -780,6 +1056,17 @@ QWidget *AcousticSourceTab::buildSignalPage()
     // 試聴: 外部 CLI プレイヤ (ffplay/aplay/afplay) に委ねる
     connect(listen, &QPushButton::clicked, this, [this] {
         playWavExternal(this, m_wavFile->text());
+    });
+    // ライブラリ: 同梱音源が無いので、入手した実ファイルを入力信号として
+    // 登録する導線を用意する (選択と同時に実読込プレビューも更新)
+    connect(libReg, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("asrc_lib_register"), QString(),
+            "Audio (*.wav *.flac *.aiff *.ogg);;All files (*)");
+        if (path.isEmpty()) return;
+        m_sigKind->setCurrentIndex(5);   // 信号種別 = WAV ファイル
+        m_wavFile->setText(path);
+        loadWavPreview(path);
     });
     return page;
 }
@@ -878,7 +1165,9 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
 
     auto *sf = new SectionBox(I18n::tr("asrc_gll_section"), page);
     auto *fileRow = new QHBoxLayout();
-    m_gllFile = new QLineEdit("EAW_KF730_v2.gll", sf);
+    // 同上 (CLF/GLL はパーサ未実装 — ファイル名の記録のみ)
+    m_gllFile = new QLineEdit(sf);
+    m_gllFile->setPlaceholderText("EAW_KF730_v2.gll");
     auto *browse = new QPushButton(I18n::tr("asrc_browse"), sf);
     fileRow->addWidget(m_gllFile, 1);
     fileRow->addWidget(browse);
@@ -907,25 +1196,23 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
                        new QLabel(I18n::tr("asrc_angres_val"), sf));
     v->addWidget(sf);
 
+    // 帯域別指向性: 解析モデル選択時は閉形式の実計算 (周波数非依存)、
+    // CLF/GLL・測定 polar 選択時はファイル未解析なので "—" (偽値を出さない)
     auto *sb = new SectionBox(I18n::tr("asrc_band_section"), page);
-    auto *band = new QTableWidget(5, 5, sb);
-    setupTable(band, { I18n::tr("asrc_col_band"), I18n::tr("asrc_col_h6"),
-                       I18n::tr("asrc_col_v6"), I18n::tr("asrc_col_q"),
-                       "DI [dB]" }, 150);
-    static const char *kBand[5][5] = {
-        { "125 Hz", "160°", "160°", "1.5",  "1.8" },
-        { "500 Hz", "120°", "110°", "3.2",  "5.1" },
-        { "1 kHz",  "90°",  "75°",  "7.4",  "8.7" },
-        { "4 kHz",  "65°",  "45°",  "18.0", "12.6" },
-        { "16 kHz", "35°",  "25°",  "55.0", "17.4" },
-    };
+    m_bandTable = new QTableWidget(5, 5, sb);
+    setupTable(m_bandTable, { I18n::tr("asrc_col_band"), I18n::tr("asrc_col_h6"),
+                              I18n::tr("asrc_col_v6"), I18n::tr("asrc_col_q"),
+                              "DI [dB]" }, 150);
+    static const char *kBandName[5] = {
+        "125 Hz", "500 Hz", "1 kHz", "4 kHz", "16 kHz" };
     for (int r = 0; r < 5; ++r)
-        for (int c = 0; c < 5; ++c)
-            band->setItem(r, c, new QTableWidgetItem(
-                QString::fromUtf8(kBand[r][c])));
-    sb->vbox()->addWidget(band);
-    // 指向性表は固定サンプル (ファイル未解析)
-    sb->vbox()->addWidget(tabhelp::sampleNote(sb));
+        m_bandTable->setItem(r, 0, new QTableWidgetItem(
+            QString::fromUtf8(kBandName[r])));
+    sb->vbox()->addWidget(m_bandTable);
+    m_bandNote = new QLabel(sb);
+    m_bandNote->setWordWrap(true);
+    m_bandNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sb->vbox()->addWidget(m_bandNote);
     v->addWidget(sb);
 
     auto *sp = new SectionBox(I18n::tr("asrc_polar_section"), page);
@@ -949,27 +1236,20 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
     sp->vbox()->addWidget(m_polarClfNote);
     v->addWidget(sp);
 
+    // 軸上周波数特性: 一次指向性モデルの軸上応答は定義上フラット (0 dB)。
+    // モックにあった凹凸カーブ (低域/高域ロールオフ + sin リップル) は
+    // どの音源にも対応しない作り物なので描かない (絶対規則 5)。
     auto *sr = new SectionBox(I18n::tr("asrc_fr_section"), page);
     m_freqResp = new MiniPlot(sr);
-    m_freqResp->setLabels("f [Hz] (log)", "SPL [dB]");
+    m_freqResp->setLabels("f [Hz] (log)", "rel. level [dB]");
     m_freqResp->setXTickPow10(true);
+    m_freqResp->setYRange(-12.0, 12.0);
     m_freqResp->setMinimumHeight(110);
-    // mock: lowRoll = 1/(1+(80/f)⁴), highRoll = 1/(1+(f/18000)⁴)
-    //       y = 20·log10(max(0.001, lowRoll·highRoll)) + sin(f/300)·1.5
-    MiniSeries fr;
-    fr.color = kAcc;
-    for (int i = 0; i < 60; ++i) {
-        const double f = 50.0 * std::pow(10.0, i / 15.0);
-        const double lowRoll = 1.0 / (1.0 + std::pow(80.0 / f, 4.0));
-        const double highRoll = 1.0 / (1.0 + std::pow(f / 18000.0, 4.0));
-        const double y = 20.0 * std::log10(std::max(0.001, lowRoll * highRoll))
-                       + std::sin(f / 300.0) * 1.5;
-        fr.pts.push_back({ std::log10(f), y });
-    }
-    m_freqResp->setSeries({ fr });
     sr->vbox()->addWidget(m_freqResp);
-    // 周波数特性は解析式による固定サンプル
-    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
+    m_frNote = new QLabel(sr);
+    m_frNote->setWordWrap(true);
+    m_frNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sr->vbox()->addWidget(m_frNote);
     v->addWidget(sr);
     v->addStretch(1);
 
@@ -982,47 +1262,32 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
     connect(m_dirModel, &QComboBox::currentIndexChanged, this,
             [this](int) { updateDirectivity(); });
     connect(m_dirSource, &QComboBox::currentIndexChanged, this,
-            [this](int i) { m_polarClfNote->setVisible(i == 3 || i == 4); });
-    m_polarClfNote->setVisible(m_dirSource->currentIndex() == 3 ||
-                               m_dirSource->currentIndex() == 4);
+            [this](int) { updateDirectivity(); });
     updateDirectivity();
     return page;
 }
 
-// 選択された一次指向性モデル r(θ) = a + b·cosθ をポーラ図へ反映し、
-// ビーム幅・F/B 比・指向性係数 Q を閉形式で実計算する。
+// 選択された一次指向性モデル r(θ) = a + b·cosθ をポーラ図・帯域別指向性表・
+// 軸上周波数特性へ反映する。ビーム幅・F/B 比・指向性係数 Q は閉形式の実計算。
+// 音源データが CLF/GLL・測定 polar のときはパーサ未実装なので、帯域表と
+// 周波数特性は値を出さない ("—" / 空グラフ) — 偽の数値を出さない (絶対規則 5)。
 void AcousticSourceTab::updateDirectivity()
 {
-    // omni / cardioid / supercardioid / hypercardioid / fig-8 の係数
-    static const double kAB[5][2] = {
-        { 1.0, 0.0 }, { 0.5, 0.5 }, { 0.37, 0.63 },
-        { 0.25, 0.75 }, { 0.0, 1.0 },
-    };
     const int idx = qBound(0, m_dirModel->currentIndex(), 4);
     const double a = kAB[idx][0], b = kAB[idx][1];
     m_polar->setPattern(a, b);
+    // 3 = CLF/GLL ファイル、4 = 測定 polar (.txt)
+    const bool fileBased = (m_dirSource->currentIndex() == 3 ||
+                            m_dirSource->currentIndex() == 4);
+    m_polarClfNote->setVisible(fileBased);
 
-    // ビーム幅: |r(θ)| が軸上値から dropDb 落ちる全角。
-    // そこまで落ちない (omni 等) 場合は 0 を返し「—」表示にする
-    auto beamDeg = [a, b](double dropDb) -> double {
-        if (b <= 0.0) return 0.0;
-        const double c =
-            (std::pow(10.0, -dropDb / 20.0) * (a + b) - a) / b;
-        if (c <= -1.0 || c >= 1.0) return 0.0;
-        return 2.0 * std::acos(c) * 180.0 / M_PI;
-    };
-    auto beamText = [](double deg) {
-        return deg > 0.0 ? QStringLiteral("%1°").arg(qRound(deg))
-                         : QStringLiteral("—");
-    };
     // F/B 比 = 20·log10(|r(0°)| / |r(180°)|)。背面ヌル (cardioid) は ∞
     const double back = std::fabs(a - b);
     const QString fb = back < 1e-9
         ? QStringLiteral("∞")
         : QStringLiteral("%1 dB").arg(QString::number(
               20.0 * std::log10((a + b) / back), 'f', 1));
-    // 指向性係数 (回転対称 3D): Q = (a+b)² / (a² + b²/3)、DI = 10·log10 Q
-    const double q = (a + b) * (a + b) / (a * a + b * b / 3.0);
+    const double q = directivityFactor(a, b);
     const double di = 10.0 * std::log10(q);
     m_polarInfo->setText(QStringLiteral(
         "<b>Type:</b> %1<br>"
@@ -1030,9 +1295,37 @@ void AcousticSourceTab::updateDirectivity()
         "<b>-6 dB beam:</b> %3<br>"
         "<b>F/B ratio:</b> %4<br>"
         "<b>Q:</b> %5 (DI %6 dB)")
-        .arg(m_dirModel->currentText(), beamText(beamDeg(3.0)),
-             beamText(beamDeg(6.0)), fb, QString::number(q, 'f', 1),
+        .arg(m_dirModel->currentText(), beamText(beamWidthDeg(a, b, 3.0)),
+             beamText(beamWidthDeg(a, b, 6.0)), fb, QString::number(q, 'f', 1),
              QString::number(di, 'f', 1)));
+
+    // ── 帯域別指向性 (列 1..4: 水平 -6dB / 垂直 -6dB / Q / DI) ──
+    // 一次指向性モデルは回転対称かつ周波数非依存なので、水平 = 垂直、
+    // 全帯域で同じ値になる。
+    const QString h6 = fileBased ? kDash : beamText(beamWidthDeg(a, b, 6.0));
+    const QString qs = fileBased ? kDash : QString::number(q, 'f', 1);
+    const QString dis = fileBased ? kDash : QString::number(di, 'f', 1);
+    for (int r = 0; r < 5; ++r) {
+        m_bandTable->setItem(r, 1, new QTableWidgetItem(h6));
+        m_bandTable->setItem(r, 2, new QTableWidgetItem(h6));
+        m_bandTable->setItem(r, 3, new QTableWidgetItem(qs));
+        m_bandTable->setItem(r, 4, new QTableWidgetItem(dis));
+    }
+    m_bandNote->setText(
+        I18n::tr(fileBased ? "asrc_band_note_file" : "asrc_band_note_model"));
+
+    // ── 軸上周波数特性 ──
+    // 解析モデルの軸上応答はフラット (0 dB)。ファイル由来は未解析なので空。
+    MiniSeries fr;
+    fr.color = kAcc;
+    if (!fileBased) {
+        // 20 Hz – 20 kHz を対数軸で 2 点 (フラットなので端点だけで足りる)
+        fr.pts.push_back({ std::log10(20.0), 0.0 });
+        fr.pts.push_back({ std::log10(20000.0), 0.0 });
+    }
+    m_freqResp->setSeries({ fr });
+    m_frNote->setText(
+        I18n::tr(fileBased ? "asrc_fr_note_file" : "asrc_fr_note_model"));
 }
 
 // ── page: array ─────────────────────────────────────────────────────────────
@@ -1142,7 +1435,8 @@ QWidget *AcousticSourceTab::buildAuralPage()
 
     auto *sc = new SectionBox(I18n::tr("asrc_conv_section"), page);
     auto *inRow = new QHBoxLayout();
-    auto *inWav = new QLineEdit("anechoic_speech_48k.wav", sc);
+    auto *inWav = new QLineEdit(sc);
+    inWav->setPlaceholderText("anechoic_speech_48k.wav");
     auto *inBtn = new QPushButton("📁", sc);
     inBtn->setMaximumWidth(36);
     inRow->addWidget(inWav, 1);
@@ -1230,30 +1524,28 @@ QWidget *AcousticSourceTab::buildAuralPage()
     sa->form()->addRow(I18n::tr("asrc_abx"), abx);
     v->addWidget(sa);
 
+    // ── 可聴化品質指標 — 実測 RIR (RIR 分析タブで設定) からの実計算 ──
     auto *sq = new SectionBox(I18n::tr("asrc_quality_section"), page);
-    auto *q = new QTableWidget(5, 3, sq);
-    setupTable(q, { I18n::tr("asrc_col_item"), I18n::tr("asrc_col_value"),
-                    I18n::tr("asrc_col_verdict") }, 150);
-    const struct { QString item, value, verdict; } kQ[5] = {
-        { I18n::tr("asrc_q_irflen"), "3.2 s", I18n::tr("asrc_q_enough") },
-        { I18n::tr("asrc_q_density"), I18n::tr("asrc_q_high"),
-          I18n::tr("asrc_q_natural") },
-        { "ITDG (Initial Time Delay Gap)", "23 ms", I18n::tr("asrc_q_good") },
-        { I18n::tr("asrc_q_lf"), "0.32", I18n::tr("asrc_q_spacious") },
-        { I18n::tr("asrc_q_phase"), I18n::tr("asrc_q_minphase"), "OK" },
-    };
-    for (int r = 0; r < 5; ++r) {
-        q->setItem(r, 0, new QTableWidgetItem(kQ[r].item));
-        q->setItem(r, 1, new QTableWidgetItem(kQ[r].value));
-        auto *ver = new QTableWidgetItem(kQ[r].verdict);
-        ver->setForeground(QBrush(kAcc));
-        q->setItem(r, 2, ver);
-    }
-    sq->vbox()->addWidget(q);
-    // 品質指標は固定サンプル — 実測値と誤認させない (絶対規則 5・6)
-    sq->vbox()->addWidget(tabhelp::sampleNote(sq));
+    m_qualTable = new QTableWidget(5, 3, sq);
+    setupTable(m_qualTable,
+               { I18n::tr("asrc_col_item"), I18n::tr("asrc_col_value"),
+                 I18n::tr("asrc_col_verdict") }, 150);
+    sq->vbox()->addWidget(m_qualTable);
+    auto *qBtnRow = new QHBoxLayout();
+    auto *qBtn = new QPushButton(I18n::tr("asrc_q_btn"), sq);
+    qBtnRow->addWidget(qBtn);
+    qBtnRow->addStretch(1);
+    sq->vbox()->addLayout(qBtnRow);
+    m_qualNote = new QLabel(I18n::tr("asrc_q_idle"), sq);
+    m_qualNote->setWordWrap(true);
+    m_qualNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sq->vbox()->addWidget(m_qualNote);
+    clearAuralQuality();
     v->addWidget(sq);
     v->addStretch(1);
+
+    connect(qBtn, &QPushButton::clicked, this,
+            [this] { computeAuralQuality(); });
 
     // 入力WAV の参照ボタン (隣の QLineEdit にパスを反映)
     connect(inBtn, &QPushButton::clicked, this, [this, inWav] {
@@ -1294,6 +1586,129 @@ QWidget *AcousticSourceTab::buildAuralPage()
     return page;
 }
 
+// 可聴化品質指標を「未算出」状態にする。値は出さず ("—")、LF と位相応答は
+// 算出できない理由を判定欄に書く (絶対規則 5・6: 偽の値を出さない)。
+void AcousticSourceTab::clearAuralQuality()
+{
+    const QString items[5] = {
+        I18n::tr("asrc_q_irflen"), I18n::tr("asrc_q_density"),
+        QStringLiteral("ITDG (Initial Time Delay Gap)"),
+        I18n::tr("asrc_q_lf"), I18n::tr("asrc_q_phase"),
+    };
+    const QString verdicts[5] = {
+        kDash, kDash, kDash,
+        I18n::tr("asrc_q_lf_need"),   // ISO 3382-1 の 2ch 測定が必要
+        I18n::tr("th_notimpl"),       // 最小位相補正は未実装
+    };
+    for (int r = 0; r < 5; ++r) {
+        m_qualTable->setItem(r, 0, new QTableWidgetItem(items[r]));
+        m_qualTable->setItem(r, 1, new QTableWidgetItem(kDash));
+        m_qualTable->setItem(r, 2, new QTableWidgetItem(verdicts[r]));
+    }
+    if (m_qualNote) m_qualNote->setText(I18n::tr("asrc_q_idle"));
+}
+
+// 実測 RIR (OperaAcousticSettings::rirPath) を分析し、IRF長・初期反射密度・
+// ITDG を実計算して表へ入れる。分析は QThread で非同期 (gui.md)。
+// LF (側方音エネルギー) は ISO 3382-1 で無指向性 + 双指向性マイクの 2ch 測定を
+// 要求するためモノ RIR からは求まらない → 「—」のまま。
+void AcousticSourceTab::computeAuralQuality()
+{
+    if (m_qualBusy) return;
+    const OperaAcousticSettings settings = m_p->operaAcoustic();
+    const QString path = settings.rirPath.trimmed();
+    if (path.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("asrc_q_title"),
+                                 I18n::tr("asrc_q_norir"));
+        return;
+    }
+    if (!QFileInfo::exists(path)) {
+        QMessageBox::warning(this, I18n::tr("asrc_q_title"),
+                             I18n::tr("asrc_q_nofile").arg(path));
+        return;
+    }
+
+    struct QualData {
+        bool ok = false;
+        QString err;
+        double duration = 0.0;      // IRF 長 [s]
+        bool   haveT30 = false;
+        double t30 = 0.0;           // 有効帯域の最大 T30 [s]
+        int    early = 0;           // 直接音後 0–50 ms の反射数
+        bool   haveItdg = false;
+        double itdgSec = 0.0;       // 直接音→初反射 [s]
+    };
+    auto d = std::make_shared<QualData>();
+    m_qualBusy = true;
+    m_qualNote->setText(I18n::tr("asrc_q_busy"));
+
+    QThread *th = QThread::create([settings, d] {
+        const acoustics::AcousticResult<acoustics::RirAnalysisResult> res =
+            QtAcousticAdapter::analyzeFile(settings);
+        if (!res.success()) {
+            d->err = QString::fromStdString(res.message());
+            return;
+        }
+        const acoustics::RirAnalysisResult &r = res.value();
+        d->duration = r.preprocess.durationSeconds;
+        // IRF 長の判定基準に使う T30 (有効な帯域の最大値)
+        for (const acoustics::BandMetricsResult &b : r.bands) {
+            if (!b.metrics.t30.valid) continue;
+            if (!d->haveT30 || b.metrics.t30.value > d->t30) {
+                d->t30 = b.metrics.t30.value;
+                d->haveT30 = true;
+            }
+        }
+        // 反射は時刻昇順 — 最初の正遅延が ITDG、0–50 ms の個数が初期反射密度
+        for (const acoustics::ReflectionEvent &e : r.reflections) {
+            if (e.delayFromDirect <= 0.0) continue;
+            if (!d->haveItdg) {
+                d->haveItdg = true;
+                d->itdgSec = e.delayFromDirect;
+            }
+            if (e.delayFromDirect <= 0.05) ++d->early;
+        }
+        d->ok = true;
+    });
+    connect(th, &QThread::finished, this, [this, th, d, path] {
+        th->deleteLater();
+        m_qualBusy = false;
+        if (!d->ok) {
+            clearAuralQuality();
+            m_qualNote->setText(I18n::tr("asrc_q_fail").arg(d->err));
+            return;
+        }
+        clearAuralQuality();
+        auto setCell = [this](int row, const QString &value,
+                              const QString &verdict, bool positive) {
+            m_qualTable->setItem(row, 1, new QTableWidgetItem(value));
+            auto *ver = new QTableWidgetItem(verdict);
+            if (positive) ver->setForeground(QBrush(kAcc));
+            m_qualTable->setItem(row, 2, ver);
+        };
+        // IRF 長: 減衰を最後まで含むか (T30 に満たない収録は評価に不足)
+        const bool longEnough = d->haveT30 && d->duration >= d->t30;
+        setCell(0, QStringLiteral("%1 s")
+                       .arg(QString::number(d->duration, 'f', 2)),
+                d->haveT30 ? I18n::tr(longEnough ? "asrc_q_enough"
+                                                 : "asrc_q_short")
+                           : kDash,
+                longEnough);
+        // 初期反射密度: 直接音後 0–50 ms に検出した反射の個数 (実測)
+        setCell(1, I18n::tr("asrc_q_refl_n").arg(d->early), kDash, false);
+        // ITDG: Beranek の親密感の目安 (≲20 ms) を満たすかだけを述べる
+        // (L. L. Beranek, "Concert Halls and Opera Houses", 2nd ed.)
+        if (d->haveItdg) {
+            const double ms = d->itdgSec * 1000.0;
+            setCell(2, QStringLiteral("%1 ms").arg(QString::number(ms, 'f', 1)),
+                    ms <= 20.0 ? I18n::tr("asrc_q_good") : kDash, ms <= 20.0);
+        }
+        m_qualNote->setText(
+            I18n::tr("asrc_q_done").arg(QFileInfo(path).fileName()));
+    });
+    th->start();
+}
+
 // ── domain switch (音響 ⇔ 水中) ─────────────────────────────────────────────
 void AcousticSourceTab::onDomainChanged()
 {
@@ -1304,24 +1719,29 @@ void AcousticSourceTab::onDomainChanged()
              I18n::tr(uw ? "asrc_preset_sonar" : "asrc_preset_speaker")));
     m_baseSplUnit->setText(uw ? QStringLiteral("dB re μPa·m")
                               : QStringLiteral("dB SPL"));
-    fillSourceTable(uw);
+    // 表示単位はドメインで変わる (室内 = SPL@1m / 水中 = SL)
+    m_srcTable->setHorizontalHeaderLabels({
+        "", "#", I18n::tr("asrc_col_name"), I18n::tr("asrc_col_kind"),
+        I18n::tr("asrc_col_pos"), I18n::tr("asrc_col_dir"),
+        I18n::tr("asrc_col_sig"),
+        I18n::tr(uw ? "asrc_col_spl_uw" : "asrc_col_spl_room") });
+    refreshSourceTable();
 
-    // ライブラリ表 (最終行のみドメイン依存)
-    const struct { const char *badge, *mat, *len, *use; } kLib[8] = {
-        { "●", "asrc_lib1", "15s",  "asrc_lib1u" },
-        { "●", "asrc_lib2", "15s",  "asrc_lib2u" },
-        { "○", "asrc_lib3", "30s",  "asrc_lib3u" },
-        { "○", "asrc_lib4", "20s",  "asrc_lib4u" },
-        { "○", "asrc_lib5", "1ms",  "asrc_lib5u" },
-        { "○", "asrc_lib6", "1-10s","asrc_lib6u" },
-        { "○", "asrc_lib7", "10s",  "asrc_lib7u" },
-        { "○", nullptr,     nullptr, nullptr },
+    // ライブラリ表 (最終行のみドメイン依存)。音源ファイルは 1 つも同梱して
+    // いないので「同梱」列は全行 "—" (○/● は同梱の誤認を招く)。
+    const struct { const char *mat, *len, *use; } kLib[8] = {
+        { "asrc_lib1", "15s",  "asrc_lib1u" },
+        { "asrc_lib2", "15s",  "asrc_lib2u" },
+        { "asrc_lib3", "30s",  "asrc_lib3u" },
+        { "asrc_lib4", "20s",  "asrc_lib4u" },
+        { "asrc_lib5", "1ms",  "asrc_lib5u" },
+        { "asrc_lib6", "1-10s","asrc_lib6u" },
+        { "asrc_lib7", "10s",  "asrc_lib7u" },
+        { nullptr,     nullptr, nullptr },
     };
     for (int r = 0; r < 8; ++r) {
         const bool last = (r == 7);
-        auto *badge = new QTableWidgetItem(QString::fromUtf8(kLib[r].badge));
-        if (r < 2) badge->setForeground(QBrush(kAcc));
-        m_libTable->setItem(r, 0, badge);
+        m_libTable->setItem(r, 0, new QTableWidgetItem(kDash));
         m_libTable->setItem(r, 1, new QTableWidgetItem(
             last ? I18n::tr(uw ? "asrc_lib8_uw" : "asrc_lib8_room")
                  : I18n::tr(kLib[r].mat)));
@@ -1358,5 +1778,9 @@ void AcousticSourceTab::refresh()
     const int sr = m_p->acoustic().sampleRate;
     m_renderRate->setCurrentIndex(
         sr == 44100 ? 0 : sr == 96000 ? 2 : sr == 192000 ? 3 : 1);
+    // 音源リスト (.ofdx) を読み直す
+    refreshSourceTable();
+    // 別プロジェクトが読み込まれたら、前の RIR の分析結果は無効 — 未算出へ
+    if (!m_qualBusy) clearAuralQuality();
     m_updating = false;
 }

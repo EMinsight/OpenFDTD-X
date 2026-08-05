@@ -5,22 +5,30 @@
 //   - フィットモデル切替 (Multi-coefficient / Drude / Lorentz / Sampled)
 //   - n,k フィット結果プレビュープロット (光学ガラスは Sellmeier 実曲線)
 //   - モデル診断表 + 「この材料を物性値リストに追加」→ Project::materials()
+//
+// フィットと診断は実計算: 公刊 Sellmeier 係数から作った参照データに
+// src/optics/DispersionFit の極モデルを最小二乗で当て、RMS 残差・因果律
+// (透明域の必要条件)・受動性・n_min を求める。実分散データを持たない材料は
+// フィットできないので、診断は「評価対象外」と表示する (偽の合格を出さない)。
 #pragma once
 #include <QScrollArea>
 #include <QVector>
+
+#include "../optics/DispersionFit.h"
+#include "../widgets/MiniPlot.h"
 
 class QComboBox;
 class QLabel;
 class QPushButton;
 class QLineEdit;
 class QStackedWidget;
+class QTableWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 
 namespace ofd {
 
 class Project;
-class MiniPlot;
 class SectionBox;
 
 class MaterialExplorerTab : public QScrollArea {
@@ -31,6 +39,7 @@ public:
 private slots:
     void filterTree(const QString &query);
     void addToMaterials();
+    void runFit();                  // 参照データへ分散モデルを当てる (実計算)
 
 private:
     // DBの1材料。glassIndex >= 0 なら GlassCatalog::all() の光学ガラス。
@@ -41,6 +50,11 @@ private:
     void buildDatabase();
     void showEntry(int index);
     double previewN(const Entry &e, double lambda_nm) const;
+    // 参照データ (公刊 Sellmeier) の有効範囲 [nm]。無い材料は false
+    bool referenceRange(const Entry &e, double &lo_nm, double &hi_nm) const;
+    void clearFit();                // フィット結果を捨てて「未計算」表示へ
+    void showFit();                 // バッジ・診断表・重ね描きの更新
+    static void setBadge(QLabel *badge, const QString &text, const char *color);
 
     Project        *m_p;
     QVector<Entry>  m_entries;
@@ -58,6 +72,16 @@ private:
     QPushButton    *m_addBtn = nullptr;
     QLabel         *m_previewNote = nullptr;   // 実分散 / 例示曲線の別を明示
     int             m_sel = 0;
+
+    // ── フィット (実計算) ──
+    QPushButton    *m_fitBtn = nullptr;
+    QLabel         *m_badgeRms = nullptr, *m_badgeCausal = nullptr;
+    QLabel         *m_fitStatus = nullptr;     // 参照データ・結果・エラーの説明
+    QTableWidget   *m_diag = nullptr;          // モデル診断表
+    MiniSeries      m_refSeries;               // 参照データ曲線 (重ね描き用)
+    optics::FitReport m_fit;
+    bool            m_hasFit = false;
+    double          m_fitLo_nm = 0.0, m_fitHi_nm = 0.0;   // 実際に使った範囲
 };
 
 } // namespace ofd

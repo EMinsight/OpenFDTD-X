@@ -23,11 +23,31 @@
 #include "io/OfdIO.h"
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
+#include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
+#include "optics/ThinFilmStack.h"
 #include "core/RoomAcoustics.h"
+#include "core/FdtdVerification.h"
+#include "core/ToleranceStats.h"
+#include "acoustics/core/SoundInsulation.h"
+#include "acoustics/core/RoomModes.h"
+#include "acoustics/core/EnvironmentalNoise.h"
+#include "acoustics/core/FocusedField.h"
+#include "optics/PlasmaDispersion.h"
+#include "optics/DispersionFit.h"
+#include "optics/BendWaveguide.h"
+#include "optics/Colorimetry.h"
+#include "optics/SourceSpectrum.h"
+#include "optics/DisplayMetrics.h"
+#include "optics/ParaxialTrace.h"
+#include "core/SolverSelection.h"
+#include "em/SarMetrics.h"
+#include "em/RadioPropagation.h"
+#include "em/EmcStandards.h"
+#include "em/LumpedRlc.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
 
@@ -457,6 +477,107 @@ static void testRoomAcoustics()
         }
     }
 
+    // 受音点リスト (AcousticTab の受音点表): 既定値と受音点数との一致
+    {
+        const AcousticOpts d;
+        check(d.receivers.size() == 1 && d.micCount == 1,
+              "receivers: default row count matches mic count");
+        check(d.receivers[0].enabled && d.receivers[0].type == 0 &&
+              d.receivers[0].name == QString::fromUtf8("P1 中央") &&
+              nearlyEq(d.receivers[0].x, 0.0) &&
+              nearlyEq(d.receivers[0].y, 1.2) &&
+              nearlyEq(d.receivers[0].z, 8.0),
+              "receivers: default row 1 values");
+        const QVector<ReceiverRow> six = defaultReceivers(6);
+        check(six.size() == 6, "receivers: defaultReceivers(6) size");
+        check(six[3].type == 1 && six[3].name == QString::fromUtf8("P4 後方"),
+              "receivers: 4th default is the stereo rear point");
+        check(six[5].name == QStringLiteral("P6") && nearlyEq(six[5].z, 18.0),
+              "receivers: 5th+ defaults continue backwards");
+    }
+
+    // 受音点リスト: .ofdx ラウンドトリップ + 既存キー保全
+    {
+        Project ps;
+        auto &rc = ps.acoustic().receivers;
+        rc = defaultReceivers(3);
+        rc[0].enabled = false;
+        rc[0].x = -1.25; rc[0].y = 1.7; rc[0].z = 6.5;
+        rc[0].type = 2;
+        rc[0].name = QString::fromUtf8("指揮者位置");
+        ps.acoustic().micCount = rc.size();
+
+        QTemporaryFile f4;
+        f4.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_XXXXXX.ofdx");
+        if (f4.open()) {
+            check(OfdxIO::save(f4.fileName(), ps), "receivers ofdx save");
+            Project pl;
+            check(OfdxIO::load(f4.fileName(), pl), "receivers ofdx load");
+            const auto &qs = pl.acoustic().receivers;
+            check(qs.size() == 3, "receivers count round-trip");
+            if (qs.size() == 3) {
+                check(!qs[0].enabled && qs[0].type == 2 &&
+                      qs[0].name == QString::fromUtf8("指揮者位置") &&
+                      nearlyEq(qs[0].x, -1.25) && nearlyEq(qs[0].y, 1.7) &&
+                      nearlyEq(qs[0].z, 6.5),
+                      "receivers row round-trip");
+                check(qs[2].enabled && nearlyEq(qs[2].x, 2.0),
+                      "receivers remaining rows round-trip");
+            }
+            check(pl.acoustic().micCount == 3,
+                  "receivers: mic count follows row count");
+
+            QFile jf(f4.fileName());
+            check(jf.open(QIODevice::ReadOnly), "receivers ofdx reopen");
+            const QJsonObject ac = QJsonDocument::fromJson(jf.readAll())
+                                       .object().value("acoustic").toObject();
+            check(ac.value("receivers").toArray().size() == 3,
+                  "receivers json key");
+            check(ac["receivers"].toArray()[0].toObject()
+                      .value("pos_m").toArray().size() == 3,
+                  "receivers json pos array");
+            check(ac.contains("mic_count") && ac.contains("noise_sources") &&
+                  ac.contains("absorption"),
+                  "receivers json keeps existing acoustic keys");
+        }
+    }
+
+    // 旧 .ofdx (receivers 無し): mic_count 個の既定点で埋める / 範囲外はクランプ
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"mic_count\": 4 } }";
+            old.write(legacy);
+            old.flush();
+            Project p4;
+            check(OfdxIO::load(old.fileName(), p4), "legacy rcv ofdx load");
+            const auto &qs = p4.acoustic().receivers;
+            check(qs.size() == 4 && p4.acoustic().micCount == 4,
+                  "legacy ofdx fills receivers from mic_count");
+            check(qs[3].name == QString::fromUtf8("P4 後方"),
+                  "legacy ofdx receiver defaults");
+        }
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_rcv_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"mic_count\": 9,"
+                "    \"receivers\": [ { \"type\": 7, \"name\": \"X\" } ] } }";
+            bad.write(broken);
+            bad.flush();
+            Project p5;
+            check(OfdxIO::load(bad.fileName(), p5), "broken rcv ofdx load");
+            const auto &qs = p5.acoustic().receivers;
+            check(qs.size() == 1 && p5.acoustic().micCount == 1,
+                  "broken ofdx: mic count follows receivers");
+            check(qs[0].type == 2, "broken ofdx: receiver type clamped");
+        }
+    }
+
     // 旧 .ofdx (noise_sources 無し): 既定 4 行のまま (旧ファイル互換)
     {
         QTemporaryFile old;
@@ -529,6 +650,148 @@ static void testRoomAcoustics()
         }
     }
 
+    // ── 音源リスト (AcousticSourceTab の音源一覧) ────────────────────────────
+    // 既定値 (新規プロジェクト): 室内 3 本 / 水中 2 本
+    {
+        const AcousticOpts da;
+        const UnderwaterOpts du;
+        check(da.sources.size() == 3, "acoustic sources: default 3 rows");
+        if (da.sources.size() == 3) {
+            check(da.sources[0].enabled &&
+                  da.sources[0].name == QStringLiteral("L_main") &&
+                  da.sources[0].kind == AcousticSourceRow::Cardioid &&
+                  nearlyEq(da.sources[0].x_m, -3.0) &&
+                  nearlyEq(da.sources[0].y_m, 4.5) &&
+                  nearlyEq(da.sources[0].z_m, 5.0) &&
+                  nearlyEq(da.sources[0].level_dB, 94.0),
+                  "acoustic sources: row 1 defaults");
+            // 同梱していない音源ファイル名を既定に入れない (信号欄は空)
+            check(da.sources[0].signal.isEmpty() &&
+                  da.sources[2].name == QStringLiteral("C_voice") &&
+                  nearlyEq(da.sources[2].level_dB, 88.0),
+                  "acoustic sources: no fabricated signal file");
+        }
+        check(du.sources.size() == 2, "sonar sources: default 2 rows");
+        if (du.sources.size() == 2)
+            check(du.sources[0].name == QStringLiteral("TX_sonar") &&
+                  du.sources[0].kind == AcousticSourceRow::Directional &&
+                  nearlyEq(du.sources[0].level_dB, 220.0) &&
+                  !du.sources[1].enabled,
+                  "sonar sources: row defaults");
+    }
+
+    // 音源リスト: .ofdx ラウンドトリップ (室内 / 水中の両方) + 既存キー保全
+    {
+        Project ps;
+        auto &sl = ps.acoustic().sources;
+        sl.clear();
+        AcousticSourceRow r;
+        r.enabled = false;
+        r.name = QString::fromUtf8("舞台上手");
+        r.kind = AcousticSourceRow::Bipolar;
+        r.x_m = 1.25; r.y_m = -2.5; r.z_m = 3.75;
+        r.aim = QString::fromUtf8("-Z 15°");
+        r.signal = QStringLiteral("speech_48k.wav");
+        r.level_dB = 91.5;
+        sl.push_back(r);
+        auto &ul = ps.underwater().sources;
+        ul.clear();
+        AcousticSourceRow u;
+        u.name = QStringLiteral("TX_A");
+        u.kind = AcousticSourceRow::Omni;
+        u.x_m = -10; u.y_m = 20; u.z_m = -30;
+        u.signal = QStringLiteral("chirp 1-2kHz");
+        u.level_dB = 205.0;
+        ul.push_back(u);
+
+        QTemporaryFile fs;
+        fs.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_XXXXXX.ofdx");
+        if (fs.open()) {
+            check(OfdxIO::save(fs.fileName(), ps), "source list ofdx save");
+            Project pl;
+            check(OfdxIO::load(fs.fileName(), pl), "source list ofdx load");
+            const auto &qs = pl.acoustic().sources;
+            check(qs.size() == 1, "source list count round-trip");
+            if (qs.size() == 1)
+                check(!qs[0].enabled &&
+                      qs[0].name == QString::fromUtf8("舞台上手") &&
+                      qs[0].kind == AcousticSourceRow::Bipolar &&
+                      nearlyEq(qs[0].x_m, 1.25) &&
+                      nearlyEq(qs[0].y_m, -2.5) &&
+                      nearlyEq(qs[0].z_m, 3.75) &&
+                      qs[0].aim == QString::fromUtf8("-Z 15°") &&
+                      qs[0].signal == QStringLiteral("speech_48k.wav") &&
+                      nearlyEq(qs[0].level_dB, 91.5),
+                      "source list row round-trip");
+            const auto &us = pl.underwater().sources;
+            check(us.size() == 1, "sonar source list count round-trip");
+            if (us.size() == 1)
+                check(us[0].name == QStringLiteral("TX_A") &&
+                      us[0].kind == AcousticSourceRow::Omni &&
+                      nearlyEq(us[0].z_m, -30.0) &&
+                      us[0].signal == QStringLiteral("chirp 1-2kHz") &&
+                      nearlyEq(us[0].level_dB, 205.0),
+                      "sonar source list row round-trip");
+
+            QFile jf(fs.fileName());
+            check(jf.open(QIODevice::ReadOnly), "source list ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject ac = root.value("acoustic").toObject();
+            const QJsonObject uw = root.value("underwater").toObject();
+            check(ac.value("sources").toArray().size() == 1 &&
+                  uw.value("sources").toArray().size() == 1,
+                  "source list json key");
+            check(ac.contains("noise_sources") && ac.contains("receivers") &&
+                  ac.contains("mic_count") &&
+                  uw.contains("sonar_sl_db") && uw.contains("ssp"),
+                  "source list json keeps existing keys");
+        }
+    }
+
+    // 旧 .ofdx (sources 無し): 既定 3 行 / 2 行のまま (旧ファイル互換)。
+    // 壊れた種別 (範囲外) はクランプされる。
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"room_l\": 25.5 },"
+                "  \"underwater\": { \"sonar_sl_db\": 210.0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p4;
+            check(OfdxIO::load(old.fileName(), p4), "legacy src ofdx load");
+            check(p4.acoustic().sources.size() == 3 &&
+                  p4.acoustic().sources[0].name == QStringLiteral("L_main"),
+                  "legacy ofdx keeps default acoustic sources");
+            check(p4.underwater().sources.size() == 2 &&
+                  p4.underwater().sources[0].name == QStringLiteral("TX_sonar"),
+                  "legacy ofdx keeps default sonar sources");
+        }
+        QTemporaryFile bad2;
+        bad2.setFileTemplate(QDir::tempPath() + "/ofdx_srclist_bad_XXXXXX.ofdx");
+        if (bad2.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"sources\": [ { \"name\": \"X\","
+                "      \"kind\": 9, \"pos_m\": [1,2] } ] } }";
+            bad2.write(broken);
+            bad2.flush();
+            Project p5;
+            check(OfdxIO::load(bad2.fileName(), p5), "broken src ofdx load");
+            const auto &bs = p5.acoustic().sources;
+            check(bs.size() == 1 && bs[0].kind == AcousticSourceRow::Directional,
+                  "source list out-of-range kind clamped");
+            // 要素数の足りない pos_m は既定値のまま (壊れた座標を作らない)
+            if (bs.size() == 1)
+                check(nearlyEq(bs[0].x_m, 0.0) && nearlyEq(bs[0].y_m, 0.0) &&
+                      nearlyEq(bs[0].z_m, 0.0) && bs[0].enabled,
+                      "source list short pos_m keeps defaults");
+        }
+    }
+
     // 壊れた .ofdx の範囲外 int はクランプされ不正な選択を作らない
     {
         QTemporaryFile bad;
@@ -546,6 +809,170 @@ static void testRoomAcoustics()
                   pb.acoustic().bandRange == 0,
                   "actab out-of-range ints clamped");
         }
+    }
+
+    // ── ISO 3382-1 の減衰時間 (回帰) ─────────────────────────────────────────
+    // 期待値は実装と独立に「傾き −60/T の直線」から与える。
+    {
+        const double T = 2.0;
+        QVector<QPointF> line;
+        for (int i = 0; i <= 2000; ++i)
+            line.push_back({ i * 0.001, -60.0 * (i * 0.001) / T });
+        check(std::fabs(decayTimeFromCurve(line, 0, -10) - T) < 1e-6,
+              "EDT from an exact -60dB/T line = T");
+        check(std::fabs(decayTimeFromCurve(line, -5, -25) - T) < 1e-6,
+              "T20 from an exact -60dB/T line = T");
+        check(std::fabs(decayTimeFromCurve(line, -5, -35) - T) < 1e-6,
+              "T30 from an exact -60dB/T line = T");
+        check(decayTimes(line).valid, "decayTimes valid on a full line");
+        // 傾きを半分 (−30 dB/s) にすれば減衰時間は 2 倍
+        QVector<QPointF> slow;
+        for (int i = 0; i <= 4000; ++i)
+            slow.push_back({ i * 0.001, -30.0 * (i * 0.001) });
+        check(std::fabs(decayTimeFromCurve(slow, -5, -25) - 2.0) < 1e-6,
+              "T20 = 60/|slope|");
+        // −35 dB まで届かない曲線は T30 が算出不能 (0)
+        QVector<QPointF> shortC;
+        for (int i = 0; i <= 500; ++i)
+            shortC.push_back({ i * 0.001, -60.0 * (i * 0.001) / T });
+        check(decayTimeFromCurve(shortC, -5, -35) == 0.0,
+              "T30 unavailable when the curve never reaches -35 dB");
+        check(!decayTimes(shortC).valid, "decayTimes invalid on a short curve");
+    }
+
+    // Barron モデルの Schroeder 曲線: 後期の傾きは −60/T なので T20=T30=RT60、
+    // 直接音の段差があるぶん EDT は RT60 以下になる。
+    {
+        const double Tb = 1.8;
+        const QVector<QPointF> c = schroederCurve(15.0, Tb, 12000, 3.0, 601);
+        check(c.size() == 601 && c.first().x() == 0.0 && c.first().y() == 0.0,
+              "Schroeder curve starts at (0, 0 dB)");
+        check(c[1].y() < 0.0 && c.last().y() < c[1].y(),
+              "Schroeder curve is decreasing");
+        const DecayTimes d = decayTimes(c);
+        // 減衰係数に 13.8 (≈ 6·ln10 = 13.8155 の慣用丸め) を使うので
+        // 傾きは −59.93/T となり、T20/T30 は RT60 より 0.11% 長く出る。
+        check(std::fabs(d.T20 - Tb) < 0.005 * Tb, "Barron curve: T20 = RT60");
+        check(std::fabs(d.T30 - Tb) < 0.005 * Tb, "Barron curve: T30 = RT60");
+        check(d.EDT > 0 && d.EDT < Tb,
+              "Barron curve: EDT < RT60 (direct sound steepens 0..-10 dB)");
+    }
+
+    // 吸音力 → ∞ で RT60 → 0 (Sabine)
+    {
+        AcousticOpts z;
+        z.volume = 12000; z.surface = 3800;
+        AbsorptionRow rw;
+        rw.role = AbsorptionRow::Other;
+        rw.area = 100000;
+        for (double &al : rw.alpha) al = 1.0;
+        z.absorption = { rw };
+        check(rt60(z, 3, 0) < 0.05, "RT60 -> 0 as absorption -> inf");
+        // 吸音力を 10 倍にすると Sabine の RT は 1/10 になる (RT = 0.161V/A)
+        AbsorptionRow tenth = rw;
+        tenth.area = 10000;
+        AcousticOpts z10 = z;
+        z10.absorption = { tenth };
+        check(std::fabs(rt60(z, 3, 0) * 10.0 - rt60(z10, 3, 0)) < 1e-9,
+              "Sabine RT is inversely proportional to A");
+    }
+
+    // Ts / G_late (Barron 閉形式) の極限
+    {
+        // 残響が消える極限 → C80 → +∞, D50 → 1, Ts → 0
+        const SeatMetrics dry = seatMetrics(10.0, 0.1, 1e9);
+        check(dry.C80 > 60.0, "C80 -> +inf without reverberation");
+        check(dry.D50 > 0.999, "D50 -> 1 without reverberation");
+        check(dry.Ts < 1.0, "Ts -> 0 ms without reverberation");
+        // 直接音が無視できる極限 → Ts → T/13.8 [s]
+        const double T = 2.0;
+        const SeatMetrics rev = seatMetrics(30.0, T, 100.0);
+        check(std::fabs(rev.Ts - 1000.0 * T / 13.8) < 0.5,
+              "Ts -> T/13.8 when the direct sound is negligible");
+        // G_late は常に G より小さく、距離とともに下がる
+        const SeatMetrics n1 = seatMetrics(8.0, 1.6, 12000);
+        const SeatMetrics f1 = seatMetrics(28.0, 1.6, 12000);
+        check(n1.Glate < n1.G, "G_late < G");
+        check(n1.Glate > f1.Glate, "G_late falls with distance");
+        check(n1.Ts < f1.Ts, "Ts grows with distance");
+    }
+
+    // 複数音源 (拡声系) の席指標
+    {
+        const double rr[2] = { 12.0, 12.0 };
+        const double gg[2] = { 0.0, 0.0 };
+        const SeatMetrics one = seatMetrics(12.0, 1.5, 8000);
+        const SeatMetrics two = seatMetrics(rr, gg, 2, 1.5, 8000);
+        check(std::fabs((two.G - one.G) - 10.0 * std::log10(2.0)) < 1e-9,
+              "2 identical sources = +3.01 dB");
+        check(std::fabs(two.C80 - one.C80) < 1e-9,
+              "C80 unchanged when the source is duplicated");
+        check(std::fabs(two.STI - one.STI) < 1e-9,
+              "STI unchanged when the source is duplicated");
+        const double r1[1] = { 12.0 }, g1[1] = { 0.0 };
+        check(std::fabs(seatMetrics(r1, g1, 1, 1.5, 8000).G - one.G) < 1e-12,
+              "multi-source with n=1 degenerates to the single-source form");
+        // 近い音源を足すと直接音が増え C80/STI が上がる
+        const double rn[2] = { 12.0, 4.0 };
+        const SeatMetrics near2 = seatMetrics(rn, gg, 2, 1.5, 8000);
+        check(near2.C80 > one.C80 && near2.STI > one.STI,
+              "a nearer loudspeaker raises C80/STI");
+    }
+
+    // 初期側方エネルギー比 LF / LFC (1次鏡像法 + ISO 3382-1 A.2.6)
+    {
+        AcousticOpts g;
+        g.roomL = 30; g.roomW = 20; g.roomH = 12;
+        const double s0[3] = { 1.5, 10.0, 1.5 };
+        const double r0[3] = { 12.0, 10.0, 1.2 };
+        const LateralEnergy le = lateralEnergy(g, s0, r0);
+        check(le.valid && le.LF >= 0.0 && le.LF <= 1.0, "LF in [0,1]");
+        check(le.LFC >= le.LF - 1e-12, "LFC >= LF (|cos| >= cos^2)");
+        check(le.nEarly > 0, "LF counts early reflections");
+        // 側壁を吸音すると側方エネルギーが減る
+        AcousticOpts h = g;
+        AbsorptionRow side;
+        side.role = AbsorptionRow::SideWall;
+        side.area = 100;
+        for (double &al : side.alpha) al = 0.9;
+        h.absorption = { side };
+        check(lateralEnergy(h, s0, r0).LF < le.LF,
+              "LF falls when the side walls are made absorptive");
+    }
+
+    // 音速 (ISO 9613-1) と整合遅延
+    {
+        check(std::fabs(soundSpeed(0.0) - 331.3) < 1e-9, "c(0 C) = 331.3 m/s");
+        check(std::fabs(soundSpeed(20.0) - 343.2) < 0.1, "c(20 C) = 343.2 m/s");
+        check(soundSpeed(30.0) > soundSpeed(20.0), "c grows with temperature");
+        check(std::fabs(alignmentDelayMs(20.0, 10.0, 20.0)
+                        - 10.0 / soundSpeed(20.0) * 1000.0) < 1e-9,
+              "delay = (dFar - dNear)/c");
+        check(alignmentDelayMs(5.0, 10.0) == 0.0, "no negative delay");
+    }
+
+    // PAG / NAG (Davis & Patronis) — 手計算と一致すること
+    {
+        // D0=32, D1=2, D2=8, Ds=16, NOM=1, EAD=2, FSM=0
+        //   NAG = 20log10(32/2)          = 24.0824 dB
+        //   PAG = 20log10(32*16/(2*8))   = 20log10(32) = 30.1030 dB
+        const GainBeforeFeedback g = pagNag(32, 2, 8, 16, 1, 2.0, 0.0);
+        check(g.valid, "pagNag valid for positive distances");
+        check(std::fabs(g.NAG - 24.0824) < 1e-3, "NAG = 20log10(D0/EAD)");
+        check(std::fabs(g.PAG - 30.1030) < 1e-3,
+              "PAG = 20log10(D0*Ds/(D1*D2))");
+        check(std::fabs(g.margin - (g.PAG - g.NAG)) < 1e-12,
+              "margin = PAG - NAG");
+        check(std::fabs((g.PAG - pagNag(32, 2, 8, 16, 2, 2.0, 0.0).PAG)
+                        - 10.0 * std::log10(2.0)) < 1e-9,
+              "doubling NOM costs 3.01 dB");
+        check(std::fabs((g.PAG - pagNag(32, 2, 8, 16, 1, 2.0, 6.0).PAG) - 6.0)
+                  < 1e-9, "FSM is subtracted from PAG");
+        check(pagNag(32, 1, 8, 16).margin > pagNag(32, 2, 8, 16).margin,
+              "a mic closer to the talker gives more margin");
+        check(pagNag(32, 2, 8, 24).margin > pagNag(32, 2, 8, 16).margin,
+              "a loudspeaker farther from the mic gives more margin");
+        check(!pagNag(0, 2, 8, 16).valid, "pagNag rejects zero distances");
     }
 }
 
@@ -1934,6 +2361,346 @@ static void testOpticsMaterials()
     }
 }
 
+// ── 多層薄膜 特性行列法 (src/optics/ThinFilmStack) ──────────────────────────
+// 期待値はすべて解析解としてこのテスト側に独立に書く:
+//   - 膜なし界面 = フレネルの式 (垂直/斜入射, s/p 両偏波)
+//   - ブルースター角で Rp = 0
+//   - 単層無反射膜 n_f = √(n0·ns) の λ/4 で R = 0 (厳密)
+//   - 半波長 (absentee) 膜は基板だけの R に一致
+//   - 四分の一波長積層 (HL)^N H は Y = (nH/nL)^{2N}·nH²/ns の閉形式
+//   - 全反射条件で R = 1, T = 0
+//   - 無損失系で R + T = 1 (エネルギー保存)
+static void testThinFilmStack()
+{
+    using namespace ofd::optics;
+    g_file = "thinfilm-tmm";
+    const double kPi = 3.14159265358979323846;
+
+    // ── (1) 膜なし界面 = フレネル (垂直入射) ────────────────────────────
+    {
+        const double n0 = 1.0, ns = 1.52;
+        const FilmResponse r = filmResponse(n0, {}, ns, 0.0, 550.0, 0.0, Pol::S);
+        const double rf = (n0 - ns) / (n0 + ns);
+        check(r.valid, "tmm: bare interface valid");
+        check(std::fabs(r.R - rf * rf) < 1e-12, "tmm: bare R = Fresnel");
+        check(std::fabs(r.R + r.T - 1.0) < 1e-12, "tmm: bare R+T = 1");
+        check(r.A < 1e-12, "tmm: bare A = 0 (lossless)");
+    }
+
+    // ── (2) 斜入射フレネル (s / p) + エネルギー保存 ──────────────────────
+    for (double aoi : { 15.0, 45.0, 70.0 }) {
+        const double n0 = 1.0, ns = 1.52;
+        const double th = aoi * kPi / 180.0;
+        const double c0 = std::cos(th);
+        const double ct = std::sqrt(1.0 - std::pow(n0 * std::sin(th) / ns, 2));
+        const double rs = (n0 * c0 - ns * ct) / (n0 * c0 + ns * ct);
+        const double rp = (ns * c0 - n0 * ct) / (ns * c0 + n0 * ct);
+        const FilmResponse s = filmResponse(n0, {}, ns, 0.0, 550.0, aoi, Pol::S);
+        const FilmResponse p = filmResponse(n0, {}, ns, 0.0, 550.0, aoi, Pol::P);
+        check(std::fabs(s.R - rs * rs) < 1e-12, "tmm: oblique Rs = Fresnel");
+        check(std::fabs(p.R - rp * rp) < 1e-12, "tmm: oblique Rp = Fresnel");
+        check(std::fabs(s.R + s.T - 1.0) < 1e-12, "tmm: oblique s energy");
+        check(std::fabs(p.R + p.T - 1.0) < 1e-12, "tmm: oblique p energy");
+    }
+
+    // ── (3) ブルースター角 θ_B = atan(ns/n0) で Rp = 0 ───────────────────
+    {
+        const double n0 = 1.0, ns = 1.52;
+        const double b = std::atan(ns / n0) * 180.0 / kPi;
+        const FilmResponse p = filmResponse(n0, {}, ns, 0.0, 550.0, b, Pol::P);
+        check(p.valid && p.R < 1e-20, "tmm: Rp = 0 at Brewster angle");
+        const FilmResponse s = filmResponse(n0, {}, ns, 0.0, 550.0, b, Pol::S);
+        check(s.R > 0.1, "tmm: Rs finite at Brewster angle");
+    }
+
+    // ── (4) 単層無反射膜 n_f = √(n0·ns) を λ/4 → R = 0 (厳密) ────────────
+    {
+        const double n0 = 1.0, ns = 2.25, lam = 550.0;
+        const double nf = std::sqrt(n0 * ns);
+        const std::vector<FilmLayer> ls{ { nf, 0.0, lam / (4.0 * nf) } };
+        const FilmResponse r = filmResponse(n0, ls, ns, 0.0, lam, 0.0, Pol::S);
+        check(r.valid && r.R < 1e-20, "tmm: quarter-wave AR gives R = 0");
+        check(std::fabs(r.T - 1.0) < 1e-12, "tmm: quarter-wave AR gives T = 1");
+        // 設計波長から外すと R は増える (最小値であることの確認)
+        const FilmResponse off = filmResponse(n0, ls, ns, 0.0, lam * 1.1, 0.0,
+                                              Pol::S);
+        check(off.valid && off.R > r.R, "tmm: AR is a minimum at λ0");
+    }
+
+    // ── (5) 半波長 (absentee) 膜は基板だけの R に一致 ─────────────────────
+    //      斜入射では傾斜光学膜厚 d·√(n² − n0²sin²θ) = λ/2
+    for (double aoi : { 0.0, 30.0 }) {
+        const double n0 = 1.0, ns = 1.52, lam = 632.8, nf = 2.3;
+        const double q = std::sqrt(nf * nf
+                                   - std::pow(n0 * std::sin(aoi * kPi / 180.0), 2));
+        const std::vector<FilmLayer> ls{ { nf, 0.0, lam / (2.0 * q) } };
+        for (Pol pol : { Pol::S, Pol::P }) {
+            const FilmResponse a = filmResponse(n0, ls, ns, 0.0, lam, aoi, pol);
+            const FilmResponse b = filmResponse(n0, {}, ns, 0.0, lam, aoi, pol);
+            check(a.valid && b.valid && std::fabs(a.R - b.R) < 1e-12,
+                  "tmm: half-wave layer is absentee");
+        }
+    }
+
+    // ── (6) 四分の一波長積層 (HL)^N H の閉形式 ───────────────────────────
+    //      Y = (nH/nL)^{2N}·nH²/ns,  R = ((n0 − Y)/(n0 + Y))²
+    {
+        const double n0 = 1.0, ns = 1.52, lam = 1550.0, nH = 2.0, nL = 1.46;
+        const int N = 6;
+        std::vector<FilmLayer> ls;
+        for (int i = 0; i < N; ++i) {
+            ls.push_back({ nH, 0.0, lam / (4.0 * nH) });
+            ls.push_back({ nL, 0.0, lam / (4.0 * nL) });
+        }
+        ls.push_back({ nH, 0.0, lam / (4.0 * nH) });
+        const FilmResponse r = filmResponse(n0, ls, ns, 0.0, lam, 0.0, Pol::S);
+        const double Y = std::pow(nH / nL, 2 * N) * nH * nH / ns;
+        const double Rex = std::pow((n0 - Y) / (n0 + Y), 2);
+        check(r.valid && std::fabs(r.R - Rex) < 1e-10,
+              "tmm: quarter-wave stack matches closed form");
+        check(std::fabs(r.R + r.T - 1.0) < 1e-12, "tmm: stack energy R+T=1");
+        check(r.R > 0.96, "tmm: 13-layer QW stack is a high reflector");
+    }
+
+    // ── (7) 全反射 (n0 > ns、臨界角超) → R = 1, T = 0 ────────────────────
+    {
+        const double n0 = 1.5, ns = 1.0;
+        const double crit = std::asin(ns / n0) * 180.0 / kPi;
+        for (Pol pol : { Pol::S, Pol::P }) {
+            const FilmResponse r = filmResponse(n0, {}, ns, 0.0, 550.0,
+                                                crit + 10.0, pol);
+            check(r.valid && std::fabs(r.R - 1.0) < 1e-12, "tmm: TIR R = 1");
+            // 厳密に 0 であること (処理系の丸め残差に依存しない実装を要求する
+            // — Apple clang で Re(ηs) に微小な非零が残り macOS CI が落ちた)
+            check(r.T == 0.0, "tmm: TIR T = 0");
+            // A は残差 (1 − R − T) として求めるので R の丸めをそのまま拾う。
+            // 「無損失系の全反射では吸収が無い」という物理量としての判定に
+            // とどめる (厳密 0 を要求すると R の最終ビットに依存し、処理系で
+            // 落ちる — macOS で実際に発生した)
+            check(std::fabs(r.A) < 1e-12, "tmm: TIR は吸収も 0");
+            // 臨界角の直上でも同じ (境界付近で分岐が崩れないこと)
+            const FilmResponse e = filmResponse(n0, {}, ns, 0.0, 550.0,
+                                                crit + 1e-6, pol);
+            check(e.valid && e.T == 0.0, "tmm: 臨界角直上でも T = 0");
+        }
+        // 臨界角未満では透過する
+        const FilmResponse t = filmResponse(n0, {}, ns, 0.0, 550.0,
+                                            crit - 10.0, Pol::S);
+        check(t.valid && t.T > 0.0, "tmm: below critical angle T > 0");
+    }
+
+    // ── (8) 吸収層: A > 0 かつ R + T + A = 1 ─────────────────────────────
+    {
+        const std::vector<FilmLayer> ls{ { 2.0, 0.05, 200.0 } };
+        const FilmResponse r = filmResponse(1.0, ls, 1.52, 0.0, 550.0, 20.0,
+                                            Pol::P);
+        check(r.valid && r.A > 1e-3, "tmm: absorbing layer A > 0");
+        check(std::fabs(r.R + r.T + r.A - 1.0) < 1e-12, "tmm: R+T+A = 1");
+        // k を厚くするほど吸収は増える (単調性)
+        const std::vector<FilmLayer> ls2{ { 2.0, 0.10, 200.0 } };
+        const FilmResponse r2 = filmResponse(1.0, ls2, 1.52, 0.0, 550.0, 20.0,
+                                             Pol::P);
+        check(r2.A > r.A, "tmm: absorptance increases with k");
+    }
+
+    // ── (9) 不正入力は valid = false ─────────────────────────────────────
+    {
+        check(!filmResponse(1.0, {}, 1.5, 0.0, 0.0, 0.0, Pol::S).valid,
+              "tmm: λ = 0 rejected");
+        check(!filmResponse(1.0, {}, 1.5, 0.0, 550.0, 90.0, Pol::S).valid,
+              "tmm: grazing incidence rejected");
+        check(!filmResponse(1.0, {}, 1.5, 0.0, 550.0, -1.0, Pol::S).valid,
+              "tmm: negative angle rejected");
+        check(!filmResponse(0.0, {}, 1.5, 0.0, 550.0, 0.0, Pol::S).valid,
+              "tmm: n0 = 0 rejected");
+    }
+
+    // ── (10) spectrum(): 点数・群遅延・範囲外 λ の除外 ───────────────────
+    {
+        const StackAtLambda bare = [](double lam, StackSample &s) {
+            (void)lam;
+            s.n0 = 1.0; s.nsub = 1.52; s.ksub = 0.0;
+            return true;
+        };
+        const std::vector<SpectrumPoint> sp = spectrum(bare, 500, 600, 11, 0.0,
+                                                       true);
+        check(sp.size() == 11, "tmm: spectrum point count");
+        check(sp.front().lambda_nm == 500.0 && sp.back().lambda_nm == 600.0,
+              "tmm: spectrum endpoints");
+        bool gdZero = true, ascending = true;
+        for (size_t i = 0; i < sp.size(); ++i) {
+            if (!sp[i].gdValid || std::fabs(sp[i].gds_ps) > 1e-9) gdZero = false;
+            if (i && sp[i].lambda_nm <= sp[i - 1].lambda_nm) ascending = false;
+        }
+        // 膜が無ければ反射位相は波長に依らないので群遅延は 0
+        check(gdZero, "tmm: bare interface group delay = 0");
+        check(ascending, "tmm: spectrum λ ascending");
+
+        // 材料データの有効範囲外は外挿せず除外する
+        const StackAtLambda limited = [](double lam, StackSample &s) {
+            if (lam < 550.0) return false;
+            s.n0 = 1.0; s.nsub = 1.52;
+            return true;
+        };
+        const std::vector<SpectrumPoint> lim = spectrum(limited, 500, 600, 11,
+                                                        0.0, false);
+        check(lim.size() == 6, "tmm: out-of-range λ dropped, not extrapolated");
+        check(lim.front().lambda_nm == 550.0, "tmm: first in-range λ");
+    }
+
+    // ── (11) angleSweep(): filmResponse と一致 ───────────────────────────
+    {
+        const StackAtLambda bare = [](double lam, StackSample &s) {
+            (void)lam;
+            s.n0 = 1.0; s.nsub = 1.52;
+            return true;
+        };
+        const std::vector<AnglePoint> ap = angleSweep(bare, 550.0, 0.0, 60.0, 61);
+        check(ap.size() == 61, "tmm: angle sweep point count");
+        if (ap.size() == 61) {
+            const FilmResponse r0 = filmResponse(1.0, {}, 1.52, 0.0, 550.0, 30.0,
+                                                 Pol::S);
+            check(std::fabs(ap[30].aoi_deg - 30.0) < 1e-12
+                  && std::fabs(ap[30].Rs - r0.R) < 1e-12,
+                  "tmm: angle sweep matches filmResponse");
+            check(ap.back().Rs > ap.front().Rs,
+                  "tmm: s-reflectance grows with angle");
+        }
+    }
+
+    // ── (12) メリット関数 ────────────────────────────────────────────────
+    {
+        const double n0 = 1.0, ns = 2.25, lam = 550.0;
+        const double nf = std::sqrt(n0 * ns);
+        const StackAtLambda ar = [=](double l, StackSample &s) {
+            (void)l;
+            s.n0 = n0; s.nsub = ns;
+            s.layers.push_back({ nf, 0.0, lam / (4.0 * nf) });
+            return true;
+        };
+        std::vector<TargetBand> t(1);
+        t[0].lam0_nm = lam; t[0].lam1_nm = lam; t[0].samples = 1;
+        t[0].q = Quantity::R; t[0].goal = 0.0; t[0].tol = 0.005; t[0].weight = 1.0;
+        const MeritResult m = merit(ar, t, 0.0);
+        // 設計波長で R = 0 (目標一致) なので F = 0
+        check(m.valid && m.used == 1 && m.merit < 1e-9,
+              "tmm: merit = 0 when the goal is met exactly");
+
+        // 目標を 100 % にすると F = |0 − 1|/tol = 1/0.005 = 200
+        t[0].goal = 1.0;
+        const MeritResult m2 = merit(ar, t, 0.0);
+        check(m2.valid && std::fabs(m2.merit - 200.0) < 1e-6,
+              "tmm: merit = |Q−goal|/tol");
+        // 許容差を 2 倍にすると F は半分
+        t[0].tol = 0.010;
+        const MeritResult m3 = merit(ar, t, 0.0);
+        check(m3.valid && std::fabs(m3.merit - 100.0) < 1e-6,
+              "tmm: merit halves when the tolerance doubles");
+        // 評価できる λ が無ければ valid = false (0 を返さない)
+        const StackAtLambda none = [](double, StackSample &) { return false; };
+        const MeritResult m4 = merit(none, t, 0.0);
+        check(!m4.valid && m4.skipped == 1, "tmm: merit invalid when no λ usable");
+    }
+
+    // ── (13) 膜厚感度 ────────────────────────────────────────────────────
+    {
+        // 入射媒質・層・基板がすべて n = 1 なら、膜厚を変えても R は変わらない
+        const StackAtLambda flat = [](double l, StackSample &s) {
+            (void)l;
+            s.n0 = 1.0; s.nsub = 1.0;
+            s.layers.push_back({ 1.0, 0.0, 100.0 });
+            return true;
+        };
+        std::vector<TargetBand> t(1);
+        t[0].lam0_nm = 500; t[0].lam1_nm = 600; t[0].samples = 5;
+        t[0].goal = 0.0; t[0].tol = 0.01; t[0].weight = 1.0;
+        const SensitivityResult s0 = thicknessSensitivity(flat, t, 0.0, 0.5);
+        check(s0.valid && s0.dQ_pctPerNm.size() == 1
+              && s0.dQ_pctPerNm[0] < 1e-12,
+              "tmm: index-matched layer has zero thickness sensitivity");
+
+        // 高屈折率層 + 「基板と同じ屈折率の層」の 2 層。後者は基板の一部と
+        // 等価なので、厚みを変えても R は変わらない (感度 0)
+        const StackAtLambda two = [](double l, StackSample &s) {
+            (void)l;
+            s.n0 = 1.0; s.nsub = 1.5;
+            s.layers.push_back({ 2.35, 0.0, 60.0 });   // 高屈折率
+            s.layers.push_back({ 1.5,  0.0, 80.0 });   // 基板と同じ n
+            return true;
+        };
+        const SensitivityResult s1 = thicknessSensitivity(two, t, 0.0, 0.5);
+        check(s1.valid && s1.dQ_pctPerNm.size() == 2, "tmm: sensitivity size");
+        if (s1.dQ_pctPerNm.size() == 2) {
+            check(s1.dQ_pctPerNm[0] > 1e-3, "tmm: high-index layer is sensitive");
+            check(s1.dQ_pctPerNm[1] < 1e-12,
+                  "tmm: index-matched layer is insensitive");
+            check(s1.worst == 0, "tmm: worst layer identified");
+        }
+    }
+
+    // ── (14) 製造誤差モンテカルロ ────────────────────────────────────────
+    {
+        const double lam = 550.0, ns = 2.25;
+        const double nf = std::sqrt(ns);
+        const StackAtLambda ar = [=](double l, StackSample &s) {
+            (void)l;
+            s.n0 = 1.0; s.nsub = ns;
+            s.layers.push_back({ nf, 0.0, lam / (4.0 * nf) });
+            return true;
+        };
+        std::vector<TargetBand> t(1);
+        t[0].lam0_nm = 540; t[0].lam1_nm = 560; t[0].samples = 5;
+        t[0].goal = 0.0; t[0].tol = 0.005; t[0].weight = 1.0;
+
+        ToleranceOptions o;
+        o.trials = 200;
+        o.sigmaRel = 0.0;
+        const ToleranceResult r0 = monteCarlo(ar, t, 0.0, o);
+        check(r0.valid && r0.trials == 200 && r0.passed == 200,
+              "tmm: σ = 0 passes every trial");
+        check(r0.yield == 1.0, "tmm: σ = 0 yield = 1");
+        check(std::fabs(r0.meritMean - r0.meritNominal) < 1e-12,
+              "tmm: σ = 0 mean merit equals nominal");
+
+        o.sigmaRel = 0.05;
+        const ToleranceResult r1 = monteCarlo(ar, t, 0.0, o);
+        const ToleranceResult r2 = monteCarlo(ar, t, 0.0, o);
+        check(r1.valid && r1.yield == r2.yield
+              && r1.meritMean == r2.meritMean,
+              "tmm: Monte Carlo is deterministic for a fixed seed");
+        check(r1.meritMean >= r1.meritNominal,
+              "tmm: perturbation cannot improve the mean merit");
+        o.sigmaRel = 0.20;
+        const ToleranceResult r3 = monteCarlo(ar, t, 0.0, o);
+        check(r3.valid && r3.yield <= r1.yield,
+              "tmm: yield decreases as the thickness error grows");
+        check(r3.meritP90 >= r1.meritP90, "tmm: 90th percentile merit grows");
+        // 評価できる λ が無ければ valid = false
+        const StackAtLambda none = [](double, StackSample &) { return false; };
+        check(!monteCarlo(none, t, 0.0, o).valid,
+              "tmm: Monte Carlo invalid when no λ usable");
+    }
+
+    // ── (15) 多層・斜入射でもエネルギー保存 (無損失) ─────────────────────
+    {
+        std::vector<FilmLayer> ls;
+        const double lam = 620.0;
+        for (int i = 0; i < 5; ++i) {
+            ls.push_back({ 2.35, 0.0, 30.0 + 7.0 * i });
+            ls.push_back({ 1.46, 0.0, 55.0 + 3.0 * i });
+        }
+        for (double aoi : { 0.0, 25.0, 55.0, 80.0 })
+            for (Pol pol : { Pol::S, Pol::P }) {
+                const FilmResponse r = filmResponse(1.0, ls, 1.52, 0.0, lam,
+                                                    aoi, pol);
+                check(r.valid && std::fabs(r.R + r.T - 1.0) < 1e-12,
+                      "tmm: lossless multilayer conserves energy");
+                check(r.R >= 0.0 && r.R <= 1.0 && r.T >= 0.0 && r.T <= 1.0,
+                      "tmm: R, T in [0,1]");
+            }
+    }
+}
+
 static void testOpticalModeSettings()
 {
     g_file = "optical-modes";
@@ -3060,6 +3827,333 @@ ofd::optics::CrossSection slabSection(double n1, double n2, double t, double dy,
 
 } // namespace fdetest
 
+// ── 建築遮音コア (src/acoustics/core/SoundInsulation) ───────────────────────
+// 期待値は実装から読まず、規格の手順・解析解・極限値から独立に立てる。
+static void testSoundInsulation()
+{
+    namespace ins = ofd::acoustics::insulation;
+    g_file = "sound-insulation";
+
+    // 帯域テーブル (1/3 oct 50..5000 Hz)
+    check(ins::kNumBands == 21, "insul: 21 third-octave bands");
+    check(ins::kThirdOctaveHz[ins::kIsoFirst] == 100,
+          "insul: ISO 717 starts at 100 Hz");
+    check(ins::kThirdOctaveHz[ins::kIsoFirst + ins::kIsoCount - 1] == 3150,
+          "insul: ISO 717 ends at 3150 Hz");
+    check(ins::kThirdOctaveHz[ins::kAstmFirst] == 125,
+          "insul: ASTM E413 starts at 125 Hz");
+    check(ins::kThirdOctaveHz[ins::kAstmFirst + ins::kAstmCount - 1] == 4000,
+          "insul: ASTM E413 ends at 4000 Hz");
+
+    // ── ISO 717-1 の基準曲線 (規格 表 1) を独立に書き下す ──────────────
+    const double isoRef[16] = { 33, 36, 39, 42, 45, 48, 51, 52,
+                                53, 54, 55, 56, 56, 56, 56, 56 };
+    double R[ins::kNumBands];
+    for (int i = 0; i < ins::kNumBands; ++i) R[i] = 0;
+    for (int i = 0; i < 16; ++i) R[ins::kIsoFirst + i] = isoRef[i];
+    {
+        // R が基準曲線そのものなら、基準曲線を s dB 上げたときの不利偏差は
+        // ちょうど 16·s。上限 32 dB なので s = 2 → Rw = 52 + 2 = 54。
+        const ins::RatingResult rw = ins::weightedReduction(R);
+        check(rw.valid, "insul: Rw of the ISO reference curve is computable");
+        check(rw.value == 54, "insul: Rw(reference curve) = 52 + 32/16 = 54");
+        check(std::fabs(rw.sumDeficiency - 32.0) < 1e-6,
+              "insul: the unfavourable deviations reach exactly 32 dB");
+        check(rw.shift == 2, "insul: contour shift is +2 dB");
+    }
+    // 平行移動不変性: R を一様に k dB 上げれば Rw も k dB 上がる
+    for (int k : { -7, 3, 11 }) {
+        double Rk[ins::kNumBands];
+        for (int i = 0; i < ins::kNumBands; ++i) Rk[i] = R[i] + k;
+        check(ins::weightedReduction(Rk).value == 54 + k,
+              "insul: Rw is translation-invariant");
+        check(ins::soundTransmissionClass(Rk).value
+                  == ins::soundTransmissionClass(R).value + k,
+              "insul: STC is translation-invariant");
+    }
+
+    // ── ASTM E413 の基準等級曲線 (規格) を独立に書き下す ────────────────
+    const double astm[16] = { -16, -13, -10, -7, -4, -1, 0, 1,
+                              2, 3, 4, 4, 4, 4, 4, 4 };
+    {
+        double Ra[ins::kNumBands];
+        for (int i = 0; i < ins::kNumBands; ++i) Ra[i] = 0;
+        for (int i = 0; i < 16; ++i) Ra[ins::kAstmFirst + i] = astm[i] + 45;
+        // 基準曲線そのもの → 16·s <= 32 で s = 2 → STC = 45 + 2 = 47
+        check(ins::soundTransmissionClass(Ra).value == 47,
+              "insul: STC(contour + 45) = 47");
+        // 1 帯域だけ 30 dB 落とすと「1 帯域 8 dB 以下」の規定で頭打ちになる:
+        // 315 Hz の基準値 −4、測定値 45−4−30 = 11 →
+        // (−4 + s) − 11 <= 8  →  s <= 23  →  STC = 23
+        Ra[ins::kAstmFirst + 4] -= 30;
+        const ins::RatingResult stc = ins::soundTransmissionClass(Ra);
+        check(stc.value == 23, "insul: STC is capped by the 8 dB single-band rule");
+        check(stc.maxDeficiency <= 8.0 + 1e-9,
+              "insul: no single deficiency exceeds 8 dB");
+        // ISO 717-1 には 1 帯域の制限が無いので Rw のほうが高く出る
+        check(ins::weightedReduction(Ra).value > stc.value,
+              "insul: Rw has no single-band cap, so it exceeds STC here");
+    }
+
+    // ── ISO 717-2 の基準曲線 (規格 表 1) ───────────────────────────────
+    {
+        const double lnRef[16] = { 62, 62, 62, 62, 62, 62, 61, 60,
+                                   59, 58, 57, 54, 51, 48, 45, 42 };
+        double Ln[ins::kNumBands];
+        for (int i = 0; i < ins::kNumBands; ++i) Ln[i] = 0;
+        for (int i = 0; i < 16; ++i) Ln[ins::kIsoFirst + i] = lnRef[i];
+        // 床衝撃音は「低いほど良い」ので基準曲線を下げる: 16·|s| <= 32,
+        // s = −2 → Ln,w = 60 − 2 = 58
+        check(ins::weightedImpact(Ln).value == 58,
+              "insul: Ln,w(reference curve) = 60 - 32/16 = 58");
+        for (int i = 0; i < 16; ++i) Ln[ins::kIsoFirst + i] = lnRef[i] - 5;
+        check(ins::weightedImpact(Ln).value == 53,
+              "insul: Ln,w drops 1 dB per 1 dB of impact level");
+    }
+
+    // ── C / Ctr: ISO 717-1 のスペクトルは Σ10^(Li/10) = 1 に正規化されている
+    // ので、R が全帯域で一定 K のときは X_A = K、すなわち C = Ctr = K − Rw。
+    {
+        double Rf[ins::kNumBands];
+        for (int i = 0; i < ins::kNumBands; ++i) Rf[i] = 40;
+        const ins::RatingResult rw = ins::weightedReduction(Rf);
+        bool okC = false, okCtr = false;
+        const int C = ins::spectrumAdaptation(Rf, ins::SpectrumPink,
+                                              rw.value, &okC);
+        const int Ctr = ins::spectrumAdaptation(Rf, ins::SpectrumTraffic,
+                                                rw.value, &okCtr);
+        check(okC && okCtr, "insul: C / Ctr are computable");
+        check(rw.value + C == 40,
+              "insul: for a flat R the pink spectrum gives X_A = R");
+        check(rw.value + Ctr == 40,
+              "insul: for a flat R the traffic spectrum gives X_A = R");
+    }
+
+    // ── 質量則: 面密度 2 倍 / 周波数 2 倍で +6 dB (20log10 2) ────────────
+    {
+        const double m = 20.0;
+        const double a = ins::fieldIncidenceMassLaw(500, m);
+        check(std::fabs(ins::fieldIncidenceMassLaw(500, 2 * m) - a
+                        - 20.0 * std::log10(2.0)) < 1e-9,
+              "insul: mass law gains 6 dB per doubling of surface mass");
+        check(std::fabs(ins::fieldIncidenceMassLaw(1000, m) - a
+                        - 20.0 * std::log10(2.0)) < 1e-9,
+              "insul: mass law gains 6 dB per octave");
+    }
+
+    // ── 限界周波数: fc = c²/(2π)·√(12ρ(1−ν²)/(E h²)) を独立に評価する ──
+    {
+        const double E = 30e9, nu = 0.2, rho = 2400, h = 0.15, c = 343.0;
+        const double want = c * c / (2.0 * 3.14159265358979323846)
+                          * std::sqrt(12.0 * rho * (1.0 - nu * nu) / (E * h * h));
+        const double got = ins::criticalFrequency(E, nu, rho, h);
+        check(std::fabs(got - want) < 1e-6 * want,
+              "insul: critical frequency matches the closed form");
+        // fc ∝ 1/h (同一材料) — 厚さ半分で 2 倍
+        check(std::fabs(ins::criticalFrequency(E, nu, rho, h / 2) - 2 * got)
+                  < 1e-6 * got,
+              "insul: fc is inversely proportional to thickness");
+        check(ins::criticalFrequency(0, nu, rho, h) == 0.0,
+              "insul: no Young's modulus -> no critical frequency");
+    }
+
+    // ── 単一壁: 0.5·fc 未満は質量則そのもの ─────────────────────────────
+    {
+        std::vector<ins::Layer> layers;
+        ins::Layer L;
+        L.thicknessM = 0.150; L.densityKgM3 = 2400; L.youngsPa = 30e9;
+        L.poisson = 0.2; L.lossFactor = 0.006;
+        layers.push_back(L);
+        const ins::TlResult tl = ins::transmissionLoss(layers);
+        check(tl.valid && tl.model == ins::ModelSingleLeaf,
+              "insul: a single solid layer uses the single-leaf model");
+        check(std::fabs(tl.surfaceMass - 360.0) < 1e-9,
+              "insul: surface mass = thickness x density");
+        int belowChecked = 0;
+        for (int i = 0; i < ins::kNumBands; ++i) {
+            if (ins::kThirdOctaveHz[i] >= 0.5 * tl.leafCriticalHz[0]) continue;
+            ++belowChecked;
+            check(std::fabs(tl.R[i]
+                            - ins::fieldIncidenceMassLaw(ins::kThirdOctaveHz[i],
+                                                         tl.surfaceMass)) < 1e-9,
+                  "insul: below 0.5 fc the single leaf follows the mass law");
+        }
+        check(belowChecked > 0, "insul: some bands lie below 0.5 fc");
+        // 質量を倍にすれば Rw は上がる (単調性)
+        layers[0].thicknessM = 0.300;
+        check(ins::weightedReduction(ins::transmissionLoss(layers).R).value
+                  > ins::weightedReduction(tl.R).value,
+              "insul: doubling the slab thickness raises Rw");
+    }
+
+    // ── 二重壁 vs 同質量の単一壁、および構造結合時のフォールバック ──────
+    {
+        std::vector<ins::Layer> stack;
+        ins::Layer board;
+        board.thicknessM = 0.0125; board.densityKgM3 = 720;
+        board.youngsPa = 2.5e9; board.poisson = 0.3; board.lossFactor = 0.015;
+        ins::Layer gap;
+        gap.thicknessM = 0.065; gap.densityKgM3 = 32;
+        gap.cavity = true; gap.porousFill = true;
+        stack.push_back(board);
+        stack.push_back(gap);
+        stack.push_back(board);
+
+        const ins::TlResult dbl = ins::transmissionLoss(stack, true);
+        check(dbl.valid && dbl.model == ins::ModelDoubleLeaf,
+              "insul: a cavity between two boards gives the double-leaf model");
+        check(dbl.leafCount == 2, "insul: two leaves detected");
+        check(dbl.cavityAbsorbed, "insul: the porous fill is detected");
+        check(std::fabs(dbl.cavityDepthM - 0.065) < 1e-12,
+              "insul: cavity depth comes from the gap layers");
+        // f0 = (1/2pi)*sqrt(1.4e5*(m1+m2)/(d*m1*m2)) を独立に評価する
+        const double m1 = 0.0125 * 720, m2 = m1;
+        const double f0 = 1.0 / (2.0 * 3.14159265358979323846)
+                        * std::sqrt(1.4e5 * (m1 + m2) / (0.065 * m1 * m2));
+        check(std::fabs(dbl.massAirMassHz - f0) < 1e-6 * f0,
+              "insul: mass-air-mass resonance matches the closed form");
+        check(std::fabs(dbl.limitingHz - 55.0 / 0.065) < 1e-9,
+              "insul: limiting frequency fl = 55/d");
+
+        const ins::TlResult rigid = ins::transmissionLoss(stack, false);
+        check(rigid.valid && rigid.model == ins::ModelSingleLeaf,
+              "insul: rigid ties collapse the stack to a single leaf");
+        check(std::fabs(rigid.surfaceMass - (m1 + m2)) < 1e-9,
+              "insul: the collapsed leaf keeps the combined surface mass");
+        // 分離された二重壁は同じ質量の単一壁より Rw が高い
+        check(ins::weightedReduction(dbl.R).value
+                  > ins::weightedReduction(rigid.R).value,
+              "insul: a decoupled double leaf beats a single leaf of equal mass");
+        // 吸音材の無い空隙は cavityAbsorbed = false になる
+        stack[1].densityKgM3 = 0;
+        stack[1].porousFill = false;
+        check(!ins::transmissionLoss(stack, true).cavityAbsorbed,
+              "insul: an empty cavity reports no absorptive fill");
+        // 葉が 3 枚あるときは最大空隙で 2 葉に集約したことを申告する
+        std::vector<ins::Layer> triple = stack;
+        ins::Layer wide = gap;
+        wide.thicknessM = 0.200;
+        triple.push_back(wide);
+        triple.push_back(board);
+        const ins::TlResult tri = ins::transmissionLoss(triple, true);
+        check(tri.leafCount == 3 && tri.reducedToTwoLeaves,
+              "insul: three leaves are reduced to two and flagged");
+        check(std::fabs(tri.cavityDepthM - 0.200) < 1e-12,
+              "insul: the reduction splits at the widest cavity");
+        // 有効な層が無ければ「計算しない」
+        check(!ins::transmissionLoss(std::vector<ins::Layer>()).valid,
+              "insul: an empty build-up yields no prediction");
+    }
+
+    // ── 複合壁 / 現場の標準式 ───────────────────────────────────────────
+    {
+        const double areas[2] = { 50.0, 50.0 };
+        const double same[2] = { 45.0, 45.0 };
+        check(std::fabs(ins::compositeReduction(areas, same, 2) - 45.0) < 1e-9,
+              "insul: equal panels give the same composite R");
+        // 開口 (R = 0 → τ = 1) 1 m² と遮音壁 99 m²:
+        //   tau = (99*10^-6 + 1)/100 → R = -10log10(tau)
+        const double a2[2] = { 99.0, 1.0 };
+        const double r2[2] = { 60.0, 0.0 };
+        const double want = -10.0 * std::log10((99.0 * 1e-6 + 1.0) / 100.0);
+        check(std::fabs(ins::compositeReduction(a2, r2, 2) - want) < 1e-9,
+              "insul: a 1% opening dominates the composite R");
+        // Lp2 = Lp1 - R + 10log10(S/A)
+        check(std::fabs(ins::receivingLevel(75, 40, 12.15, 10.0)
+                        - (75 - 40 + 10.0 * std::log10(12.15 / 10.0))) < 1e-9,
+              "insul: receiving level follows Lp1 - R + 10log10(S/A)");
+        check(std::fabs(ins::sabineAbsorption(100, 0.5) - 0.161 * 100 / 0.5)
+                  < 1e-12,
+              "insul: A = 0.161 V / T");
+        // DnT,w = Rw + 10log10(0.32 V/S); 0.32V = S のとき DnT,w = Rw
+        check(std::fabs(ins::standardizedLevelDifference(50, 100.0, 32.0) - 50.0)
+                  < 1e-9,
+              "insul: DnT,w equals Rw when 0.32 V = S");
+        // 囲い: 開口ゼロ・内部吸音 1.0 なら IL = R、alpha = 0.1 なら R - 10
+        check(std::fabs(ins::enclosureInsertionLoss(30, 10, 0, 1.0) - 30.0) < 1e-9,
+              "insul: IL = R for a fully absorptive enclosure with no openings");
+        check(std::fabs(ins::enclosureInsertionLoss(30, 10, 0, 0.1) - 20.0) < 1e-9,
+              "insul: IL loses 10 dB when the interior absorption drops to 0.1");
+        // 開口があると IL は開口率で頭打ちになる (壁 R を無限に上げても)
+        const double capped = ins::enclosureInsertionLoss(200, 99, 1, 1.0);
+        check(std::fabs(capped - 20.0) < 0.01,
+              "insul: a 1% opening caps the enclosure IL at ~20 dB");
+    }
+
+    // ── ダクト (ASHRAE) ────────────────────────────────────────────────
+    {
+        // Sabine の式: alpha = 1, P/A = 1 → 1.05 dB/m。alpha に単調増加。
+        check(std::fabs(ins::linedDuctAttenuation(1.0, 1.0, 1.0) - 1.05) < 1e-9,
+              "insul: Sabine duct attenuation is 1.05 dB/m at alpha = 1");
+        check(ins::linedDuctAttenuation(0.3, 1.3, 0.1)
+                  < ins::linedDuctAttenuation(0.6, 1.3, 0.1),
+              "insul: duct lining attenuation grows with alpha");
+        check(ins::linedDuctAttenuation(0.0, 1.3, 0.1) == 0.0,
+              "insul: no absorption -> no lining attenuation");
+        // 分岐: 半分の断面へ入るなら 3.01 dB
+        check(std::fabs(ins::branchAttenuation(0.5, 1.0)
+                        - 10.0 * std::log10(2.0)) < 1e-9,
+              "insul: halving the branch area costs 3 dB");
+        check(ins::branchAttenuation(1.0, 1.0) == 0.0,
+              "insul: no branching -> no loss");
+        // 開口端反射: ka >= 1 で 0、フランジなしはフランジ付き +3.01 dB
+        const double area = 0.1;
+        check(ins::endReflectionLoss(125, area, true)
+                  > ins::endReflectionLoss(500, area, true),
+              "insul: end reflection loss falls with frequency");
+        check(std::fabs(ins::endReflectionLoss(125, area, false)
+                        - ins::endReflectionLoss(125, area, true)
+                        - 10.0 * std::log10(2.0)) < 1e-9,
+              "insul: an unflanged end reflects 3 dB more");
+        check(ins::endReflectionLoss(4000, area, true) == 0.0,
+              "insul: no end reflection loss once ka >= 1");
+        // エルボ: ASHRAE の表は f·w (w はインチ) で区切られる。
+        // f·w < 48 in·Hz (= 63 Hz で幅 19 mm 未満) は 0 dB。
+        check(ins::elbowAttenuation(63, 0.015, false) == 0.0,
+              "insul: a small f*w elbow gives no attenuation");
+        check(ins::elbowAttenuation(63, 0.030, false) > 0.0,
+              "insul: crossing f*w = 48 in.Hz starts to attenuate");
+        check(ins::elbowAttenuation(1000, 0.4, false) > 0.0,
+              "insul: a large f*w elbow attenuates");
+        // 拡散音場: Lp = LW + 10log10(4/A)
+        check(std::fabs(ins::reverberantLevel(80, 40.0)
+                        - (80 + 10.0 * std::log10(4.0 / 40.0))) < 1e-9,
+              "insul: reverberant level follows LW + 10log10(4/A)");
+    }
+
+    // ── STI (IEC 60268-16 MTF 法) ──────────────────────────────────────
+    {
+        // 残響ゼロ・十分な S/N なら MTF = 1 → STI = Sum(alpha) - Sum(beta) = 1
+        check(ins::sti(0.0, 50.0) > 0.999,
+              "insul: STI tends to 1 as RT60 -> 0 with a high S/N");
+        check(ins::sti(0.0, 50.0) <= 1.0, "insul: STI never exceeds 1");
+        // S/N が十分低ければ STI = 0
+        check(ins::sti(1.0, -30.0) < 0.001,
+              "insul: STI collapses to 0 at a very low S/N");
+        // RT60 に対して単調減少、S/N に対して単調増加
+        double prev = 2.0;
+        for (double rt : { 0.2, 0.5, 1.0, 2.0, 4.0 }) {
+            const double s = ins::sti(rt, 20.0);
+            check(s < prev, "insul: STI decreases monotonically with RT60");
+            prev = s;
+        }
+        double prevS = -1.0;
+        for (double snr : { -10.0, 0.0, 10.0, 20.0 }) {
+            const double s = ins::sti(0.8, snr);
+            check(s > prevS, "insul: STI increases monotonically with S/N");
+            prevS = s;
+        }
+        // 帯域別 API に同じ値を渡せば一括版と一致する
+        double rts[7], snrs[7];
+        for (int i = 0; i < 7; ++i) { rts[i] = 0.8; snrs[i] = 12.0; }
+        check(ins::stiBands(rts, snrs) == ins::sti(0.8, 12.0),
+              "insul: stiBands with uniform inputs equals sti()");
+        // 決定性 (同一入力 → 同一ビット列)
+        check(ins::sti(0.73, 7.5) == ins::sti(0.73, 7.5),
+              "insul: sti is deterministic");
+    }
+}
+
 static void testFdeModeSolver()
 {
     using namespace ofd::optics;
@@ -3333,6 +4427,3187 @@ static void testFdeModeSolver()
     }
 }
 
+// ── 直方体室の音響モード (src/acoustics/core/RoomModes) ─────────────────────
+// 期待値は実装から読まず、1 次元極限・既知の閉形式・単調性から独立に立てる。
+static void testRoomModes()
+{
+    namespace rm = ofd::acoustics::roommodes;
+    g_file = "room-modes";
+
+    // ── 音速 (ISO 9613-1): 0 ℃ で 331.3 m/s、20 ℃ で 343.2 m/s ─────────
+    check(std::fabs(rm::soundSpeed(0.0) - 331.3) < 1e-9,
+          "modes: c(0 °C) = 331.3 m/s");
+    check(std::fabs(rm::soundSpeed(20.0) - 343.2) < 0.1,
+          "modes: c(20 °C) ≈ 343.2 m/s");
+    check(rm::soundSpeed(-300.0) == 0.0,
+          "modes: below absolute zero yields no sound speed");
+
+    const double c = 343.0;
+
+    // ── 1 次元極限: 他の 2 辺を非常に長くすると f(1,0,0) → c/(2L) ───────
+    {
+        const double L = 2.4;
+        const double f100 = rm::modeFrequency(1, 0, 0, L, 1000.0, 1000.0, c);
+        check(std::fabs(f100 - c / (2.0 * L)) < 1e-9,
+              "modes: axial mode (1,0,0) equals c/(2L)");
+        // 次数 n の軸モードは基本波の n 倍 (弦・気柱と同じ調和列)
+        for (int n = 2; n <= 5; ++n) {
+            const double fn = rm::modeFrequency(n, 0, 0, L, 3.0, 2.0, c);
+            check(std::fabs(fn - n * c / (2.0 * L)) < 1e-9,
+                  "modes: axial series is harmonic (n·c/2L)");
+        }
+    }
+
+    // ── 立方体の (1,1,0) / (1,1,1) は解析的に √2, √3 倍 ─────────────────
+    {
+        const double a = 3.0;
+        const double f1 = rm::modeFrequency(1, 0, 0, a, a, a, c);
+        const double f2 = rm::modeFrequency(1, 1, 0, a, a, a, c);
+        const double f3 = rm::modeFrequency(1, 1, 1, a, a, a, c);
+        check(std::fabs(f2 - std::sqrt(2.0) * f1) < 1e-9,
+              "modes: cube tangential = √2 × axial");
+        check(std::fabs(f3 - std::sqrt(3.0) * f1) < 1e-9,
+              "modes: cube oblique = √3 × axial");
+    }
+
+    // ── 種別の分類と昇順・網羅性 ────────────────────────────────────────
+    {
+        const double L = 2.4, W = 1.45, H = 1.15, fmax = 200.0;
+        const std::vector<rm::Mode> v =
+            rm::rectangularModes(L, W, H, c, fmax, 0);
+        check(!v.empty(), "modes: rectangular cabin has modes below 200 Hz");
+
+        bool sorted = true, inRange = true, kindOk = true, hasZero = false;
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (i > 0 && v[i].freqHz < v[i - 1].freqHz) sorted = false;
+            if (v[i].freqHz <= 0.0 || v[i].freqHz > fmax) inRange = false;
+            const int nz = (v[i].nx > 0 ? 1 : 0) + (v[i].ny > 0 ? 1 : 0)
+                           + (v[i].nz > 0 ? 1 : 0);
+            if (v[i].kind != nz) kindOk = false;
+            if (v[i].nx == 0 && v[i].ny == 0 && v[i].nz == 0) hasZero = true;
+        }
+        check(sorted, "modes: list is sorted by frequency");
+        check(inRange, "modes: every mode lies in (0, fmax]");
+        check(kindOk, "modes: kind = number of non-zero orders");
+        check(!hasZero, "modes: the (0,0,0) trivial solution is excluded");
+
+        // 最低次は最長辺の軸モード (2.4 m → c/(2·2.4))
+        check(v[0].kind == rm::ModeAxial && v[0].nx == 1
+                  && v[0].ny == 0 && v[0].nz == 0,
+              "modes: lowest mode is the axial mode along the longest side");
+        check(std::fabs(v[0].freqHz - c / (2.0 * L)) < 1e-9,
+              "modes: lowest mode frequency = c/(2·Lmax)");
+
+        // 総数は独立な素朴列挙と一致する
+        int brute = 0;
+        for (int ix = 0; ix <= 20; ++ix)
+            for (int iy = 0; iy <= 20; ++iy)
+                for (int iz = 0; iz <= 20; ++iz) {
+                    if (!ix && !iy && !iz) continue;
+                    const double fx = ix / L, fy = iy / W, fz = iz / H;
+                    const double f = 0.5 * c
+                                     * std::sqrt(fx * fx + fy * fy + fz * fz);
+                    if (f > 0.0 && f <= fmax) ++brute;
+                }
+        check(int(v.size()) == brute,
+              "modes: enumeration matches an independent brute-force count");
+
+        // maxModes は低次側からの打ち切り
+        const std::vector<rm::Mode> top5 =
+            rm::rectangularModes(L, W, H, c, fmax, 5);
+        check(top5.size() == 5, "modes: maxModes truncates the list");
+        bool sameHead = true;
+        for (size_t i = 0; i < top5.size(); ++i)
+            if (top5[i].freqHz != v[i].freqHz) sameHead = false;
+        check(sameHead, "modes: truncation keeps the lowest modes");
+
+        // 上限周波数を上げるとモードは増える一方 (単調)
+        check(rm::rectangularModes(L, W, H, c, 2 * fmax, 0).size() > v.size(),
+              "modes: raising fmax can only add modes");
+        // 室を大きくするとモード周波数は下がる (総数は増える)
+        check(rm::rectangularModes(2 * L, 2 * W, 2 * H, c, fmax, 0).size()
+                  > v.size(),
+              "modes: a larger room has more modes below a given frequency");
+    }
+
+    // ── 異常入力は «計算しない» (0 / 空を返す) ──────────────────────────
+    check(rm::modeFrequency(0, 0, 0, 3, 3, 3, c) == 0.0,
+          "modes: (0,0,0) has no frequency");
+    check(rm::modeFrequency(1, 0, 0, -1, 3, 3, c) == 0.0,
+          "modes: negative dimension yields no frequency");
+    check(rm::rectangularModes(0, 1, 1, c, 200, 0).empty(),
+          "modes: zero dimension yields no modes");
+    check(rm::rectangularModes(3, 3, 3, c, 0, 0).empty(),
+          "modes: non-positive fmax yields no modes");
+    check(rm::rectangularModes(3, 3, 3, 0, 200, 0).empty(),
+          "modes: non-positive sound speed yields no modes");
+}
+
+// ── 屋外騒音伝搬 (src/acoustics/core/EnvironmentalNoise) ────────────────────
+// 期待値は実装から読まず、規格の式・前川の原典・極限値から独立に立てる。
+static void testEnvironmentalNoise()
+{
+    namespace en = ofd::acoustics::outdoor;
+    g_file = "environmental-noise";
+
+    // ── 幾何拡散 (ISO 9613-2 §7.1) ──────────────────────────────────────
+    // A_div = 20 lg(d) + 11 は 10 lg(4πd²) と同じ (4π = 11.0 dB)
+    {
+        const double d = 7.5;
+        const double expect = 10.0 * std::log10(4.0 * 3.14159265358979323846
+                                                * d * d);
+        check(std::fabs(en::divergencePoint(d) - expect) < 0.01,
+              "outdoor: A_div(point) = 10 lg(4πd²)");
+        // 線音源は 10 lg(2πd)
+        const double expectL = 10.0 * std::log10(2.0 * 3.14159265358979323846
+                                                 * d);
+        check(std::fabs(en::divergenceLine(d) - expectL) < 0.02,
+              "outdoor: A_div(line) = 10 lg(2πd)");
+        check(en::divergencePoint(0.0) == 0.0 && en::divergenceLine(-1.0) == 0.0,
+              "outdoor: non-positive distance yields no divergence term");
+    }
+    // 距離 2 倍で点音源 −6.02 dB / 線音源 −3.01 dB
+    {
+        const double a = en::divergenceRelative(50.0, 25.0, false);
+        const double b = en::divergenceRelative(50.0, 25.0, true);
+        check(std::fabs(a - 6.0206) < 1e-3,
+              "outdoor: point source loses 6.02 dB per distance doubling");
+        check(std::fabs(b - 3.0103) < 1e-3,
+              "outdoor: line source loses 3.01 dB per distance doubling");
+        check(std::fabs(en::divergenceRelative(25.0, 25.0, false)) < 1e-12,
+              "outdoor: no attenuation at the reference distance");
+        // 10 倍距離: 点 20 dB / 線 10 dB
+        check(std::fabs(en::divergenceRelative(100.0, 10.0, false) - 20.0)
+                  < 1e-9,
+              "outdoor: ×10 distance = 20 dB (point)");
+        check(std::fabs(en::divergenceRelative(100.0, 10.0, true) - 10.0)
+                  < 1e-9,
+              "outdoor: ×10 distance = 10 dB (line)");
+    }
+    // PWL → 1 m の音圧レベル
+    check(std::fabs(en::pointSourceLevelAt1m(105.0) - 94.0) < 1e-9,
+          "outdoor: Lp(1 m) = PWL − 11 dB");
+
+    // ── 前川チャート ────────────────────────────────────────────────────
+    // N → 0 の極限は 10 lg 3 = 4.77 dB (≈ 5 dB)
+    {
+        const double d0 = en::maekawaAttenuation(1e-9);
+        check(std::fabs(d0 - 10.0 * std::log10(3.0)) < 1e-6,
+              "outdoor: Maekawa → 10 lg 3 = 4.77 dB as N → 0");
+        check(d0 > 4.7 && d0 < 4.8, "outdoor: Maekawa at N→0 is about 5 dB");
+        // 代表点: N = 1 で 10 lg 23 = 13.6 dB
+        check(std::fabs(en::maekawaAttenuation(1.0)
+                        - 10.0 * std::log10(23.0)) < 1e-9,
+              "outdoor: Maekawa at N = 1 is 10 lg 23 dB");
+        // 単調増加、24 dB で頭打ち
+        double prev = 0;
+        bool mono = true;
+        for (int i = 1; i <= 200; ++i) {
+            const double v = en::maekawaAttenuation(i * 0.25);
+            if (v < prev - 1e-12) mono = false;
+            prev = v;
+        }
+        check(mono, "outdoor: Maekawa is monotonic in N");
+        check(en::maekawaAttenuation(1e6) == en::kMaekawaMaxDb,
+              "outdoor: Maekawa saturates at the chart limit");
+        check(en::maekawaAttenuation(0.0) == 0.0
+                  && en::maekawaAttenuation(-1.0) == 0.0,
+              "outdoor: no diffraction loss without shadowing");
+    }
+    // フレネル数 N = 2δ/λ
+    {
+        const double c = 343.2, f = 500.0;
+        const double lambda = c / f;
+        check(std::fabs(en::fresnelNumber(lambda, f, c) - 2.0) < 1e-9,
+              "outdoor: N = 2 when the path difference equals λ");
+        check(en::fresnelNumber(1.0, 0.0, c) == 0.0,
+              "outdoor: no Fresnel number without a frequency");
+    }
+
+    // ── 遮蔽幾何 ────────────────────────────────────────────────────────
+    {
+        const double c = 343.2;
+        en::BarrierGeometry g;
+        g.srcHeightM = 0.5; g.barDistM = 5.0; g.barHeightM = 3.0;
+        g.recvDistM = 25.0; g.recvHeightM = 1.2;
+        const en::BarrierResult r = en::barrierDiffraction(g, 500.0, c);
+        check(r.valid && r.shadow, "outdoor: a 3 m wall shadows the receiver");
+        // 経路差を独立に計算する
+        const double a = std::sqrt(5.0 * 5.0 + 2.5 * 2.5);
+        const double b = std::sqrt(20.0 * 20.0 + 1.8 * 1.8);
+        const double d = std::sqrt(25.0 * 25.0 + 0.7 * 0.7);
+        check(std::fabs(r.pathDiffM - (a + b - d)) < 1e-9,
+              "outdoor: path difference matches the geometry");
+        check(std::fabs(r.fresnelN - 2.0 * r.pathDiffM / (c / 500.0)) < 1e-9,
+              "outdoor: N = 2δ/λ from the geometry");
+        check(std::fabs(r.attenDb - en::maekawaAttenuation(r.fresnelN)) < 1e-12,
+              "outdoor: ΔL comes from the Maekawa chart");
+        // 高い周波数ほど N が大きく ΔL も大きい (λ が短い)
+        const en::BarrierResult hi = en::barrierDiffraction(g, 2000.0, c);
+        check(hi.fresnelN > r.fresnelN && hi.attenDb > r.attenDb,
+              "outdoor: higher frequency gives more diffraction loss");
+        // 壁を高くすると経路差が増える
+        en::BarrierGeometry g2 = g;
+        g2.barHeightM = 5.0;
+        check(en::barrierDiffraction(g2, 500.0, c).pathDiffM > r.pathDiffM,
+              "outdoor: a taller wall increases the path difference");
+        // 見通しがあるときは ΔL = 0
+        en::BarrierGeometry g3 = g;
+        g3.barHeightM = 0.6;   // 音源 0.5 m と受音点 1.2 m を結ぶ線より低い
+        const en::BarrierResult los = en::barrierDiffraction(g3, 500.0, c);
+        check(los.valid && !los.shadow && los.attenDb == 0.0,
+              "outdoor: no loss when the wall does not break the sight line");
+        // 幾何が成立しない入力
+        en::BarrierGeometry g4 = g;
+        g4.barDistM = 30.0;    // 受音点より遠い
+        check(!en::barrierDiffraction(g4, 500.0, c).valid,
+              "outdoor: a wall beyond the receiver is not a valid section");
+    }
+
+    // ── 環境基準 (平成10年環境庁告示第64号) ─────────────────────────────
+    // 期待値は告示の表そのもの (実装とは独立に書き下す)
+    {
+        const double day[7]   = { 50, 55, 55, 60, 60, 65, 70 };
+        const double night[7] = { 40, 45, 45, 50, 55, 60, 65 };
+        bool ok = true;
+        for (int i = 0; i < 7; ++i) {
+            const en::EnvStandard s = en::environmentalStandardJp(i);
+            if (!s.valid || s.dayDb != day[i] || s.nightDb != night[i])
+                ok = false;
+        }
+        check(ok, "outdoor: JP environmental standards match Notification 64");
+        check(!en::environmentalStandardJp(-1).valid
+                  && !en::environmentalStandardJp(7).valid,
+              "outdoor: unknown area category has no limit value");
+        // 夜間の基準値は必ず昼間以下
+        bool nightLower = true;
+        for (int i = 0; i < 7; ++i) {
+            const en::EnvStandard s = en::environmentalStandardJp(i);
+            if (s.nightDb > s.dayDb) nightLower = false;
+        }
+        check(nightLower, "outdoor: the night limit never exceeds the day one");
+    }
+
+    // ── 断面予測 ────────────────────────────────────────────────────────
+    {
+        en::SiteModel m;
+        m.refLevelDb = 80.0;
+        m.refDistM   = 10.0;
+        m.lineSource = false;
+        m.srcHeightM = 0.5;
+        m.evalFreqHz = 500.0;
+        m.soundSpeedMs = 343.2;
+
+        // 壁なし: 距離 2 倍でちょうど 6.02 dB 下がる
+        const double l10 = en::predictLevel(m, 10.0, 1.2).levelDb;
+        const double l20 = en::predictLevel(m, 20.0, 1.2).levelDb;
+        check(std::fabs(l10 - 80.0) < 1e-9,
+              "outdoor: level equals the reference level at the reference "
+              "distance");
+        check(std::fabs((l10 - l20) - 6.0206) < 1e-3,
+              "outdoor: −6.02 dB per doubling without a barrier");
+
+        // 線音源にすると 3.01 dB
+        en::SiteModel ml = m;
+        ml.lineSource = true;
+        check(std::fabs((en::predictLevel(ml, 10.0, 1.2).levelDb
+                         - en::predictLevel(ml, 20.0, 1.2).levelDb) - 3.0103)
+                  < 1e-3,
+              "outdoor: −3.01 dB per doubling for a line source");
+
+        // 壁を入れると必ず下がる (回折減衰の分だけ)
+        en::SiteModel mb = m;
+        mb.barrierEnabled = true;
+        mb.barDistM = 5.0;
+        mb.barHeightM = 3.0;
+        const en::PredictionResult pb = en::predictLevel(mb, 25.0, 1.2);
+        const en::PredictionResult pn = en::predictLevel(m, 25.0, 1.2);
+        check(pb.valid && pb.aBarDb > 0.0,
+              "outdoor: the barrier contributes an attenuation");
+        check(std::fabs((pn.levelDb - pb.levelDb) - pb.aBarDb) < 1e-9,
+              "outdoor: the barrier lowers the level by exactly ΔL");
+
+        // A_div を外すと距離に依らず基準レベルのまま (項を計上しない)
+        en::SiteModel md = m;
+        md.divergenceEnabled = false;
+        check(std::fabs(en::predictLevel(md, 500.0, 1.2).levelDb - 80.0) < 1e-12,
+              "outdoor: disabling A_div removes the divergence term");
+
+        // 逆問題: L(d) = target の距離を求め、そこで実際に target になる
+        const double d55 = en::distanceForLevel(m, 55.0, 1.2, 0.5, 5000.0);
+        check(d55 > 0.0, "outdoor: the 55 dB distance is found");
+        check(std::fabs(en::predictLevel(m, d55, 1.2).levelDb - 55.0) < 1e-6,
+              "outdoor: the level at that distance is indeed the target");
+        // 点音源 80 dB @ 10 m → 55 dB は 10·10^(25/20) = 177.8 m
+        check(std::fabs(d55 - 10.0 * std::pow(10.0, 25.0 / 20.0)) < 1e-3,
+              "outdoor: the 55 dB distance matches the closed-form inverse");
+        // 高いレベルほど近い距離になる (単調)
+        check(en::distanceForLevel(m, 60.0, 1.2, 0.5, 5000.0) < d55,
+              "outdoor: a higher target level lies closer to the source");
+        // 区間内に解が無ければ «作らない»
+        check(en::distanceForLevel(m, 200.0, 1.2, 0.5, 5000.0) == 0.0,
+              "outdoor: an unreachable target yields no distance");
+        check(!en::predictLevel(m, -1.0, 1.2).valid,
+              "outdoor: a non-positive receiver distance is not computable");
+    }
+}
+
+// ── 集束超音波の軸上音場 (src/acoustics/core/FocusedField) ──────────────────
+// 期待値はすべてテスト側に独立に書く:
+//   - 幾何焦点の音圧 = ρ c u0 k h  (O'Neil 1949 の閉形式)
+//   - 軸上閉形式は焦点で上の値に連続的に一致する
+//   - 弱集束 (a ≪ R) の極限で h → a²/(2R)、利得 kh → k a²/(2R)
+//   - 電力 → 速度の換算は W = ½ρc u0² S を厳密に満たす
+//   - 強度 I = p²/(2ρc)、減衰は α0 f^y·距離 [dB]
+//   - MI は IEC 62359 の定義 (0.3 dB/cm/MHz デレーティング)
+//   - Gol'dberg 数 Γ = 1/(α x_sh), x_sh = 1/(βεk), β = 1+B/2A
+static void testFocusedField()
+{
+    using namespace ofd::acoustics::ultrasound;
+    g_file = "focused-ultrasound";
+    const double kPi = 3.14159265358979323846;
+
+    Medium water;                 // 水 (無吸収にして解析解と厳密比較する)
+    water.rho = 1000.0;
+    water.c = 1500.0;
+    water.alpha0_dBcmMHz = 0.0;
+    water.alphaExponent = 2.0;
+    water.bOverA = 5.0;
+
+    FocusedSource src;
+    src.apertureRadius_m = 0.032;
+    src.focalLength_m = 0.0626;
+    src.frequency_Hz = 1.0e6;
+    src.power_W = 150.0;
+
+    // ── (1) 幾何量 ───────────────────────────────────────────────────────
+    const double a = src.apertureRadius_m, R = src.focalLength_m;
+    const double hExact = R - std::sqrt(R * R - a * a);
+    check(std::fabs(capHeight(a, R) - hExact) < 1e-15,
+          "focus: cap height h = R − √(R²−a²)");
+    check(std::fabs(capArea(a, R) - 2.0 * kPi * R * hExact) < 1e-15,
+          "focus: cap area S = 2πRh");
+    check(capHeight(R, R * 0.5) == 0.0, "focus: a ≥ R is rejected");
+
+    // ── (2) 電力 → 法線速度: W = ½ρc u0² S ──────────────────────────────
+    const double u0 = surfaceVelocity(src, water);
+    const double S = capArea(a, R);
+    check(std::fabs(0.5 * water.rho * water.c * u0 * u0 * S - src.power_W)
+              < 1e-9 * src.power_W,
+          "focus: u0 reproduces the radiated power");
+
+    // ── (3) 焦点音圧 = ρ c u0 k h (O'Neil) ──────────────────────────────
+    const double k = 2.0 * kPi * src.frequency_Hz / water.c;
+    const double pExact = water.rho * water.c * u0 * k * hExact;
+    check(std::fabs(focalPressureLossless(src, water, u0) - pExact)
+              < 1e-9 * pExact,
+          "focus: focal pressure = rho c u0 k h");
+    // 軸上閉形式が焦点で同じ値に一致する (数値的な連続性も確認)
+    check(std::fabs(axialPressureAmplitude(src, water, u0, R) - pExact)
+              < 1e-6 * pExact,
+          "focus: axial closed form equals the focal value at z = R");
+    check(std::fabs(axialPressureAmplitude(src, water, u0, R - 1e-7) - pExact)
+              < 1e-4 * pExact,
+          "focus: axial closed form is continuous at the focus");
+
+    // ── (4) 弱集束の極限: h → a²/(2R), 利得 → k a²/(2R) ─────────────────
+    {
+        FocusedSource weak = src;
+        weak.apertureRadius_m = 1.0e-4;      // a/R = 1.6e-3
+        const double hp = weak.apertureRadius_m * weak.apertureRadius_m
+                          / (2.0 * weak.focalLength_m);
+        check(std::fabs(capHeight(weak.apertureRadius_m, weak.focalLength_m)
+                        - hp) < 1e-5 * hp,
+              "focus: h → a²/(2R) for a << R");
+        const FocusedFieldResult wr = evaluateFocus(weak, water);
+        const double kw = 2.0 * kPi * weak.frequency_Hz / water.c;
+        check(std::fabs(wr.pressureGain - kw * hp) < 1e-5 * kw * hp,
+              "focus: pressure gain → k a²/(2R) in the paraxial limit");
+    }
+
+    // ── (5) 軸上分布の性質 ──────────────────────────────────────────────
+    {
+        // 焦点が軸上最大 (音源〜2R の範囲を走査)
+        double maxV = 0.0, maxZ = 0.0;
+        for (int i = 1; i <= 2000; ++i) {
+            const double z = 2.0 * R * i / 2000.0;
+            const double v = axialPressureAmplitude(src, water, u0, z);
+            if (v > maxV) { maxV = v; maxZ = z; }
+        }
+        // 有限開口では軸上最大は幾何焦点よりわずかに音源側へ寄る
+        // (焦点シフト。O'Neil 1949)。値は幾何焦点の閉形式とほぼ一致する。
+        check(maxZ <= R && std::fabs(maxZ - R) < 0.02 * R,
+              "focus: the axial maximum sits just before the geometric focus");
+        check(maxV >= pExact && (maxV - pExact) < 0.01 * pExact,
+              "focus: the axial maximum is within 1 % of the focal value");
+        // 音圧は u0 に比例する (線形性)
+        check(std::fabs(axialPressureAmplitude(src, water, 2.0 * u0, 0.04)
+                        - 2.0 * axialPressureAmplitude(src, water, u0, 0.04))
+                  < 1e-9 * pExact,
+              "focus: the axial field is linear in the surface velocity");
+        check(axialPressureAmplitude(src, water, u0, 0.0) == 0.0,
+              "focus: z = 0 is not evaluated");
+    }
+
+    // ── (6) 強度・減衰・ビーム幅 ────────────────────────────────────────
+    {
+        const FocusedFieldResult r = evaluateFocus(src, water);
+        check(r.valid, "focus: the reference configuration is valid");
+        check(std::fabs(r.attenuation_dB) < 1e-15,
+              "focus: a lossless medium gives no attenuation");
+        check(std::fabs(r.focalPressure_Pa - pExact) < 1e-9 * pExact,
+              "focus: no derating without absorption");
+        const double iExact = pExact * pExact / (2.0 * water.rho * water.c);
+        check(std::fabs(r.focalIntensity_Wm2 - iExact) < 1e-9 * iExact,
+              "focus: I = p^2/(2 rho c)");
+        check(std::fabs(r.fNumber - R / (2.0 * a)) < 1e-15,
+              "focus: F# = R/(2a)");
+        // −6 dB (強度) 幅は 1.028·λ·F# (Airy パターン。文献値と 1 % 以内)
+        const double lambda = water.c / src.frequency_Hz;
+        check(std::fabs(r.beamWidth6dB_m - 1.028 * lambda * r.fNumber)
+                  < 0.01 * 1.028 * lambda * r.fNumber,
+              "focus: -6 dB width is 1.028 lambda F#");
+        // λ を半分にすると幅も半分 (スケーリング)
+        FocusedSource hi = src;
+        hi.frequency_Hz = 2.0e6;
+        const FocusedFieldResult rh = evaluateFocus(hi, water);
+        check(std::fabs(rh.beamWidth6dB_m - 0.5 * r.beamWidth6dB_m)
+                  < 1e-9 * r.beamWidth6dB_m,
+              "focus: the -6 dB width scales with the wavelength");
+    }
+
+    // ── (7) べき乗則吸収: α(f) = α0 f^y ─────────────────────────────────
+    {
+        Medium m = water;
+        m.alpha0_dBcmMHz = 0.5;
+        m.alphaExponent = 1.0;
+        // 0.5 dB/cm/MHz を 2 MHz で 1 cm → 1.0 dB/cm = 100 dB/m
+        check(std::fabs(attenuation_dB_per_m(m, 2.0e6) - 100.0) < 1e-9,
+              "focus: power-law absorption at y = 1");
+        m.alphaExponent = 2.0;
+        // 0.5 × 2² = 2 dB/cm = 200 dB/m
+        check(std::fabs(attenuation_dB_per_m(m, 2.0e6) - 200.0) < 1e-9,
+              "focus: power-law absorption at y = 2");
+        // Np/m は dB/m ÷ 8.6859
+        check(std::fabs(attenuation_Np_per_m(m, 2.0e6)
+                        - 200.0 / 8.685889638065035) < 1e-9,
+              "focus: dB/m to Np/m conversion");
+        // 5 cm を 1 MHz で伝搬 (y=1, 0.5 dB/cm) → 2.5 dB 減衰
+        Medium m2 = water;
+        m2.alpha0_dBcmMHz = 0.5;
+        m2.alphaExponent = 1.0;
+        FocusedSource s2 = src;
+        s2.focalLength_m = 0.05;
+        const FocusedFieldResult r2 = evaluateFocus(s2, m2);
+        check(std::fabs(r2.attenuation_dB - 2.5) < 1e-9,
+              "focus: attenuation over the focal distance");
+        check(std::fabs(r2.focalPressure_Pa
+                        - r2.focalPressureLossless_Pa
+                              * std::pow(10.0, -2.5 / 20.0))
+                  < 1e-9 * r2.focalPressureLossless_Pa,
+              "focus: the derated pressure applies the dB attenuation");
+    }
+
+    // ── (8) MI (IEC 62359) ──────────────────────────────────────────────
+    {
+        const FocusedFieldResult r = evaluateFocus(src, water);
+        const double fMHz = 1.0;
+        const double derate = std::pow(10.0, -0.3 * fMHz * (R * 100.0) / 20.0);
+        const double miExact = pExact * derate * 1e-6 / std::sqrt(fMHz);
+        check(std::fabs(r.mechanicalIndex - miExact) < 1e-9 * miExact,
+              "focus: MI = derated p_r [MPa] / sqrt(f [MHz])");
+        // 出力を 4 倍にすると音圧は 2 倍 → MI も 2 倍
+        FocusedSource p4 = src;
+        p4.power_W = 4.0 * src.power_W;
+        const FocusedFieldResult r4 = evaluateFocus(p4, water);
+        check(std::fabs(r4.mechanicalIndex - 2.0 * r.mechanicalIndex)
+                  < 1e-9 * r.mechanicalIndex,
+              "focus: MI doubles when the power is quadrupled");
+    }
+
+    // ── (9) 非線形指標 (Gol'dberg) ──────────────────────────────────────
+    {
+        Medium m = water;
+        m.alpha0_dBcmMHz = 0.002;     // 水 (y = 2)
+        const FocusedFieldResult r = evaluateFocus(src, m);
+        check(r.nonlinearValid, "focus: B/A known → nonlinear metrics");
+        check(std::fabs(r.betaNonlinear - (1.0 + 5.0 / 2.0)) < 1e-15,
+              "focus: beta = 1 + B/2A");
+        const double eps = r.focalPressure_Pa
+                           / (m.rho * m.c * m.c);
+        check(std::fabs(r.machNumber - eps) < 1e-12 * eps,
+              "focus: Mach number = p/(rho c^2)");
+        const double xsh = 1.0 / (r.betaNonlinear * eps * k);
+        check(std::fabs(r.shockDistance_m - xsh) < 1e-9 * xsh,
+              "focus: shock distance = 1/(beta eps k)");
+        const double alphaNp = attenuation_Np_per_m(m, src.frequency_Hz);
+        check(std::fabs(r.goldberg - 1.0 / (alphaNp * xsh))
+                  < 1e-9 * r.goldberg,
+              "focus: Goldberg number = 1/(alpha x_sh)");
+        check(r.regime == RegimeShock,
+              "focus: 150 W HIFU in water is shock-dominated");
+        // 出力を下げれば準線形へ (単調性)
+        FocusedSource lo = src;
+        lo.power_W = 1e-9;
+        const FocusedFieldResult rl = evaluateFocus(lo, m);
+        check(rl.goldberg < r.goldberg,
+              "focus: the Goldberg number falls with the drive power");
+        check(rl.regime == RegimeQuasiLinear,
+              "focus: a very weak drive is quasi-linear");
+        // 吸収ゼロは Γ = ∞ (負値で表現)
+        const FocusedFieldResult rw = evaluateFocus(src, water);
+        check(rw.goldberg < 0.0 && rw.regime == RegimeShock,
+              "focus: no absorption means an infinite Goldberg number");
+        // B/A 不明の媒質では非線形指標を出さない
+        Medium bone = bioMedium(4).medium;
+        check(bone.bOverA < 0.0, "focus: cortical bone has no B/A entry");
+        check(!evaluateFocus(src, bone).nonlinearValid,
+              "focus: unknown B/A yields no nonlinear metrics");
+    }
+
+    // ── (10) 不正入力 ───────────────────────────────────────────────────
+    {
+        FocusedSource bad = src;
+        bad.apertureRadius_m = src.focalLength_m;   // a = R
+        check(!evaluateFocus(bad, water).valid, "focus: a = R is invalid");
+        bad = src;
+        bad.frequency_Hz = 0.0;
+        check(!evaluateFocus(bad, water).valid, "focus: f = 0 is invalid");
+        Medium bm;
+        bm.rho = 0.0;
+        check(!evaluateFocus(src, bm).valid, "focus: rho = 0 is invalid");
+    }
+
+    // ── (11) 文献値データベース ─────────────────────────────────────────
+    {
+        check(bioMediumCount() == 5 && ndtMediumCount() == 4,
+              "focus: medium database sizes");
+        for (int i = 0; i < bioMediumCount(); ++i) {
+            const Medium &m = bioMedium(i).medium;
+            check(m.rho > 0.0 && m.c > 0.0 && m.alpha0_dBcmMHz >= 0.0
+                      && m.alphaExponent > 0.0,
+                  "focus: bio medium entries are physical");
+        }
+        // 水の特性インピーダンス ≈ 1.48 MRayl (文献値)
+        const Medium w = bioMedium(0).medium;
+        check(std::fabs(acousticImpedance(w) * 1e-6 - 1.48) < 0.01,
+              "focus: water impedance is about 1.48 MRayl");
+        // 鋼の縦波音速 ≈ 5900 m/s、Z ≈ 46 MRayl
+        const Medium st = ndtMedium(0).medium;
+        check(std::fabs(st.c - 5900.0) < 1.0,
+              "focus: steel longitudinal speed");
+        check(std::fabs(acousticImpedance(st) * 1e-6 - 46.3) < 0.5,
+              "focus: steel impedance is about 46 MRayl");
+        // 水は f² 則、軟組織はほぼ f¹ (Szabo Table 4.1)
+        check(std::fabs(w.alphaExponent - 2.0) < 1e-12,
+              "focus: water absorption follows f^2");
+        check(bioMedium(1).medium.alphaExponent > 1.0
+                  && bioMedium(1).medium.alphaExponent < 1.5,
+              "focus: soft tissue absorption is nearly linear in f");
+    }
+}
+
+// ── 自由キャリア分散 (src/optics/PlasmaDispersion) ──────────────────────────
+// 期待値はテスト側に独立に書く:
+//   - ω_p = √(Ne²/(ε0 m*)) を定数から直接計算した値と一致
+//   - γ = 0 の Drude は ω = ω_p で ε = 0 (プラズマ端)
+//   - Δn = −ω_p²/(2nω²) (小摂動) — Drude 実装と一致
+//   - Soref-Bennett の Si フィットは論文の係数どおり
+//   - ΔN = ΔP = 0 で Δn = Δα = 0、キャリアに対し単調
+static void testPlasmaDispersion()
+{
+    using namespace ofd::optics;
+    g_file = "plasma-dispersion";
+    const double kPi = 3.14159265358979323846;
+    // CODATA 2018 (テスト側に独立に書く)
+    const double e = 1.602176634e-19;
+    const double m0 = 9.1093837015e-31;
+    const double eps0 = 8.8541878128e-12;
+    const double c0 = 2.99792458e8;
+
+    // ── (1) プラズマ周波数 ──────────────────────────────────────────────
+    {
+        const double N = 1.0e24;      // m^-3 (= 1e18 cm^-3)
+        const double meff = 0.26;
+        const double wp = std::sqrt(N * e * e / (eps0 * meff * m0));
+        check(std::fabs(plasmaAngularFrequency(N, meff) - wp) < 1e-9 * wp,
+              "plasma: omega_p = sqrt(N e^2 /(eps0 m*))");
+        // 密度 4 倍で ω_p は 2 倍
+        check(std::fabs(plasmaAngularFrequency(4.0 * N, meff) - 2.0 * wp)
+                  < 1e-9 * wp,
+              "plasma: omega_p scales as sqrt(N)");
+        check(plasmaAngularFrequency(0.0, meff) == 0.0,
+              "plasma: no carriers means no plasma frequency");
+    }
+
+    // ── (2) Drude の誘電率: ω = ω_p で ε = 0 ────────────────────────────
+    {
+        const double wp = 1.0e14;
+        const ComplexEps at = drudePermittivity(1.0, wp, wp, 0.0);
+        check(std::fabs(at.re) < 1e-9 && std::fabs(at.im) < 1e-30,
+              "plasma: eps = 0 at the plasma frequency (gamma = 0)");
+        const ComplexEps below = drudePermittivity(1.0, 0.5 * wp, wp, 0.0);
+        check(below.re < 0.0, "plasma: eps < 0 below the plasma frequency");
+        const ComplexEps above = drudePermittivity(1.0, 2.0 * wp, wp, 0.0);
+        check(above.re > 0.0 && above.re < 1.0,
+              "plasma: 0 < eps < eps_inf above the plasma frequency");
+        // 損失があると虚部は正 (exp(-iwt) 規約)
+        const ComplexEps lossy = drudePermittivity(1.0, wp, wp, 1e12);
+        check(lossy.im > 0.0, "plasma: damping gives a positive Im(eps)");
+    }
+
+    // ── (3) Drude の Δn = −ω_p²/(2nω²) ─────────────────────────────────
+    {
+        CarrierState cs;
+        cs.deltaN_cm3 = 1.0e18;
+        cs.deltaP_cm3 = 0.0;
+        const double n = 3.48, lambda = 1550.0;
+        const PlasmaResult r = drudeFreeCarrier(lambda, n, cs);
+        check(r.valid, "plasma: Drude evaluation is valid");
+        const double omega = 2.0 * kPi * c0 / (lambda * 1e-9);
+        const double wp = std::sqrt(1.0e24 * e * e / (eps0 * 0.26 * m0));
+        const double dnExact = -wp * wp / (2.0 * n * omega * omega);
+        check(std::fabs(r.deltaN_index - dnExact) < 1e-9 * std::fabs(dnExact),
+              "plasma: Drude index change matches -wp^2/(2 n w^2)");
+        // Soref-Bennett の実測値 (-8.8e-4) と同じ桁・同符号
+        check(r.deltaN_index < 0.0, "plasma: free carriers lower the index");
+        check(std::fabs(r.deltaN_index) > 5e-4
+                  && std::fabs(r.deltaN_index) < 2e-3,
+              "plasma: Drude dn is the same order as the measured fit");
+        // キャリア密度に比例
+        CarrierState c2 = cs;
+        c2.deltaN_cm3 = 2.0e18;
+        check(std::fabs(drudeFreeCarrier(lambda, n, c2).deltaN_index
+                        - 2.0 * r.deltaN_index) < 1e-9 * std::fabs(dnExact),
+              "plasma: Drude dn is linear in the carrier density");
+        // キャリアゼロで変化なし
+        CarrierState zero;
+        const PlasmaResult z = drudeFreeCarrier(lambda, n, zero);
+        check(z.valid && z.deltaN_index == 0.0 && z.deltaAlpha_per_cm == 0.0,
+              "plasma: no carriers means no index or loss change");
+        // 不正入力
+        check(!drudeFreeCarrier(0.0, n, cs).valid, "plasma: lambda > 0 required");
+        check(!drudeFreeCarrier(lambda, 0.0, cs).valid, "plasma: n > 0 required");
+    }
+
+    // ── (4) Soref-Bennett の Si フィット ────────────────────────────────
+    {
+        // λ = 1.55 μm, ΔN = 1e18 cm^-3, ΔP = 0 → Δn = −8.8e-4, Δα = 8.5 cm^-1
+        const PlasmaResult r = sorefBennettSilicon(1550.0, 1.0e18, 0.0);
+        check(r.valid, "plasma: Soref-Bennett evaluation is valid");
+        check(std::fabs(r.deltaN_index + 8.8e-4) < 1e-12,
+              "plasma: SB electron index change at 1.55 um");
+        check(std::fabs(r.deltaAlpha_per_cm - 8.5) < 1e-9,
+              "plasma: SB electron absorption at 1.55 um");
+        // 正孔は指数 0.8: ΔP = 1e18 → 8.5e-18·(1e18)^0.8
+        const PlasmaResult h = sorefBennettSilicon(1550.0, 0.0, 1.0e18);
+        check(std::fabs(h.deltaN_index
+                        + 8.5e-18 * std::pow(1.0e18, 0.8)) < 1e-12,
+              "plasma: SB hole index change uses the 0.8 exponent");
+        check(std::fabs(h.deltaAlpha_per_cm - 6.0) < 1e-9,
+              "plasma: SB hole absorption at 1.55 um");
+        // λ = 1.31 μm の係数
+        const PlasmaResult s13 = sorefBennettSilicon(1310.0, 1.0e18, 0.0);
+        check(std::fabs(s13.deltaN_index + 6.2e-4) < 1e-12,
+              "plasma: SB electron index change at 1.31 um");
+        check(std::fabs(s13.deltaAlpha_per_cm - 6.0) < 1e-9,
+              "plasma: SB electron absorption at 1.31 um");
+        // 帯の選択と適用範囲
+        check(nearestSorefBennettBand(1550.0) == SorefBennettBand::Lambda1550nm,
+              "plasma: 1550 nm selects the 1.55 um fit");
+        check(nearestSorefBennettBand(1310.0) == SorefBennettBand::Lambda1310nm,
+              "plasma: 1310 nm selects the 1.31 um fit");
+        check(sorefBennettApplicable(1550.0) && sorefBennettApplicable(1310.0),
+              "plasma: the fitted bands are in range");
+        check(!sorefBennettApplicable(1000.0),
+              "plasma: 1000 nm is outside the fitted bands");
+        // ゼロ入力・単調性
+        const PlasmaResult z = sorefBennettSilicon(1550.0, 0.0, 0.0);
+        check(z.deltaN_index == 0.0 && z.deltaAlpha_per_cm == 0.0,
+              "plasma: SB with no carriers changes nothing");
+        check(sorefBennettSilicon(1550.0, 2.0e18, 0.0).deltaN_index
+                  < r.deltaN_index,
+              "plasma: SB index change decreases monotonically with dN");
+        check(sorefBennettSilicon(1550.0, 2.0e18, 0.0).deltaAlpha_per_cm
+                  > r.deltaAlpha_per_cm,
+              "plasma: SB absorption grows monotonically with dN");
+        // dB/cm 換算は 10·log10(e)·α
+        check(std::fabs(r.deltaAlpha_dB_per_cm
+                        - r.deltaAlpha_per_cm * 4.3429448190325175) < 1e-9,
+              "plasma: cm^-1 to dB/cm conversion");
+        check(!sorefBennettSilicon(1550.0, -1.0, 0.0).valid,
+              "plasma: negative carrier density is rejected");
+    }
+}
+
+// ── SAR の定義式と指針値 (src/em/SarMetrics) ────────────────────────────────
+// 期待値はテスト側に独立に書く (手計算値・規格の条文値):
+//   - SAR = σ|E|²/(2ρ): σ=0.9, |E|=100 V/m, ρ=1000 → 4.5 W/kg
+//   - E_rms 61.4 V/m ↔ S = 10 W/m² (ICNIRP の参考レベルの対応)
+//   - ICNIRP 2020 / IEEE C95.1-2019 / FCC の基本制限
+//   - 算出値が無いときに「適合」を返さない
+static void testSarMetrics()
+{
+    using namespace ofd::em;
+    g_file = "sar-metrics";
+
+    // ── (1) 定義式 ──────────────────────────────────────────────────────
+    check(std::fabs(sarFromPeakField(0.9, 100.0, 1000.0) - 4.5) < 1e-12,
+          "sar: SAR = sigma |E|^2 /(2 rho)");
+    check(std::fabs(sarFromRmsField(0.9, 100.0, 1000.0) - 9.0) < 1e-12,
+          "sar: SAR = sigma |E_rms|^2 / rho");
+    // ピーク = √2 × 実効 の整合
+    check(std::fabs(sarFromPeakField(0.9, 100.0 * std::sqrt(2.0), 1000.0)
+                    - sarFromRmsField(0.9, 100.0, 1000.0)) < 1e-12,
+          "sar: peak and rms forms agree");
+    check(sarFromPeakField(0.9, 100.0, 0.0) == 0.0,
+          "sar: zero density is rejected");
+    // 電界 2 倍で SAR 4 倍
+    check(std::fabs(sarFromRmsField(0.9, 200.0, 1000.0)
+                    - 4.0 * sarFromRmsField(0.9, 100.0, 1000.0)) < 1e-12,
+          "sar: SAR is quadratic in the field");
+
+    // ── (2) 平面波の電力密度 ────────────────────────────────────────────
+    {
+        // 61.4 V/m (rms) ↔ 10 W/m^2 (ICNIRP の対応表)
+        const double s = planeWavePowerDensityFromRms(61.4);
+        check(std::fabs(s - 10.0) < 0.02,
+              "sar: 61.4 V/m rms is about 10 W/m^2");
+        // 逆算の往復
+        check(std::fabs(rmsFieldFromPowerDensity(s) - 61.4) < 1e-9,
+              "sar: power density inverts back to the field");
+        check(std::fabs(planeWavePowerDensityFromRms(1.0)
+                        - 1.0 / 376.730313668) < 1e-15,
+              "sar: S = E_rms^2 / Z0");
+        check(rmsFieldFromPowerDensity(-1.0) == 0.0,
+              "sar: negative power density yields no field");
+    }
+
+    // ── (3) 断熱温度上昇 ────────────────────────────────────────────────
+    {
+        // 2 W/kg を 6 分、c_p = 3600 J/(kg K) → 2*360/3600 = 0.2 K
+        check(std::fabs(adiabaticTemperatureRise(2.0, 360.0, 3600.0) - 0.2)
+                  < 1e-12,
+              "sar: adiabatic dT = SAR t / c_p");
+        check(adiabaticTemperatureRise(0.0, 360.0, 3600.0) == 0.0,
+              "sar: no SAR means no temperature rise");
+        check(adiabaticTemperatureRise(2.0, 360.0, 0.0) == 0.0,
+              "sar: zero specific heat is rejected");
+    }
+
+    // ── (4) 指針値 (規格の条文値) ───────────────────────────────────────
+    {
+        const double f = 1950.0e6;    // 1950 MHz
+        const ExposureLimit l10 = exposureLimit(Standard::Icnirp2020,
+                                                Category::GeneralPublic,
+                                                Metric::LocalSar10g, f);
+        check(l10.defined && l10.applicable, "sar: ICNIRP 10 g applies at 2 GHz");
+        check(std::fabs(l10.value - 2.0) < 1e-12,
+              "sar: ICNIRP general-public local SAR is 2 W/kg");
+        check(std::fabs(l10.averagingMass_g - 10.0) < 1e-12
+                  && std::fabs(l10.averagingTime_s - 360.0) < 1e-12,
+              "sar: ICNIRP local SAR averages 10 g over 6 min");
+        const ExposureLimit l10o = exposureLimit(Standard::Icnirp2020,
+                                                 Category::Occupational,
+                                                 Metric::LocalSar10g, f);
+        check(std::fabs(l10o.value - 10.0) < 1e-12,
+              "sar: ICNIRP occupational local SAR is 10 W/kg");
+        check(std::fabs(l10o.value / l10.value - 5.0) < 1e-12,
+              "sar: the occupational/public ratio is 5");
+
+        const ExposureLimit wb = exposureLimit(Standard::Icnirp2020,
+                                               Category::GeneralPublic,
+                                               Metric::WholeBodySar, f);
+        check(std::fabs(wb.value - 0.08) < 1e-12,
+              "sar: ICNIRP whole-body SAR is 0.08 W/kg");
+        check(std::fabs(wb.averagingTime_s - 1800.0) < 1e-12,
+              "sar: whole-body SAR averages over 30 min");
+
+        // FCC の 1 g
+        const ExposureLimit fcc1 = exposureLimit(Standard::Fcc47Cfr,
+                                                 Category::GeneralPublic,
+                                                 Metric::LocalSar1g, f);
+        check(fcc1.defined && std::fabs(fcc1.value - 1.6) < 1e-12,
+              "sar: FCC uncontrolled 1 g SAR is 1.6 W/kg");
+        check(std::fabs(exposureLimit(Standard::Fcc47Cfr,
+                                      Category::Occupational,
+                                      Metric::LocalSar1g, f).value - 8.0)
+                  < 1e-12,
+              "sar: FCC controlled 1 g SAR is 8 W/kg");
+        // ICNIRP は 1 g 平均を採用していない
+        check(!exposureLimit(Standard::Icnirp2020, Category::GeneralPublic,
+                             Metric::LocalSar1g, f).defined,
+              "sar: ICNIRP defines no 1 g limit");
+
+        // IEEE C95.1-2019
+        check(std::fabs(exposureLimit(Standard::IeeeC95_1_2019,
+                                      Category::GeneralPublic,
+                                      Metric::LocalSar10g, f).value - 2.0)
+                  < 1e-12,
+              "sar: IEEE unrestricted local SAR is 2 W/kg");
+    }
+
+    // ── (5) 周波数による適用範囲 ────────────────────────────────────────
+    {
+        const double f2g = 1950.0e6, f28g = 28.0e9;
+        check(exposureLimit(Standard::Icnirp2020, Category::GeneralPublic,
+                            Metric::LocalSar10g, f2g).applicable,
+              "sar: SAR limits apply below 6 GHz");
+        check(!exposureLimit(Standard::Icnirp2020, Category::GeneralPublic,
+                             Metric::LocalSar10g, f28g).applicable,
+              "sar: SAR limits do not apply at 28 GHz");
+        const ExposureLimit pd = exposureLimit(Standard::Icnirp2020,
+                                               Category::GeneralPublic,
+                                               Metric::AbsorbedPowerDensity,
+                                               f28g);
+        check(pd.defined && pd.applicable && std::fabs(pd.value - 20.0) < 1e-12,
+              "sar: ICNIRP absorbed power density is 20 W/m^2 above 6 GHz");
+        check(!exposureLimit(Standard::Icnirp2020, Category::GeneralPublic,
+                             Metric::AbsorbedPowerDensity, f2g).applicable,
+              "sar: the absorbed power density does not apply at 2 GHz");
+        const ExposureLimit inc = exposureLimit(Standard::Icnirp2020,
+                                                Category::GeneralPublic,
+                                                Metric::IncidentPowerDensity,
+                                                f28g);
+        check(inc.applicable && std::fabs(inc.value - 10.0) < 1e-12,
+              "sar: ICNIRP whole-body reference level is 10 W/m^2");
+    }
+
+    // ── (6) 温度上昇は「根拠値」であって限度値ではない ──────────────────
+    {
+        const ExposureLimit t = exposureLimit(Standard::IeeeC95_1_2019,
+                                              Category::GeneralPublic,
+                                              Metric::LocalTemperatureRise,
+                                              1950.0e6);
+        check(t.defined && t.isBasis, "sar: the temperature rise is a basis");
+        check(std::fabs(t.value - 1.0) < 1e-12,
+              "sar: the local temperature-rise basis is 1 K");
+    }
+
+    // ── (7) 判定は算出値が無いときに「適合」を作らない ──────────────────
+    {
+        const ExposureLimit l = exposureLimit(Standard::Icnirp2020,
+                                              Category::GeneralPublic,
+                                              Metric::LocalSar10g, 1950.0e6);
+        check(evaluate(l, 0.0, false) == Verdict::NotEvaluated,
+              "sar: no computed value means no verdict");
+        check(evaluate(l, 1.4, true) == Verdict::Compliant,
+              "sar: 1.4 W/kg is below the 2 W/kg limit");
+        check(evaluate(l, 2.5, true) == Verdict::NonCompliant,
+              "sar: 2.5 W/kg exceeds the 2 W/kg limit");
+        const ExposureLimit off = exposureLimit(Standard::Icnirp2020,
+                                                Category::GeneralPublic,
+                                                Metric::LocalSar10g, 28.0e9);
+        check(evaluate(off, 1.0, true) == Verdict::NotApplicable,
+              "sar: an out-of-range metric is not applicable");
+    }
+}
+
+// ── FDTD 設定の検証計算 (src/core/FdtdVerification) ─────────────────────────
+// VerificationTab が表示する「実計算」の検算。期待値はすべてこのテスト側に
+// 独立に書く (解析解・極限値・公表式の手計算):
+//   - メッシュ解像度: 分割数を r 倍すると λ/Δx は r 倍、セル数は r³ 倍
+//   - PML 設計反射率: R(θ)=R0^cosθ → θ=0 で R0、cosθ=1/2 で √R0 (dB は半分)
+//   - 1 次 Mur: θ=0 で無反射、θ=90° で全反射、θ=60° で 1/3
+//   - Courant 数: 等方格子 Δ で Δt = Δ/(c√3) のとき S = 1 (安定限界)
+//   - 各判定関数の閾値 (既知の設定 → 期待どおりの合否)
+static void testFdtdVerification()
+{
+    using namespace ofd::verify;
+    g_file = "fdtd-verification";
+
+    // ── (1) メッシュ解像度の計画値 ──────────────────────────────────────
+    {
+        Grid g;
+        g.axis[0] = { 0.01,  0.01,  10 };
+        g.axis[1] = { 0.005, 0.005, 20 };
+        g.axis[2] = { 0.02,  0.02,   4 };
+        const double lambda = 1.0;               // λ = 1 m
+        const std::vector<MeshLevel> lv =
+            meshConvergenceLevels(g, lambda, { 0.5, 1.0, 2.0 });
+        check(lv.size() == 3, "meshlv: three levels");
+        if (lv.size() == 3) {
+            // ×1: 10*20*4 = 800 セル、Δx_max = 0.02 → λ/Δx = 50
+            check(lv[1].cells == 800, "meshlv: x1 cell count");
+            check(std::fabs(lv[1].dxMax_m - 0.02) < 1e-15, "meshlv: x1 dx_max");
+            check(std::fabs(lv[1].lambdaOverDx - 50.0) < 1e-12,
+                  "meshlv: x1 lambda/dx = 50");
+            // ×2: 20*40*8 = 6400 セル (= 8 倍)、λ/Δx = 100 (= 2 倍)
+            check(lv[2].cells == 6400, "meshlv: x2 cell count is 8x");
+            check(std::fabs(lv[2].lambdaOverDx - 100.0) < 1e-12,
+                  "meshlv: x2 lambda/dx doubles");
+            // ×0.5: 5*10*2 = 100 セル、λ/Δx = 25
+            check(lv[0].cells == 100, "meshlv: x0.5 cell count");
+            check(std::fabs(lv[0].lambdaOverDx - 25.0) < 1e-12,
+                  "meshlv: x0.5 lambda/dx halves");
+            // メモリはセル数 × 60 byte
+            check(std::fabs(lv[1].memoryMB - 800.0 * 60.0 / (1024.0 * 1024.0))
+                      < 1e-12, "meshlv: memory = cells * 60 byte");
+            // 単調性: 細かくするほどセル数も λ/Δx も増える
+            check(lv[0].cells < lv[1].cells && lv[1].cells < lv[2].cells,
+                  "meshlv: cell count is monotonic");
+        }
+        // 波長が不明なら λ/Δx は計算しない (0 = 未計算)
+        const std::vector<MeshLevel> nolam = meshConvergenceLevels(g, 0.0, { 1.0 });
+        check(nolam.size() == 1 && nolam[0].lambdaOverDx == 0.0,
+              "meshlv: no wavelength -> lambda/dx not computed");
+        // 格子が空なら行を作らない
+        Grid empty;
+        check(meshConvergenceLevels(empty, 1.0, { 1.0 }).empty(),
+              "meshlv: empty grid yields no levels");
+    }
+
+    // ── (2) PML の設計反射率 R(θ) = R0^cosθ ─────────────────────────────
+    {
+        const double r0 = 1e-5;
+        check(std::fabs(pmlDesignReflection(r0, 0.0) - r0) < 1e-18,
+              "pml: normal incidence returns R0");
+        check(std::fabs(toDb(pmlDesignReflection(r0, 0.0)) + 100.0) < 1e-9,
+              "pml: R0 = 1e-5 is -100 dB");
+        // cos 60° = 1/2 → R = √R0、dB はちょうど半分
+        check(std::fabs(pmlDesignReflection(r0, 60.0) - std::sqrt(r0)) < 1e-15,
+              "pml: 60 deg gives sqrt(R0)");
+        check(std::fabs(toDb(pmlDesignReflection(r0, 60.0)) + 50.0) < 1e-9,
+              "pml: 60 deg is half the dB");
+        // 接線入射は吸収されない (R = 1)
+        check(std::fabs(pmlDesignReflection(r0, 90.0) - 1.0) < 1e-15,
+              "pml: grazing incidence reflects fully");
+        // 角度に対して単調増加
+        double prev = pmlDesignReflection(r0, 0.0);
+        bool mono = true;
+        for (double th = 5.0; th <= 85.0; th += 5.0) {
+            const double v = pmlDesignReflection(r0, th);
+            if (!(v > prev)) mono = false;
+            prev = v;
+        }
+        check(mono, "pml: reflection grows monotonically with angle");
+    }
+
+    // ── (3) 1 次 Mur の残留反射 R(θ) = (1−cosθ)/(1+cosθ) ────────────────
+    {
+        check(murDesignReflection(0.0) == 0.0, "mur: normal incidence is exact");
+        check(toDb(murDesignReflection(0.0)) <= -300.0,
+              "mur: zero reflection clamps to the dB floor");
+        check(std::fabs(murDesignReflection(60.0) - 1.0 / 3.0) < 1e-12,
+              "mur: 60 deg gives 1/3");
+        check(std::fabs(toDb(murDesignReflection(60.0)) + 9.542425094) < 1e-6,
+              "mur: 60 deg is -9.54 dB");
+        check(std::fabs(murDesignReflection(90.0) - 1.0) < 1e-15,
+              "mur: grazing incidence reflects fully");
+        // 同じ角度で PML (R0=1e-5) より Mur の方がはるかに反射が大きい
+        check(murDesignReflection(45.0) > pmlDesignReflection(1e-5, 45.0),
+              "mur: worse than PML at 45 deg");
+    }
+
+    // ── (4) dB 変換 ─────────────────────────────────────────────────────
+    {
+        check(std::fabs(toDb(1.0)) < 1e-15, "todb: 1 -> 0 dB");
+        check(std::fabs(toDb(0.1) + 20.0) < 1e-12, "todb: 0.1 -> -20 dB");
+        check(toDb(0.0) == -300.0, "todb: 0 -> floor");
+        check(toDb(0.0, -120.0) == -120.0, "todb: explicit floor honoured");
+    }
+
+    // ── (5) 実行ログの収束履歴の抽出 ────────────────────────────────────
+    {
+        const std::string log =
+            "OpenFDTD Version 4.2.0\n"
+            "     Nx=10 Ny=10 Nz=10\n"
+            "      1 1.000000e+00 9.000000e-01\n"
+            "    100 1.000000e-02 9.000000e-03\n"
+            "   1000 5.000000e-04 4.000000e-04\n"
+            "     50 1.000000e-01 1.000000e-01\n"   // step が戻る = 別表
+            "      1 2 3 4\n"                        // 4 トークン = 対象外
+            "   2000 abc 1.0\n"                      // 数値でない
+            "cpu time = 12.3\n"
+            "normal end\n";
+        const std::vector<ConvergencePoint> h = parseConvergenceLog(log);
+        check(h.size() == 3, "convlog: three convergence rows");
+        if (h.size() == 3) {
+            check(h[0].step == 1 && std::fabs(h[0].e - 1.0) < 1e-12,
+                  "convlog: first row");
+            check(h[2].step == 1000 && std::fabs(h[2].e - 5.0e-4) < 1e-16 &&
+                      std::fabs(h[2].h - 4.0e-4) < 1e-16,
+                  "convlog: last row");
+        }
+        check(parseConvergenceLog("").empty(), "convlog: empty text");
+        // 上限を超える分は捨てる
+        check(parseConvergenceLog(log, 2).size() == 2, "convlog: maxPoints");
+
+        // 収束判定 (未実行 = Unknown。OK を捏造しない)
+        check(convergenceVerdict({}, 1e-3) == Verdict::Unknown,
+              "convverdict: no history -> unknown");
+        check(convergenceVerdict(h, 1e-3) == Verdict::Ok,
+              "convverdict: last point below threshold -> ok");
+        check(convergenceVerdict(h, 1e-6) == Verdict::Warn,
+              "convverdict: last point above threshold -> warn");
+    }
+
+    // ── (6) Courant 数と安定条件 ────────────────────────────────────────
+    {
+        const double c = 2.99792458e8;
+        const double d = 1e-3;
+        const double dxs[3] = { d, d, d };
+        // 等方格子の安定限界 Δt = Δ/(c√3) でちょうど S = 1
+        const double dtLimit = d / (c * std::sqrt(3.0));
+        check(std::fabs(courantNumber(dtLimit, c, dxs) - 1.0) < 1e-12,
+              "courant: isotropic grid limit gives S = 1");
+        check(std::fabs(courantNumber(0.5 * dtLimit, c, dxs) - 0.5) < 1e-12,
+              "courant: S is proportional to dt");
+        check(courantNumber(0.0, c, dxs) == 0.0,
+              "courant: dt = 0 (auto) is not evaluated");
+        // 音響 (343 m/s) でも同じ形
+        const double da[3] = { 0.01, 0.01, 0.01 };
+        check(std::fabs(courantNumber(0.01 / (343.0 * std::sqrt(3.0)), 343.0, da)
+                        - 1.0) < 1e-12, "courant: works for sound speed too");
+
+        check(courantVerdict(0.5) == Verdict::Ok, "courant: S = 0.5 is ok");
+        check(courantVerdict(0.99) == Verdict::Ok, "courant: S = 0.99 is ok");
+        check(courantVerdict(0.995) == Verdict::Warn, "courant: S = 0.995 warns");
+        check(courantVerdict(1.0) == Verdict::Warn, "courant: S = 1 warns");
+        check(courantVerdict(1.05) == Verdict::Ng, "courant: S > 1 is unstable");
+        check(courantVerdict(0.0) == Verdict::Unknown, "courant: S = 0 unknown");
+    }
+
+    // ── (7) 分解能の判定 (既知の設定 → 期待どおりの合否) ────────────────
+    {
+        // 2.5 GHz (λ = 119.9 mm) を Δx = 5 mm で切ると λ/Δx ≈ 24 → OK
+        const double lambda = 2.99792458e8 / 2.5e9;
+        Grid g;
+        g.axis[0] = { 0.005, 0.005, 40 };
+        g.axis[1] = { 0.005, 0.005, 40 };
+        g.axis[2] = { 0.005, 0.005, 40 };
+        std::vector<MeshLevel> lv = meshConvergenceLevels(g, lambda, { 1.0 });
+        check(lv.size() == 1 && resolutionVerdict(lv[0].lambdaOverDx) == Verdict::Ok,
+              "resolution: 5 mm at 2.5 GHz is ok");
+        // Δx = 15 mm → λ/Δx ≈ 8.0 → 注意
+        g.axis[0] = g.axis[1] = g.axis[2] = AxisGrid{ 0.015, 0.015, 10 };
+        lv = meshConvergenceLevels(g, lambda, { 1.0 });
+        check(lv.size() == 1 && resolutionVerdict(lv[0].lambdaOverDx) == Verdict::Warn,
+              "resolution: 15 mm at 2.5 GHz warns");
+        // Δx = 20 mm → λ/Δx ≈ 6.0 (しきい値 6 のわずかに下) → NG
+        g.axis[0] = g.axis[1] = g.axis[2] = AxisGrid{ 0.02, 0.02, 10 };
+        lv = meshConvergenceLevels(g, lambda, { 1.0 });
+        check(lv.size() == 1 && resolutionVerdict(lv[0].lambdaOverDx) == Verdict::Ng,
+              "resolution: 20 mm at 2.5 GHz is just below the 6 cell/lambda line");
+        // Δx = 30 mm → λ/Δx ≈ 4.0 → NG
+        g.axis[0] = g.axis[1] = g.axis[2] = AxisGrid{ 0.03, 0.03, 10 };
+        lv = meshConvergenceLevels(g, lambda, { 1.0 });
+        check(lv.size() == 1 && resolutionVerdict(lv[0].lambdaOverDx) == Verdict::Ng,
+              "resolution: 30 mm at 2.5 GHz is too coarse");
+
+        check(resolutionVerdict(20.0) == Verdict::Ok, "resolution: 20 ok");
+        check(resolutionVerdict(10.0) == Verdict::Ok, "resolution: 10 ok");
+        check(resolutionVerdict(8.0) == Verdict::Warn, "resolution: 8 warns");
+        check(resolutionVerdict(5.0) == Verdict::Ng, "resolution: 5 ng");
+        check(resolutionVerdict(0.0) == Verdict::Unknown, "resolution: 0 unknown");
+    }
+
+    // ── (8) 吸収境界・配置の判定 ────────────────────────────────────────
+    {
+        check(absorbingBoundaryVerdict(true, 10) == Verdict::Ok, "abc: PML 10 ok");
+        check(absorbingBoundaryVerdict(true, 8) == Verdict::Ok, "abc: PML 8 ok");
+        check(absorbingBoundaryVerdict(true, 5) == Verdict::Warn, "abc: PML 5 warns");
+        check(absorbingBoundaryVerdict(true, 4) == Verdict::Ng, "abc: PML 4 ng");
+        check(absorbingBoundaryVerdict(false, 32) == Verdict::Warn,
+              "abc: Mur warns regardless of layer count");
+
+        check(separationVerdict(4.0) == Verdict::Ok, "sep: 4 lambda ok");
+        check(separationVerdict(1.0) == Verdict::Ok, "sep: 1 lambda ok");
+        check(separationVerdict(0.5) == Verdict::Warn, "sep: 0.5 lambda warns");
+        // 反応性近傍界の境界 λ/2π のすぐ下は NG
+        check(separationVerdict(0.9 / (2.0 * 3.14159265358979323846))
+                  == Verdict::Ng, "sep: inside the reactive near field is ng");
+        check(separationVerdict(0.0) == Verdict::Unknown, "sep: 0 unknown");
+
+        check(marginVerdict(0.5) == Verdict::Ok, "margin: lambda/2 ok");
+        check(marginVerdict(0.25) == Verdict::Ok, "margin: lambda/4 ok");
+        check(marginVerdict(0.2) == Verdict::Warn, "margin: below lambda/4 warns");
+        check(marginVerdict(0.05) == Verdict::Ng, "margin: too close is ng");
+        check(marginVerdict(-0.1) == Verdict::Ng,
+              "margin: geometry outside the grid is ng");
+    }
+}
+
+// ── 製造ばらつきの入力分布 (src/core/ToleranceStats) ────────────────────────
+// 期待値はこのテスト側に独立に書く (公表されている分布の性質):
+//   - 正規: ピーク 1/(σ√2π)、±kσ の被覆 = erf(k/√2)、モーメント
+//   - 一様: 密度 1/(2a)、標準偏差 a/√3 (GUM §4.3.7)
+//   - レイリー: 最頻値 σ、平均 σ√(π/2)、標準偏差 σ√(2−π/2)
+//   - 被覆区間は数値積分した確率が normalCoverage(k) に一致する
+static void testToleranceStats()
+{
+    using namespace ofd::tolstat;
+    g_file = "tolerance-stats";
+    const double kPi = 3.14159265358979323846;
+
+    // 台形則で ∫ w(x)·f(x) dx を数値積分する (期待値をテスト側で作るため)
+    const auto integrate = [](const Variable &v, double lo, double hi, int n,
+                              double (*w)(double)) {
+        double s = 0.0;
+        const double dx = (hi - lo) / n;
+        for (int i = 0; i <= n; ++i) {
+            const double x = lo + dx * i;
+            const double f = pdf(v, x) * (w ? w(x) : 1.0);
+            s += (i == 0 || i == n) ? 0.5 * f : f;
+        }
+        return s * dx;
+    };
+    const auto one = [](double) { return 1.0; };
+
+    // ── (1) 被覆確率 erf(k/√2) の既知値 ─────────────────────────────────
+    check(std::fabs(normalCoverage(1.0) - 0.6826894921) < 1e-9,
+          "cover: k=1 is 68.27%");
+    check(std::fabs(normalCoverage(2.0) - 0.9544997361) < 1e-9,
+          "cover: k=2 is 95.45%");
+    check(std::fabs(normalCoverage(3.0) - 0.9973002039) < 1e-9,
+          "cover: k=3 is 99.73%");
+    check(normalCoverage(0.0) == 0.0, "cover: k=0 is 0");
+
+    // ── (2) 正規分布 ────────────────────────────────────────────────────
+    {
+        Variable v{ Dist::Normal, 1.0, 2.0 };
+        check(isContinuous(v), "normal: continuous");
+        check(std::fabs(pdf(v, 1.0) - 1.0 / (2.0 * std::sqrt(2.0 * kPi))) < 1e-15,
+              "normal: peak is 1/(sigma*sqrt(2pi))");
+        check(std::fabs(pdf(v, 1.0 + 1.7) - pdf(v, 1.0 - 1.7)) < 1e-18,
+              "normal: symmetric about the mean");
+        check(std::fabs(stdDev(v) - 2.0) < 1e-15, "normal: sigma");
+        check(std::fabs(mean(v) - 1.0) < 1e-15, "normal: mean");
+        // 全確率 1 (±10σ で十分)
+        check(std::fabs(integrate(v, 1.0 - 20.0, 1.0 + 20.0, 20000, one) - 1.0)
+                  < 1e-9, "normal: pdf integrates to 1");
+        // ±kσ の被覆が erf(k/√2) に一致する
+        for (double k : { 1.0, 2.0, 3.0 }) {
+            const Interval iv = coverageInterval(v, k);
+            check(std::fabs(iv.lo - (1.0 - k * 2.0)) < 1e-15 &&
+                      std::fabs(iv.hi - (1.0 + k * 2.0)) < 1e-15,
+                  "normal: interval is mean +- k*sigma");
+            check(std::fabs(integrate(v, iv.lo, iv.hi, 20000, one)
+                            - normalCoverage(k)) < 1e-7,
+                  "normal: interval holds the expected probability");
+        }
+        // 密度曲線は μ±4σ を等間隔に刻む
+        const std::vector<Point> c = pdfCurve(v, 121);
+        check(c.size() == 121, "normal: curve size");
+        if (c.size() == 121) {
+            check(std::fabs(c.front().x - (1.0 - 8.0)) < 1e-12 &&
+                      std::fabs(c.back().x - (1.0 + 8.0)) < 1e-12,
+                  "normal: curve spans mean +- 4 sigma");
+            check(std::fabs(c[60].y - pdf(v, 1.0)) < 1e-15,
+                  "normal: curve centre equals the peak");
+        }
+    }
+
+    // ── (3) 一様分布 (GUM §4.3.7: σ = a/√3) ─────────────────────────────
+    {
+        Variable v{ Dist::Uniform, 50.0, 20.0 };
+        check(std::fabs(pdf(v, 50.0) - 1.0 / 40.0) < 1e-15,
+              "uniform: density is 1/(2a)");
+        check(pdf(v, 50.0 - 20.0 - 1e-9) == 0.0, "uniform: zero below support");
+        check(pdf(v, 50.0 + 20.0 + 1e-9) == 0.0, "uniform: zero above support");
+        check(std::fabs(stdDev(v) - 20.0 / std::sqrt(3.0)) < 1e-15,
+              "uniform: sigma = a/sqrt(3)");
+        check(std::fabs(mean(v) - 50.0) < 1e-15, "uniform: mean = centre");
+        // 中央被覆区間の確率が erf(k/√2) に一致する (CDF が線形なので厳密)
+        const Interval iv = coverageInterval(v, 3.0);
+        check(std::fabs((iv.hi - iv.lo) / 40.0 - normalCoverage(3.0)) < 1e-12,
+              "uniform: interval width is P * support");
+        check(iv.lo > 50.0 - 20.0 && iv.hi < 50.0 + 20.0,
+              "uniform: interval stays inside the support");
+        // 分散 = ∫(x-μ)² f dx = a²/3
+        double s2 = 0.0;
+        const int n = 200000;
+        const double lo = 30.0, hi = 70.0, dx = (hi - lo) / n;
+        for (int i = 0; i <= n; ++i) {
+            const double x = lo + dx * i;
+            const double t = (x - 50.0) * (x - 50.0) * pdf(v, x);
+            s2 += (i == 0 || i == n) ? 0.5 * t : t;
+        }
+        s2 *= dx;
+        check(std::fabs(s2 - 400.0 / 3.0) < 1e-3, "uniform: variance = a^2/3");
+    }
+
+    // ── (4) レイリー分布 ────────────────────────────────────────────────
+    {
+        const double sg = 2.5;
+        Variable v{ Dist::Rayleigh, 0.0, sg };
+        check(pdf(v, -1.0) == 0.0, "rayleigh: zero below the location");
+        check(pdf(v, 0.0) == 0.0, "rayleigh: zero at the location");
+        // 最頻値は x = σ
+        check(pdf(v, sg) > pdf(v, sg - 0.05) && pdf(v, sg) > pdf(v, sg + 0.05),
+              "rayleigh: mode at sigma");
+        // 台形則の離散化誤差 (~1e-8) を見込んだ許容値
+        check(std::fabs(integrate(v, 0.0, 40.0 * sg, 200000, one) - 1.0) < 1e-7,
+              "rayleigh: pdf integrates to 1");
+        // 平均 σ√(π/2)、標準偏差 σ√(2−π/2)
+        check(std::fabs(mean(v) - sg * std::sqrt(kPi / 2.0)) < 1e-15,
+              "rayleigh: mean = sigma*sqrt(pi/2)");
+        check(std::fabs(stdDev(v) - sg * std::sqrt(2.0 - kPi / 2.0)) < 1e-15,
+              "rayleigh: sigma = scale*sqrt(2-pi/2)");
+        double m1 = 0.0;
+        const int n = 400000;
+        const double hi = 40.0 * sg, dx = hi / n;
+        for (int i = 0; i <= n; ++i) {
+            const double x = dx * i;
+            const double t = x * pdf(v, x);
+            m1 += (i == 0 || i == n) ? 0.5 * t : t;
+        }
+        m1 *= dx;
+        check(std::fabs(m1 - sg * std::sqrt(kPi / 2.0)) < 1e-6,
+              "rayleigh: numeric mean matches the closed form");
+        // 被覆区間の確率が normalCoverage(3) に一致 (裾は非対称でも確率は同じ)
+        const Interval iv = coverageInterval(v, 3.0);
+        check(iv.lo > 0.0 && iv.hi > iv.lo, "rayleigh: interval is positive");
+        check(std::fabs(integrate(v, iv.lo, iv.hi, 200000, one)
+                        - normalCoverage(3.0)) < 1e-6,
+              "rayleigh: interval holds the expected probability");
+        check(std::fabs(integrate(v, 0.0, iv.lo, 200000, one)
+                        - 0.5 * (1.0 - normalCoverage(3.0))) < 1e-7,
+              "rayleigh: lower tail holds half the residual");
+        // 位置パラメータは分布ごと平行移動する
+        Variable shifted{ Dist::Rayleigh, 3.0, sg };
+        check(std::fabs(pdf(shifted, 3.0 + sg) - pdf(v, sg)) < 1e-15,
+              "rayleigh: location shifts the density");
+    }
+
+    // ── (5) 離散 / 不正な入力は「数値を出さない」 ───────────────────────
+    {
+        Variable d{ Dist::Discrete, 0.0, 1.0 };
+        check(!isContinuous(d), "discrete: not continuous");
+        check(pdf(d, 0.0) == 0.0, "discrete: no density");
+        check(pdfCurve(d).empty(), "discrete: no curve");
+        const Interval iv = coverageInterval(d, 3.0);
+        check(iv.lo == 0.0 && iv.hi == 0.0, "discrete: no interval");
+
+        Variable bad{ Dist::Normal, 0.0, 0.0 };   // σ = 0
+        check(!isContinuous(bad), "normal: sigma = 0 is not continuous");
+        check(pdfCurve(bad).empty(), "normal: sigma = 0 yields no curve");
+        check(stdDev(bad) == 0.0 && mean(bad) == 0.0,
+              "normal: sigma = 0 yields no moments");
+    }
+}
+
+// ── ソルバ選定の目安 (src/core/SolverSelection) ─────────────────────────────
+// 期待値はテスト側に独立に書く (定義式・手計算・極限値):
+//   λ = v/f、L/λ、λ/Δx、Q ≤ f·T (DFT 分解能 1/T)、
+//   Schroeder f_c = 2000√(T/V)、Thorp の吸収係数、球面拡散 20log10(r)
+static void testSolverSelection()
+{
+    using namespace ofd::selsolver;
+    g_file = "solver-selection";
+
+    // ── 波長・電気サイズ・分解能 (定義そのもの) ─────────────────────────
+    check(std::fabs(wavelength(3.0e8, 3.0e8) - 1.0) < 1e-15,
+          "sel: lambda = v/f");
+    check(std::fabs(wavelength(343.0, 1000.0) - 0.343) < 1e-15,
+          "sel: 1 kHz in air is 0.343 m");
+    check(wavelength(0.0, 1.0e9) == 0.0 && wavelength(3.0e8, 0.0) == 0.0,
+          "sel: no speed or no frequency yields 0 (not computed)");
+
+    check(std::fabs(electricalSize(8.4, 1.0) - 8.4) < 1e-15,
+          "sel: L/lambda");
+    check(electricalSize(1.0, 0.0) == 0.0, "sel: no wavelength yields 0");
+    check(std::fabs(cellsPerWavelength(0.1, 0.005) - 20.0) < 1e-12,
+          "sel: 5 mm cells give 20 per 100 mm wavelength");
+    check(cellsPerWavelength(0.1, 0.0) == 0.0, "sel: no cell size yields 0");
+
+    // ── 分解できる Q の上限 (Q ≤ f·T) ────────────────────────────────────
+    // 3 GHz を 1 µs 走らせれば線幅 1 MHz まで分解できる → Q = 3e9/1e6 = 3000
+    check(std::fabs(maxResolvableQ(3.0e9, 1.0e-6) - 3000.0) < 1e-9,
+          "sel: Q <= f*T equals 3000 for 3 GHz over 1 us");
+    check(maxResolvableQ(3.0e9, 2.0e-6) > maxResolvableQ(3.0e9, 1.0e-6),
+          "sel: longer runs resolve sharper resonances");
+    check(maxResolvableQ(0.0, 1.0) == 0.0, "sel: no frequency yields 0");
+
+    // ── Schroeder 周波数 ─────────────────────────────────────────────────
+    // T = 2 s, V = 12000 m³ → 2000·sqrt(2/12000) = 2000/sqrt(6000) = 25.8199 Hz
+    {
+        const double expect = 2000.0 / std::sqrt(6000.0);
+        check(std::fabs(schroederFrequency(2.0, 12000.0) - expect) < 1e-9,
+              "sel: Schroeder frequency of a 12000 m3 hall with T60 = 2 s");
+        check(std::fabs(expect - 25.81988897) < 1e-6,
+              "sel: that value is 25.82 Hz");
+        // 大きな室ほど低く、残響が長いほど高い
+        check(schroederFrequency(2.0, 24000.0) < schroederFrequency(2.0, 12000.0),
+              "sel: larger rooms have a lower Schroeder frequency");
+        check(schroederFrequency(3.0, 12000.0) > schroederFrequency(2.0, 12000.0),
+              "sel: longer reverberation raises the Schroeder frequency");
+        check(schroederFrequency(0.0, 12000.0) == 0.0,
+              "sel: no reverberation time yields 0 (not computed)");
+    }
+
+    // ── Thorp の吸収係数 ─────────────────────────────────────────────────
+    {
+        // f → 0 では定数項 0.003 dB/km だけが残る
+        check(std::fabs(thorpAbsorption_dBkm(0.0) - 0.003) < 1e-12,
+              "sel: Thorp tends to 0.003 dB/km at DC");
+        // 10 kHz の手計算: 0.11·100/101 + 44·100/4200 + 2.75e-4·100 + 0.003
+        const double hand = 0.11 * 100.0 / 101.0 + 44.0 * 100.0 / 4200.0
+                          + 2.75e-4 * 100.0 + 0.003;
+        check(std::fabs(thorpAbsorption_dBkm(10.0) - hand) < 1e-12,
+              "sel: Thorp at 10 kHz matches the hand calculation");
+        // 文献 (Urick §5.3) の桁: 10 kHz でおよそ 1 dB/km
+        check(thorpAbsorption_dBkm(10.0) > 0.8 && thorpAbsorption_dBkm(10.0) < 1.5,
+              "sel: Thorp at 10 kHz is of order 1 dB/km");
+        // 周波数とともに単調増加
+        double prev = -1.0;
+        for (double f = 0.1; f <= 60.0; f *= 1.5) {
+            const double a = thorpAbsorption_dBkm(f);
+            check(a > prev, "sel: Thorp absorption increases with frequency");
+            prev = a;
+        }
+    }
+
+    // ── 球面拡散 + 吸収 ──────────────────────────────────────────────────
+    check(std::fabs(sphericalTransmissionLoss_dB(1.0, 0.0) - 60.0) < 1e-12,
+          "sel: 1 km of spherical spreading is 60 dB");
+    check(std::fabs(sphericalTransmissionLoss_dB(10.0, 0.5)
+                    - (20.0 * std::log10(10000.0) + 5.0)) < 1e-12,
+          "sel: absorption adds alpha*range");
+    check(sphericalTransmissionLoss_dB(0.0, 0.5) == 0.0,
+          "sel: zero range yields 0 (not computed)");
+}
+
+// ── 電波伝搬モデル (src/em/RadioPropagation) ────────────────────────────────
+// 期待値はテスト側に独立に書く:
+//   ITU-R P.525 の 32.44 + 20log10(f[MHz]) + 20log10(d[km])、
+//   距離 2 倍で 6.02 dB、2 波モデルの遠方漸近 40log10(d) − 20log10(h_t·h_r)、
+//   kT0B (T0 = 290 K)、Shannon C = B·log2(1+SNR)
+static void testRadioPropagation()
+{
+    namespace pr = ofd::em::propagation;
+    g_file = "radio-propagation";
+
+    // ── 自由空間損失 ─────────────────────────────────────────────────────
+    {
+        // ITU-R P.525-4 の実用形 (定数 32.44 は 2·log10(4π/c)+120 の丸め)
+        const double itu = 32.44 + 20.0 * std::log10(2400.0)
+                                 + 20.0 * std::log10(1.0);
+        check(std::fabs(pr::freeSpacePathLossDb(1000.0, 2.4e9) - itu) < 0.02,
+              "prop: FSPL at 2.4 GHz / 1 km matches ITU-R P.525");
+        // 距離 2 倍で 6.0206 dB 増える (逆二乗則)
+        const double a = pr::freeSpacePathLossDb(100.0, 1.0e9);
+        const double b = pr::freeSpacePathLossDb(200.0, 1.0e9);
+        check(std::fabs((b - a) - 20.0 * std::log10(2.0)) < 1e-12,
+              "prop: doubling the distance adds 6.02 dB");
+        // 周波数 2 倍でも 6.0206 dB 増える
+        const double c = pr::freeSpacePathLossDb(100.0, 2.0e9);
+        check(std::fabs((c - a) - 20.0 * std::log10(2.0)) < 1e-12,
+              "prop: doubling the frequency adds 6.02 dB");
+        check(pr::freeSpacePathLossDb(0.0, 1.0e9) == 0.0,
+              "prop: no distance yields 0 (not computed)");
+        // 波長 = c/f
+        check(std::fabs(pr::wavelength(1.0e9) - 0.299792458) < 1e-12,
+              "prop: 1 GHz is 29.98 cm");
+    }
+
+    // ── 経路損失指数 ─────────────────────────────────────────────────────
+    {
+        const double l1 = pr::freeSpacePathLossDb(100.0, 3.5e9);
+        const double l2 = pr::freeSpacePathLossDb(200.0, 3.5e9);
+        check(std::fabs(pr::pathLossExponent(l1, 100.0, l2, 200.0) - 2.0) < 1e-9,
+              "prop: free space gives exactly n = 2");
+        check(pr::pathLossExponent(l1, 0.0, l2, 200.0) == 0.0,
+              "prop: invalid distances yield 0");
+    }
+
+    // ── 2 波モデル ───────────────────────────────────────────────────────
+    {
+        const double f = 3.5e9, ht = 10.0, hr = 1.5;
+        // ブレークポイント d_bp = 4·h_t·h_r/λ
+        const double lam = 2.99792458e8 / f;
+        const double dbp = 4.0 * ht * hr / lam;
+        check(std::fabs(pr::breakpointDistance(ht, hr, f) - dbp) < 1e-9,
+              "prop: breakpoint distance is 4*ht*hr/lambda");
+        // 遠方では平面大地の漸近形 40log10(d) − 20log10(ht·hr) に一致する
+        const double d = 100.0 * dbp;
+        const double plane = 40.0 * std::log10(d)
+                           - 20.0 * std::log10(ht * hr);
+        check(std::fabs(pr::twoRayPathLossDb(d, ht, hr, f) - plane) < 0.1,
+              "prop: two-ray tends to the plane-earth asymptote");
+        // その領域の経路損失指数は 4 に近い
+        const double n = pr::pathLossExponent(
+            pr::twoRayPathLossDb(d, ht, hr, f), d,
+            pr::twoRayPathLossDb(2.0 * d, ht, hr, f), 2.0 * d);
+        check(std::fabs(n - 4.0) < 0.05, "prop: the exponent tends to 4");
+        // 反射が無ければ (|Γ| = 0) 自由空間損失そのもの
+        check(std::fabs(pr::twoRayPathLossDb(500.0, ht, hr, f, 0.0)
+                        - pr::freeSpacePathLossDb(
+                              std::sqrt(500.0 * 500.0 + (ht - hr) * (ht - hr)),
+                              f)) < 1e-9,
+              "prop: without a reflection the two-ray model is Friis on d_los");
+        // K ファクタ = (d_ref/d_los)²、遅延差 = (d_ref − d_los)/c
+        const double dist = 100.0;
+        const double d1 = std::sqrt(dist * dist + (ht - hr) * (ht - hr));
+        const double d2 = std::sqrt(dist * dist + (ht + hr) * (ht + hr));
+        check(std::fabs(pr::twoRayKFactorDb(dist, ht, hr)
+                        - 20.0 * std::log10(d2 / d1)) < 1e-12,
+              "prop: two-ray K factor is the ray-length ratio");
+        check(std::fabs(pr::twoRayExcessDelay(dist, ht, hr)
+                        - (d2 - d1) / 2.99792458e8) < 1e-18,
+              "prop: two-ray excess delay is the path difference over c");
+        // 遠距離では 2 波の電力が等しくなり K → 0 dB
+        check(std::fabs(pr::twoRayKFactorDb(1.0e6, ht, hr)) < 1e-3,
+              "prop: K tends to 0 dB at long range");
+        // 損失は上限で頭打ちにする (干渉ヌルで発散させない)
+        check(pr::twoRayPathLossDb(100.0, ht, hr, f) <= pr::kMaxPathLossDb,
+              "prop: path loss is capped at the null");
+    }
+
+    // ── 雑音と容量 ───────────────────────────────────────────────────────
+    {
+        // N = kT0B: 1 Hz・NF 0 dB で −173.98 dBm/Hz (教科書値)
+        const double n0 = pr::thermalNoiseDbm(1.0, 0.0);
+        check(std::fabs(n0 + 173.9754) < 1e-3,
+              "prop: thermal noise density is -173.98 dBm/Hz");
+        // 帯域 1e6 倍で 60 dB 増える。NF はそのまま加算される
+        check(std::fabs(pr::thermalNoiseDbm(1.0e6, 0.0) - (n0 + 60.0)) < 1e-9,
+              "prop: bandwidth scales the noise power by 10log10(B)");
+        check(std::fabs(pr::thermalNoiseDbm(1.0e6, 7.0)
+                        - (pr::thermalNoiseDbm(1.0e6, 0.0) + 7.0)) < 1e-12,
+              "prop: the noise figure adds directly");
+        check(pr::thermalNoiseDbm(0.0, 0.0) == 0.0,
+              "prop: no bandwidth yields 0 (not computed)");
+        // Shannon: SNR = 0 dB なら 1 bit/s/Hz
+        check(std::fabs(pr::shannonCapacity(1.0e6, 0.0) - 1.0e6) < 1e-6,
+              "prop: capacity at 0 dB SNR is 1 bit/s/Hz");
+        check(std::fabs(pr::shannonCapacity(1.0e6, 30.0)
+                        - 1.0e6 * std::log2(1001.0)) < 1e-3,
+              "prop: capacity follows log2(1+SNR)");
+        check(pr::shannonCapacity(1.0e6, -300.0) < 1.0,
+              "prop: capacity vanishes without signal");
+        // 受信電力 = EIRP − 損失 + 利得
+        check(std::fabs(pr::receivedPowerDbm(30.0, 100.0, 3.0) + 67.0) < 1e-12,
+              "prop: received power is EIRP - loss + gain");
+    }
+}
+
+// ── 分散モデルのフィット (src/optics/DispersionFit) ─────────────────────────
+// 期待値はテスト側に独立に書く: 参照データを Sellmeier / Drude の**解析式**で
+// 作り、同じ形のモデルを当てれば残差はゼロに収束し、係数も元の値に戻るはず。
+static void testDispersionFit()
+{
+    using namespace ofd::optics;
+    g_file = "dispersion-fit";
+
+    // λ [µm] 範囲を等間隔にサンプルする (k は「データ無し」= 負)
+    const auto sample = [](double lo, double hi, int n,
+                           double (*nf)(double)) {
+        std::vector<NkSample> v;
+        for (int i = 0; i < n; ++i) {
+            const double l = lo + (hi - lo) * i / (n - 1);
+            NkSample s;
+            s.lambda_um = l;
+            s.n = nf(l);
+            s.k = -1.0;
+            v.push_back(s);
+        }
+        return v;
+    };
+
+    // ── (1) 単極 Sellmeier を単極 Lorentz で当てる → 係数が元に戻る ─────
+    // n² = 1 + 1.0·λ²/(λ² − 0.01)  (極は λ0 = 0.1 µm、強度 Δε = 1)
+    {
+        struct F { static double n(double l) {
+            return std::sqrt(1.0 + 1.0 * l * l / (l * l - 0.01)); } };
+        const std::vector<NkSample> s = sample(0.4, 1.6, 48, &F::n);
+        FitOptions o;
+        o.model = FitModel::Lorentz;
+        o.rmsTol = 1e-12;
+        o.iterations = 40;
+        const FitReport r = fitDispersion(s, o);
+        check(r.status == FitStatus::Ok, "fit: single Lorentz solves");
+        check(r.poles == 1, "fit: Lorentz uses exactly one pole");
+        check(r.rmsN < 1e-6, "fit: single-pole data is reproduced");
+        check(std::fabs(r.epsInf - 1.0) < 1e-3, "fit: recovers eps_inf = 1");
+        check(!r.lambda0_um.empty()
+              && std::fabs(r.lambda0_um[0] - 0.1) < 1e-3,
+              "fit: recovers the pole wavelength 0.1 um");
+        check(!r.deltaEps.empty() && std::fabs(r.deltaEps[0] - 1.0) < 1e-3,
+              "fit: recovers the oscillator strength 1.0");
+        // モデル評価は参照データに一致する (サンプル点の間でも)
+        const double lam = 0.777;
+        check(std::fabs(modelIndex(r, lam) - F::n(lam)) < 1e-5,
+              "fit: the fitted model reproduces n between the samples");
+        check(r.passivityOk, "fit: a passive Sellmeier stays passive");
+        check(r.nMin > 1.0, "fit: n stays above 1 for this dielectric");
+    }
+
+    // ── (2) 3 項 Sellmeier (Malitson 1965 の SiO2) — 極を増やすほど良くなる ─
+    {
+        struct F { static double n(double l) {
+            const double l2 = l * l;
+            return std::sqrt(1.0 + 0.6961663 * l2 / (l2 - 0.004679148)
+                                 + 0.4079426 * l2 / (l2 - 0.013512063)
+                                 + 0.8974794 * l2 / (l2 - 97.934003)); } };
+        const std::vector<NkSample> s = sample(0.4, 1.6, 64, &F::n);
+        FitOptions o1;
+        o1.maxPoles = 1; o1.rmsTol = 0.0; o1.iterations = 12;
+        FitOptions o3 = o1;
+        o3.maxPoles = 3;
+        const FitReport r1 = fitDispersion(s, o1);
+        const FitReport r3 = fitDispersion(s, o3);
+        check(r1.status == FitStatus::Ok && r3.status == FitStatus::Ok,
+              "fit: multi-pole fits solve");
+        check(r3.rmsN <= r1.rmsN,
+              "fit: more coefficients cannot make the residual worse");
+        check(r3.rmsN < 1e-5, "fit: three poles reproduce fused silica");
+        check(r1.points == 64 && r3.points == 64, "fit: all samples are used");
+        // 参照データは公刊値そのものなので n(0.5876 µm) = 1.4585 (Malitson)
+        check(std::fabs(F::n(0.58756) - 1.45846) < 1e-4,
+              "fit: the reference data is the published Malitson curve");
+        check(std::fabs(modelIndex(r3, 0.58756) - F::n(0.58756)) < 1e-4,
+              "fit: the fit follows the published curve at the d line");
+        // 許容値に達したら極を増やさない (係数の数の制御が効く)
+        FitOptions oTol = o3;
+        oTol.rmsTol = 1e-2;
+        const FitReport rTol = fitDispersion(s, oTol);
+        check(rTol.poles <= r3.poles,
+              "fit: a loose tolerance stops adding poles");
+    }
+
+    // ── (3) Drude 参照データを Drude で当てる ────────────────────────────
+    // ε = 4 − (λ/2)² → n = sqrt(4 − λ²/4)
+    {
+        struct F { static double n(double l) {
+            return std::sqrt(4.0 - 0.25 * l * l); } };
+        const std::vector<NkSample> s = sample(0.4, 1.2, 32, &F::n);
+        FitOptions o;
+        o.model = FitModel::Drude;
+        const FitReport r = fitDispersion(s, o);
+        check(r.status == FitStatus::Ok, "fit: Drude solves");
+        check(r.rmsN < 1e-9, "fit: Drude data is reproduced exactly");
+        check(std::fabs(r.epsInf - 4.0) < 1e-6, "fit: recovers eps_inf = 4");
+        check(!r.lambda0_um.empty()
+              && std::fabs(r.lambda0_um[0] - 2.0) < 1e-6,
+              "fit: recovers the plasma wavelength 2 um");
+        check(r.passivityOk, "fit: eps_inf >= 1 and wp^2 >= 0 is passive");
+    }
+
+    // ── (4) FDTD 安定性: n < 1 の帯域を持つモデルを検出する ──────────────
+    {
+        // ε = 1.2 − λ² → λ = 1 µm で ε = 0.2 (n = 0.447 < 1)
+        struct F { static double n(double l) {
+            return std::sqrt(1.2 - l * l); } };
+        const std::vector<NkSample> s = sample(0.3, 1.0, 24, &F::n);
+        FitOptions o;
+        o.model = FitModel::Drude;
+        const FitReport r = fitDispersion(s, o);
+        check(r.status == FitStatus::Ok, "fit: sub-unity index model solves");
+        check(r.nMin < 1.0, "fit: n_min below 1 is reported (Courant limit)");
+        check(std::fabs(r.nMin - std::sqrt(0.2)) < 1e-3,
+              "fit: n_min equals the analytic minimum");
+    }
+
+    // ── (5) 因果律の必要条件 (透明域で dε/dω ≥ 0 = λ について非増加) ─────
+    {
+        // 正常分散 (λ が伸びると n が下がる)
+        struct Norm { static double n(double l) { return 1.5 - 0.05 * l; } };
+        const FitReport ok = fitDispersion(sample(0.4, 1.6, 16, &Norm::n),
+                                           FitOptions());
+        check(ok.causalityEvaluable, "fit: transparent data can be judged");
+        check(ok.causalityChecks == 15, "fit: judges every sample interval");
+        check(ok.causalityViolations == 0,
+              "fit: normal dispersion satisfies the requirement");
+        // 異常分散 (吸収を伴わずに n が上がる = 因果律の必要条件に反する)
+        struct Anom { static double n(double l) { return 1.5 + 0.05 * l; } };
+        const FitReport ng = fitDispersion(sample(0.4, 1.6, 16, &Anom::n),
+                                           FitOptions());
+        check(ng.causalityEvaluable, "fit: the same judgement applies");
+        check(ng.causalityViolations == ng.causalityChecks,
+              "fit: anomalous dispersion violates it on every interval");
+        // 無分散 (真空・n 一定) は境界例として満足側に入れる
+        struct Flat { static double n(double) { return 1.0; } };
+        const FitReport flat = fitDispersion(sample(0.4, 1.6, 16, &Flat::n),
+                                             FitOptions());
+        check(flat.causalityViolations == 0,
+              "fit: a dispersionless medium is not flagged");
+        // 吸収域を含むデータは必要条件では判定しない (評価対象外)
+        {
+            std::vector<NkSample> s = sample(0.4, 1.6, 16, &Norm::n);
+            for (NkSample &p : s) p.k = 0.1;
+            const FitReport r = fitDispersion(s, FitOptions());
+            check(!r.causalityEvaluable,
+                  "fit: absorbing data is out of scope for the requirement");
+            check(r.hasK, "fit: k data is recognised when present");
+            check(std::fabs(r.rmsK - 0.1) < 1e-9,
+                  "fit: a lossless model leaves the whole k as residual");
+        }
+    }
+
+    // ── (6) データが無い / 補間モデル ────────────────────────────────────
+    {
+        const FitReport none = fitDispersion(std::vector<NkSample>(),
+                                             FitOptions());
+        check(none.status == FitStatus::NoData, "fit: no data is reported");
+        check(!none.causalityEvaluable && none.points == 0,
+              "fit: nothing is judged without data");
+        check(modelIndex(none, 1.0) == 0.0,
+              "fit: a failed fit evaluates to 0 (no fabricated index)");
+
+        struct F { static double n(double l) { return 1.5 - 0.05 * l; } };
+        FitOptions o;
+        o.model = FitModel::Sampled;
+        const FitReport r = fitDispersion(sample(0.4, 1.6, 16, &F::n), o);
+        check(r.status == FitStatus::Ok && r.interpolation,
+              "fit: Sampled is flagged as interpolation");
+        check(r.rmsN == 0.0 && r.poles == 0,
+              "fit: interpolation has no residual and no poles");
+        check(modelIndex(r, 1.0) == 0.0,
+              "fit: interpolation has no pole model to evaluate");
+    }
+}
+
+// ── 曲げ導波路の共形変換 (src/optics/BendWaveguide) ─────────────────────────
+// 期待値はテスト側に独立に書く: 変換式そのもの、重なり積分の定義、
+// R → ∞ の極限 (直線に戻る) と単調性。
+static void testBendWaveguide()
+{
+    using namespace ofd::optics;
+    g_file = "bend-waveguide";
+
+    // ── (1) 共形変換 n_eq(x) = n(x)(1 + x/R) ─────────────────────────────
+    {
+        CrossSection cs = makeRectangularCore(0.45, 0.22, 0.0,
+                                              3.4764, 1.4440, 1.4440, 0.025);
+        check(cs.nx > 0 && cs.ny > 0, "bend: the test cross-section is built");
+        const double R = 5.0;
+        const CrossSection b = bendEquivalent(cs, R);
+        check(b.nx == cs.nx && b.ny == cs.ny && b.n.size() == cs.n.size(),
+              "bend: the transform keeps the grid");
+        bool exact = true;
+        for (int ix = 0; ix < cs.nx; ++ix) {
+            const double x = (ix + 0.5 - 0.5 * cs.nx) * cs.dx_um;
+            const double f = 1.0 + x / R;
+            for (int iy = 0; iy < cs.ny; iy += 7) {
+                const std::size_t i = std::size_t(iy) * cs.nx + ix;
+                if (std::fabs(b.n[i] - cs.n[i] * f) > 1e-12) exact = false;
+            }
+        }
+        check(exact, "bend: every cell is scaled by 1 + x/R");
+        // 外周側は屈折率が上がり、内周側は下がる
+        check(b.n[cs.nx - 1] > cs.n[cs.nx - 1] && b.n[0] < cs.n[0],
+              "bend: the outer side gains index and the inner side loses it");
+        // R → ∞ で直線に戻る
+        const CrossSection s = bendEquivalent(cs, 1.0e9);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < cs.n.size(); ++i)
+            worst = std::max(worst, std::fabs(s.n[i] - cs.n[i]));
+        check(worst < 1e-6, "bend: an infinite radius reproduces the straight guide");
+        check(bendEquivalent(cs, 0.0).n == cs.n,
+              "bend: a non-positive radius leaves the guide unchanged");
+        // 妥当性指標 |x|/R
+        const double xEdge = (cs.nx - 0.5 - 0.5 * cs.nx) * cs.dx_um;
+        check(std::fabs(conformalRatio(cs, R) - xEdge / R) < 1e-12,
+              "bend: the conformal ratio is |x_edge|/R");
+        check(conformalRatio(cs, 20.0) < conformalRatio(cs, 5.0),
+              "bend: larger radii are better approximated");
+    }
+
+    // ── (2) 重なり積分と接続損 (定義そのもの) ────────────────────────────
+    {
+        const int n = 64;
+        std::vector<double> a(n), b(n), c(n);
+        const double pi = 3.14159265358979323846;
+        for (int i = 0; i < n; ++i) {
+            a[i] = std::sin(pi * (i + 1) / (n + 1));
+            b[i] = 2.0 * a[i];                       // 振幅だけ違う
+            c[i] = std::sin(2.0 * pi * (i + 1) / (n + 1));   // 直交モード
+        }
+        check(std::fabs(overlapEfficiency(a, a) - 1.0) < 1e-12,
+              "bend: a mode overlaps itself perfectly");
+        check(std::fabs(overlapEfficiency(a, b) - 1.0) < 1e-12,
+              "bend: the overlap is normalised (amplitude does not matter)");
+        check(overlapEfficiency(a, c) < 1e-6,
+              "bend: orthogonal modes do not overlap");
+        check(overlapEfficiency(a, std::vector<double>()) == 0.0,
+              "bend: mismatched sizes yield 0");
+        check(std::fabs(mismatchLossDb(1.0)) < 1e-12,
+              "bend: a perfect overlap costs 0 dB");
+        check(std::fabs(mismatchLossDb(0.5) - 10.0 * std::log10(2.0)) < 1e-12,
+              "bend: half the power is 3.01 dB");
+        check(mismatchLossDb(0.0) >= 300.0,
+              "bend: a vanishing overlap is capped instead of diverging");
+    }
+
+    // ── (3) 放射カウスティック x_c = R(neff/n_clad − 1) ──────────────────
+    {
+        check(std::fabs(radiationCaustic(5.0, 2.4, 1.44) - 5.0 * (2.4 / 1.44 - 1.0))
+                  < 1e-12,
+              "bend: the caustic follows the definition");
+        check(std::fabs(radiationCaustic(5.0, 2.4, 1.44) - 3.3333333333) < 1e-9,
+              "bend: 5 um radius with neff 2.4 gives 3.33 um");
+        check(radiationCaustic(10.0, 2.4, 1.44) > radiationCaustic(5.0, 2.4, 1.44),
+              "bend: a larger radius pushes the caustic further out");
+        check(radiationCaustic(5.0, 1.4, 1.44) == 0.0,
+              "bend: a non-guided index yields no caustic");
+        check(radiationCaustic(0.0, 2.4, 1.44) == 0.0,
+              "bend: a non-positive radius yields no caustic");
+    }
+
+    // ── (4) FDE と組んだ接続損: 半径が大きいほど小さく、直線で 0 になる ──
+    {
+        CrossSection cs = makeRectangularCore(0.45, 0.22, 0.0,
+                                              3.4764, 1.4440, 1.4440, 0.025);
+        SolveOptions o;
+        o.pol = Polarization::SemiVecTE;
+        o.modes = 1;
+        const std::vector<ModeResult> st = solveModes(cs, 1.55, o);
+        check(!st.empty(), "bend: the straight mode is found");
+        if (!st.empty()) {
+            double prev = 1e9;
+            for (double R : { 3.0, 10.0 }) {
+                const std::vector<ModeResult> bm =
+                    solveModes(bendEquivalent(cs, R), 1.55, o);
+                check(!bm.empty(), "bend: the equivalent bent mode is found");
+                if (bm.empty()) continue;
+                const double eta = overlapEfficiency(st[0].field, bm[0].field);
+                const double loss = mismatchLossDb(eta);
+                check(eta > 0.9 && eta <= 1.0,
+                      "bend: the bent mode still resembles the straight one");
+                check(loss < prev, "bend: mismatch loss falls as R grows");
+                prev = loss;
+                // 曲げると外周側へ寄るので実効屈折率は上がる
+                check(bm[0].neff > st[0].neff,
+                      "bend: the bend raises neff (the mode shifts outwards)");
+            }
+            check(prev < 0.05, "bend: a 10 um bend costs well under 0.05 dB");
+            // R → ∞ は完全一致 (同じ固有値問題)
+            const std::vector<ModeResult> sm =
+                solveModes(bendEquivalent(cs, 1.0e9), 1.55, o);
+            check(!sm.empty() && overlapEfficiency(st[0].field, sm[0].field)
+                                     > 1.0 - 1e-9,
+                  "bend: an infinite radius costs nothing");
+        }
+    }
+}
+
+// ── 取込メッシュの位相・幾何検査 (io/MeshDiagnostics) ───────────────────────
+// GeometryTab「ジオメトリ検査」節の検出値の実体。期待値はコードからではなく
+// 立方体の位相 (頂点 8・辺 18・面 12 三角形) から手で導ける値を使う。
+static void testMeshDiagnostics()
+{
+    g_file = "mesh-diagnostics";
+
+    // 外向き法線で首尾一貫させた閉じた立方体 (12 三角形)。
+    // 面ごとの 4 頂点を外から見て CCW に並べる = 全体で coherent orientation。
+    auto orientedCube = [](double a) {
+        ImportedMesh m;
+        m.name = "cube";
+        const double h = a / 2.0;
+        double p[8][3] = {
+            {-h,-h,-h},{ h,-h,-h},{ h, h,-h},{-h, h,-h},
+            {-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h} };
+        auto quad = [&](int i0, int i1, int i2, int i3) {
+            addTri(m, p[i0][0],p[i0][1],p[i0][2],
+                      p[i1][0],p[i1][1],p[i1][2],
+                      p[i2][0],p[i2][1],p[i2][2]);
+            addTri(m, p[i0][0],p[i0][1],p[i0][2],
+                      p[i2][0],p[i2][1],p[i2][2],
+                      p[i3][0],p[i3][1],p[i3][2]);
+        };
+        quad(0, 3, 2, 1);   // z− 面
+        quad(4, 5, 6, 7);   // z+ 面
+        quad(0, 1, 5, 4);   // y− 面
+        quad(3, 7, 6, 2);   // y+ 面
+        quad(0, 4, 7, 3);   // x− 面
+        quad(1, 2, 6, 5);   // x+ 面
+        m.bbox[0] = m.bbox[1] = m.bbox[2] = -h;
+        m.bbox[3] = m.bbox[4] = m.bbox[5] =  h;
+        return m;
+    };
+
+    // 1) 健全な閉多様体: 穴なし・非多様体なし・向き一致・重複頂点 36−8=28
+    {
+        const ImportedMesh cube = orientedCube(0.02);
+        const MeshDiagnostics d = analyzeMesh(cube);
+        check(d.valid && !d.skippedTooLarge, "meshdiag: cube analyzed");
+        check(d.triangles == 12, "meshdiag: cube triangle count");
+        check(d.rawVertices == 36, "meshdiag: cube raw vertex count");
+        check(d.uniqueVertices == 8, "meshdiag: cube welds to 8 vertices");
+        check(d.duplicateVertices == 28, "meshdiag: cube duplicate vertices");
+        check(d.degenerateTriangles == 0, "meshdiag: cube has no degenerates");
+        check(d.boundaryEdges == 0, "meshdiag: cube has no boundary edges");
+        check(d.nonManifoldEdges == 0, "meshdiag: cube is manifold");
+        check(d.inconsistentEdges == 0, "meshdiag: cube orientation coherent");
+        check(d.watertight(), "meshdiag: cube watertight");
+        check(d.weldTolerance > 0.0, "meshdiag: weld tolerance positive");
+    }
+
+    // 2) 三角形を 1 枚落とす → その 3 辺が境界エッジになり水密でなくなる
+    {
+        ImportedMesh holed = orientedCube(0.02);
+        holed.vertices.resize(holed.vertices.size() - 9);
+        --holed.numTriangles;
+        const MeshDiagnostics d = analyzeMesh(holed);
+        check(d.triangles == 11, "meshdiag: holed triangle count");
+        check(d.boundaryEdges == 3, "meshdiag: hole gives 3 boundary edges");
+        check(d.nonManifoldEdges == 0, "meshdiag: holed still manifold");
+        check(!d.watertight(), "meshdiag: holed not watertight");
+    }
+
+    // 3) 三角形を 1 枚複製 → その 3 辺が 3 枚共有 = 非多様体
+    {
+        ImportedMesh dup = orientedCube(0.02);
+        for (int i = 0; i < 9; ++i) dup.vertices.push_back(dup.vertices[i]);
+        ++dup.numTriangles;
+        const MeshDiagnostics d = analyzeMesh(dup);
+        check(d.nonManifoldEdges == 3, "meshdiag: duplicated face is non-manifold");
+        check(d.boundaryEdges == 0, "meshdiag: duplicated face has no boundary");
+        check(!d.watertight(), "meshdiag: non-manifold is not watertight");
+    }
+
+    // 4) 三角形を 1 枚裏返す → その 3 辺で向きが一致しなくなる
+    {
+        ImportedMesh flip = orientedCube(0.02);
+        for (int k = 0; k < 3; ++k)      // 頂点 1 と 2 を入れ替える
+            std::swap(flip.vertices[3 + k], flip.vertices[6 + k]);
+        const MeshDiagnostics d = analyzeMesh(flip);
+        check(d.inconsistentEdges == 3, "meshdiag: flipped face gives 3 bad edges");
+        check(d.boundaryEdges == 0 && d.nonManifoldEdges == 0,
+              "meshdiag: flipped face keeps the topology closed");
+        // 位相としては閉じている (向きの不一致は watertight の判定に含めない)
+        check(d.watertight(), "meshdiag: flipped face still closed");
+    }
+
+    // 5) 縮退三角形 (3 頂点が同一) は数えられ、辺の位相を汚さない
+    {
+        ImportedMesh deg = orientedCube(0.02);
+        addTri(deg, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001,
+                    0.001, 0.001, 0.001);
+        const MeshDiagnostics d = analyzeMesh(deg);
+        check(d.degenerateTriangles == 1, "meshdiag: degenerate triangle counted");
+        check(d.boundaryEdges == 0 && d.nonManifoldEdges == 0,
+              "meshdiag: degenerate triangle excluded from edge topology");
+    }
+
+    // 6) 空メッシュ / 上限超過は「検査していない」ことを返す (偽の OK を出さない)
+    {
+        const ImportedMesh empty;
+        const MeshDiagnostics d = analyzeMesh(empty);
+        check(!d.valid && !d.watertight(), "meshdiag: empty mesh is not valid");
+
+        const ImportedMesh cube = orientedCube(0.02);
+        const MeshDiagnostics s = analyzeMesh(cube, 4);   // 上限 4 三角形
+        check(!s.valid && s.skippedTooLarge && s.triangles == 12,
+              "meshdiag: oversized mesh is skipped, not silently OK");
+        check(!s.watertight(), "meshdiag: skipped mesh never reports watertight");
+    }
+}
+
+// ── EMC 規格の公表限度値と対策効果の古典式 (em/EmcStandards) ────────────────
+// 期待値はコードと独立な出所 (規格の表 / 手計算) から取る。
+static void testEmcStandards()
+{
+    using namespace ofd::em::emc;
+    g_file = "emc-standards";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 1) 放射妨害波の限度値 (CISPR 32:2015 Table A.3/A.4 の公表値)
+    {
+        LimitSegment seg[kMaxLimitSegments];
+        int n = radiatedLimits(Standard::Cispr32, EmClass::A, seg,
+                               kMaxLimitSegments);
+        check(n == 2, "emc: CISPR 32 Class A has two segments");
+        if (n == 2) {
+            check(approx(seg[0].f1_MHz, 30.0, 0) &&
+                  approx(seg[0].f2_MHz, 230.0, 0) &&
+                  approx(seg[0].limit_dBuVm, 40.0, 0) &&
+                  approx(seg[0].refDist_m, 10.0, 0),
+                  "emc: CISPR 32 Class A 30-230 MHz = 40 dBuV/m @10 m");
+            check(approx(seg[1].limit_dBuVm, 47.0, 0) &&
+                  approx(seg[1].f2_MHz, 1000.0, 0),
+                  "emc: CISPR 32 Class A 230-1000 MHz = 47 dBuV/m");
+        }
+        n = radiatedLimits(Standard::Cispr32, EmClass::B, seg,
+                           kMaxLimitSegments);
+        check(n == 2 && approx(seg[0].limit_dBuVm, 30.0, 0) &&
+              approx(seg[1].limit_dBuVm, 37.0, 0),
+              "emc: CISPR 32 Class B = 30 / 37 dBuV/m @10 m");
+
+        // FCC 47 CFR §15.109: μV/m 規定 → dBμV/m (100 μV/m = 40 dBμV/m)
+        n = radiatedLimits(Standard::Fcc15, EmClass::B, seg, kMaxLimitSegments);
+        check(n == 4, "emc: FCC Part 15 Class B has four segments");
+        if (n == 4) {
+            check(approx(seg[0].limit_dBuVm, 40.0, 1e-9) &&
+                  approx(seg[0].refDist_m, 3.0, 0),
+                  "emc: FCC Class B 30-88 MHz = 100 uV/m (40 dBuV/m) @3 m");
+            check(approx(seg[1].limit_dBuVm, 43.5218, 1e-3) &&
+                  approx(seg[2].limit_dBuVm, 46.0206, 1e-3) &&
+                  approx(seg[3].limit_dBuVm, 53.9794, 1e-3),
+                  "emc: FCC Class B 150/200/500 uV/m in dBuV/m");
+        }
+        n = radiatedLimits(Standard::Fcc15, EmClass::A, seg, kMaxLimitSegments);
+        check(n == 4 && approx(seg[0].limit_dBuVm, 39.0849, 1e-3) &&
+              approx(seg[0].refDist_m, 10.0, 0),
+              "emc: FCC Class A 30-88 MHz = 90 uV/m @10 m");
+
+        // 収載していない規格は 0 件 (推定値を作らない)
+        check(radiatedLimits(Standard::None, EmClass::A, seg,
+                             kMaxLimitSegments) == 0,
+              "emc: unlisted standard yields no limits");
+    }
+
+    // 2) 逆距離則による距離換算と区間検索
+    {
+        LimitSegment seg[kMaxLimitSegments];
+        const int n = radiatedLimits(Standard::Cispr32, EmClass::B, seg,
+                                     kMaxLimitSegments);
+        // 30 dBμV/m @10 m → 3 m では +20log10(10/3) = +10.4576 dB
+        check(approx(limitAtDistance(seg[0], 3.0), 40.4576, 1e-3),
+              "emc: inverse-distance extrapolation 10 m -> 3 m");
+        check(approx(limitAtDistance(seg[0], 10.0), 30.0, 1e-12),
+              "emc: same distance leaves the limit unchanged");
+        check(approx(limitAtDistance(seg[0], 0.0), 30.0, 1e-12),
+              "emc: invalid distance falls back to the reference value");
+        check(limitSegmentIndex(seg, n, 30.0) == 0 &&
+              limitSegmentIndex(seg, n, 230.0) == 0 &&
+              limitSegmentIndex(seg, n, 230.1) == 1 &&
+              limitSegmentIndex(seg, n, 1500.0) == -1,
+              "emc: limit segment lookup honours the band edges");
+    }
+
+    // 3) シールド遮蔽効果 SE = A + R + B (Schelkunoff / Ott)
+    {
+        // 銅 1 mm @500 MHz: δ = 1/√(πfμσ) = 2.955 μm
+        const ShieldSE se = shieldEffectiveness(5.0e8, 1.0e-3, 1.0, 1.0);
+        check(se.valid, "emc: shield SE is valid for a positive thickness");
+        check(approx(se.skinDepth_m * 1e6, 2.9554, 1e-3),
+              "emc: copper skin depth at 500 MHz = 2.955 um");
+        check(approx(se.absorption_dB, 8.686 * 1.0e-3 / se.skinDepth_m, 1e-6),
+              "emc: absorption loss A = 8.686 t/delta");
+        // R = 168 + 10log10(sigma_r/(mu_r f)) = 168 - 86.9897
+        check(approx(se.reflection_dB, 81.0103, 1e-3),
+              "emc: plane-wave reflection loss of copper at 500 MHz");
+        check(approx(se.multiRefl_dB, 0.0, 1e-6),
+              "emc: multiple-reflection term vanishes for a thick shield");
+        check(approx(se.total_dB,
+                     se.absorption_dB + se.reflection_dB + se.multiRefl_dB, 1e-9),
+              "emc: SE is the sum A + R + B");
+        // 鋼は導電率が低く透磁率が高い → 吸収損は増え反射損は減る
+        const ShieldSE st = shieldEffectiveness(5.0e8, 1.0e-3, 0.10, 1000.0);
+        check(st.absorption_dB > se.absorption_dB &&
+              st.reflection_dB < se.reflection_dB,
+              "emc: steel absorbs more and reflects less than copper");
+        // 無効入力では計算しない (0 を返し valid=false)
+        const ShieldSE bad = shieldEffectiveness(5.0e8, 0.0, 1.0, 1.0);
+        check(!bad.valid && bad.total_dB == 0.0,
+              "emc: zero thickness gives no shielding effectiveness");
+        // 材料表 (Ott Table 6-1)
+        check(approx(shieldMaterial(0).sigmaRel, 1.0, 0) &&
+              approx(shieldMaterial(1).sigmaRel, 0.61, 0) &&
+              approx(shieldMaterial(2).muRel, 1000.0, 0),
+              "emc: shield material constants (Cu / Al / steel)");
+    }
+
+    // 4) 開口 (スリット) の遮蔽効果 SE = 20log10(lambda/2L) - 10log10(n)
+    {
+        // 500 MHz: λ = 0.59958 m、L = 50 mm → 20log10(5.9958) = 15.556 dB
+        check(approx(apertureSE_dB(5.0e8, 0.050, 1), 15.5561, 1e-3),
+              "emc: aperture SE of a 50 mm slot at 500 MHz");
+        check(approx(apertureSE_dB(5.0e8, 0.050, 4),
+                     15.5561 - 6.0206, 1e-3),
+              "emc: four apertures lose 10log10(4) dB");
+        check(apertureSE_dB(5.0e8, 0.40, 1) == 0.0,
+              "emc: an aperture at or above lambda/2 gives no shielding");
+        check(apertureSE_dB(5.0e8, 0.0, 1) == 0.0,
+              "emc: invalid aperture input yields 0");
+        // 幅を半分にすると 20log10(2) = 6.02 dB 改善
+        check(approx(apertureShrinkGain_dB(0.5), 6.0206, 1e-3),
+              "emc: halving the slot width gains 6 dB");
+        check(apertureShrinkGain_dB(1.0) == 0.0 &&
+              apertureShrinkGain_dB(0.0) == 0.0,
+              "emc: no gain when the slot is not shrunk");
+    }
+
+    // 5) 挿入損失 / ESD 電流 / 電力密度
+    {
+        // Z = 300 Ω を 150 Ω 回路へ直列挿入 → 20log10(3) = 9.542 dB
+        check(approx(insertionLoss_dB(300.0, 150.0), 9.5424, 1e-3),
+              "emc: insertion loss of a 300 ohm series element in 150 ohm");
+        check(insertionLoss_dB(300.0, 0.0) == 0.0,
+              "emc: insertion loss needs a positive circuit impedance");
+        // 1 μH の理想インダクタ @500 MHz = 3141.6 Ω
+        check(approx(inductiveReactance(5.0e8, 1.0e-6), 3141.5927, 1e-3),
+              "emc: inductive reactance 2*pi*f*L");
+        // IEC 61000-4-2 Table 2: レベル 4 (8 kV) = 30 / 16 / 8 A
+        const EsdContactCurrent c = esdContactCurrent(8.0);
+        check(approx(c.firstPeak_A, 30.0, 1e-9) &&
+              approx(c.at30ns_A, 16.0, 1e-9) &&
+              approx(c.at60ns_A, 8.0, 1e-9),
+              "emc: IEC 61000-4-2 contact discharge currents at 8 kV");
+        check(approx(esdContactCurrent(2.0).firstPeak_A, 7.5, 1e-9),
+              "emc: IEC 61000-4-2 level 1 (2 kV) first peak = 7.5 A");
+        // S = E^2/Z0 (10 V/m → 0.26544 W/m^2)、80% AM の尖頭は 1.8 倍
+        check(approx(powerDensity_Wm2(10.0), 0.2654419, 1e-6),
+              "emc: plane-wave power density S = E^2/Z0");
+        check(approx(amModulatedPeakField(10.0), 18.0, 1e-9),
+              "emc: 80% AM peak envelope = 1.8 x test level");
+    }
+}
+
+// ── 集中定数 RLC の |Z(f)| (em/LumpedRlc) ───────────────────────────────────
+static void testLumpedRlc()
+{
+    using namespace ofd::em;
+    g_file = "lumped-rlc";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    RlcModel m;
+    m.r_ohm = 0.01;
+    m.l_H = 50e-9;
+    m.c_F = 200e-12;
+
+    // 共振周波数 f0 = 1/(2*pi*sqrt(LC)) = 50.329 MHz
+    const double f0 = rlcResonanceHz(m.l_H, m.c_F);
+    check(approx(f0 * 1e-6, 50.3292, 1e-3), "rlc: f0 = 1/(2 pi sqrt(LC))");
+    check(rlcResonanceHz(0.0, 200e-12) == 0.0 &&
+          rlcResonanceHz(50e-9, 0.0) == 0.0,
+          "rlc: no resonance without both L and C");
+
+    // 直列: 1 MHz では容量性 1/(wC) = 795.77 ohm が支配的
+    {
+        const RlcImpedance z = rlcImpedance(m, 1.0e6);
+        check(z.valid, "rlc: series impedance is valid at 1 MHz");
+        check(approx(z.xL_ohm, 0.314159, 1e-6) &&
+              approx(z.xC_ohm, 795.7747, 1e-3),
+              "rlc: reactances wL and 1/wC at 1 MHz");
+        check(approx(z.magnitude_ohm, 795.4606, 1e-3),
+              "rlc: |Z| = sqrt(R^2 + (wL - 1/wC)^2)");
+    }
+    // 直列: 共振で |Z| = R (最小)
+    {
+        const RlcImpedance z = rlcImpedance(m, f0);
+        check(approx(z.magnitude_ohm, m.r_ohm, 1e-9),
+              "rlc: series |Z| falls to R at resonance");
+        check(rlcImpedance(m, f0 * 2.0).magnitude_ohm > m.r_ohm,
+              "rlc: series |Z| rises away from resonance");
+    }
+    // 並列: 共振で |Z| = R (最大)
+    {
+        RlcModel p = m;
+        p.topology = RlcTopology::Parallel;
+        const RlcImpedance z = rlcImpedance(p, f0);
+        check(approx(z.magnitude_ohm, p.r_ohm, 1e-9),
+              "rlc: parallel |Z| peaks at R at resonance");
+        check(rlcImpedance(p, f0 * 2.0).magnitude_ohm < p.r_ohm,
+              "rlc: parallel |Z| falls away from resonance");
+    }
+    // 素子の不在: 直列は短絡 (0 ohm)、並列は開放 (アドミタンス 0)
+    {
+        RlcModel s;
+        s.r_ohm = 3.0;
+        s.l_H = 50e-9;                       // C 無し
+        const RlcImpedance z = rlcImpedance(s, 1.0e8);
+        check(z.xC_ohm == 0.0 &&
+              approx(z.magnitude_ohm,
+                     std::sqrt(9.0 + z.xL_ohm * z.xL_ohm), 1e-9),
+              "rlc: a missing series capacitor is a short");
+        RlcModel p;
+        p.r_ohm = 3.0;
+        p.topology = RlcTopology::Parallel;  // R のみ
+        check(approx(rlcImpedance(p, 1.0e8).magnitude_ohm, 3.0, 1e-9),
+              "rlc: a parallel R alone gives |Z| = R");
+        RlcModel none;
+        check(!rlcImpedance(none, 1.0e8).valid,
+              "rlc: an empty model is not valid");
+        check(!rlcImpedance(m, 0.0).valid, "rlc: f <= 0 is not valid");
+    }
+}
+
+// ── 回路ポート定義 (.ofdx "circuit.ports") ──────────────────────────────────
+static void testCircuitPorts()
+{
+    g_file = "circuit-ports";
+
+    // 1) 既定は 3 行 — .ofd も .ofdx も従来の出力のまま (追加キーを書かない)
+    {
+        Project p;
+        check(p.circuitPorts().size() == 3, "cirport: default has three ports");
+        check(p.circuitPorts()[0].name == "VIN" &&
+              p.circuitPorts()[0].kind == CircuitPortRow::Lumped &&
+              p.circuitPorts()[2].kind == CircuitPortRow::Probe,
+              "cirport: default rows are the documented initial values");
+        const QString base = OfdIO::serialize(p);
+        CircuitPortRow extra;
+        extra.name = QStringLiteral("PORT4");
+        p.circuitPorts().push_back(extra);
+        check(OfdIO::serialize(p) == base,
+              "cirport: ports keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_port_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;   // 既定のまま
+            check(OfdxIO::save(def.fileName(), q), "cirport default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "cirport default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("circuit"),
+                  "cirport: no circuit key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<CircuitPortRow> &ports = p1.circuitPorts();
+        ports[0].name = QStringLiteral("VBUS_IN");
+        ports[0].net = QStringLiteral("NET_A");
+        ports[1].enabled = false;
+        ports[2].kind = CircuitPortRow::Probe;
+        CircuitPortRow added;
+        added.name = QStringLiteral("PORT4");
+        added.kind = CircuitPortRow::Probe;
+        added.net = QStringLiteral("NET_D");
+        added.ref = QStringLiteral("AGND");
+        ports.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_port_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "cirport ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "cirport ofdx load");
+            const QVector<CircuitPortRow> &r = p2.circuitPorts();
+            check(r.size() == 4, "cirport: four ports round-trip");
+            if (r.size() == 4) {
+                check(r[0].name == "VBUS_IN" && r[0].net == "NET_A" &&
+                      r[0].enabled && r[0].ref == "GND",
+                      "cirport: first port fields round-trip");
+                check(!r[1].enabled, "cirport: disabled flag round-trips");
+                check(r[3].name == "PORT4" &&
+                      r[3].kind == CircuitPortRow::Probe &&
+                      r[3].ref == "AGND",
+                      "cirport: appended port round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "cirport ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("circuit").toObject()
+                      .value("ports").toArray().size() == 4,
+                  "cirport: circuit.ports json array length");
+            check(root.contains("optical") && root.contains("acoustic"),
+                  "cirport: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (circuit キー無し): 既定 3 行のまま (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_port_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"em\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "cirport legacy ofdx load");
+            check(p.circuitPorts().size() == 3 &&
+                  p.circuitPorts()[0].name == "VIN",
+                  "cirport: legacy file keeps the default ports");
+        }
+        Project p;
+        p.circuitPorts().clear();
+        p.clear();
+        check(p.circuitPorts().size() == 3,
+              "cirport: clear() restores the default ports");
+    }
+}
+
+// ── フォトニック回路ネットリスト (.ofdx "schematic.netlist") ────────────────
+static void testPhotonicNetlist()
+{
+    g_file = "photonic-netlist";
+
+    // 1) 既定は 5 行 — 追加キーを書かない (旧 .ofdx とバイト一致)
+    {
+        Project p;
+        check(p.photonicNetlist().size() == 5,
+              "phnet: default netlist has five connections");
+        check(p.photonicNetlist()[0].from == "LASER1.out" &&
+              p.photonicNetlist()[0].to == "MZI1.in1",
+              "phnet: default rows are the documented initial values");
+        const QString base = OfdIO::serialize(p);
+        p.photonicNetlist().push_back(PhotonicNetRow{});
+        check(OfdIO::serialize(p) == base,
+              "phnet: netlist keeps .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_net_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;
+            check(OfdxIO::save(def.fileName(), q), "phnet default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "phnet default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("schematic"),
+                  "phnet: no schematic key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<PhotonicNetRow> &net = p1.photonicNetlist();
+        net.remove(4);
+        net[0].to = QStringLiteral("MMI1.in");
+        net[1].enabled = false;
+        PhotonicNetRow added;
+        added.from = QStringLiteral("PD1.out");
+        added.to = QStringLiteral("TIA1.in");
+        added.wavelength = QStringLiteral("DC");
+        net.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_net_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "phnet ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "phnet ofdx load");
+            const QVector<PhotonicNetRow> &r = p2.photonicNetlist();
+            check(r.size() == 5, "phnet: five connections round-trip");
+            if (r.size() == 5) {
+                check(r[0].from == "LASER1.out" && r[0].to == "MMI1.in" &&
+                      r[0].wavelength == "1530~1570nm",
+                      "phnet: first connection round-trips");
+                check(!r[1].enabled, "phnet: disabled flag round-trips");
+                check(r[4].from == "PD1.out" && r[4].to == "TIA1.in" &&
+                      r[4].wavelength == "DC",
+                      "phnet: appended connection round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "phnet ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("schematic").toObject()
+                      .value("netlist").toArray().size() == 5,
+                  "phnet: schematic.netlist json array length");
+        }
+    }
+
+    // 3) 旧 .ofdx (schematic キー無し): 既定 5 行のまま (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_net_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optics\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "phnet legacy ofdx load");
+            check(p.photonicNetlist().size() == 5 &&
+                  p.photonicNetlist()[2].to == "RING1.in",
+                  "phnet: legacy file keeps the default netlist");
+        }
+        Project p;
+        p.photonicNetlist().clear();
+        p.clear();
+        check(p.photonicNetlist().size() == 5,
+              "phnet: clear() restores the default netlist");
+    }
+}
+
+// ── モニター定義 (.ofdx "monitors") ─────────────────────────────────────────
+static void testMonitorList()
+{
+    g_file = "monitors";
+
+    // 1) 既定はドメイン別の初期行 — .ofd も .ofdx も従来の出力のまま
+    {
+        Project p;
+        check(p.monitors().size() == 4, "mon: default EM list has four rows");
+        check(p.monitors()[0].type == "point" &&
+              p.monitors()[0].name == "E_probe" &&
+              !p.monitors()[3].enabled,
+              "mon: default rows are the documented initial values");
+        check(defaultMonitors(Domain::Optical).size() == 5 &&
+              defaultMonitors(Domain::Acoustic).size() == 4,
+              "mon: per-domain defaults have the documented row counts");
+        check(isDefaultMonitorSet(p.monitors()),
+              "mon: an untouched list is recognised as a default set");
+        const QString base = OfdIO::serialize(p);
+        MonitorRow extra;
+        extra.type = QStringLiteral("flux");
+        extra.name = QStringLiteral("P_out");
+        p.monitors().push_back(extra);
+        check(!isDefaultMonitorSet(p.monitors()),
+              "mon: an edited list is no longer a default set");
+        check(OfdIO::serialize(p) == base,
+              "mon: monitors keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_mon_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;   // 既定のまま
+            check(OfdxIO::save(def.fileName(), q), "mon default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("monitors"),
+                  "mon: no monitors key while the list is unedited");
+        }
+        // ドメインを変えても「そのドメインの既定」ならキーを書かない
+        QTemporaryFile defOpt;
+        defOpt.setFileTemplate(QDir::tempPath() + "/ofdx_mon_opt_XXXXXX.ofdx");
+        if (defOpt.open()) {
+            Project q;
+            q.setActiveDomain(Domain::Optical);
+            q.monitors() = defaultMonitors(Domain::Optical);
+            check(OfdxIO::save(defOpt.fileName(), q), "mon optical ofdx save");
+            QFile jf(defOpt.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon optical ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("monitors"),
+                  "mon: no monitors key for the optical default list");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<MonitorRow> &mons = p1.monitors();
+        mons[0].name = QStringLiteral("probe_A");
+        mons[0].region = QStringLiteral("(1, 2, 3)");
+        mons[1].enabled = false;
+        MonitorRow added;
+        added.type = QStringLiteral("spara");
+        added.name = QStringLiteral("S21");
+        added.region = QStringLiteral("port1→port2");
+        added.band = QStringLiteral("2~3 GHz");
+        mons.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_mon_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "mon ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "mon ofdx load");
+            const QVector<MonitorRow> &r = p2.monitors();
+            check(r.size() == 5, "mon: five monitors round-trip");
+            if (r.size() == 5) {
+                check(r[0].name == "probe_A" && r[0].region == "(1, 2, 3)" &&
+                      r[0].type == "point" && r[0].enabled,
+                      "mon: first monitor fields round-trip");
+                check(!r[1].enabled, "mon: disabled flag round-trips");
+                check(r[4].type == "spara" && r[4].name == "S21" &&
+                      r[4].band == "2~3 GHz",
+                      "mon: appended monitor round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "mon ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("monitors").toArray().size() == 5,
+                  "mon: monitors json array length");
+            check(root.contains("optical") && root.contains("acoustic"),
+                  "mon: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (monitors キー無し): 読み込んだドメインの既定行 (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_mon_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "mon legacy ofdx load");
+            check(p.monitors() == defaultMonitors(p.activeDomain()),
+                  "mon: legacy file falls back to the domain default list");
+            check(p.monitors().size() >= 4 && p.monitors()[0].name == "T_drop",
+                  "mon: legacy optical file gets the optical defaults");
+        }
+    }
+
+    // 4) サイドカーの無い .ofd を開いたら前のプロジェクトの一覧を持ち越さない
+    {
+        Project p;
+        p.monitors()[0].name = QStringLiteral("carried_over");
+        MonitorRow extra;
+        extra.type = QStringLiteral("flux");
+        p.monitors().push_back(extra);
+        p.analysisGroups()[0].name = QStringLiteral("carried_over");
+        QString err;
+        const QString text = OfdIO::serialize(Project());   // 素の .ofd
+        check(OfdIO::parse(text, p, &err), "mon: plain .ofd parse");
+        check(p.monitors() == defaultMonitors(p.activeDomain()),
+              "mon: a sidecar-less .ofd resets the list to the domain default");
+        check(p.analysisGroups() == defaultAnalysisGroups(p.activeDomain()),
+              "aggrp: a sidecar-less .ofd resets the groups to the default");
+    }
+}
+
+// ── 解析グループ (.ofdx "analysis_groups") ──────────────────────────────────
+static void testAnalysisGroups()
+{
+    g_file = "analysis-groups";
+
+    // 1) 既定はドメイン別の初期行 — 出力は従来のまま
+    {
+        Project p;
+        check(p.analysisGroups().size() == 4,
+              "aggrp: default EM list has four groups");
+        check(p.analysisGroups()[0].name == "Antenna patterns" &&
+              p.analysisGroups()[0].enabled &&
+              !p.analysisGroups()[2].enabled,
+              "aggrp: default rows are the documented initial values");
+        check(defaultAnalysisGroups(Domain::Optical).size() == 6 &&
+              defaultAnalysisGroups(Domain::Underwater).size() == 3,
+              "aggrp: per-domain defaults have the documented row counts");
+        const QString base = OfdIO::serialize(p);
+        AnalysisGroupRow extra;
+        extra.name = QStringLiteral("my_analysis");
+        p.analysisGroups().push_back(extra);
+        check(OfdIO::serialize(p) == base,
+              "aggrp: groups keep .ofd output byte-identical");
+
+        QTemporaryFile def;
+        def.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_def_XXXXXX.ofdx");
+        if (def.open()) {
+            Project q;
+            check(OfdxIO::save(def.fileName(), q), "aggrp default ofdx save");
+            QFile jf(def.fileName());
+            check(jf.open(QIODevice::ReadOnly), "aggrp default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("analysis_groups"),
+                  "aggrp: no analysis_groups key while the table is unedited");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        QVector<AnalysisGroupRow> &grps = p1.analysisGroups();
+        grps[0].name = QStringLiteral("patterns_v2");
+        grps[0].output = QStringLiteral("gain, efficiency");
+        grps[1].enabled = false;
+        AnalysisGroupRow added;
+        added.enabled = true;
+        added.name = QStringLiteral("my_analysis");
+        added.monitors = QStringLiteral("E_probe (point), far_field (ntff)");
+        added.output = QStringLiteral("—");
+        grps.push_back(added);
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "aggrp ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "aggrp ofdx load");
+            const QVector<AnalysisGroupRow> &r = p2.analysisGroups();
+            check(r.size() == 5, "aggrp: five groups round-trip");
+            if (r.size() == 5) {
+                check(r[0].name == "patterns_v2" &&
+                      r[0].output == "gain, efficiency" && r[0].enabled,
+                      "aggrp: first group fields round-trip");
+                check(!r[1].enabled, "aggrp: disabled flag round-trips");
+                check(r[4].name == "my_analysis" &&
+                      r[4].monitors == "E_probe (point), far_field (ntff)",
+                      "aggrp: appended group round-trips");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "aggrp ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(root.value("analysis_groups").toArray().size() == 5,
+                  "aggrp: analysis_groups json array length");
+        }
+    }
+
+    // 3) 旧 .ofdx (analysis_groups キー無し): ドメインの既定行 (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "aggrp legacy ofdx load");
+            check(p.analysisGroups() == defaultAnalysisGroups(p.activeDomain()),
+                  "aggrp: legacy file falls back to the domain default groups");
+            check(p.analysisGroups().size() == 4 &&
+                  p.analysisGroups()[0].name == "RT60 calculator",
+                  "aggrp: legacy acoustic file gets the acoustic defaults");
+        }
+    }
+}
+
+// ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────
+static void testRefineRegions()
+{
+    g_file = "refine-regions";
+
+    auto makeRegion = [](const char *name, double lo, double hi, double ratio) {
+        RefineRegion r;
+        r.name = QString::fromUtf8(name);
+        for (int a = 0; a < 3; ++a) { r.min_m[a] = lo; r.max_m[a] = hi; }
+        r.ratio = ratio;
+        return r;
+    };
+
+    // 1) 既定は空 — .ofd も .ofdx も従来の出力のまま (追加キーを書かない)
+    {
+        Project p;
+        check(p.refineRegions().isEmpty(), "refregion: default list is empty");
+        const QString base = OfdIO::serialize(p);
+        p.refineRegions().push_back(makeRegion("patch", -0.005, 0.005, 3.0));
+        check(OfdIO::serialize(p) == base,
+              "refregion: regions keep .ofd output byte-identical");
+
+        QTemporaryFile empty;
+        empty.setFileTemplate(QDir::tempPath() + "/ofdx_reg_empty_XXXXXX.ofdx");
+        if (empty.open()) {
+            Project q;   // 既定 (領域なし)
+            check(OfdxIO::save(empty.fileName(), q), "refregion empty ofdx save");
+            QFile jf(empty.fileName());
+            check(jf.open(QIODevice::ReadOnly), "refregion empty ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("geometry"),
+                  "refregion: no geometry key when no region is defined");
+        }
+    }
+
+    // 2) .ofdx ラウンドトリップ (a)
+    {
+        Project p1;
+        RefineRegion a = makeRegion("patch_edge", -0.005, 0.005, 3.0);
+        a.max_m[2] = 0.001;
+        RefineRegion b = makeRegion("far_region", -0.03, 0.03, 0.5);
+        b.enabled = false;
+        p1.refineRegions() = { a, b };
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_reg_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "refregion ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "refregion ofdx load");
+            const QVector<RefineRegion> &r = p2.refineRegions();
+            check(r.size() == 2, "refregion: two regions round-trip");
+            if (r.size() == 2) {
+                check(r[0].enabled && r[0].name == "patch_edge" &&
+                      nearlyEq(r[0].min_m[0], -0.005) &&
+                      nearlyEq(r[0].max_m[0], 0.005) &&
+                      nearlyEq(r[0].max_m[2], 0.001) &&
+                      nearlyEq(r[0].ratio, 3.0),
+                      "refregion: first region fields round-trip");
+                check(!r[1].enabled && r[1].name == "far_region" &&
+                      nearlyEq(r[1].min_m[1], -0.03) &&
+                      nearlyEq(r[1].ratio, 0.5),
+                      "refregion: second region fields round-trip");
+            }
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "refregion ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject geo = root.value("geometry").toObject();
+            check(geo.contains("refine_regions"),
+                  "refregion: geometry.refine_regions key written");
+            check(geo.value("refine_regions").toArray().size() == 2,
+                  "refregion: json array length");
+            // 既存セクションは従来どおり残っている (追加のみ)
+            check(root.contains("optical") && root.contains("acoustic") &&
+                  root.contains("underwater") && root.contains("tidy3d"),
+                  "refregion: existing ofdx sections untouched");
+        }
+    }
+
+    // 3) 旧 .ofdx (geometry キー無し): 既定値 = 領域なし (b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_reg_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"em\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            p.refineRegions().push_back(makeRegion("stale", -1, 1, 2));
+            check(OfdxIO::load(old.fileName(), p), "refregion legacy ofdx load");
+            check(p.refineRegions().size() == 1,
+                  "refregion: legacy file leaves the list untouched (no key)");
+        }
+        // clear() したプロジェクトでは空に戻る
+        Project p;
+        p.refineRegions().push_back(makeRegion("stale", -1, 1, 2));
+        p.clear();
+        check(p.refineRegions().isEmpty(), "refregion: clear() empties the list");
+    }
+}
+
+// ── CIE 表色系の測色計算 (optics/Colorimetry) ───────────────────────────────
+// 既知の基準値と突き合わせる:
+//   - ȳ(555 nm) ≈ 1 (V(λ) の定義)
+//   - 等エネルギー白 E の色度 (1/3, 1/3)
+//   - 黒体 2856 K = 標準イルミナント A (x=0.4476, y=0.4074)
+//   - 黒体の CCT は自分自身に戻り Duv = 0
+//   - 単色 555 nm の発光効率 ≈ 683 lm/W、CCT は定義されない
+static void testColorimetry()
+{
+    g_file = "colorimetry";
+    namespace cm = ofd::colorimetry;
+
+    // 1) 等色関数: ȳ のピークは 555 nm 付近で値 ≈ 1
+    check(std::fabs(cm::cieYbar(555.0) - 1.0) < 0.02,
+          "colorimetry: ybar(555) ~ 1");
+    check(cm::cieYbar(555.0) > cm::cieYbar(500.0) &&
+          cm::cieYbar(555.0) > cm::cieYbar(650.0),
+          "colorimetry: ybar peaks near 555 nm");
+    check(cm::cieYbar(300.0) < 1e-3 && cm::cieYbar(900.0) < 1e-3,
+          "colorimetry: ybar vanishes outside the visible range");
+
+    // 2) 等エネルギー白 E → x = y = 1/3
+    {
+        const cm::Chromaticity c =
+            cm::chromaticity(cm::integrate([](double) { return 1.0; }));
+        check(c.valid, "colorimetry: equal-energy white is valid");
+        check(std::fabs(c.x - 1.0 / 3.0) < 0.01 &&
+              std::fabs(c.y - 1.0 / 3.0) < 0.01,
+              "colorimetry: equal-energy white sits at (1/3, 1/3)");
+        // u' = u1960, v' = 1.5 v1960 (CIE 1976 の定義)
+        check(std::fabs(c.up - c.u1960) < 1e-12 &&
+              std::fabs(c.vp - 1.5 * c.v1960) < 1e-12,
+              "colorimetry: u'v' follows the 1960 UCS by definition");
+    }
+
+    // 3) 黒体 2856 K = 標準イルミナント A の色度
+    {
+        const cm::Chromaticity a = cm::chromaticity(
+            cm::integrate([](double l) { return cm::planckSpectrum(l, 2856.0); }));
+        check(std::fabs(a.x - 0.4476) < 0.005 && std::fabs(a.y - 0.4074) < 0.005,
+              "colorimetry: 2856 K blackbody matches illuminant A");
+    }
+
+    // 4) 黒体の CCT は温度そのものに戻り、Duv ≈ 0
+    for (double T : { 2700.0, 5000.0, 6504.0 }) {
+        const cm::Chromaticity c = cm::chromaticity(
+            cm::integrate([T](double l) { return cm::planckSpectrum(l, T); }));
+        const cm::CctResult k = cm::correlatedColorTemperature(c);
+        check(k.valid, "colorimetry: blackbody has a defined CCT");
+        check(std::fabs(k.cct_K - T) < 0.01 * T,
+              "colorimetry: CCT of a blackbody returns its temperature");
+        check(std::fabs(k.duv) < 1e-3, "colorimetry: blackbody Duv ~ 0");
+    }
+
+    // 5) 単色 555 nm: K ≈ 683 lm/W、黒体軌跡から遠いので CCT は未定義
+    {
+        const std::vector<cm::GaussLobe> mono = { { 555.0, 1.0, 1.0 } };
+        auto spd = [&mono](double l) { return cm::lobeSpectrum(mono, l); };
+        check(std::fabs(cm::luminousEfficacyOfRadiation(spd) - 683.0) < 10.0,
+              "colorimetry: 555 nm line has K ~ 683 lm/W");
+        check(std::fabs(cm::peakWavelength(spd) - 555.0) < 1.0,
+              "colorimetry: peak wavelength of a 555 nm line");
+        const cm::CctResult k = cm::correlatedColorTemperature(
+            cm::chromaticity(cm::integrate(spd)));
+        check(!k.valid, "colorimetry: monochromatic light has no defined CCT");
+    }
+
+    // 6) 光源モデル (IlluminationOpts) の既定値は黒体軌跡上の白色
+    {
+        IlluminationOpts o;                       // 既定 = 白色 LED
+        const optics::SourceColor c = optics::evaluateSource(o);
+        check(c.valid, "colorimetry: default white LED evaluates");
+        check(c.cct.valid && std::fabs(c.cct.cct_K - o.cctTarget_K) <= o.cctTol_K,
+              "colorimetry: default white LED meets its CCT target");
+        check(std::fabs(c.cct.duv) <= o.duvTol,
+              "colorimetry: default white LED sits on the Planckian locus");
+        check(c.efficacy_lm_W > 0.0 && c.efficacy_lm_W < 683.0,
+              "colorimetry: efficacy of radiation is within (0, 683]");
+
+        IlluminationOpts rgb = o;  rgb.spectrum = 1;
+        const optics::SourceColor r = optics::evaluateSource(rgb);
+        check(r.cct.valid && std::fabs(r.cct.cct_K - 5000.0) < 150.0,
+              "colorimetry: default RGB mix lands on the 5000 K locus");
+
+        IlluminationOpts bb = o;  bb.spectrum = 2;  bb.blackbody_K = 3000.0;
+        const optics::SourceColor b = optics::evaluateSource(bb);
+        check(b.cct.valid && std::fabs(b.cct.cct_K - 3000.0) < 30.0,
+              "colorimetry: blackbody model returns its own temperature");
+
+        IlluminationOpts mono = o;  mono.spectrum = 3;  mono.monoPeak_nm = 470.0;
+        const optics::SourceColor m = optics::evaluateSource(mono);
+        check(m.valid && std::fabs(m.peak_nm - 470.0) < 1.5,
+              "colorimetry: monochromatic model peaks where asked");
+    }
+}
+
+// ── ディスプレイ / AR-VR 光学の解析式 (optics/DisplayMetrics) ───────────────
+static void testDisplayMetrics()
+{
+    g_file = "display-metrics";
+    namespace dm = ofd::displayoptics;
+
+    // 1) 全反射臨界角: n = 1.5 → 41.81°、n <= 1 は 90°
+    check(std::fabs(dm::criticalAngle_deg(1.5) - 41.8103) < 1e-3,
+          "dispmetrics: critical angle of n = 1.5");
+    check(std::fabs(dm::criticalAngle_deg(1.0) - 90.0) < 1e-9,
+          "dispmetrics: critical angle is 90 deg for n <= 1");
+
+    // 2) 導波路 FOV: 手計算 sinθ = n·sinθg − λ/Λ と一致すること
+    {
+        const double n = 1.8, lam = 550.0, per = 385.0, gmax = 80.0;
+        const dm::WaveguideFov f = dm::waveguideFov(per, lam, n, gmax);
+        check(f.valid, "dispmetrics: SRG waveguide has a guided band");
+        const double lo = std::asin(1.0 - lam / per) * 180.0 / M_PI;
+        const double hi = std::asin(n * std::sin(gmax * M_PI / 180.0) - lam / per)
+                          * 180.0 / M_PI;
+        check(std::fabs(f.fovMin_deg - lo) < 1e-6 &&
+              std::fabs(f.fovMax_deg - hi) < 1e-6,
+              "dispmetrics: FOV limits follow the grating equation");
+        check(std::fabs(f.fov_deg - (hi - lo)) < 1e-9,
+              "dispmetrics: FOV span is the difference of the limits");
+        // サイン空間での帯域幅 sinθmax − sinθmin = n·sinθg,max − 1 は
+        // 周期に依らない (格子ベクトル λ/Λ は帯域を平行移動するだけ)
+        const double sinSpan = n * std::sin(gmax * M_PI / 180.0) - 1.0;
+        for (double period : { 385.0, 500.0, 600.0 }) {
+            const dm::WaveguideFov g = dm::waveguideFov(period, lam, n, gmax);
+            check(g.valid, "dispmetrics: guided band exists for this period");
+            const double span = std::sin(g.fovMax_deg * M_PI / 180.0)
+                              - std::sin(g.fovMin_deg * M_PI / 180.0);
+            check(std::fabs(span - sinSpan) < 1e-9,
+                  "dispmetrics: sine-space band width is period-independent");
+        }
+        // 周期を広げると帯域そのものが大きい角度側へ動く
+        check(dm::waveguideFov(600.0, lam, n, gmax).fovMin_deg > f.fovMin_deg,
+              "dispmetrics: a coarser grating shifts the band to larger angles");
+        // 帯域が存在しない設定は valid=false (推定値を出さない)
+        check(!dm::waveguideFov(200.0, lam, n, gmax).valid,
+              "dispmetrics: no band reported when |sin| > 1");
+        check(!dm::waveguideFov(0.0, lam, n, gmax).valid,
+              "dispmetrics: zero period is rejected");
+    }
+
+    // 3) アイボックス: W = L − 2·ER·tan(FOV/2)、負にならない
+    {
+        const double w = dm::eyeboxWidth_mm(30.0, 18.0, 45.0);
+        const double ref = 30.0 - 2.0 * 18.0 * std::tan(22.5 * M_PI / 180.0);
+        check(std::fabs(w - ref) < 1e-9, "dispmetrics: eyebox formula");
+        check(dm::eyeboxWidth_mm(5.0, 50.0, 60.0) == 0.0,
+              "dispmetrics: eyebox is clamped at zero");
+    }
+
+    // 4) シースルー透過率: n=1 で 1、n=1.8 で 84.9%
+    check(std::fabs(dm::slabTransmittance(1.0) - 1.0) < 1e-12,
+          "dispmetrics: index-matched slab transmits everything");
+    check(std::fabs(dm::slabTransmittance(1.8) - 0.8491) < 1e-3,
+          "dispmetrics: uncoated n = 1.8 slab transmits ~84.9%");
+
+    // 5) 射出円錐 / OLED 取り出し効率の古典近似
+    {
+        const double n = 1.75;
+        const double thc = std::asin(1.0 / n);
+        check(std::fabs(dm::escapeConeFraction(n) - 0.5 * (1.0 - std::cos(thc)))
+                  < 1e-12,
+              "dispmetrics: escape-cone fraction (1-cos)/2");
+        check(std::fabs(dm::oledOutcoupling(n) - 1.0 / (2.0 * n * n)) < 1e-12,
+              "dispmetrics: OLED outcoupling 1/(2n^2)");
+        // 屈折率が上がると取り出し効率は下がる (単調性)
+        check(dm::oledOutcoupling(2.0) < dm::oledOutcoupling(1.5),
+              "dispmetrics: higher index lowers the outcoupling");
+        check(dm::ledExtractionCube(2.45) > dm::ledExtractionTopFace(2.45),
+              "dispmetrics: the 6-face bound exceeds the top-face value");
+    }
+
+    // 6) 側壁再結合: 4Sτ/L のスケーリング (L→∞ で低下なし)
+    {
+        // S = 1e4 cm/s, τ = 10 ns → Sτ = 1 μm, L = 5 μm → η = η0/1.8
+        const double e = dm::sidewallDeratedIqe(0.8, 5.0, 1.0e4, 10.0);
+        check(std::fabs(e - 0.8 / 1.8) < 1e-9,
+              "dispmetrics: sidewall derating matches 1/(1+4S tau/L)");
+        check(dm::sidewallDeratedIqe(0.8, 500.0, 1.0e4, 10.0) >
+              dm::sidewallDeratedIqe(0.8, 5.0, 1.0e4, 10.0),
+              "dispmetrics: bigger chips lose less to the sidewalls");
+        check(std::fabs(dm::sidewallDeratedIqe(0.8, 5.0, 0.0, 10.0) - 0.8) < 1e-12,
+              "dispmetrics: no surface recombination leaves IQE untouched");
+    }
+
+    // 7) 環境光コントラスト: 暗室 (E=0) では暗室 CR に一致、明るいほど低下
+    {
+        const dm::AmbientContrast dark = dm::ambientContrast(500, 5000, 0, 0.045);
+        check(dark.valid && std::fabs(dark.contrast - 5000.0) < 1e-6,
+              "dispmetrics: zero ambient reproduces the darkroom CR");
+        const dm::AmbientContrast lit = dm::ambientContrast(500, 5000, 200, 0.045);
+        const double lamb = 0.045 * 200.0 / M_PI;
+        check(std::fabs(lit.ambientLuminance_cdm2 - lamb) < 1e-9,
+              "dispmetrics: ambient screen luminance R*E/pi");
+        check(std::fabs(lit.contrast - (500.0 + lamb) / (0.1 + lamb)) < 1e-6,
+              "dispmetrics: ambient contrast definition");
+        check(lit.contrast < dark.contrast,
+              "dispmetrics: ambient light lowers the contrast");
+        check(!dm::ambientContrast(0.0, 5000, 200, 0.045).valid,
+              "dispmetrics: invalid luminance is rejected, not guessed");
+    }
+}
+
+// ── 近軸光線追跡 (optics/ParaxialTrace) ─────────────────────────────────────
+static void testParaxialTrace()
+{
+    g_file = "paraxial";
+    namespace px = ofd::paraxial;
+
+    // 1) 薄い両凸レンズ (R = ±50, n = 1.5, 厚み 0):
+    //    レンズメーカーの式 1/f = (n-1)(1/R1 - 1/R2) → f = 50 mm
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 50.0;  s[0].thickness = 0.0;  s[0].nAfter = 1.5;
+        s[1].R = -50.0; s[1].thickness = 50.0; s[1].nAfter = 1.0;
+        const px::SystemData d = px::analyze(s, 50.0, 12.5, 10.0);
+        check(d.valid, "paraxial: thin biconvex solves");
+        check(std::fabs(d.efl - 50.0) < 1e-9, "paraxial: EFL = 50 mm");
+        check(std::fabs(d.bfl - 50.0) < 1e-9,
+              "paraxial: thin lens BFL equals EFL");
+        check(std::fabs(d.backPrincipal) < 1e-9,
+              "paraxial: thin lens rear principal plane is at the vertex");
+        check(std::fabs(d.fnumber - 4.0) < 1e-9, "paraxial: F/# = f'/EPD");
+        check(std::fabs(d.imageHeight - 50.0 * std::tan(10.0 * M_PI / 180.0))
+                  < 1e-9,
+              "paraxial: paraxial image height f'*tan(theta)");
+        check(d.hasImagePlane && std::fabs(d.defocus) < 1e-9,
+              "paraxial: image plane at the paraxial focus gives zero defocus");
+    }
+
+    // 2) 単一屈折面 (平凸, R = 50, n = 1.5): f' = n'R/(n'-n) = 150 mm、
+    //    BFL は像側主点が頂点にあるので f' に等しい
+    {
+        std::vector<px::Surface> s(1);
+        s[0].R = 50.0; s[0].thickness = 0.0; s[0].nAfter = 1.5;
+        const px::SystemData d = px::analyze(s, -1.0, 0.0, 0.0);
+        check(d.valid, "paraxial: single surface solves");
+        // 像空間が n=1.5 のときの後側焦点距離は y/u' で測る (BFL) — 幾何長
+        check(std::fabs(d.bfl - 150.0) < 1e-6,
+              "paraxial: single-surface back focal distance n'R/(n'-n)");
+        check(!d.hasImagePlane, "paraxial: no image plane → no defocus");
+    }
+
+    // 3) 平板 (両面平面) はアフォーカル → valid=false (偽の焦点距離を出さない)
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 0.0; s[0].thickness = 5.0; s[0].nAfter = 1.5;
+        s[1].R = 0.0; s[1].thickness = 0.0; s[1].nAfter = 1.0;
+        check(!px::analyze(s, -1.0, 10.0, 0.0).valid,
+              "paraxial: a plane-parallel plate is afocal");
+        check(!px::analyze({}, -1.0, 10.0, 0.0).valid,
+              "paraxial: an empty system is not solvable");
+    }
+
+    // 4) 2 枚の薄レンズ (f1 = f2 = 100, 間隔 d = 50):
+    //    1/f = 1/f1 + 1/f2 − d/(f1 f2) → f = 66.667 mm
+    //    BFL = f(1 − d/f1) = 33.333 mm
+    {
+        auto thin = [](double f, double t) {
+            // 屈折率 1.5 の薄肉レンズ 2 面 (R1 = -R2) で焦点距離 f を作る
+            std::vector<px::Surface> two(2);
+            const double R = 2.0 * 0.5 * f;      // (n-1)*2/R = 1/f → R = 2(n-1)f
+            two[0].R = R;  two[0].thickness = 0.0; two[0].nAfter = 1.5;
+            two[1].R = -R; two[1].thickness = t;   two[1].nAfter = 1.0;
+            return two;
+        };
+        std::vector<px::Surface> s = thin(100.0, 50.0);
+        const std::vector<px::Surface> b = thin(100.0, 0.0);
+        s.insert(s.end(), b.begin(), b.end());
+        const px::SystemData d = px::analyze(s, -1.0, 20.0, 0.0);
+        check(d.valid, "paraxial: two-lens system solves");
+        check(std::fabs(d.efl - 200.0 / 3.0) < 1e-6,
+              "paraxial: combined focal length of two thin lenses");
+        check(std::fabs(d.bfl - 100.0 / 3.0) < 1e-6,
+              "paraxial: back focal length of two thin lenses");
+        // 対称系なので前側焦点距離は後側と一致する
+        check(std::fabs(d.ffl - d.bfl) < 1e-6,
+              "paraxial: symmetric doublet has FFL = BFL");
+        check(std::fabs(d.totalTrack - 50.0) < 1e-9,
+              "paraxial: total track equals the air gap");
+    }
+}
+
+// ── .ofdx "display_optics" / "illumination" (追加キー) ──────────────────────
+static void testDisplayIlluminationSettings()
+{
+    g_file = "display-illumination";
+
+    auto setNonDefaults = [](Project &p) {
+        DisplayOpticsOpts &d = p.displayOptics();
+        d.device = 2;
+        d.wgType = 3;
+        d.subThick_mm = 1.25;
+        d.subIndex = 2.05;
+        d.gratPeriod_nm = 420.0;
+        d.gratDepth_nm = 180.0;
+        d.gratSlant_deg = 45.0;
+        d.threeGratings = false;
+        d.rcwaOptimize = true;
+        d.designLambda_nm = 520.0;
+        d.guideMaxAngle_deg = 75.0;
+        d.outcouplerLen_mm = 24.0;
+        d.eyeRelief_mm = 15.0;
+        d.fovTarget_deg = 55.0;
+        d.eyeboxTarget_mm = 12.0;
+        d.seeThroughTarget_pct = 90.0;
+        d.bottomEmission = true;
+        d.topEmission = false;
+        d.microcavity = false;
+        d.sepIqe = false;
+        d.sepSpp = false;
+        d.sepWaveguide = false;
+        d.outcouplingStruct = 3;
+        d.oledIndex = 1.62;
+        d.oledIqe = 0.75;
+        d.chipSize_um = 3.5;
+        d.sidewallRecomb = false;
+        d.sidewallDbr = false;
+        d.directional = true;
+        d.mlIndex = 2.6;
+        d.mlIqe = 0.65;
+        d.mlSurfVel_cm_s = 5.0e3;
+        d.mlLifetime_ns = 4.5;
+        d.lcdMode = 1;
+        d.lcAnisotropy = false;
+        d.compFilm = false;
+        d.lcdPeakLum_cdm2 = 700.0;
+        d.lcdDarkroomCr = 1500.0;
+        d.lcdAmbient_lx = 350.0;
+        d.lcdReflectance = 0.02;
+
+        IlluminationOpts &i = p.illumination();
+        i.app = 2;
+        i.srcModel = 0;
+        i.rayFile = QStringLiteral("my_source.ray");
+        i.spectrum = 3;
+        i.flux_lm = 2500.0;
+        i.rays = 1.0e7;
+        i.reflector = false;
+        i.tirLens = true;
+        i.diffuser = false;
+        i.lightGuide = true;
+        i.phosphor = false;
+        i.surface = 3;
+        i.bluePeak_nm = 455.0;
+        i.blueFwhm_nm = 25.0;
+        i.phosPeak_nm = 585.0;
+        i.phosFwhm_nm = 120.0;
+        i.phosRatio = 0.8;
+        i.rPeak_nm = 625.0; i.rFwhm_nm = 18.0; i.rRatio = 1.5;
+        i.gPeak_nm = 530.0; i.gFwhm_nm = 30.0; i.gRatio = 1.2;
+        i.bPeak_nm = 465.0; i.bFwhm_nm = 24.0; i.bRatio = 0.9;
+        i.blackbody_K = 2700.0;
+        i.monoPeak_nm = 632.8;
+        i.monoFwhm_nm = 0.5;
+        i.cctTarget_K = 4000.0;
+        i.cctTol_K = 200.0;
+        i.duvTol = 0.004;
+    };
+
+    // 1) これらの設定は .ofd (カーネル入力) を 1 バイトも変えない
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        setNonDefaults(p);
+        check(OfdIO::serialize(p) == base,
+              "dispillum: settings keep .ofd output byte-identical");
+    }
+
+    // 2) 既定値のままなら .ofdx にキー自体を書かない (旧ファイルとバイト一致)
+    {
+        Project p;
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_def_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p), "dispillum default ofdx save");
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "dispillum default ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            check(!root.contains("display_optics"),
+                  "dispillum: defaults write no display_optics key");
+            check(!root.contains("illumination"),
+                  "dispillum: defaults write no illumination key");
+        }
+    }
+
+    // 3) .ofdx ラウンドトリップ (a: 新キーの往復)
+    {
+        Project p1;
+        setNonDefaults(p1);
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "dispillum ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "dispillum ofdx load");
+            const DisplayOpticsOpts &d = p2.displayOptics();
+            check(d.device == 2 && d.wgType == 3,
+                  "dispillum: device / waveguide type round-trip");
+            check(nearlyEq(d.subThick_mm, 1.25) && nearlyEq(d.subIndex, 2.05) &&
+                  nearlyEq(d.gratPeriod_nm, 420.0) &&
+                  nearlyEq(d.gratDepth_nm, 180.0) &&
+                  nearlyEq(d.gratSlant_deg, 45.0),
+                  "dispillum: substrate / grating round-trip");
+            check(!d.threeGratings && d.rcwaOptimize,
+                  "dispillum: waveguide flags round-trip");
+            check(nearlyEq(d.designLambda_nm, 520.0) &&
+                  nearlyEq(d.guideMaxAngle_deg, 75.0) &&
+                  nearlyEq(d.outcouplerLen_mm, 24.0) &&
+                  nearlyEq(d.eyeRelief_mm, 15.0),
+                  "dispillum: pupil-expansion geometry round-trip");
+            check(nearlyEq(d.fovTarget_deg, 55.0) &&
+                  nearlyEq(d.eyeboxTarget_mm, 12.0) &&
+                  nearlyEq(d.seeThroughTarget_pct, 90.0),
+                  "dispillum: design targets round-trip");
+            check(d.bottomEmission && !d.topEmission && !d.microcavity &&
+                  !d.sepIqe && !d.sepSpp && !d.sepWaveguide &&
+                  d.outcouplingStruct == 3 &&
+                  nearlyEq(d.oledIndex, 1.62) && nearlyEq(d.oledIqe, 0.75),
+                  "dispillum: OLED settings round-trip");
+            check(nearlyEq(d.chipSize_um, 3.5) && !d.sidewallRecomb &&
+                  !d.sidewallDbr && d.directional &&
+                  nearlyEq(d.mlIndex, 2.6) && nearlyEq(d.mlIqe, 0.65) &&
+                  nearlyEq(d.mlSurfVel_cm_s, 5.0e3) &&
+                  nearlyEq(d.mlLifetime_ns, 4.5),
+                  "dispillum: microLED settings round-trip");
+            check(d.lcdMode == 1 && !d.lcAnisotropy && !d.compFilm &&
+                  nearlyEq(d.lcdPeakLum_cdm2, 700.0) &&
+                  nearlyEq(d.lcdDarkroomCr, 1500.0) &&
+                  nearlyEq(d.lcdAmbient_lx, 350.0) &&
+                  nearlyEq(d.lcdReflectance, 0.02),
+                  "dispillum: LCD settings round-trip");
+
+            const IlluminationOpts &i = p2.illumination();
+            check(i.app == 2 && i.srcModel == 0 && i.spectrum == 3 &&
+                  i.rayFile == QStringLiteral("my_source.ray"),
+                  "dispillum: illumination source selectors round-trip");
+            check(nearlyEq(i.flux_lm, 2500.0) && nearlyEq(i.rays, 1.0e7),
+                  "dispillum: flux / ray count round-trip");
+            check(!i.reflector && i.tirLens && !i.diffuser && i.lightGuide &&
+                  !i.phosphor && i.surface == 3,
+                  "dispillum: illumination optics round-trip");
+            check(nearlyEq(i.bluePeak_nm, 455.0) && nearlyEq(i.blueFwhm_nm, 25.0) &&
+                  nearlyEq(i.phosPeak_nm, 585.0) &&
+                  nearlyEq(i.phosFwhm_nm, 120.0) && nearlyEq(i.phosRatio, 0.8),
+                  "dispillum: white-LED lobes round-trip");
+            check(nearlyEq(i.rPeak_nm, 625.0) && nearlyEq(i.gFwhm_nm, 30.0) &&
+                  nearlyEq(i.bRatio, 0.9),
+                  "dispillum: RGB lobes round-trip");
+            check(nearlyEq(i.blackbody_K, 2700.0) &&
+                  nearlyEq(i.monoPeak_nm, 632.8) &&
+                  nearlyEq(i.monoFwhm_nm, 0.5),
+                  "dispillum: blackbody / mono parameters round-trip");
+            check(nearlyEq(i.cctTarget_K, 4000.0) && nearlyEq(i.cctTol_K, 200.0) &&
+                  nearlyEq(i.duvTol, 0.004),
+                  "dispillum: colorimetric targets round-trip");
+
+            // JSON 構造 (追加キーの位置)
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "dispillum ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject dj = root.value("display_optics").toObject();
+            check(dj.contains("waveguide") && dj.contains("targets") &&
+                  dj.contains("oled") && dj.contains("microled") &&
+                  dj.contains("lcd"),
+                  "dispillum: display_optics json sections present");
+            const QJsonObject ij = root.value("illumination").toObject();
+            check(ij.contains("optics") && ij.contains("white_led") &&
+                  ij.contains("rgb") && ij.contains("mono") &&
+                  ij.contains("targets"),
+                  "dispillum: illumination json sections present");
+            // 既存の "optical" セクションは無傷
+            check(root.contains("optical"),
+                  "dispillum: existing optical section is untouched");
+        }
+    }
+
+    // 4) 旧 .ofdx (新キー無し): 既定値のまま (旧ファイル互換, b)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 0 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "dispillum legacy ofdx load");
+            const DisplayOpticsOpts &d = p.displayOptics();
+            check(d.device == 0 && d.wgType == 0 && d.subThick_mm == 0.7 &&
+                  d.subIndex == 1.80 && d.gratPeriod_nm == 385.0,
+                  "dispillum: legacy file leaves display_optics defaults");
+            check(d.designLambda_nm == 550.0 && d.guideMaxAngle_deg == 80.0 &&
+                  d.outcouplerLen_mm == 30.0 && d.eyeRelief_mm == 18.0,
+                  "dispillum: legacy file leaves pupil defaults");
+            check(d.oledIndex == 1.75 && d.oledIqe == 0.90 &&
+                  d.mlIndex == 2.45 && d.lcdDarkroomCr == 5000.0,
+                  "dispillum: legacy file leaves device-model defaults");
+            const IlluminationOpts &i = p.illumination();
+            check(i.spectrum == 0 && i.flux_lm == 1200.0 &&
+                  i.bluePeak_nm == 450.0 && i.phosPeak_nm == 570.0 &&
+                  i.cctTarget_K == 5000.0,
+                  "dispillum: legacy file leaves illumination defaults");
+        }
+    }
+
+    // 5) 壊れたファイルの範囲外値はコンボ index の範囲へクランプされる
+    {
+        QTemporaryFile bad;
+        bad.setFileTemplate(QDir::tempPath() + "/ofdx_dispillum_bad_XXXXXX.ofdx");
+        if (bad.open()) {
+            const QByteArray broken =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"display_optics\": { \"device\": 99,"
+                "     \"waveguide\": { \"type\": -4 },"
+                "     \"oled\": { \"structure\": 12 },"
+                "     \"lcd\": { \"mode\": 9 } },"
+                "  \"illumination\": { \"app\": -1, \"source_model\": 7,"
+                "     \"spectrum\": 42, \"optics\": { \"surface\": 9 } } }";
+            bad.write(broken);
+            bad.flush();
+            Project p;
+            check(OfdxIO::load(bad.fileName(), p), "dispillum broken ofdx load");
+            const DisplayOpticsOpts &d = p.displayOptics();
+            check(d.device == 3 && d.wgType == 0 && d.outcouplingStruct == 3 &&
+                  d.lcdMode == 2, "dispillum: broken display indices clamped");
+            const IlluminationOpts &i = p.illumination();
+            check(i.app == 0 && i.srcModel == 2 && i.spectrum == 3 &&
+                  i.surface == 3, "dispillum: broken illumination indices clamped");
+        }
+    }
+
+    // 6) clear() で既定値へ戻る
+    {
+        Project p;
+        setNonDefaults(p);
+        p.clear();
+        check(p.displayOptics().device == 0 && p.displayOptics().subIndex == 1.80,
+              "dispillum: clear() resets display_optics");
+        check(p.illumination().spectrum == 0 && p.illumination().flux_lm == 1200.0,
+              "dispillum: clear() resets illumination");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -3398,6 +7673,7 @@ int main(int argc, char *argv[])
     testOnnActivation();
     testRcwaCore();
     testOpticsMaterials();
+    testThinFilmStack();
     testOpticalModeSettings();
     testBellhop();
     testH5Reader();
@@ -3405,6 +7681,30 @@ int main(int argc, char *argv[])
     testRunGating();
     testAcousticReport();
     testFdeModeSolver();
+    testSoundInsulation();
+    testRoomModes();
+    testEnvironmentalNoise();
+    testFdtdVerification();
+    testToleranceStats();
+    testFocusedField();
+    testPlasmaDispersion();
+    testSarMetrics();
+    testSolverSelection();
+    testRadioPropagation();
+    testDispersionFit();
+    testBendWaveguide();
+    testMeshDiagnostics();
+    testRefineRegions();
+    testEmcStandards();
+    testLumpedRlc();
+    testCircuitPorts();
+    testPhotonicNetlist();
+    testMonitorList();
+    testAnalysisGroups();
+    testColorimetry();
+    testDisplayMetrics();
+    testParaxialTrace();
+    testDisplayIlluminationSettings();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

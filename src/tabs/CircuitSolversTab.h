@@ -1,16 +1,24 @@
 // CircuitSolversTab.h — 回路系電磁解析タブ (circuit-solvers.jsx CircuitSolversTab 相当)。
 // FDTD (主ソルバ) を補完する回路抽出用ソルバ PEEC / FEM 準静的 / FEM 波動 を選び、
 //   モデル/ポート → 抽出設定 → SPICE連成 → 結果 のサブタブで一連の流れを扱う。
-//   結果タブは抽出パラメータ表と |Z| (PDNインピーダンス) の MiniPlot を表示。
-// Static prototype: 表と値はモックのものをそのまま保持 (Project へは永続化しない)。
+//
+//   - ポート定義表は `Project::circuitPorts()` のビュー。編集はモデルへ書き戻し、
+//     .ofdx ("circuit.ports") に保存される。抽出エンジンの起動は未実装。
+//   - 結果ページは **抽出結果ではない**: PEEC/FEM 抽出が未実装なので寄生
+//     パラメータは存在しない。代わりに利用者が入力した集中定数 RLC の
+//     |Z(f)| を解析式 (em/LumpedRlc) で表示する (プロジェクトに .ofd の
+//     load 行があれば、その値でフォームを初期化する)。
 #pragma once
+#include <QFont>
 #include <QScrollArea>
 
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QStackedWidget;
 class QTableWidget;
+class QTableWidgetItem;
 class QTabWidget;
 
 namespace ofd {
@@ -25,18 +33,23 @@ public:
 
 private slots:
     void solverChanged(int index);      // ソルバ切替 → 説明文・抽出ページ・推定時間
+    void refresh();                     // model → widgets (ポート表 / RLC 初期値)
+    void refreshPorts();                // model → ポート表のみ
+    void onPortItemChanged(QTableWidgetItem *item);   // ポート表 → model
+    void updateResults();               // 集中定数モデル → 結果表 + |Z| 曲線
 
 private:
     QWidget *buildModelPage();          // モデル/ポート
     QWidget *buildExtractPage();        // 抽出設定 (+ FDTD連成)
     QWidget *buildSpicePage();          // SPICE連成
-    QWidget *buildResultsPage();        // 結果 (表 + |Z| プロット)
+    QWidget *buildResultsPage();        // 結果 (集中定数モデルの |Z|)
     QWidget *buildPeecPage();
     QWidget *buildFemqPage();
     QWidget *buildFemwPage();
-    void     updateZPlot();             // モックの数式で |Z|(log f) を生成
 
     Project        *m_p;
+    bool            m_updating = false; // refresh 中の再入ガード
+    QFont           m_mono;             // ネット名/基準名の等幅フォント
 
     QComboBox      *m_solver;           // PEEC / FEM 準静的 / FEM 波動
     QLabel         *m_solverDesc;
@@ -46,6 +59,14 @@ private:
     QLabel         *m_estimate;         // 推定計算時間
 
     QTableWidget   *m_portTable;
+
+    // 結果ページ: 集中定数モデルの入力と表示
+    QComboBox      *m_rlcTopology = nullptr;   // 直列 / 並列
+    QLineEdit      *m_rlcR = nullptr;          // R [Ω]
+    QLineEdit      *m_rlcL = nullptr;          // L [nH]
+    QLineEdit      *m_rlcC = nullptr;          // C [pF]
+    QLabel         *m_rlcSource = nullptr;     // 初期値の出所 (load 行 / 既定)
+    QLabel         *m_resonance = nullptr;     // LC 共振 f0
     QTableWidget   *m_resultTable;
     MiniPlot       *m_zPlot;
 };

@@ -9,9 +9,11 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -36,13 +38,10 @@ const bool s_i18n = [] {
     I18n::reg("t3_cost", "見積コスト", "Estimated cost");
     I18n::reg("t3_runtime", "推定実行時間", "Est. runtime");
     I18n::reg("t3_submit", "ジョブ送信", "Submit job");
-    I18n::reg("t3_jobs", "ジョブ一覧", "Jobs");
-    I18n::reg("t3_done", "完了", "Done");
-    I18n::reg("t3_running", "実行中", "Running");
-    I18n::reg("t3_failed", "失敗", "Failed");
     I18n::reg("t3_status", "ジョブ状態", "Job status");
-    I18n::reg("t3_download", "結果ダウンロード", "Download results");
     I18n::reg("t3_pending", "待機中", "Pending");
+    // 完了/実行中/失敗/ダウンロード (mock のジョブ一覧の語彙) は、クラウド API
+    // からジョブ状態を取得できるようになるまで表示しないので登録もしない。
     // t3_export は I18n.cpp 側が「Pythonスクリプト生成…」で先取りしており
     // (reg は既存優先 / I18n.cpp は編集不可)、このタブのボタンだけ mock 表記に
     // 揃えるためタブ固有キーで持つ。
@@ -122,9 +121,28 @@ const bool s_i18n = [] {
               "Generate the script and submit it with `python <name>.py` "
               "(direct submission from the GUI is not supported — the tidy3d CLI "
               "configuration provides the API key).");
-    // ジョブ一覧
-    I18n::reg("t3x_h_name", "名前", "Name");
-    I18n::reg("t3x_h_time", "時間", "Time");
+    // ジョブ一覧 — クラウド側の状態は取得していないので、ここに出せる実データは
+    // 「このマシンで書き出したスクリプト」だけ (偽のジョブ行は出さない)。
+    I18n::reg("t3x_scripts_section", "書き出したジョブスクリプト (ローカル)",
+              "Exported job scripts (local)");
+    I18n::reg("t3x_h_file", "ファイル", "File");
+    I18n::reg("t3x_h_created", "書き出し日時", "Exported at");
+    I18n::reg("t3x_state_local", "未送信 (ローカル生成)",
+              "Not submitted (generated locally)");
+    I18n::reg("t3x_state_missing", "ファイルなし", "File missing");
+    I18n::reg("t3x_jobs_empty",
+              "まだスクリプトを書き出していません — 上の "
+              "「📤 tidy3dへエクスポート (.py)」でここに履歴が残ります。",
+              "No scripts exported yet — use \"📤 Export to tidy3d (.py)\" above "
+              "and the history will appear here.");
+    I18n::reg("t3x_jobs_note",
+              "クラウド上のジョブ状態 (実行中/完了/課金) は取得していません "
+              "(GUI からの送信・状態取得は未実装)。tidy3d 側の状態は web コンソール"
+              "または tidy3d CLI で確認してください。",
+              "Cloud job status (running / done / cost) is not fetched — "
+              "submission and status polling from the GUI are not implemented. "
+              "Check the tidy3d web console or the tidy3d CLI instead.");
+    I18n::reg("t3x_jobs_clear", "履歴を消去", "Clear history");
     // ローカル ↔ クラウド比較
     I18n::reg("t3x_cmp_section", "ローカル ↔ クラウド比較",
               "Local ↔ cloud comparison");
@@ -259,18 +277,10 @@ int resIndexOf(const QString &key)
     return 1;   // 既定 medium
 }
 
-// mock のジョブ一覧 (静的プロトタイプの4行)
-struct JobRow {
-    const char *id; const char *name; const char *stateKey; const char *kind;
-    const char *extra; const char *time; const char *btn;
-};
-const JobRow kJobs[] = {
-    { "fdtd_241015_a", "BPF design v3",   "t3_done",    "ok",  "",     "2m18s", "DL"  },
-    { "fdtd_241015_b", "Ring resonator",  "t3_running", "acc", "64%",  "1m02s", "…"   },
-    { "fdtd_241014_c", "Metasurface 3x3", "t3_done",    "ok",  "",     "8m44s", "DL"  },
-    { "fdtd_241014_d", "PhC cavity",      "t3_failed",  "err", "",     "-",     "log" },
-};
-const int kJobCount = int(sizeof(kJobs) / sizeof(kJobs[0]));
+// 書き出し履歴の QSettings キー。1 件 = "ISO日時\tパス" (タブ区切り)。
+// API キーと同じくプロジェクトファイルではなくアプリ設定に置く。
+const char kHistoryKey[] = "tidy3d/exportHistory";
+const int  kHistoryMax = 20;
 } // namespace
 
 Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
@@ -405,33 +415,25 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     sj->vbox()->addWidget(m_jobStatus);
     v->addWidget(sj);
 
-    // ── ジョブ一覧 (mock の静的プロトタイプ) ────────────────────────────────
-    auto *sl = new SectionBox(I18n::tr("t3_jobs"), body);
-    m_jobs = makeStaticTable(sl, { "ID", I18n::tr("t3x_h_name"),
-                                   I18n::tr("t3x_h_state"),
-                                   I18n::tr("t3x_h_time"), "" }, kJobCount);
-    m_jobs->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int r = 0; r < kJobCount; ++r) {
-        m_jobs->setItem(r, 0, monoItem(QString::fromUtf8(kJobs[r].id)));
-        m_jobs->setItem(r, 1, new QTableWidgetItem(QString::fromUtf8(kJobs[r].name)));
-        m_jobs->setCellWidget(r, 2, badgeCell(I18n::tr(kJobs[r].stateKey),
-                                              kJobs[r].kind,
-                                              QString::fromUtf8(kJobs[r].extra)));
-        m_jobs->setItem(r, 3, monoItem(QString::fromUtf8(kJobs[r].time)));
-        // mock の行ボタンは "DL" / "…" / "log"。DL は結果ダウンロードなので
-        // 正式名称 (t3_download) をヒントに出す。
-        // 行ボタン (DL/…/log) は未配線 → 無効化 (ツールチップは「未実装」)
-        auto *rowBtn = new QPushButton(QString::fromUtf8(kJobs[r].btn), m_jobs);
-        tabhelp::markNotImplemented(rowBtn);
-        if (qstrcmp(kJobs[r].btn, "DL") == 0)
-            rowBtn->setToolTip(I18n::tr("t3_download") + " — "
-                               + rowBtn->toolTip());
-        m_jobs->setCellWidget(r, 4, rowBtn);
-    }
-    m_jobs->resizeRowsToContents();
+    // ── 書き出したジョブスクリプト (ローカル履歴) ──────────────────────────
+    // クラウドのジョブ状態は API 未接続で取得できないため、実在するデータ =
+    // 「このマシンで書き出した .py」だけを出す (絶対規則 5)。
+    auto *sl = new SectionBox(I18n::tr("t3x_scripts_section"), body);
+    sl->vbox()->addWidget(hintLabel(I18n::tr("t3x_jobs_note"), sl));
+    m_jobs = makeStaticTable(sl, { I18n::tr("t3x_h_file"),
+                                   I18n::tr("t3x_h_created"),
+                                   I18n::tr("t3x_h_state") }, 0);
+    m_jobs->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     sl->vbox()->addWidget(m_jobs);
-    // ジョブ一覧はモックの静的プロトタイプ (実ジョブを取得していない)
-    sl->vbox()->addWidget(tabhelp::sampleNote(sl));
+    auto *histRow = new QHBoxLayout();
+    auto *clearBtn = new QPushButton(I18n::tr("t3x_jobs_clear"), sl);
+    connect(clearBtn, &QPushButton::clicked, this, [this] {
+        QSettings().setValue(QString::fromLatin1(kHistoryKey), QStringList());
+        rebuildJobs();
+    });
+    histRow->addWidget(clearBtn);
+    histRow->addStretch(1);
+    sl->vbox()->addLayout(histRow);
     v->addWidget(sl);
 
     // ── ローカル ↔ クラウド比較 ─────────────────────────────────────────────
@@ -490,10 +492,60 @@ void Tidy3dTab::exportScript()
         m_p->tidy3d().projectName + ".py", "Python (*.py)");
     if (path.isEmpty()) return;
     QString err;
-    if (Tidy3dExporter::exportTo(path, *m_p, &err))
+    if (Tidy3dExporter::exportTo(path, *m_p, &err)) {
         m_status->setText("OK: " + path);
-    else
+        // 実際に書き出せたものだけを履歴へ入れる (書き出し日時 + パス)
+        QStringList hist =
+            QSettings().value(QString::fromLatin1(kHistoryKey)).toStringList();
+        const QString stamp =
+            QDateTime::currentDateTime().toString(Qt::ISODate);
+        // 同じパスへの再書き出しは 1 件に畳んで先頭へ
+        for (int i = hist.size() - 1; i >= 0; --i)
+            if (hist[i].section('\t', 1) == path) hist.removeAt(i);
+        hist.prepend(stamp + '\t' + path);
+        while (hist.size() > kHistoryMax) hist.removeLast();
+        QSettings().setValue(QString::fromLatin1(kHistoryKey), hist);
+        rebuildJobs();
+    } else {
         m_status->setText("error: " + err);
+    }
+}
+
+// 書き出し履歴 (QSettings) → 表。ファイルが消えていれば実状態を出す。
+void Tidy3dTab::rebuildJobs()
+{
+    const QStringList hist =
+        QSettings().value(QString::fromLatin1(kHistoryKey)).toStringList();
+    m_jobs->clearContents();
+    m_jobs->clearSpans();   // 前回の結合セルを解除
+    if (hist.isEmpty()) {
+        // 空表ではなく「何をすれば埋まるか」を出す
+        m_jobs->setRowCount(1);
+        m_jobs->setItem(0, 0, new QTableWidgetItem(I18n::tr("t3x_jobs_empty")));
+        m_jobs->setSpan(0, 0, 1, 3);
+        m_jobs->setMinimumHeight(72);
+        m_jobs->resizeRowsToContents();
+        return;
+    }
+    m_jobs->setRowCount(hist.size());
+    for (int r = 0; r < hist.size(); ++r) {
+        const QString stamp = hist[r].section('\t', 0, 0);
+        const QString path  = hist[r].section('\t', 1);
+        const QFileInfo fi(path);
+        auto *file = monoItem(fi.fileName());
+        file->setToolTip(path);
+        m_jobs->setItem(r, 0, file);
+        const QDateTime dt = QDateTime::fromString(stamp, Qt::ISODate);
+        m_jobs->setItem(r, 1, monoItem(dt.isValid()
+                                           ? dt.toString("yyyy-MM-dd hh:mm")
+                                           : stamp));
+        const bool exists = fi.exists();
+        m_jobs->setCellWidget(r, 2,
+            badgeCell(I18n::tr(exists ? "t3x_state_local" : "t3x_state_missing"),
+                      exists ? "warn" : "err"));
+    }
+    m_jobs->setMinimumHeight(hist.size() * 30 + 42);
+    m_jobs->resizeRowsToContents();
 }
 
 // プレビュー: 生成される tidy3d スクリプトをそのまま表示 (Tidy3dExporter が唯一の生成元)
@@ -541,5 +593,6 @@ void Tidy3dTab::refresh()
     m_resolution->setCurrentIndex(resIndexOf(m_p->tidy3d().resolution));
     m_autoPml->setChecked(m_p->tidy3d().autoPml);
     updateConnBadge();
+    rebuildJobs();
     m_updating = false;
 }

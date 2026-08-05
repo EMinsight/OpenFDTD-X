@@ -17,6 +17,8 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <cmath>
 
 using namespace ofd;
 
@@ -54,13 +56,44 @@ const bool s_i18n = [] {
     I18n::reg("gds_col_celltype", "セルタイプ", "Cell type");
     I18n::reg("gds_col_params",   "パラメータ", "Parameters");
     I18n::reg("gds_col_pos",      "位置",       "Position");
-    I18n::reg("gds_add_pcell",    "＋ PCellを追加…", "＋ Add PCell…");
+    I18n::reg("gds_cells_note",
+              "一覧はプロジェクトの形状ユニットを XY 平面へ投影したものです "
+              "(ジオメトリタブで編集)。GDS ファイルの取込・書き出しは未実装なので、"
+              "PCell (パラメトリックセル) としての情報は持ちません。",
+              "The list is this project's shape units projected onto the XY plane "
+              "(edit them in the Geometry tab). GDS import/export is not "
+              "implemented, so no parametric-cell (PCell) data is available.");
+    I18n::reg("gds_cells_empty",
+              "形状がありません — ジオメトリタブで追加してください",
+              "No shapes — add them in the Geometry tab");
+    I18n::reg("gds_cells_skipped",
+              "うち %1 ユニットは外接直方体が一意でない形状 (三角柱/角錐台/円錐台) "
+              "のため一覧・DRC から除外しています。",
+              "%1 unit(s) are excluded from the list and the DRC because their "
+              "bounding box is not unique (prisms / pyramids / cones).");
     I18n::reg("gds_drc_section", "DRC (デザインルールチェック)",
               "DRC (design rule check)");
     I18n::reg("gds_drc_hint",
-              "Foundry PDK のルールに基づく製造可能性チェック (未実装)。",
-              "Manufacturability check against the foundry PDK rules "
-              "(not implemented).");
+              "上の一覧 (形状ユニットの XY 投影) に対する幾何チェックです。"
+              "線幅・間隔・密度は実際に計算しています。曲率半径とパッド間隔は"
+              "対応するデータがモデルに無いため評価しません (—)。",
+              "Geometric check over the list above (XY footprints of the shape "
+              "units). Line width, spacing and density are actually computed. "
+              "Bend radius and pad spacing are not evaluated (—) because the "
+              "model holds no such data.");
+    I18n::reg("gds_drc_note",
+              "しきい値は 220nm SOI シリコンフォトニクスの代表値です "
+              "(上の PDK 選択とは未連動)。間隔は矩形間のユークリッド距離、"
+              "密度は投影面積の和 (重なりを除いた実面積) / 解析領域の XY 面積。",
+              "Thresholds are representative values for 220nm SOI silicon "
+              "photonics (not linked to the PDK selector above). Spacing is the "
+              "Euclidean distance between footprints; density is their union "
+              "area divided by the XY area of the analysis region.");
+    I18n::reg("gds_drc_na", "対象外", "Not evaluated");
+    I18n::reg("gds_drc_toomany",
+              "セル数が多いため未計算", "Too many cells — not computed");
+    I18n::reg("gds_drc_worst", "最小 %1", "min %1");
+    I18n::reg("gds_drc_density_val", "ρ_Si = %1", "ρ_Si = %1");
     I18n::reg("gds_col_rule",       "ルール", "Rule");
     I18n::reg("gds_col_violations", "違反数", "Violations");
     I18n::reg("gds_rule_width",   "最小線幅 Si ≥ 80nm",   "Min. line width Si ≥ 80nm");
@@ -104,6 +137,81 @@ QTableWidgetItem *checkItem(bool checked)
     it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
     it->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
     return it;
+}
+
+// ── レイアウト平面 (XY) への投影 (Footprint は LayoutGDSTab.h) ─────────────
+// DRC しきい値 (220nm SOI シリコンフォトニクスの代表値。i18n の
+// gds_rule_* の文言と必ず対で直すこと)。単位は m。
+const double kMinWidth_m   = 80e-9;
+const double kMinSpacing_m = 100e-9;
+const double kDensityMin   = 0.30;
+const double kDensityMax   = 0.70;
+// union 面積 (座標圧縮 = O(n³) 相当) を GUI スレッドで回してよい上限セル数。
+// 典型的な FDTD モデルは数十ユニットなので実用上ここに当たらない。
+const int    kDensityMaxCells = 64;
+
+// 形状ユニット → XY フットプリント。外接直方体が g[0..5] で決まる形状
+// (直方体 / 楕円体 / 円柱) だけを対象にし、それ以外の数を skipped で返す。
+// 材質 0 (空気) は構造物ではないので除く。
+QVector<Footprint> footprints(const QVector<Geometry> &geos, int *skipped)
+{
+    QVector<Footprint> out;
+    int skip = 0;
+    for (int i = 0; i < geos.size(); ++i) {
+        const Geometry &g = geos[i];
+        if (g.materialId == 0) continue;                 // 空気ユニット
+        if (Geometry::paramCount(g.shape) != 6) { ++skip; continue; }
+        Footprint f;
+        f.name = g.name.isEmpty() ? QStringLiteral("unit%1").arg(i + 1) : g.name;
+        f.x0 = std::min(g.g[0], g.g[1]);
+        f.x1 = std::max(g.g[0], g.g[1]);
+        f.y0 = std::min(g.g[2], g.g[3]);
+        f.y1 = std::max(g.g[2], g.g[3]);
+        out.push_back(f);
+    }
+    if (skipped) *skipped = skip;
+    return out;
+}
+
+// 矩形間の最短距離 [m]。重なっている (または内包) 場合は負を返す。
+double rectGap(const Footprint &a, const Footprint &b)
+{
+    const double dx = std::max(a.x0 - b.x1, b.x0 - a.x1);
+    const double dy = std::max(a.y0 - b.y1, b.y0 - a.y1);
+    if (dx <= 0 && dy <= 0) return -1.0;                  // 重なり
+    return std::hypot(std::max(dx, 0.0), std::max(dy, 0.0));
+}
+
+// 矩形群の和集合面積 [m²] (座標圧縮 — 軸平行なので厳密)。
+double unionArea(const QVector<Footprint> &f)
+{
+    QVector<double> xs, ys;
+    for (const Footprint &r : f) { xs << r.x0 << r.x1; ys << r.y0 << r.y1; }
+    std::sort(xs.begin(), xs.end());
+    std::sort(ys.begin(), ys.end());
+    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+    double sum = 0;
+    for (int i = 0; i + 1 < xs.size(); ++i) {
+        const double cx = 0.5 * (xs[i] + xs[i + 1]);
+        for (int j = 0; j + 1 < ys.size(); ++j) {
+            const double cy = 0.5 * (ys[j] + ys[j + 1]);
+            for (const Footprint &r : f) {
+                if (cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1) {
+                    sum += (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]);
+                    break;
+                }
+            }
+        }
+    }
+    return sum;
+}
+
+// m → 表示単位。1μm 未満は nm、それ以上は μm で出す。
+QString lengthText(double m)
+{
+    if (m < 1e-6) return QStringLiteral("%1 nm").arg(m * 1e9, 0, 'g', 3);
+    return QStringLiteral("%1 μm").arg(m * 1e6, 0, 'g', 4);
 }
 } // namespace
 
@@ -189,49 +297,21 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     sLay->vbox()->addWidget(m_layers);
     v->addWidget(sLay);
 
-    // 配置済みセル / Placed cells (PCells)
+    // 配置済みセル / Placed cells — プロジェクトの形状ユニットの XY 投影
     auto *sCells = new SectionBox(I18n::tr("gds_cells_section"), body);
-    m_cells = new QTableWidget(6, 5, sCells);
+    m_cells = new QTableWidget(0, 5, sCells);
     m_cells->setHorizontalHeaderLabels({
-        "", I18n::tr("gds_col_name"), I18n::tr("gds_col_celltype"),
+        "#", I18n::tr("gds_col_name"), I18n::tr("gds_col_celltype"),
         I18n::tr("gds_col_params"), I18n::tr("gds_col_pos") });
     m_cells->verticalHeader()->setVisible(false);
     m_cells->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_cells->setColumnWidth(0, 26);
+    m_cells->setColumnWidth(0, 30);
     m_cells->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_cells->setMinimumHeight(200);
-    const struct { const char *name, *type, *params, *pos; } cells[5] = {
-        { "RING_1550",  "SiEPIC.RingResonator",  "R=5μm, gap=200nm",    "(100, 200)" },
-        { "GC_IN",      "SiEPIC.GratingCoupler", "period=630nm, ff=0.5", "(0, 200)" },
-        { "GC_THRU",    "SiEPIC.GratingCoupler", "period=630nm",         "(250, 200)" },
-        { "GC_DROP",    "SiEPIC.GratingCoupler", "period=630nm",         "(150, 350)" },
-        { "WG_routing", "auto.Route",            "3 ports, R_min=10μm",  "—" },
-    };
-    for (int i = 0; i < 5; ++i) {
-        m_cells->setItem(i, 0, checkItem(true));
-        m_cells->setItem(i, 1, new QTableWidgetItem(
-            QString::fromUtf8(cells[i].name)));
-        m_cells->setItem(i, 2, new QTableWidgetItem(
-            QString::fromUtf8(cells[i].type)));
-        auto *par = new QTableWidgetItem(QString::fromUtf8(cells[i].params));
-        par->setFont(mono);
-        m_cells->setItem(i, 3, par);
-        auto *pos = new QTableWidgetItem(QString::fromUtf8(cells[i].pos));
-        pos->setFont(mono);
-        m_cells->setItem(i, 4, pos);
-    }
-    // 追加行 (mock の「＋ PCellを追加…」、列1〜4を結合)
-    m_cells->setItem(5, 0, checkItem(false));
-    m_cells->setSpan(5, 1, 1, 4);
-    auto *add = new QTableWidgetItem(I18n::tr("gds_add_pcell"));
-    QFont italic = add->font();
-    italic.setItalic(true);
-    add->setFont(italic);
-    add->setForeground(QColor("#7A7A7A"));
-    m_cells->setItem(5, 1, add);
     sCells->vbox()->addWidget(m_cells);
-    // 配置済みセル表はモック由来の固定値 (絶対規則 5)
-    sCells->vbox()->addWidget(tabhelp::sampleNote(sCells));
+    sCells->vbox()->addWidget(mutedLabel(I18n::tr("gds_cells_note"), sCells));
+    m_cellsSkipped = mutedLabel(QString(), sCells);
+    sCells->vbox()->addWidget(m_cellsSkipped);
     v->addWidget(sCells);
 
     // DRC (デザインルールチェック)
@@ -246,40 +326,16 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     m_drc->setColumnWidth(0, 40);
     m_drc->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_drc->setMinimumHeight(170);
-    const struct { bool ok; const char *ruleKey; int count; const char *pos; }
-    drc[5] = {
-        { true,  "gds_rule_width",   0, "—" },
-        { true,  "gds_rule_space",   0, "—" },
-        { false, "gds_rule_bend",    2, "cell:WG_route (3,4)" },
-        { true,  "gds_rule_pad",     0, "—" },
-        { true,  "gds_rule_density", 0, "—" },
-    };
-    for (int i = 0; i < 5; ++i) {
-        auto *st = new QTableWidgetItem(drc[i].ok ? QStringLiteral("OK")
-                                                  : QStringLiteral("!"));
-        st->setTextAlignment(Qt::AlignCenter);
-        st->setForeground(drc[i].ok ? QColor("#2E7D32") : QColor("#B06B0F"));
-        QFont bold = st->font();
-        bold.setBold(true);
-        st->setFont(bold);
-        m_drc->setItem(i, 0, st);
-        m_drc->setItem(i, 1, new QTableWidgetItem(I18n::tr(drc[i].ruleKey)));
-        auto *cnt = new QTableWidgetItem(QString::number(drc[i].count));
-        cnt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_drc->setItem(i, 2, cnt);
-        auto *pos = new QTableWidgetItem(QString::fromUtf8(drc[i].pos));
-        if (!drc[i].ok) pos->setFont(mono);
-        m_drc->setItem(i, 3, pos);
-    }
     sDrc->vbox()->addWidget(m_drc);
-    // DRC 結果表はモック由来の固定値 (絶対規則 5)
-    sDrc->vbox()->addWidget(tabhelp::sampleNote(sDrc));
+    sDrc->vbox()->addWidget(mutedLabel(I18n::tr("gds_drc_note"), sDrc));
     auto *drcRow = new QHBoxLayout();
-    // DRC 実行・GDS 入出力は未実装 — 無効化して明示する (絶対規則 5)
+    // DRC は実計算する。GDS 入出力は未実装 — 無効化して明示する (絶対規則 5)
     auto *btnDrc    = new QPushButton(I18n::tr("gds_run_drc"), sDrc);
+    connect(btnDrc, &QPushButton::clicked, this, [this] { refreshLayout(); });
     auto *btnExport = new QPushButton(I18n::tr("gds_export"), sDrc);
     auto *btnImport = new QPushButton(I18n::tr("gds_import"), sDrc);
-    for (QPushButton *b : { btnDrc, btnExport, btnImport }) {
+    drcRow->addWidget(btnDrc);
+    for (QPushButton *b : { btnExport, btnImport }) {
         tabhelp::markNotImplemented(b);
         drcRow->addWidget(b);
     }
@@ -314,4 +370,179 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+
+    // 形状の追加・削除・移動、ファイル読込に追従する
+    connect(project, &Project::changed, this, [this] { refreshLayout(); });
+    connect(project, &Project::loaded,  this, [this] { refreshLayout(); });
+    refreshLayout();
+}
+
+// ── プロジェクト形状 → セル一覧 + DRC ───────────────────────────────────────
+void LayoutGDSTab::refreshLayout()
+{
+    int skipped = 0;
+    const QVector<Footprint> foots = footprints(m_p->geometries(), &skipped);
+    // Project::changed は全タブの編集で飛んでくるので、形状が変わっていない
+    // ときは DRC (対総当たり + 和集合面積) を回さない
+    if (m_lastSkipped >= 0 && skipped == m_lastSkipped && foots == m_lastFoots)
+        return;
+    m_lastFoots = foots;
+    m_lastSkipped = skipped;
+    rebuildCells(foots, skipped);
+    rebuildDrc(foots);
+}
+
+void LayoutGDSTab::rebuildCells(const QVector<Footprint> &foots, int skipped)
+{
+    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    const QVector<Geometry> &geos = m_p->geometries();
+    const QVector<Material> &mats = m_p->materials();
+
+    m_cells->clearContents();
+    m_cells->clearSpans();   // 前回の結合セルを解除
+    if (foots.isEmpty()) {
+        m_cells->setRowCount(1);
+        m_cells->setItem(0, 0,
+            new QTableWidgetItem(I18n::tr("gds_cells_empty")));
+        m_cells->setSpan(0, 0, 1, 5);
+        m_cellsSkipped->setText(skipped > 0
+            ? I18n::tr("gds_cells_skipped").arg(skipped) : QString());
+        return;
+    }
+    // フットプリントと形状ユニットの対応 (footprints() と同じ順・同じ条件)
+    QVector<int> src;
+    for (int i = 0; i < geos.size(); ++i) {
+        if (geos[i].materialId == 0) continue;
+        if (Geometry::paramCount(geos[i].shape) != 6) continue;
+        src.push_back(i);
+    }
+    m_cells->setRowCount(foots.size());
+    for (int r = 0; r < foots.size(); ++r) {
+        const Footprint &f = foots[r];
+        const Geometry &g = geos[src[r]];
+        m_cells->setItem(r, 0, new QTableWidgetItem(QString::number(r + 1)));
+        m_cells->setItem(r, 1, new QTableWidgetItem(f.name));
+        // セルタイプ = 材質名 + 形状名 (共通キー ge_shape_<code>)
+        QString matName;
+        if (g.materialId == 1) matName = QStringLiteral("PEC");
+        else if (g.materialId - 2 >= 0 && g.materialId - 2 < mats.size())
+            matName = mats[g.materialId - 2].name;
+        if (matName.isEmpty())
+            matName = QStringLiteral("material %1").arg(g.materialId);
+        m_cells->setItem(r, 2, new QTableWidgetItem(
+            matName + " / " + I18n::tr(QStringLiteral("ge_shape_%1").arg(g.shape))));
+        // パラメータ = XY 寸法 + 厚み (Z)
+        auto *par = new QTableWidgetItem(QStringLiteral("%1 × %2, t=%3")
+            .arg(lengthText(f.width()), lengthText(f.height()),
+                 lengthText(std::abs(g.g[5] - g.g[4]))));
+        par->setFont(mono);
+        m_cells->setItem(r, 3, par);
+        auto *pos = new QTableWidgetItem(QStringLiteral("(%1, %2) μm")
+            .arg(0.5 * (f.x0 + f.x1) * 1e6, 0, 'g', 4)
+            .arg(0.5 * (f.y0 + f.y1) * 1e6, 0, 'g', 4));
+        pos->setFont(mono);
+        m_cells->setItem(r, 4, pos);
+    }
+    m_cellsSkipped->setText(skipped > 0
+        ? I18n::tr("gds_cells_skipped").arg(skipped) : QString());
+}
+
+// 幾何 DRC。線幅・間隔・密度は実計算し、モデルに対応データが無いルール
+// (曲率半径 / パッド間隔) は「対象外」を出す (0 件と偽らない)。
+void LayoutGDSTab::rebuildDrc(const QVector<Footprint> &foots)
+{
+    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+
+    struct Result { int state; int count; QString detail; };  // state: 1=OK 0=NG -1=対象外
+    Result res[5];
+    const QString dash = QString::fromUtf8("—");
+
+    // 1) 最小線幅 — 各フットプリントの短辺
+    if (foots.isEmpty()) {
+        res[0] = { -1, 0, I18n::tr("gds_cells_empty") };
+    } else {
+        int bad = 0;
+        double worst = 1e300;
+        QString who;
+        for (const Footprint &f : foots) {
+            if (f.minDim() < worst) { worst = f.minDim(); who = f.name; }
+            if (f.minDim() < kMinWidth_m) ++bad;
+        }
+        res[0] = { bad ? 0 : 1, bad,
+                   I18n::tr("gds_drc_worst").arg(lengthText(worst))
+                       + " (" + who + ")" };
+    }
+
+    // 2) 最小間隔 — 重なっていない矩形対のユークリッド距離
+    if (foots.size() < 2) {
+        res[1] = { -1, 0, dash };
+    } else {
+        int bad = 0;
+        double worst = 1e300;
+        QString who;
+        for (int i = 0; i < foots.size(); ++i)
+            for (int j = i + 1; j < foots.size(); ++j) {
+                const double d = rectGap(foots[i], foots[j]);
+                if (d <= 0) continue;              // 重なり/接触は間隔違反にしない
+                if (d < worst) {
+                    worst = d;
+                    who = foots[i].name + " ↔ " + foots[j].name;
+                }
+                if (d < kMinSpacing_m) ++bad;
+            }
+        res[1] = who.isEmpty()
+            ? Result{ -1, 0, dash }
+            : Result{ bad ? 0 : 1, bad,
+                      I18n::tr("gds_drc_worst").arg(lengthText(worst))
+                          + " (" + who + ")" };
+    }
+
+    // 3) 最小曲率半径 — 曲線導波路はモデルに無い (直方体/円柱ユニットのみ)
+    res[2] = { -1, 0, I18n::tr("gds_drc_na") };
+    // 4) パッド間隔 — パッド層はモデルに無い
+    res[3] = { -1, 0, I18n::tr("gds_drc_na") };
+
+    // 5) 密度 ρ_Si = フットプリントの和集合面積 / 解析領域の XY 面積
+    const double regionArea = (m_p->mesh(0).max() - m_p->mesh(0).min())
+                            * (m_p->mesh(1).max() - m_p->mesh(1).min());
+    if (foots.isEmpty() || regionArea <= 0) {
+        res[4] = { -1, 0, dash };
+    } else if (foots.size() > kDensityMaxCells) {
+        res[4] = { -1, 0, I18n::tr("gds_drc_toomany") };
+    } else {
+        const double rho = unionArea(foots) / regionArea;
+        const bool ok = (rho >= kDensityMin && rho <= kDensityMax);
+        // 解析領域が構造より遥かに広いと ρ は極端に小さくなるので有効数字で出す
+        res[4] = { ok ? 1 : 0, ok ? 0 : 1,
+                   I18n::tr("gds_drc_density_val")
+                       .arg(QString::number(rho, 'g', 3)) };
+    }
+
+    static const char *kRuleKeys[5] = { "gds_rule_width", "gds_rule_space",
+                                        "gds_rule_bend", "gds_rule_pad",
+                                        "gds_rule_density" };
+    m_drc->setRowCount(5);
+    for (int i = 0; i < 5; ++i) {
+        const int st = res[i].state;
+        auto *stIt = new QTableWidgetItem(st == 1 ? QStringLiteral("OK")
+                                        : st == 0 ? QStringLiteral("!")
+                                                  : dash);
+        stIt->setTextAlignment(Qt::AlignCenter);
+        stIt->setForeground(st == 1 ? QColor("#2E7D32")
+                          : st == 0 ? QColor("#B06B0F")
+                                    : QColor("#7A7A7A"));
+        QFont bold = stIt->font();
+        bold.setBold(true);
+        stIt->setFont(bold);
+        m_drc->setItem(i, 0, stIt);
+        m_drc->setItem(i, 1, new QTableWidgetItem(I18n::tr(kRuleKeys[i])));
+        // 評価していないルールは違反数を 0 と偽らず「—」にする
+        auto *cnt = new QTableWidgetItem(st < 0 ? dash
+                                                : QString::number(res[i].count));
+        cnt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_drc->setItem(i, 2, cnt);
+        auto *det = new QTableWidgetItem(res[i].detail);
+        det->setFont(mono);
+        m_drc->setItem(i, 3, det);
+    }
 }

@@ -2,7 +2,10 @@
 //   - Lens Data Editor: Zemax OpticStudio 風の面テーブル (初期値 Cooke triplet)。
 //     ガラス欄は GlassCatalog から自動補完、行の挿入/削除、STO 行ハイライト。
 //   - システム諸元 (入射瞳径 / 視野 / 波長サンプル / 座標系)
+//   - 近軸諸元 : 面テーブルから y-nu 近軸追跡で焦点距離・主点・F 値等を実計算
 //   - Merit Function (FoM) オペランド表 + 最適化ボタン
+//     (近軸オペランド EFFL/PIMH/ISFN は実計算。収差オペランドは実光線追跡が
+//      必要なため値を出さず「—」)
 //   - 解析プロット起動ボタン (Spot / Ray Fan / MTF …)
 //   - 面テーブルから子午面 2D 光線追跡するレイアウトプレビュー
 // 光ドメイン選択時のみ表示される。面データはローカル状態 (モック忠実)。
@@ -52,6 +55,15 @@ private:
     double m_epd = 12.0, m_field = 20.0;
 };
 
+// Merit Function の 1 オペランド。目標と重みは利用者が編集できる定義値、
+// 「値」は近軸追跡で計算できるものだけを埋める (収差は実光線追跡が必要)。
+struct MeritOperand {
+    QString code;      // EFFL / PIMH / ISFN / SPHA / COMA / ASTI / DIST
+    QString label;     // 表示名
+    QString target;    // 目標値 (編集可能)
+    QString weight;    // 重み   (編集可能)
+};
+
 class LensEditorTab : public QScrollArea {
     Q_OBJECT
 public:
@@ -64,12 +76,17 @@ private:
     void rebuildTable();            // m_rows → QTableWidget (行挿入/削除後)
     void syncRowFromTable(int row); // QTableWidget → m_rows (セル編集後)
     void applyStopHighlight();      // STO 行の背景ハイライト
+    void rebuildMeritTable();       // m_fom → Merit 表 (目標/重みは編集可能)
+    void recomputeParaxial();       // 面テーブル → 近軸諸元 + Merit の値列
 
     Project      *m_p;
     bool          m_updating = false;
     QVector<LensSurface> m_rows;
+    QVector<MeritOperand> m_fom;
 
     QTableWidget *m_table;
+    QTableWidget *m_merit = nullptr;
+    QTableWidget *m_paraxial = nullptr;
     QLineEdit    *m_epd, *m_field;
     QComboBox    *m_coord;
     LensLayoutView *m_layout;

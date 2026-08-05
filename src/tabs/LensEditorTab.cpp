@@ -3,6 +3,7 @@
 #include "TabHelpers.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
+#include "../optics/ParaxialTrace.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -20,10 +21,12 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QStandardItemModel>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <cmath>
+#include <vector>
 
 using namespace ofd;
 
@@ -70,17 +73,59 @@ const bool s_i18n = [] {
               "Hybrid (not implemented)");
     I18n::reg("lde_merit_section","Merit Function (FoM)", "Merit Function (FoM)");
     I18n::reg("lde_merit_hint",
-              "最適化評価関数の定義 (最適化は未実装 — 定義の記録のみ)。",
-              "Merit-function definition (optimization is not implemented — "
-              "the definition is only recorded).");
+              "最適化評価関数の定義 (目標・重みは編集可能。最適化そのものは未実装)。"
+              "「値」列は近軸オペランド (EFFL / PIMH / ISFN) のみ面テーブルから"
+              "計算する。収差オペランドは実光線追跡が必要なため「—」。",
+              "Merit-function definition (target and weight are editable; the "
+              "optimizer itself is not implemented). The value column is computed "
+              "from the surface table for the paraxial operands (EFFL / PIMH / ISFN) "
+              "only; aberration operands need real ray tracing and stay “—”.");
     I18n::reg("lde_col_operand", "オペランド",  "Operand");
     I18n::reg("lde_col_target",  "目標",        "Target");
     I18n::reg("lde_col_weight",  "重み",        "Weight");
     I18n::reg("lde_col_value",   "値",          "Value");
+    I18n::reg("lde_col_basis",   "根拠 / 必要な計算", "Basis / required computation");
     I18n::reg("lde_op_spha",     "SPHA (球面収差)", "SPHA (spherical aberration)");
+    I18n::reg("lde_op_coma",     "COMA (コマ収差)", "COMA (coma)");
     I18n::reg("lde_op_asti",     "ASTI (非点)",     "ASTI (astigmatism)");
     I18n::reg("lde_op_effl",     "EFFL (有効焦点)", "EFFL (effective focal length)");
     I18n::reg("lde_op_dist",     "DIST (歪曲)",     "DIST (distortion)");
+    I18n::reg("lde_op_pimh",     "PIMH (近軸像高)", "PIMH (paraxial image height)");
+    I18n::reg("lde_op_isfn",     "ISFN (像側F値)",  "ISFN (image-space F/#)");
+    I18n::reg("lde_b_paraxial",  "近軸 y-nu 追跡 (面テーブルから計算)",
+              "Paraxial y-nu trace of the surface table");
+    I18n::reg("lde_b_needreal",
+              "実光線追跡 (収差計算) が必要 — 未実装",
+              "Requires real ray tracing (aberration calculation) — not implemented");
+    I18n::reg("lde_dash",        "—",           "—");
+    I18n::reg("lde_parax_section", "近軸諸元 / Paraxial data", "Paraxial data");
+    I18n::reg("lde_parax_hint",
+              "面テーブル (有効行) の屈折率・曲率・厚さから y-nu 近軸追跡で計算。"
+              "ガラス名がカタログにない場合は n=1.6 と仮定するため注意。",
+              "Computed by a y-nu paraxial trace from the enabled rows of the "
+              "surface table. Note that glasses missing from the catalog are "
+              "assumed to have n = 1.6.");
+    I18n::reg("lde_parax_item",  "項目",  "Quantity");
+    I18n::reg("lde_parax_value", "値",    "Value");
+    I18n::reg("lde_px_efl",   "有効焦点距離 f'", "Effective focal length f'");
+    I18n::reg("lde_px_bfl",   "バックフォーカス (最終面→後側焦点)",
+              "Back focal length (last vertex → rear focus)");
+    I18n::reg("lde_px_ffl",   "フロントフォーカス (第1面→前側焦点)",
+              "Front focal length (first vertex → front focus)");
+    I18n::reg("lde_px_hp",    "後側主点 H' (最終面から)",
+              "Rear principal point H' (from the last vertex)");
+    I18n::reg("lde_px_h",     "前側主点 H (第1面から)",
+              "Front principal point H (from the first vertex)");
+    I18n::reg("lde_px_fno",   "像側 F 値 (f'/EPD)", "Image-space F/# (f'/EPD)");
+    I18n::reg("lde_px_imh",   "近軸像高 f'·tanθ", "Paraxial image height f'·tanθ");
+    I18n::reg("lde_px_track", "第1面→最終面の長さ", "First → last surface length");
+    I18n::reg("lde_px_defocus", "像面デフォーカス (近軸焦点 − 像面)",
+              "Image-plane defocus (paraxial focus − image plane)");
+    I18n::reg("lde_px_assumed", "n=1.6 と仮定したガラス (カタログ外)",
+              "Glasses assumed to have n = 1.6 (not in the catalog)");
+    I18n::reg("lde_px_invalid",
+              "面テーブルが近軸的に解けない (アフォーカル / 面が無い)",
+              "The surface table is not paraxially solvable (afocal / no surfaces)");
     I18n::reg("lde_optimize",    "▶ 最適化実行",  "▶ Run optimization");
     I18n::reg("lde_analyses_section", "解析プロット / Analyses", "Analyses");
     I18n::reg("lde_an_mtf",      "MTF (変調伝達関数)",
@@ -130,6 +175,21 @@ double indexAfter(const QString &glass)
         if (c.name.compare(g, Qt::CaseInsensitive) == 0)
             return c.nd;
     return 1.6;
+}
+
+// カタログに載っていないガラス名か (空気は false)。近軸諸元では n=1.6 と
+// 仮定するため、どの銘柄が仮定値なのかを画面に出す (数値の出所を隠さない)。
+bool isUnknownGlass(const QString &glass)
+{
+    const QString g = glass.trimmed();
+    if (g.isEmpty() || g == QStringLiteral("-") || g == QString::fromUtf8("—")
+        || g.compare(QStringLiteral("AIR"), Qt::CaseInsensitive) == 0
+        || g == QString::fromUtf8("空気"))
+        return false;
+    for (const Glass &c : GlassCatalog::all())
+        if (c.name.compare(g, Qt::CaseInsensitive) == 0)
+            return false;
+    return true;
 }
 } // namespace
 
@@ -411,42 +471,50 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     sSys->form()->addRow(I18n::tr("lde_coord"), m_coord);
     v->addWidget(sSys);
 
+    // 近軸諸元 / Paraxial data (面テーブルから y-nu 追跡で実計算)
+    auto *sPx = new SectionBox(I18n::tr("lde_parax_section"), body);
+    sPx->vbox()->addWidget(mutedLabel(I18n::tr("lde_parax_hint"), sPx));
+    m_paraxial = new QTableWidget(0, 2, sPx);
+    m_paraxial->setHorizontalHeaderLabels({ I18n::tr("lde_parax_item"),
+                                            I18n::tr("lde_parax_value") });
+    m_paraxial->verticalHeader()->setVisible(false);
+    m_paraxial->verticalHeader()->setDefaultSectionSize(24);
+    m_paraxial->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // 左パネルが狭くても「値」列が隠れないよう、項目名は固定幅 + 省略表示にする
+    m_paraxial->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_paraxial->setColumnWidth(0, 190);
+    m_paraxial->horizontalHeader()
+        ->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_paraxial->horizontalHeader()->setStretchLastSection(false);
+    m_paraxial->setTextElideMode(Qt::ElideRight);
+    m_paraxial->setMinimumHeight(240);
+    sPx->vbox()->addWidget(m_paraxial);
+    v->addWidget(sPx);
+
     // Merit Function (FoM)
     auto *sMerit = new SectionBox(I18n::tr("lde_merit_section"), body);
     sMerit->vbox()->addWidget(mutedLabel(I18n::tr("lde_merit_hint"), sMerit));
-    auto *merit = new QTableWidget(5, 5, sMerit);
-    merit->setHorizontalHeaderLabels({
-        "#", I18n::tr("lde_col_operand"), I18n::tr("lde_col_target"),
-        I18n::tr("lde_col_weight"), I18n::tr("lde_col_value") });
-    merit->verticalHeader()->setVisible(false);
-    merit->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    merit->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    merit->setMinimumHeight(170);
-    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    const struct { QString op; const char *target, *weight, *value; } fom[5] = {
-        { I18n::tr("lde_op_spha"), "0.000",  "1.0", "0.018"  },
-        { "COMA",                  "0.000",  "1.0", "-0.005" },
-        { I18n::tr("lde_op_asti"), "0.000",  "0.8", "0.012"  },
-        { I18n::tr("lde_op_effl"), "50.000", "1.0", "50.21"  },
-        { I18n::tr("lde_op_dist"), "0.000",  "0.5", "-1.2%"  },
+    // 目標・重みは編集可能な定義値。既定値は Cooke triplet の設計目標。
+    m_fom = {
+        { "EFFL", I18n::tr("lde_op_effl"), "50.000", "1.0" },
+        { "PIMH", I18n::tr("lde_op_pimh"), "18.200", "1.0" },
+        { "ISFN", I18n::tr("lde_op_isfn"), "4.200",  "0.5" },
+        { "SPHA", I18n::tr("lde_op_spha"), "0.000",  "1.0" },
+        { "COMA", I18n::tr("lde_op_coma"), "0.000",  "1.0" },
+        { "ASTI", I18n::tr("lde_op_asti"), "0.000",  "0.8" },
+        { "DIST", I18n::tr("lde_op_dist"), "0.000",  "0.5" },
     };
-    for (int i = 0; i < 5; ++i) {
-        auto num = [](const QString &t) {
-            auto *it = new QTableWidgetItem(t);
-            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            return it;
-        };
-        merit->setItem(i, 0, num(QString::number(i + 1)));
-        auto *op = new QTableWidgetItem(fom[i].op);
-        op->setFont(mono);
-        merit->setItem(i, 1, op);
-        merit->setItem(i, 2, num(QString::fromUtf8(fom[i].target)));
-        merit->setItem(i, 3, num(QString::fromUtf8(fom[i].weight)));
-        merit->setItem(i, 4, num(QString::fromUtf8(fom[i].value)));
-    }
-    sMerit->vbox()->addWidget(merit);
-    // 値列はモック由来の固定値 (絶対規則 5)
-    sMerit->vbox()->addWidget(tabhelp::sampleNote(sMerit));
+    m_merit = new QTableWidget(0, 6, sMerit);
+    m_merit->setHorizontalHeaderLabels({
+        "#", I18n::tr("lde_col_operand"), I18n::tr("lde_col_target"),
+        I18n::tr("lde_col_weight"), I18n::tr("lde_col_value"),
+        I18n::tr("lde_col_basis") });
+    m_merit->verticalHeader()->setVisible(false);
+    m_merit->horizontalHeader()
+        ->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_merit->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_merit->setMinimumHeight(210);
+    sMerit->vbox()->addWidget(m_merit);
     auto *optRow = new QHBoxLayout();
     // 最適化は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *optBtn = new QPushButton(I18n::tr("lde_optimize"), sMerit);
@@ -502,9 +570,50 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     });
     connect(m_epd, &QLineEdit::editingFinished, this, &LensEditorTab::retrace);
     connect(m_field, &QLineEdit::editingFinished, this, &LensEditorTab::retrace);
+    // Merit 表の目標/重みは編集可能 (定義値)。編集したら値列も再計算する。
+    connect(m_merit, &QTableWidget::cellChanged, this, [this](int row, int col) {
+        if (m_updating) return;
+        if (row < 0 || row >= m_fom.size()) return;
+        auto *it = m_merit->item(row, col);
+        if (!it) return;
+        if (col == 2) m_fom[row].target = it->text();
+        else if (col == 3) m_fom[row].weight = it->text();
+    });
 
     rebuildTable();
+    rebuildMeritTable();
     retrace();
+}
+
+// m_fom → Merit 表。目標/重みだけ編集可能にし、値列は recomputeParaxial() が埋める
+void LensEditorTab::rebuildMeritTable()
+{
+    const bool was = m_updating;
+    m_updating = true;
+    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    m_merit->clearContents();
+    m_merit->setRowCount(m_fom.size());
+    for (int i = 0; i < m_fom.size(); ++i) {
+        auto num = [](const QString &t, bool editable) {
+            auto *it = new QTableWidgetItem(t);
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (!editable)
+                it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            return it;
+        };
+        m_merit->setItem(i, 0, num(QString::number(i + 1), false));
+        auto *op = new QTableWidgetItem(m_fom[i].label);
+        op->setFont(mono);
+        op->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        m_merit->setItem(i, 1, op);
+        m_merit->setItem(i, 2, num(m_fom[i].target, true));
+        m_merit->setItem(i, 3, num(m_fom[i].weight, true));
+        m_merit->setItem(i, 4, num(I18n::tr("lde_dash"), false));
+        auto *basis = new QTableWidgetItem(I18n::tr("lde_b_needreal"));
+        basis->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        m_merit->setItem(i, 5, basis);
+    }
+    m_updating = was;
 }
 
 // m_rows → QTableWidget。行の挿入/削除時のみ全再構築する
@@ -646,4 +755,118 @@ void LensEditorTab::retrace()
     double field = m_field->text().toDouble(&ok);
     if (!ok) field = 20.0;
     m_layout->setSystem(m_rows, epd, field);
+    recomputeParaxial();
+}
+
+// 面テーブル → 近軸諸元 (y-nu 追跡) と Merit の近軸オペランド値.
+// 収差オペランド (SPHA/COMA/ASTI/DIST) は実光線追跡が要るため「—」のまま。
+void LensEditorTab::recomputeParaxial()
+{
+    bool ok = false;
+    double epd = m_epd->text().toDouble(&ok);
+    if (!ok || epd <= 0) epd = 12.0;
+    double field = m_field->text().toDouble(&ok);
+    if (!ok) field = 20.0;
+
+    // 有効行のうち OBJ (無限遠物体) と IMG (像面) を除いたものが屈折面。
+    // 各行の「厚さ」は次の面までの距離なので、最後の面の厚さが像面までの距離。
+    std::vector<paraxial::Surface> surfs;
+    double imageDistance = -1.0;
+    QStringList unknownGlass;
+    for (const LensSurface &r : m_rows) {
+        if (!r.enabled) continue;
+        if (r.type == QStringLiteral("OBJ")) continue;
+        if (r.type == QStringLiteral("IMG")) {
+            if (!surfs.empty()) imageDistance = surfs.back().thickness;
+            break;
+        }
+        paraxial::Surface s;
+        bool rok = false;
+        const double R = r.R.toDouble(&rok);
+        s.R = rok ? R : 0.0;                       // "Infinity" → 平面 (R=0)
+        bool tok = false;
+        const double t = r.thick.toDouble(&tok);
+        s.thickness = tok ? t : 0.0;
+        s.nAfter = indexAfter(r.glass);
+        if (isUnknownGlass(r.glass) && !unknownGlass.contains(r.glass.trimmed()))
+            unknownGlass << r.glass.trimmed();
+        bool dok = false;
+        const double sd = r.semiD.toDouble(&dok);
+        s.semiD = (dok && sd > 0) ? sd : 0.0;
+        s.stop = (r.type == QStringLiteral("STO"));
+        surfs.push_back(s);
+    }
+
+    const paraxial::SystemData d =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+
+    // 近軸諸元表
+    auto roItem = [](const QString &t, bool rightAlign) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        if (rightAlign) it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return it;
+    };
+    struct Line { QString name, value; };
+    QVector<Line> lines;
+    const QString dash = I18n::tr("lde_dash");
+    auto mm = [](double v) {
+        return QString::number(v, 'f', 3) + QString::fromUtf8(" mm");
+    };
+    if (d.valid) {
+        lines.push_back({ I18n::tr("lde_px_efl"), mm(d.efl) });
+        lines.push_back({ I18n::tr("lde_px_bfl"), mm(d.bfl) });
+        lines.push_back({ I18n::tr("lde_px_ffl"), mm(d.ffl) });
+        lines.push_back({ I18n::tr("lde_px_hp"),  mm(d.backPrincipal) });
+        lines.push_back({ I18n::tr("lde_px_h"),   mm(d.frontPrincipal) });
+        lines.push_back({ I18n::tr("lde_px_fno"),
+                          (d.fnumber > 0)
+                              ? QString::fromUtf8("F/")
+                                    + QString::number(d.fnumber, 'f', 3)
+                              : dash });
+        lines.push_back({ I18n::tr("lde_px_imh"),
+                          (field > 0) ? mm(d.imageHeight) : dash });
+        lines.push_back({ I18n::tr("lde_px_track"), mm(d.totalTrack) });
+        lines.push_back({ I18n::tr("lde_px_defocus"),
+                          d.hasImagePlane ? mm(d.defocus) : dash });
+    } else {
+        lines.push_back({ I18n::tr("lde_px_invalid"), dash });
+    }
+    // 屈折率が仮定値の銘柄を明示する (計算値の出所を隠さない)
+    if (!unknownGlass.isEmpty())
+        lines.push_back({ I18n::tr("lde_px_assumed"),
+                          unknownGlass.join(QStringLiteral(", ")) });
+    m_paraxial->clearContents();
+    m_paraxial->setRowCount(lines.size());
+    for (int i = 0; i < lines.size(); ++i) {
+        m_paraxial->setItem(i, 0, roItem(lines[i].name, false));
+        m_paraxial->setItem(i, 1, roItem(lines[i].value, true));
+    }
+
+    // Merit の値列 (近軸オペランドのみ)
+    const bool was = m_updating;
+    m_updating = true;
+    for (int i = 0; i < m_fom.size(); ++i) {
+        QString value = dash;
+        QString basis = I18n::tr("lde_b_needreal");
+        if (d.valid) {
+            if (m_fom[i].code == QStringLiteral("EFFL")) {
+                value = QString::number(d.efl, 'f', 4);
+                basis = I18n::tr("lde_b_paraxial");
+            } else if (m_fom[i].code == QStringLiteral("PIMH")) {
+                if (field > 0) {
+                    value = QString::number(d.imageHeight, 'f', 4);
+                    basis = I18n::tr("lde_b_paraxial");
+                }
+            } else if (m_fom[i].code == QStringLiteral("ISFN")) {
+                if (d.fnumber > 0) {
+                    value = QString::number(d.fnumber, 'f', 4);
+                    basis = I18n::tr("lde_b_paraxial");
+                }
+            }
+        }
+        if (auto *it = m_merit->item(i, 4)) it->setText(value);
+        if (auto *it = m_merit->item(i, 5)) it->setText(basis);
+    }
+    m_updating = was;
 }

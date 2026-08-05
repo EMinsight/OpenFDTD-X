@@ -3,17 +3,21 @@
 //     S パラメータ・コンパクトモデルを連結してチップ全体を秒単位で解析する。
 //   - シミュレーションモード (周波数領域 / 時間領域 / 混合)
 //   - 要素ライブラリ: 導波路・リング・DBR・MZI・MMI・GC・PD・レーザ… 12 種のカード
-//     (ドラッグして回路図に配置する想定なので OpenHandCursor)
-//   - ネットリスト表 (From / To / 波長依存)
+//     (回路図キャンバスが無いのでドラッグ配置はできない)
+//   - ネットリスト表 (From / To / 波長依存) — `Project::photonicNetlist()` の
+//     ビュー。編集はモデルへ書き戻され .ofdx ("schematic.netlist") に保存される。
+//     回路図からの自動生成と回路シミュレーションは未実装。
 //   - ノイズ・温度効果 (ショット/熱/RIN/位相雑音、熱光学シフト自動適用)
-// 光ドメイン選択時のみ表示される。状態はローカル (モック忠実、Project 対応欄なし)。
+// 光ドメイン選択時のみ表示される。ネットリスト以外の設定はローカル状態。
 #pragma once
+#include <QFont>
 #include <QScrollArea>
 
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QTableWidget;
+class QTableWidgetItem;
 
 namespace ofd {
 
@@ -24,14 +28,20 @@ class SchematicTab : public QScrollArea {
 public:
     explicit SchematicTab(Project *project, QWidget *parent = nullptr);
 
+private slots:
+    void refreshNetlist();                        // model → widgets
+    void onNetItemChanged(QTableWidgetItem *it);  // widgets → model
+
 private:
     Project      *m_p;
+    bool          m_updating = false;   // refresh 中の itemChanged 再入ガード
 
     // シミュレーション設定 / Simulation
     QComboBox    *m_mode;
 
     // ネットリスト / Connections
     QTableWidget *m_net;
+    QFont         m_netFont;            // 波長列の等幅フォント
 
     // ノイズ・温度効果 / Noise & temperature
     QCheckBox    *m_shot, *m_thermal, *m_rin, *m_phase, *m_toShift;

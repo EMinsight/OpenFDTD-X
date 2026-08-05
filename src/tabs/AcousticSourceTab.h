@@ -8,6 +8,8 @@
 // 音響/水中ドメインで表示され、水中選択時はソナー音源リストに切替わる。
 #pragma once
 #include <QScrollArea>
+#include <QVector>
+#include "../core/Project.h"   // AcousticSourceRow (音源リストの行)
 
 class QCheckBox;
 class QComboBox;
@@ -54,12 +56,20 @@ private:
     QWidget *buildDirectivityPage();
     QWidget *buildArrayPage();
     QWidget *buildAuralPage();
-    void fillSourceTable(bool underwater);
     bool isUnderwater() const;
+    // 音源リスト (Project::acoustic().sources / underwater().sources) と
+    // 表の同期。ドメインで対象リストが切り替わる。
+    QVector<AcousticSourceRow> &sourceList();
+    void applySourceCell(int row, int col);  // widgets → model (1 セル)
+    void refreshSourceTable();               // model → widgets
+    void addSourceRow(const AcousticSourceRow &row);
     // 選択 WAV を実読込して包絡線とレベル指標を表示 (QThread で非同期)
     void loadWavPreview(const QString &path);
-    // 選択された解析指向性モデルをポーラ図・特性値へ反映
+    // 選択された解析指向性モデルをポーラ図・帯域表・軸上特性へ反映
     void updateDirectivity();
+    // 可聴化品質指標: 実測 RIR (OperaAcousticSettings::rirPath) を非同期分析
+    void computeAuralQuality();
+    void clearAuralQuality();    // 未算出状態 ("—" + 説明) へ戻す
 
     Project    *m_p;
     bool        m_updating = false;
@@ -69,6 +79,7 @@ private:
     QLabel       *m_srcHint;
     QTableWidget *m_srcTable;
     QPushButton  *m_presetBtn;
+    QLabel       *m_srcModelNote = nullptr;  // 「計算へは渡されない」注記
     QLineEdit    *m_baseSpl;
     QLabel       *m_baseSplUnit;
 
@@ -90,9 +101,15 @@ private:
     PolarPatternView *m_polar = nullptr;
     QLabel       *m_polarInfo = nullptr;    // ビーム幅 / F/B / Q (閉形式)
     QLabel       *m_polarClfNote = nullptr; // CLF/GLL 選択時のみ表示する注記
+    QTableWidget *m_bandTable = nullptr;    // 帯域別指向性 (解析式 or "—")
+    QLabel       *m_bandNote = nullptr;
+    QLabel       *m_frNote = nullptr;       // 軸上周波数特性の状態注記
 
     // aural
     QComboBox    *m_renderRate;
+    QTableWidget *m_qualTable = nullptr;    // 可聴化品質指標 (実測 RIR 由来)
+    QLabel       *m_qualNote = nullptr;
+    bool          m_qualBusy = false;       // 非同期分析中
 };
 
 } // namespace ofd

@@ -8,6 +8,7 @@
 #pragma once
 #include <QScrollArea>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -25,9 +26,12 @@ public:
 
 private slots:
     void rebuildDomain();     // ドメイン変更 → モジュール表と詳細セクション
+    void refreshPlasma();     // プロジェクトの波長を読み直して Δn を再計算
+    void updatePlasma();      // 入力 → Δn / Δα (src/optics/PlasmaDispersion)
 
 private:
     Project      *m_p;
+    bool          m_updating = false;
 
     QLabel       *m_hint;         // ドメイン名を含む説明文
     QTableWidget *m_modules;      // 連成モジュール一覧
@@ -38,6 +42,17 @@ private:
     // ドメイン別詳細セクション (表示切替)
     SectionBox   *m_secThermo;    // 光: 熱光学
     SectionBox   *m_secPlasma;    // 光: プラズマ効果 (Drude)
+    // プラズマ効果の入力と算出結果 (実計算 — PlasmaDispersion)
+    QComboBox    *m_plModel   = nullptr;   // Soref-Bennett / Drude
+    QLineEdit    *m_plDeltaN  = nullptr;   // ΔN [cm^-3]
+    QLineEdit    *m_plDeltaP  = nullptr;   // ΔP [cm^-3]
+    QLineEdit    *m_plLambda  = nullptr;   // λ [nm] (既定はプロジェクトの光波長)
+    QLineEdit    *m_plIndex   = nullptr;   // 背景屈折率 n
+    QCheckBox    *m_plElectron = nullptr;  // 電子濃度依存を含める
+    QCheckBox    *m_plHole     = nullptr;  // 正孔濃度依存を含める
+    QLabel       *m_plFormula = nullptr;   // 使用した式
+    QLabel       *m_plResult  = nullptr;   // Δn / Δα の算出値
+    QLabel       *m_plWarn    = nullptr;   // 適用範囲外・入力不正の警告
     SectionBox   *m_secSar;       // EM: SAR → 温度
     SectionBox   *m_secVibro;     // 音響: 振動音響
     SectionBox   *m_secOcean;     // 水中: 海洋環境

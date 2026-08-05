@@ -2,6 +2,7 @@
 #include "SarTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../em/SarMetrics.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -109,11 +110,48 @@ const bool s_i18n = [] {
     I18n::reg("sar_std_icnirp_gp", "ICNIRP 一般環境",
               "ICNIRP general public");
     I18n::reg("sar_std_fcc", "FCC / IEEE C95.1", "FCC / IEEE C95.1");
+    I18n::reg("sar_std_fcc47", "FCC 47 CFR", "FCC 47 CFR");
+    I18n::reg("sar_std_ieee2019", "IEEE C95.1-2019", "IEEE C95.1-2019");
     I18n::reg("sar_std_icnirp", "ICNIRP", "ICNIRP");
     I18n::reg("sar_std_icnirp2020", "ICNIRP 2020", "ICNIRP 2020");
     I18n::reg("sar_std_ieee_th", "IEEE 熱指標", "IEEE thermal metric");
     I18n::reg("sar_ok", "適合", "Compliant");
+    I18n::reg("sar_ng", "不適合", "Non-compliant");
     I18n::reg("sar_na", "対象外", "Not applicable");
+    I18n::reg("sar_uneval", "未評価", "Not evaluated");
+    // 曝露区分 (指針値は区分で変わる)
+    I18n::reg("sar_category", "曝露区分", "Exposure category");
+    I18n::reg("sar_cat_gp", "一般環境 (uncontrolled)",
+              "General public (uncontrolled)");
+    I18n::reg("sar_cat_occ", "職業 (controlled)", "Occupational (controlled)");
+    I18n::reg("sar_m_temp_basis", "局所温度上昇 (健康影響の根拠値)",
+              "Local temperature rise (adverse-effect basis)");
+    // 点 SAR 換算 (定義式による実計算)
+    I18n::reg("sar_point_section", "点 SAR 換算 / Point SAR conversion",
+              "Point SAR conversion");
+    I18n::reg("sar_pt_hint",
+              "定義式 SAR = σ|E|²/(2ρ) (|E| は振幅) をその場で評価します。"
+              "IEEE Std C95.1-2019 §3 / IEC 62704-1:2017 の定義。",
+              "Evaluates the definition SAR = σ|E|²/(2ρ) (|E| = amplitude) "
+              "directly. Definition per IEEE Std C95.1-2019 §3 / "
+              "IEC 62704-1:2017.");
+    I18n::reg("sar_pt_sigma", "導電率 σ", "Conductivity σ");
+    I18n::reg("sar_pt_rho", "組織密度 ρ", "Tissue density ρ");
+    I18n::reg("sar_pt_efield", "電界 |E| (実効値)", "Electric field |E| (rms)");
+    I18n::reg("sar_pt_cp", "比熱 c_p", "Specific heat c_p");
+    I18n::reg("sar_pt_time", "曝露時間", "Exposure time");
+    I18n::reg("sar_pt_result", "算出値", "Computed");
+    I18n::reg("sar_pt_caveat",
+              "⚠ 点 SAR は 1 g / 10 g 空間平均 SAR とは別量で、下表の指針値との"
+              "適合判定には使えません (空間平均には電界分布全体が必要)。\n"
+              "温度上昇は熱伝導・血流灌流を無視した断熱上限 (ΔT = SAR·t/c_p)。",
+              "⚠ Point SAR is a different quantity from the 1 g / 10 g "
+              "spatial-average SAR and cannot be compared with the limits in "
+              "the table below (spatial averaging needs the full field "
+              "distribution).\nThe temperature rise is the adiabatic upper "
+              "bound ΔT = SAR·t/c_p (conduction and perfusion neglected).");
+    I18n::reg("sar_pt_bad", "⚠ 入力が不正です (σ ≥ 0, ρ > 0, |E| ≥ 0)",
+              "⚠ Invalid input (σ ≥ 0, ρ > 0, |E| ≥ 0)");
     I18n::reg("sar_bioheat", "Pennes BioHeat 方程式で温度上昇を連成計算",
               "Co-simulate the temperature rise with the Pennes BioHeat equation");
     I18n::reg("sar_uncertainty", "不確かさ評価 (IEC 62704-1 準拠)",
@@ -130,18 +168,28 @@ const bool s_i18n = [] {
     I18n::reg("sar_btn_report", "📄 適合宣言用レポート (IEC 62704)",
               "📄 Declaration-of-conformity report (IEC 62704)");
 
-    // 安全規制に関わる表のため強い注記を付ける (絶対規則 5)
-    I18n::reg("sar_sample_warn",
-              "⚠ サンプル値 — 実際の SAR 計算・適合評価は未実装 "
-              "(適合宣言に使用不可)",
-              "⚠ Sample values — actual SAR computation and compliance "
-              "assessment are not implemented (must not be used for a "
-              "declaration of conformity)");
+    // 安全規制に関わる表のため強い注記を付ける (絶対規則 5)。
+    // 算出値は持たない (未計算) ので「サンプル値」ではなく状態を説明する。
+    I18n::reg("sar_status_warn",
+              "⚠ 算出値は未計算です — SAR 分布の計算は未実装のため、"
+              "「算出値」「判定」は空欄のままです (適合宣言に使用不可)。",
+              "⚠ No computed values — the SAR distribution is not implemented, "
+              "so the “Computed” and “Verdict” columns stay empty (must not be "
+              "used for a declaration of conformity).");
+    I18n::reg("sar_limits_note",
+              "▸ 「指針値」欄は規格の基本制限そのもの (周波数と曝露区分から選択)。"
+              "算出値を埋めるには ofd カーネルによる SAR 分布計算と "
+              "IEC 62704-1 の空間平均処理が必要です (いずれも未実装)。",
+              "▸ The “Guideline” column holds the basic restrictions of the "
+              "standards themselves (selected by frequency and exposure "
+              "category). Filling the computed column requires an SAR "
+              "distribution from the ofd kernel plus the IEC 62704-1 spatial "
+              "averaging — neither is implemented yet.");
+    I18n::reg("sar_col_avg", "平均化", "Averaging");
     return true;
 }();
 
 // ── 小物ヘルパー (mock の badge / muted / q-table / Seg 相当) ───────────────
-const char kOk[]    = "#2E8B57";    // badge ok
 const char kMuted[] = "#888888";    // badge (色指定なし)
 
 QLabel *makeHint(const QString &text, QWidget *parent)
@@ -254,21 +302,39 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
     return t;
 }
 
-// 評価指標表 (モックの <tbody> をそのまま。&gt; は > に戻す)
-struct MetricRow { const char *nameKey, *value, *limit, *stdKey, *verdictKey;
-                   const char *color; };
-const MetricRow kMetrics[5] = {
-    { "sar_m_10g",  "1.42 W/kg",  "2.0",      "sar_std_icnirp_gp",
-      "sar_ok", kOk },
-    { "sar_m_1g",   "1.18 W/kg",  "1.6",      "sar_std_fcc",
-      "sar_ok", kOk },
-    { "sar_m_wb",   "0.028 W/kg", "0.08",     "sar_std_icnirp",
-      "sar_ok", kOk },
-    { "sar_m_pd",   "—",          "10 W/m²",  "sar_std_icnirp2020",
-      "sar_na", kMuted },
-    { "sar_m_temp", "0.21 K",     "1.0",      "sar_std_ieee_th",
-      "sar_ok", kOk },
+// 評価指標表の行定義。
+// 「指針値」は規格そのもの (src/em/SarMetrics) から周波数・曝露区分に応じて
+// 引く実データ。「算出値」「判定」は SAR 分布の計算が未実装なので空欄のまま
+// (固定のサンプル値を出さない — CLAUDE.md 絶対規則 5・6)。
+struct MetricRow {
+    const char    *nameKey;
+    em::Standard   standard;
+    em::Metric     metric;
+    const char    *stdKey;
 };
+const MetricRow kMetrics[5] = {
+    { "sar_m_10g",        em::Standard::Icnirp2020,
+      em::Metric::LocalSar10g,          "sar_std_icnirp2020" },
+    { "sar_m_1g",         em::Standard::Fcc47Cfr,
+      em::Metric::LocalSar1g,           "sar_std_fcc47"      },
+    { "sar_m_wb",         em::Standard::Icnirp2020,
+      em::Metric::WholeBodySar,         "sar_std_icnirp2020" },
+    { "sar_m_pd",         em::Standard::Icnirp2020,
+      em::Metric::IncidentPowerDensity, "sar_std_icnirp2020" },
+    { "sar_m_temp_basis", em::Standard::IeeeC95_1_2019,
+      em::Metric::LocalTemperatureRise, "sar_std_ieee2019"   },
+};
+
+// 平均化の説明 ("10 g / 6 min")
+QString averagingText(const em::ExposureLimit &l)
+{
+    QStringList parts;
+    if (l.averagingMass_g > 0.0)
+        parts << QString::number(l.averagingMass_g, 'g', 3) + " g";
+    if (l.averagingTime_s > 0.0)
+        parts << QString::number(l.averagingTime_s / 60.0, 'g', 3) + " min";
+    return parts.isEmpty() ? QString::fromUtf8("—") : parts.join(" / ");
+}
 } // namespace
 
 // ── SarTab ──────────────────────────────────────────────────────────────────
@@ -314,24 +380,34 @@ SarTab::SarTab(Project *project, QWidget *parent)
     m_txPower = numEdit("24", ss);
     ss->form()->addRow(I18n::tr("sar_tx_power"),
                        unitRow(m_txPower, I18n::tr("sar_tx_power_unit"), ss));
-    // 曝露源の入力 (機器/周波数/送信電力) はどこにも読まれない
-    // (未実装の明示 — 絶対規則 5)
+    // 曝露区分 — 指針値の選択に実際に使う (機器/送信電力はまだ未使用)
+    m_category = new QComboBox(ss);
+    m_category->addItems({ I18n::tr("sar_cat_gp"), I18n::tr("sar_cat_occ") });
+    ss->form()->addRow(I18n::tr("sar_category"), m_category);
+    // 機器・送信電力はどこにも読まれない (未実装の明示 — 絶対規則 5)
     ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
     v->addWidget(ss);
 
+    // ── 点 SAR 換算 (定義式による実計算) ────────────────────────────────────
+    v->addWidget(buildPointSarSection(body));
+
     // ── 評価指標 / Metrics ──────────────────────────────────────────────────
     auto *sme = new SectionBox(I18n::tr("sar_metrics_section"), body);
-    // 表は完全な固定値で ICNIRP/FCC の「適合」を無条件表示するモック。
-    // 安全規制に関わるため、表ヘッダ付近に強い注記を置く (絶対規則 5)
-    auto *sampleWarn = new QLabel(I18n::tr("sar_sample_warn"), sme);
-    sampleWarn->setWordWrap(true);
-    sampleWarn->setStyleSheet("font-weight:600; color:#B91C1C;");
-    sme->vbox()->addWidget(sampleWarn);
+    // 算出値は持たない (SAR 分布の計算が未実装)。固定のサンプル値を出さず、
+    // 空欄 +「未評価」とし、何が足りないかを明示する (絶対規則 5・6)。
+    auto *statusWarn = new QLabel(I18n::tr("sar_status_warn"), sme);
+    statusWarn->setWordWrap(true);
+    statusWarn->setStyleSheet("font-weight:600; color:#B91C1C;");
+    sme->vbox()->addWidget(statusWarn);
     m_metrics = makeTable({ I18n::tr("sar_col_metric"), I18n::tr("sar_col_value"),
-                            I18n::tr("sar_col_limit"), I18n::tr("sar_col_std"),
+                            I18n::tr("sar_col_limit"), I18n::tr("sar_col_avg"),
+                            I18n::tr("sar_col_std"),
                             I18n::tr("sar_col_verdict") }, 5, sme, 165);
     sme->vbox()->addWidget(m_metrics);
-    sme->vbox()->addWidget(tabhelp::sampleNote(sme));
+    auto *limitsNote = new QLabel(I18n::tr("sar_limits_note"), sme);
+    limitsNote->setWordWrap(true);
+    limitsNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sme->vbox()->addWidget(limitsNote);
     fillMetricsTable();
     m_bioHeat     = makeCheck(I18n::tr("sar_bioheat"), true, sme);
     m_uncertainty = makeCheck(I18n::tr("sar_uncertainty"), false, sme);
@@ -369,8 +445,74 @@ SarTab::SarTab(Project *project, QWidget *parent)
         m_modelIdx = id;
         onModelChanged();
     });
+    // 周波数・曝露区分は指針値の選択に効く → 変更のたびに表を作り直す
+    connect(m_freq, &QLineEdit::textChanged, this,
+            [this](const QString &) { fillMetricsTable(); });
+    connect(m_category, &QComboBox::currentIndexChanged, this,
+            [this](int) { fillMetricsTable(); });
     connect(project, &Project::loaded, this, &SarTab::refresh);
     refresh();
+}
+
+// ── 点 SAR 換算 (SAR = σ|E|²/(2ρ)) ─────────────────────────────────────────
+QWidget *SarTab::buildPointSarSection(QWidget *parent)
+{
+    auto *s = new SectionBox(I18n::tr("sar_point_section"), parent);
+    s->vbox()->addWidget(makeHint(I18n::tr("sar_pt_hint"), s));
+
+    // 既定値は 1950 MHz の筋肉 (IT'IS Tissue Properties Database V4.1)
+    m_ptSigma = numEdit("1.45", s);
+    s->form()->addRow(I18n::tr("sar_pt_sigma"), unitRow(m_ptSigma, "S/m", s));
+    m_ptRho = numEdit("1090", s);
+    s->form()->addRow(I18n::tr("sar_pt_rho"),
+                      unitRow(m_ptRho, QString::fromUtf8("kg/m³"), s));
+    m_ptField = numEdit("61.4", s);
+    s->form()->addRow(I18n::tr("sar_pt_efield"),
+                      unitRow(m_ptField, "V/m (rms)", s));
+    m_ptCp = numEdit("3421", s);
+    s->form()->addRow(I18n::tr("sar_pt_cp"),
+                      unitRow(m_ptCp, QString::fromUtf8("J/(kg·K)"), s));
+    m_ptTime = numEdit("360", s);
+    s->form()->addRow(I18n::tr("sar_pt_time"), unitRow(m_ptTime, "s", s));
+
+    m_ptResult = makeMono(QString::fromUtf8("—"), s);
+    m_ptResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    s->form()->addRow(I18n::tr("sar_pt_result"), m_ptResult);
+
+    auto *caveat = makeHint(I18n::tr("sar_pt_caveat"), s);
+    caveat->setStyleSheet("color:#B45309;");
+    s->vbox()->addWidget(caveat);
+
+    for (QLineEdit *e : { m_ptSigma, m_ptRho, m_ptField, m_ptCp, m_ptTime })
+        connect(e, &QLineEdit::textChanged, this, &SarTab::updatePointSar);
+    updatePointSar();
+    return s;
+}
+
+void SarTab::updatePointSar()
+{
+    bool ok[5] = { false, false, false, false, false };
+    const double sigma = m_ptSigma->text().trimmed().toDouble(&ok[0]);
+    const double rho   = m_ptRho->text().trimmed().toDouble(&ok[1]);
+    const double erms  = m_ptField->text().trimmed().toDouble(&ok[2]);
+    const double cp    = m_ptCp->text().trimmed().toDouble(&ok[3]);
+    const double t     = m_ptTime->text().trimmed().toDouble(&ok[4]);
+    for (bool b : ok) if (!b) {
+        m_ptResult->setText(I18n::tr("sar_pt_bad"));
+        return;
+    }
+    if (sigma < 0.0 || rho <= 0.0 || erms < 0.0) {
+        m_ptResult->setText(I18n::tr("sar_pt_bad"));
+        return;
+    }
+    const double sar = em::sarFromRmsField(sigma, erms, rho);
+    const double pd  = em::planeWavePowerDensityFromRms(erms);
+    const double dT  = em::adiabaticTemperatureRise(sar, t, cp);
+    m_ptResult->setText(
+        QString::fromUtf8("SAR = %1 W/kg    S = %2 W/m²    ΔT ≤ %3 K")
+            .arg(QString::number(sar, 'g', 4))
+            .arg(QString::number(pd, 'g', 4))
+            .arg(QString::number(dT, 'g', 3)));
 }
 
 void SarTab::refresh()
@@ -432,14 +574,55 @@ QWidget *SarTab::buildHeadPane(QWidget *parent)
     return pane;
 }
 
+// 指針値は規格 (src/em/SarMetrics) から周波数・曝露区分に応じて引く。
+// 算出値は無いので空欄 + 「未評価」/「対象外」とする (絶対規則 5)。
 void SarTab::fillMetricsTable()
 {
+    bool okF = false;
+    const double fMHz = m_freq->text().trimmed().toDouble(&okF);
+    const double f_Hz = (okF && fMHz > 0.0) ? fMHz * 1.0e6 : -1.0;
+    const em::Category cat = (m_category->currentIndex() == 1)
+                                 ? em::Category::Occupational
+                                 : em::Category::GeneralPublic;
+    const QString catText = I18n::tr(m_category->currentIndex() == 1
+                                         ? "sar_cat_occ" : "sar_cat_gp");
+    const QString dash = QString::fromUtf8("—");
+
     for (int r = 0; r < 5; ++r) {
         const MetricRow &row = kMetrics[r];
+        const em::ExposureLimit lim =
+            em::exposureLimit(row.standard, cat, row.metric,
+                              f_Hz > 0.0 ? f_Hz : 0.0);
+
         m_metrics->setItem(r, 0, textItem(I18n::tr(row.nameKey)));
-        m_metrics->setItem(r, 1, numItem(QString::fromUtf8(row.value)));
-        m_metrics->setItem(r, 2, numItem(QString::fromUtf8(row.limit)));
-        m_metrics->setItem(r, 3, textItem(I18n::tr(row.stdKey)));
-        m_metrics->setItem(r, 4, badgeItem(I18n::tr(row.verdictKey), row.color));
+        // 算出値: SAR 分布が無いので常に未計算
+        m_metrics->setItem(r, 1, numItem(dash));
+        // 指針値 (規格値)
+        const QString limitText =
+            lim.defined ? QString::number(lim.value, 'g', 3) + " "
+                              + QString::fromUtf8(lim.unit)
+                        : dash;
+        m_metrics->setItem(r, 2, numItem(limitText));
+        m_metrics->setItem(r, 3, textItem(lim.defined ? averagingText(lim)
+                                                      : dash));
+        m_metrics->setItem(r, 4,
+                           textItem(I18n::tr(row.stdKey) + " / " + catText));
+        // 判定: 未計算なので「未評価」。周波数が適用範囲外なら「対象外」
+        const em::Verdict v = em::evaluate(lim, 0.0, /*hasValue=*/false);
+        const bool na = (v == em::Verdict::NotApplicable);
+        m_metrics->setItem(r, 5,
+                           badgeItem(I18n::tr(na ? "sar_na" : "sar_uneval"),
+                                     kMuted));
+
+        // 出典条項と適用周波数範囲をツールチップに (表示欄は狭いため)
+        if (lim.defined) {
+            const QString tip =
+                QString::fromUtf8("%1\n%2 – %3 MHz")
+                    .arg(QString::fromUtf8(lim.reference))
+                    .arg(QString::number(lim.fmin_Hz / 1.0e6, 'g', 4))
+                    .arg(QString::number(lim.fmax_Hz / 1.0e6, 'g', 4));
+            for (int c = 0; c < 6; ++c)
+                if (auto *it = m_metrics->item(r, c)) it->setToolTip(tip);
+        }
     }
 }

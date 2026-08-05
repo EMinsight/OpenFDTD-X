@@ -4,6 +4,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
+#include "../acoustics/core/RoomModes.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -20,8 +21,11 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QVector>
+#include <algorithm>
+#include <vector>
 
 using namespace ofd;
+namespace rm = ofd::acoustics::roommodes;
 
 // ── タブ固有語彙 (cab_) — file-local 登録 ───────────────────────────────────
 namespace {
@@ -91,17 +95,59 @@ const bool s_i18n = [] {
     I18n::reg("cab_cad", "3Dモデル", "3D model");
     I18n::reg("cab_browse", "📁 参照…", "📁 Browse…");
     I18n::reg("cab_modal_row", "音響モード解析", "Acoustic modal analysis");
-    I18n::reg("cab_modal", "〜200Hzの固有モード抽出",
-              "Extract eigenmodes up to 200 Hz");
-    I18n::reg("cab_modal_note",
-              "1次: 42Hz (前後) / 2次: 68Hz (左右) / 3次: 87Hz (上下) — ブーミング対策周波数",
-              "1st: 42 Hz (fore-aft) / 2nd: 68 Hz (lateral) / 3rd: 87 Hz "
-              "(vertical) — booming countermeasure frequencies");
+    I18n::reg("cab_modal", "固有モードを計算する",
+              "Compute the eigenmodes");
     I18n::reg("cab_absorb", "吸音内装", "Interior absorption");
     I18n::reg("cab_abs_roof", "ルーフライナー", "Roof liner");
     I18n::reg("cab_abs_carpet", "カーペット", "Carpet");
     I18n::reg("cab_abs_door", "ドアトリム", "Door trim");
     I18n::reg("cab_abs_seat", "シート", "Seats");
+    // 車室音響モード (直方体近似の厳密解)
+    I18n::reg("cab_mode_section", "車室音響モード (直方体近似)",
+              "Cabin acoustic modes (rectangular approximation)");
+    I18n::reg("cab_mode_hint",
+              "剛壁直方体室の固有周波数 f(nx,ny,nz) = (c/2)·√((nx/L)²+(ny/W)²+(nz/H)²) "
+              "を下の寸法から計算します (Rayleigh, The Theory of Sound Vol.II §267, 1896)。"
+              "ブーミング対策で狙う周波数の目安になります。"
+              "初期値は乗用車を想定した入力例です — 対象車両の実寸法に"
+              "置き換えてください。",
+              "Eigenfrequencies of a rigid-walled rectangular room, "
+              "f(nx,ny,nz) = (c/2)·√((nx/L)²+(ny/W)²+(nz/H)²), computed from the "
+              "dimensions below (Rayleigh, The Theory of Sound Vol. II §267, 1896). "
+              "They indicate the frequencies to target against booming. The "
+              "initial values are an example for a passenger car — replace them "
+              "with the real dimensions of your vehicle.");
+    I18n::reg("cab_dim_l", "長さ L (前後)", "Length L (fore-aft)");
+    I18n::reg("cab_dim_w", "幅 W (左右)", "Width W (lateral)");
+    I18n::reg("cab_dim_h", "高さ H (上下)", "Height H (vertical)");
+    I18n::reg("cab_temp", "室温", "Air temperature");
+    I18n::reg("cab_fmax", "計算上限周波数", "Upper frequency");
+    I18n::reg("cab_h_order", "次数 (nx,ny,nz)", "Order (nx,ny,nz)");
+    I18n::reg("cab_h_freq", "周波数 [Hz]", "Frequency [Hz]");
+    I18n::reg("cab_h_kind", "種別", "Type");
+    I18n::reg("cab_kind_axial", "軸 (axial)", "Axial");
+    I18n::reg("cab_kind_tang", "接線 (tangential)", "Tangential");
+    I18n::reg("cab_kind_obl", "斜め (oblique)", "Oblique");
+    I18n::reg("cab_mode_summary",
+              "音速 c = %1 m/s (%2 ℃) / 容積 V = %3 m³ / "
+              "%4 Hz 以下のモード数 %5 (表示 %6) / 最低次モード %7 Hz",
+              "c = %1 m/s (%2 °C) / V = %3 m³ / %5 modes below %4 Hz "
+              "(%6 listed) / lowest mode %7 Hz");
+    I18n::reg("cab_mode_bad",
+              "▸ 未計算 — 寸法・室温・上限周波数を正の数で入力してください。",
+              "▸ Not computed — enter positive values for the dimensions, "
+              "temperature and upper frequency.");
+    I18n::reg("cab_mode_off",
+              "▸ 未計算 — 「音響モード解析」のチェックを入れると計算します。",
+              "▸ Not computed — tick “Acoustic modal analysis” to compute.");
+    I18n::reg("cab_mode_src",
+              "▸ 剛壁・直方体・無損失の理想化に基づく解析解です。実際の車室 "
+              "(曲面・座席・吸音内装・窓) の共鳴周波数とは差が出ます。音速は "
+              "c = 331.3·√(1+t/273.15) (ISO 9613-1:1993)。",
+              "▸ Closed-form solution for an idealised rigid, lossless, "
+              "rectangular room. Real cabins (curved surfaces, seats, trim, "
+              "glazing) resonate at somewhat different frequencies. Speed of "
+              "sound c = 331.3·√(1+t/273.15) (ISO 9613-1:1993).");
     // 評価
     I18n::reg("cab_metrics_section", "評価", "Metrics");
     I18n::reg("cab_m_earspl", "運転席耳位置 SPL (dB(A))",
@@ -111,44 +157,75 @@ const bool s_i18n = [] {
     I18n::reg("cab_m_loud", "Loudness (ISO 532-1)", "Loudness (ISO 532-1)");
     I18n::reg("cab_m_sharp", "Sharpness / Roughness (音質評価)",
               "Sharpness / Roughness (sound quality)");
-    I18n::reg("cab_result", "60km/h 巡航: 62.4 dB(A)",
-              "60 km/h cruise: 62.4 dB(A)");
-    I18n::reg("cab_seg_avg", "セグメント平均 -1.8dB",
-              "-1.8 dB vs segment average");
+    I18n::reg("cab_h_metric", "指標", "Metric");
+    I18n::reg("cab_h_value", "値", "Value");
+    I18n::reg("cab_h_need", "算出に必要なもの", "Required to compute it");
+    I18n::reg("cab_dash", "—", "—");
+    I18n::reg("cab_need_spl",
+              "校正済みの車室内音場 (連成解析または実測)。未校正の絶対 SPL は表示しない",
+              "A calibrated cabin sound field (coupled analysis or measurement); "
+              "uncalibrated absolute SPL is never shown");
+    I18n::reg("cab_need_ai",
+              "オクターブ帯域の信号・騒音レベル (ANSI S3.5)",
+              "Octave-band speech and noise levels (ANSI S3.5)");
+    I18n::reg("cab_need_loud",
+              "1/3 オクターブ帯域スペクトル (ISO 532-1 の実装は未着手)",
+              "Third-octave spectrum (ISO 532-1 not implemented)");
+    I18n::reg("cab_need_sharp",
+              "同スペクトル (Sharpness / Roughness の実装は未着手)",
+              "The same spectrum (sharpness / roughness not implemented)");
+    I18n::reg("cab_metrics_note",
+              "▸ いずれも未計算です — 車室の構造振動+音響連成解析が未実装のため、"
+              "値を出せる入力がありません。校正の無い絶対 SPL や根拠の無い比較値は "
+              "表示しません。連成解析またはキャリブレーション済み実測の結果が"
+              "入力された時点で、この表の「値」欄が埋まります。",
+              "▸ Nothing here is computed yet: the coupled structural-acoustic "
+              "analysis of the cabin is not implemented, so there is no input "
+              "from which to derive these values. Uncalibrated absolute SPL and "
+              "unsupported comparisons are never displayed. The Value column "
+              "fills in once a coupled analysis or a calibrated measurement "
+              "provides results.");
     I18n::reg("cab_aural_btn", "🎧 車内音の可聴化", "🎧 Auralize cabin sound");
     I18n::reg("cab_tpa_btn", "📊 寄与度分析 (TPA)",
               "📊 Contribution analysis (TPA)");
     // 対策検討
     I18n::reg("cab_meas_section", "対策検討", "Countermeasures");
     I18n::reg("cab_h_meas", "対策", "Countermeasure");
-    I18n::reg("cab_h_effect", "効果", "Effect");
-    I18n::reg("cab_h_weight", "重量", "Weight");
-    I18n::reg("cab_h_cost", "コスト", "Cost");
+    I18n::reg("cab_h_effect", "効果 [dB] (入力)", "Effect [dB] (entered)");
+    I18n::reg("cab_h_weight", "重量 [kg] (入力)", "Weight [kg] (entered)");
+    I18n::reg("cab_h_cost", "コスト (入力)", "Cost (entered)");
     I18n::reg("cab_meas_dash", "ダッシュインシュレータ増厚",
               "Thicker dash insulator");
     I18n::reg("cab_meas_damp", "制振材 (フロア)", "Damping material (floor)");
     I18n::reg("cab_meas_glass", "遮音ガラス (合わせ)",
               "Acoustic laminated glass");
     I18n::reg("cab_meas_anc", "ANC (アクティブ制御)", "ANC (active control)");
-    I18n::reg("cab_eff_glass", "-1.8 dB (風切)", "-1.8 dB (wind)");
-    I18n::reg("cab_eff_anc", "-8 dB (@40-200Hz)", "-8 dB (@40-200 Hz)");
-    I18n::reg("cab_cost_low", "低", "Low");
-    I18n::reg("cab_cost_mid", "中", "Medium");
-    I18n::reg("cab_cost_high", "高", "High");
+    I18n::reg("cab_meas_note",
+              "▸ 効果・重量・コストの各欄は空欄です — 対策の効果は解析または実測が"
+              "必要で、本画面には算出根拠がありません (未計算)。ダブルクリックで"
+              "自分の解析値・見積り値を入力できます (入力値であって計算結果では"
+              "ありません)。合計するのは重量だけです — 効果 [dB] は伝搬経路が"
+              "異なるため単純加算できません。",
+              "▸ The effect / weight / cost cells are empty: the benefit of a "
+              "countermeasure has to come from analysis or measurement, and this "
+              "screen has no basis to derive it (not computed). Double-click a "
+              "cell to enter your own analysed or estimated figures (entered "
+              "values, not computed results). Only weight is summed — effects in "
+              "dB act on different paths and cannot simply be added.");
+    I18n::reg("cab_meas_total",
+              "選択中 %1 件 / 重量入力済み %2 件の合計 %3 kg",
+              "%1 selected / %3 kg total over the %2 rows with a weight entered");
+    I18n::reg("cab_meas_total_none",
+              "選択中 %1 件 / 重量の入力がないため合計は未計算",
+              "%1 selected / no weight entered, so no total");
     return true;
 }();
 
 // ── 小物ヘルパー (mock の badge / muted / q-table 相当) ─────────────────────
 const char kAcc[] = "#0078D4";      // badge acc
-const char kOk[]  = "#2E8B57";      // badge ok
 
-QLabel *makeBadge(const QString &text, const char *color, QWidget *parent)
-{
-    auto *l = new QLabel(text, parent);
-    l->setStyleSheet(QString("color:%1; border:1px solid %1; border-radius:3px;"
-                             " padding:1px 6px; font-weight:600;").arg(color));
-    return l;
-}
+// モード表に並べる最大行数 (総数は要約行に出す)
+const int kShownModes = 40;
 
 QLabel *makeHint(const QString &text, QWidget *parent)
 {
@@ -162,6 +239,23 @@ QCheckBox *makeCheck(const QString &text, bool on, QWidget *parent)
     auto *c = new QCheckBox(text, parent);
     c->setChecked(on);
     return c;
+}
+
+QLineEdit *numEdit(const QString &text, QWidget *parent, int w = 80)
+{
+    auto *e = new QLineEdit(text, parent);
+    e->setMaximumWidth(w);
+    return e;
+}
+
+// 「値 + 単位」の 1 行 (mock の <Row><Num/><span class=muted/></Row> 相当)
+QHBoxLayout *unitRow(QWidget *w, const QString &unit, QWidget *parent)
+{
+    auto *h = new QHBoxLayout();
+    h->addWidget(w);
+    h->addWidget(new QLabel(unit, parent));
+    h->addStretch(1);
+    return h;
 }
 
 // <Seg> 相当 (少数選択肢の排他セグメント) — QComboBox で再現
@@ -283,11 +377,6 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     auto *cadBrowse = new QPushButton(I18n::tr("cab_browse"), sc);
     hCad->addWidget(cadBrowse);
     sc->form()->addRow(I18n::tr("cab_cad"), hCad);
-    m_modal = makeCheck(I18n::tr("cab_modal"), true, sc);
-    sc->form()->addRow(I18n::tr("cab_modal_row"), m_modal);
-    sc->vbox()->addWidget(makeHint(I18n::tr("cab_modal_note"), sc));
-    // モード周波数は固定サンプル (解析結果ではない)
-    sc->vbox()->addWidget(tabhelp::sampleNote(sc));
     m_absRoof   = makeCheck(I18n::tr("cab_abs_roof"),   true, sc);
     m_absCarpet = makeCheck(I18n::tr("cab_abs_carpet"), true, sc);
     m_absDoor   = makeCheck(I18n::tr("cab_abs_door"),   true, sc);
@@ -295,9 +384,35 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     sc->form()->addRow(I18n::tr("cab_absorb"),
                        checkRow({ m_absRoof, m_absCarpet, m_absDoor,
                                   m_absSeat }));
-    // 車室モデル設定はまだどこにも読まれない
+    // CAD ファイル・吸音内装のチェックはまだどこにも読まれない
+    // (下の音響モード計算は寸法入力のみを使う)
     sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
     v->addWidget(sc);
+
+    // ── 車室音響モード (直方体近似の厳密解) ────────────────────────────────
+    // 固定サンプルだった「1次 42Hz / 2次 68Hz / 3次 87Hz」を、入力寸法からの
+    // 実計算 (acoustics/core/RoomModes) へ置き換えたもの。
+    auto *smd = new SectionBox(I18n::tr("cab_mode_section"), body);
+    smd->vbox()->addWidget(makeHint(I18n::tr("cab_mode_hint"), smd));
+    m_modal = makeCheck(I18n::tr("cab_modal"), true, smd);
+    smd->form()->addRow(I18n::tr("cab_modal_row"), m_modal);
+    m_dimL = numEdit("2.40", smd);
+    m_dimW = numEdit("1.45", smd);
+    m_dimH = numEdit("1.15", smd);
+    smd->form()->addRow(I18n::tr("cab_dim_l"), unitRow(m_dimL, "m", smd));
+    smd->form()->addRow(I18n::tr("cab_dim_w"), unitRow(m_dimW, "m", smd));
+    smd->form()->addRow(I18n::tr("cab_dim_h"), unitRow(m_dimH, "m", smd));
+    m_temp = numEdit("20", smd);
+    smd->form()->addRow(I18n::tr("cab_temp"), unitRow(m_temp, "℃", smd));
+    m_fmax = numEdit("200", smd);
+    smd->form()->addRow(I18n::tr("cab_fmax"), unitRow(m_fmax, "Hz", smd));
+    m_modeTable = makeTable({ I18n::tr("cab_h_order"), I18n::tr("cab_h_freq"),
+                              I18n::tr("cab_h_kind") }, 0, smd, 220);
+    smd->vbox()->addWidget(m_modeTable);
+    m_modeSummary = makeHint(QString(), smd);
+    smd->vbox()->addWidget(m_modeSummary);
+    smd->vbox()->addWidget(makeHint(I18n::tr("cab_mode_src"), smd));
+    v->addWidget(smd);
 
     // ── 評価 ────────────────────────────────────────────────────────────────
     auto *se = new SectionBox(I18n::tr("cab_metrics_section"), body);
@@ -307,16 +422,13 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     m_mSharpness = makeCheck(I18n::tr("cab_m_sharp"),  false, se);
     se->vbox()->addLayout(checkRow({ m_mSpl, m_mAi }));
     se->vbox()->addLayout(checkRow({ m_mLoudness, m_mSharpness }));
-    // 評価指標チェックはローカル状態のみ (どこにも読まれない)
-    se->vbox()->addWidget(tabhelp::unwiredNote(se));
-    auto *hBadge = new QHBoxLayout();
-    hBadge->addWidget(makeBadge(I18n::tr("cab_result"), kAcc, se));
-    hBadge->addWidget(makeBadge(I18n::tr("cab_seg_avg"), kOk, se));
-    hBadge->addStretch(1);
-    se->vbox()->addLayout(hBadge);
-    // 評価バッジは固定サンプル — 校正なし絶対 SPL を実測と誤認させない
-    // (絶対規則 5・6)
-    se->vbox()->addWidget(tabhelp::sampleNote(se));
+    // 固定サンプルだった「62.4 dB(A)」「セグメント平均 -1.8dB」のバッジを、
+    // 「未計算 (—)」+ 何があれば埋まるかの表へ置き換えたもの。
+    // 校正の無い絶対 SPL は表示しない (絶対規則 6)。
+    m_metricTable = makeTable({ I18n::tr("cab_h_metric"), I18n::tr("cab_h_value"),
+                                I18n::tr("cab_h_need") }, 0, se, 120);
+    se->vbox()->addWidget(m_metricTable);
+    se->vbox()->addWidget(makeHint(I18n::tr("cab_metrics_note"), se));
     auto *hBtn = new QHBoxLayout();
     auto *auralBtn = new QPushButton(I18n::tr("cab_aural_btn"), se);
     auto *tpaBtn   = new QPushButton(I18n::tr("cab_tpa_btn"), se);
@@ -334,27 +446,28 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
                                  I18n::tr("cab_h_effect"),
                                  I18n::tr("cab_h_weight"),
                                  I18n::tr("cab_h_cost") }, 4, sw, 150);
-    struct Meas { bool on; const char *name; const char *effect;
-                  const char *weight; const char *cost; bool effKey; };
-    static const Meas kMeas[4] = {
-        { true,  "cab_meas_dash",  "-2.1 dB",      "+1.2 kg", "cab_cost_mid",  false },
-        { false, "cab_meas_damp",  "-1.4 dB",      "+2.8 kg", "cab_cost_low",  false },
-        { true,  "cab_meas_glass", "cab_eff_glass","+3.5 kg", "cab_cost_high", true  },
-        { false, "cab_meas_anc",   "cab_eff_anc",  "+0.5 kg", "cab_cost_high", true  },
+    // 効果 / 重量 / コストは固定サンプルを廃し、既定は空欄 (未計算)。
+    // 利用者が自分の解析値・見積り値を入力できるセルにする。
+    static const char *const kMeasName[4] = {
+        "cab_meas_dash", "cab_meas_damp", "cab_meas_glass", "cab_meas_anc"
     };
+    m_measureTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                    | QAbstractItemView::SelectedClicked
+                                    | QAbstractItemView::EditKeyPressed);
     for (int i = 0; i < 4; ++i) {
-        m_measureTable->setItem(i, 0, checkItem(kMeas[i].on));
-        m_measureTable->setItem(i, 1, textItem(I18n::tr(kMeas[i].name)));
-        m_measureTable->setItem(i, 2,
-            numItem(kMeas[i].effKey ? I18n::tr(kMeas[i].effect)
-                                    : QString::fromUtf8(kMeas[i].effect)));
-        m_measureTable->setItem(i, 3,
-            numItem(QString::fromUtf8(kMeas[i].weight)));
-        m_measureTable->setItem(i, 4, textItem(I18n::tr(kMeas[i].cost)));
+        m_measureTable->setItem(i, 0, checkItem(false));
+        m_measureTable->setItem(i, 1, textItem(I18n::tr(kMeasName[i])));
+        for (int c = 2; c <= 4; ++c) {
+            auto *it = (c == 4) ? textItem(QString()) : numItem(QString());
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable
+                         | Qt::ItemIsEditable);
+            m_measureTable->setItem(i, c, it);
+        }
     }
     sw->vbox()->addWidget(m_measureTable);
-    // 対策効果・重量・コストは固定サンプル (解析結果ではない)
-    sw->vbox()->addWidget(tabhelp::sampleNote(sw));
+    m_measureSummary = makeHint(QString(), sw);
+    sw->vbox()->addWidget(m_measureSummary);
+    sw->vbox()->addWidget(makeHint(I18n::tr("cab_meas_note"), sw));
     v->addWidget(sw);
 
     v->addStretch(1);
@@ -375,6 +488,22 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
         m_vehicleIdx = i;
         m_srcStack->setCurrentIndex(i);
     });
+
+    // 音響モード: 寸法・室温・上限周波数のいずれかが変わるたびに再計算する
+    // (直方体の閉形式解なので同期実行でよい — 数万モードでも数 ms)
+    for (QLineEdit *e : { m_dimL, m_dimW, m_dimH, m_temp, m_fmax })
+        connect(e, &QLineEdit::textChanged, this,
+                &CabinAcousticsTab::updateModes);
+    connect(m_modal, &QCheckBox::toggled, this, &CabinAcousticsTab::updateModes);
+
+    // 評価: どの指標を対象にするかで表の行が変わる (値は常に未計算)
+    for (QCheckBox *c : { m_mSpl, m_mAi, m_mLoudness, m_mSharpness })
+        connect(c, &QCheckBox::toggled, this,
+                &CabinAcousticsTab::updateMetrics);
+
+    connect(m_measureTable, &QTableWidget::itemChanged, this,
+            [this](QTableWidgetItem *) { updateMeasures(); });
+
     connect(project, &Project::loaded, this, &CabinAcousticsTab::refresh);
     refresh();
 }
@@ -385,6 +514,117 @@ void CabinAcousticsTab::refresh()
     m_vehicle->setCurrentIndex(m_vehicleIdx);
     m_srcStack->setCurrentIndex(m_vehicleIdx);
     m_updating = false;
+    updateModes();
+    updateMetrics();
+    updateMeasures();
+}
+
+// ── 車室音響モード ──────────────────────────────────────────────────────────
+// 剛壁直方体の解析解 (acoustics/core/RoomModes) をそのまま表に出す。
+void CabinAcousticsTab::updateModes()
+{
+    m_modeTable->setRowCount(0);
+
+    if (!m_modal->isChecked()) {
+        m_modeTable->setEnabled(false);
+        m_modeSummary->setText(I18n::tr("cab_mode_off"));
+        return;
+    }
+    m_modeTable->setEnabled(true);
+
+    bool okL = false, okW = false, okH = false, okT = false, okF = false;
+    const double L = m_dimL->text().toDouble(&okL);
+    const double W = m_dimW->text().toDouble(&okW);
+    const double H = m_dimH->text().toDouble(&okH);
+    const double t = m_temp->text().toDouble(&okT);
+    const double fmax = m_fmax->text().toDouble(&okF);
+    const double c = okT ? rm::soundSpeed(t) : 0.0;
+    if (!okL || !okW || !okH || !okT || !okF
+        || L <= 0 || W <= 0 || H <= 0 || fmax <= 0 || c <= 0) {
+        m_modeSummary->setText(I18n::tr("cab_mode_bad"));
+        return;
+    }
+
+    // 表に出すのは低次から kShownModes 個 (以下のモード総数は要約に出す)
+    const std::vector<rm::Mode> all =
+        rm::rectangularModes(L, W, H, c, fmax, 0);
+    const int total = int(all.size());
+    const int shown = std::min(total, kShownModes);
+
+    m_modeTable->setRowCount(shown);
+    for (int i = 0; i < shown; ++i) {
+        const rm::Mode &m = all[size_t(i)];
+        m_modeTable->setItem(i, 0, textItem(QString("(%1, %2, %3)")
+                                                .arg(m.nx).arg(m.ny).arg(m.nz)));
+        m_modeTable->setItem(i, 1, numItem(QString::number(m.freqHz, 'f', 1)));
+        const char *kindKey = (m.kind == rm::ModeAxial)      ? "cab_kind_axial"
+                            : (m.kind == rm::ModeTangential) ? "cab_kind_tang"
+                                                             : "cab_kind_obl";
+        m_modeTable->setItem(i, 2,
+            badgeItem(I18n::tr(kindKey),
+                      m.kind == rm::ModeAxial ? kAcc : nullptr));
+    }
+
+    m_modeSummary->setText(
+        I18n::tr("cab_mode_summary")
+            .arg(QString::number(c, 'f', 1))
+            .arg(QString::number(t, 'f', 1))
+            .arg(QString::number(L * W * H, 'f', 2))
+            .arg(QString::number(fmax, 'f', 0))
+            .arg(total)
+            .arg(shown)
+            .arg(total > 0 ? QString::number(all[0].freqHz, 'f', 1)
+                           : I18n::tr("cab_dash")));
+}
+
+// ── 評価 (未計算) ───────────────────────────────────────────────────────────
+// 連成解析が未実装で算出根拠が無いため、値は常に「—」。何があれば埋まるかを
+// 併記する (絶対規則 5・6)。実行結果が入るようになったら value を差し替える。
+void CabinAcousticsTab::updateMetrics()
+{
+    struct Row { QCheckBox *cb; const char *name; const char *need; };
+    const Row rows[4] = {
+        { m_mSpl,       "cab_m_earspl", "cab_need_spl"   },
+        { m_mAi,        "cab_m_ai",     "cab_need_ai"    },
+        { m_mLoudness,  "cab_m_loud",   "cab_need_loud"  },
+        { m_mSharpness, "cab_m_sharp",  "cab_need_sharp" },
+    };
+    m_metricTable->setRowCount(0);
+    int r = 0;
+    for (const Row &row : rows) {
+        if (!row.cb->isChecked()) continue;
+        m_metricTable->insertRow(r);
+        m_metricTable->setItem(r, 0, textItem(I18n::tr(row.name)));
+        // 値は未計算 — 偽の数値を出さない
+        m_metricTable->setItem(r, 1, numItem(I18n::tr("cab_dash")));
+        m_metricTable->setItem(r, 2, textItem(I18n::tr(row.need)));
+        ++r;
+    }
+}
+
+// ── 対策検討 (利用者入力の集計) ─────────────────────────────────────────────
+// 効果 [dB] は経路が異なるため合算しない。加算が成り立つ重量のみ合計する。
+void CabinAcousticsTab::updateMeasures()
+{
+    int selected = 0, weighed = 0;
+    double totalKg = 0.0;
+    for (int i = 0; i < m_measureTable->rowCount(); ++i) {
+        QTableWidgetItem *chk = m_measureTable->item(i, 0);
+        if (!chk || chk->checkState() != Qt::Checked) continue;
+        ++selected;
+        QTableWidgetItem *w = m_measureTable->item(i, 3);
+        if (!w) continue;
+        bool ok = false;
+        const double kg = w->text().trimmed().toDouble(&ok);
+        if (!ok) continue;
+        ++weighed;
+        totalKg += kg;
+    }
+    m_measureSummary->setText(
+        weighed > 0 ? I18n::tr("cab_meas_total")
+                          .arg(selected).arg(weighed)
+                          .arg(QString::number(totalKg, 'f', 2))
+                    : I18n::tr("cab_meas_total_none").arg(selected));
 }
 
 // ── 乗用車 / car ────────────────────────────────────────────────────────────

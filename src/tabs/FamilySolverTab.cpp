@@ -96,6 +96,19 @@ const bool s_i18n = [] {
     I18n::reg("fam_stf_electrodes", "電極", "Electrodes");
     I18n::reg("fam_stf_volt", "電圧 [V]", "Voltage [V]");
     I18n::reg("fam_stf_shape", "形状", "Shape");
+    I18n::reg("fam_stf_name", "名前", "Name");
+    I18n::reg("fam_stf_elec_note",
+              "電極候補はプロジェクトの導体形状 (材質 1 = PEC) から自動抽出して"
+              "います。電圧は .ofd / .ofdx に持たない量なので「—」です "
+              "(OpenSTF への受け渡しは未実装)。",
+              "Electrode candidates are extracted from this project's conductor "
+              "shapes (material 1 = PEC). Voltage is not part of .ofd / .ofdx, "
+              "so it shows \"—\" (hand-off to OpenSTF is not implemented).");
+    I18n::reg("fam_stf_elec_empty",
+              "PEC (材質 1) の形状がありません — 形状タブで導体を追加すると"
+              "ここに一覧されます",
+              "No PEC (material 1) shapes — add a conductor in the Geometry tab "
+              "and it will be listed here");
 
     // トモグラフィー
     I18n::reg("fam_tomo_hint", "FDTD+逆問題で誘電率分布を再構成。乳腺/木材を画像化。",
@@ -269,6 +282,11 @@ FamilySolverTab::FamilySolverTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     connect(project, &Project::domainChanged, this, &FamilySolverTab::rebuildCards);
+    // 形状の追加・削除・材質変更を電極一覧へ反映する
+    connect(project, &Project::changed, this,
+            [this] { refreshStfElectrodes(); });
+    connect(project, &Project::loaded, this,
+            [this] { refreshStfElectrodes(); });
     rebuildCards();
 }
 
@@ -437,26 +455,66 @@ QWidget *FamilySolverTab::buildStfPage()
     form->addRow(I18n::tr("fam_stf_relax"), numEdit("1.85", 70, page));
     form->addRow(I18n::tr("fam_converge"), numEdit("1e-7", 110, page));
 
-    auto *tbl = new QTableWidget(3, 3, page);
-    tbl->setHorizontalHeaderLabels({ "#", I18n::tr("fam_stf_volt"),
-                                     I18n::tr("fam_stf_shape") });
-    static const char *kElectrodes[3][3] = {
-        { "1", "+100", "板 (上)" },
-        { "2", "0",    "板 (下)" },
-        { "3", "浮遊", "球 (中央)" },
-    };
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-            tbl->setItem(r, c, new QTableWidgetItem(
-                QString::fromUtf8(kElectrodes[r][c])));
-    tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    tbl->verticalHeader()->setVisible(false);
-    tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tbl->setMaximumHeight(120);
-    form->addRow(I18n::tr("fam_stf_electrodes"), tbl);
-    form->addRow(tabhelp::sampleNote(page));    // 電極表はモック由来の固定サンプル
+    // 電極一覧はプロジェクトの導体形状 (PEC) から作る実データ
+    m_stfElectrodes = new QTableWidget(0, 4, page);
+    m_stfElectrodes->setHorizontalHeaderLabels({ "#", I18n::tr("fam_stf_name"),
+                                                 I18n::tr("fam_stf_volt"),
+                                                 I18n::tr("fam_stf_shape") });
+    m_stfElectrodes->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_stfElectrodes->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_stfElectrodes->verticalHeader()->setVisible(false);
+    m_stfElectrodes->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_stfElectrodes->setMaximumHeight(140);
+    form->addRow(I18n::tr("fam_stf_electrodes"), m_stfElectrodes);
+    auto *elecNote = hintLabel(I18n::tr("fam_stf_elec_note"), page);
+    elecNote->setStyleSheet("color:#7A7A7A; font-size:11px;");
+    form->addRow(elecNote);
     form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    refreshStfElectrodes();
     return page;
+}
+
+// プロジェクトの PEC 形状 (材質 1) → 電極一覧。
+// 静電界解析 (OpenSTF) の電極は導体面なので、モデル中の PEC ユニットが
+// そのまま電極候補になる。電圧はモデルに無いので「—」を出す (捏造しない)。
+void FamilySolverTab::refreshStfElectrodes()
+{
+    if (!m_stfElectrodes) return;
+    const QVector<Geometry> &geos = m_p->geometries();
+    QVector<int> pec;
+    for (int i = 0; i < geos.size(); ++i)
+        if (geos[i].materialId == 1) pec.push_back(i);
+
+    m_stfElectrodes->clearContents();
+    m_stfElectrodes->clearSpans();   // 前回の結合セルを解除
+    if (pec.isEmpty()) {
+        m_stfElectrodes->setRowCount(1);
+        m_stfElectrodes->setItem(0, 0,
+            new QTableWidgetItem(I18n::tr("fam_stf_elec_empty")));
+        m_stfElectrodes->setSpan(0, 0, 1, 4);
+        return;
+    }
+    m_stfElectrodes->setRowCount(pec.size());
+    for (int r = 0; r < pec.size(); ++r) {
+        const Geometry &g = geos[pec[r]];
+        m_stfElectrodes->setItem(r, 0,
+            new QTableWidgetItem(QString::number(r + 1)));
+        m_stfElectrodes->setItem(r, 1, new QTableWidgetItem(
+            g.name.isEmpty() ? QStringLiteral("unit%1").arg(pec[r] + 1)
+                             : g.name));
+        // 電圧はモデルに存在しない量 (.ofd にも .ofdx にも無い)
+        m_stfElectrodes->setItem(r, 2,
+            new QTableWidgetItem(QString::fromUtf8("—")));
+        // 形状名は共通キー (ge_shape_<code>) を使う。外接直方体の寸法を添える。
+        const QString shape =
+            I18n::tr(QStringLiteral("ge_shape_%1").arg(g.shape));
+        const QString size = QStringLiteral("%1 × %2 × %3 m")
+            .arg(g.g[1] - g.g[0], 0, 'g', 3)
+            .arg(g.g[3] - g.g[2], 0, 'g', 3)
+            .arg(g.g[5] - g.g[4], 0, 'g', 3);
+        m_stfElectrodes->setItem(r, 3,
+            new QTableWidgetItem(shape + "  " + size));
+    }
 }
 
 QWidget *FamilySolverTab::buildTomoPage()

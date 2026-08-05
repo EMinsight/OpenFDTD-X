@@ -56,6 +56,46 @@ QVector<NoiseSourceRow> ofd::defaultNoiseSources()
     };
 }
 
+// ── 回路系電磁解析: ポート定義の既定 3 行 ───────────────────────────────────
+// 降圧コンバータ基板を想定した初期値 (抽出結果ではない)。利用者は
+// CircuitSolversTab の表で編集・追加・削除でき、変更すると .ofdx に保存される。
+QVector<CircuitPortRow> ofd::defaultCircuitPorts()
+{
+    auto row = [](const char *name, int kind, const char *net, const char *ref) {
+        CircuitPortRow r;
+        r.name = QString::fromUtf8(name);
+        r.kind = kind;
+        r.net = QString::fromUtf8(net);
+        r.ref = QString::fromUtf8(ref);
+        return r;
+    };
+    return {
+        row("VIN",     CircuitPortRow::Lumped, "NET_VBUS", "GND"),
+        row("VOUT",    CircuitPortRow::Lumped, "NET_VOUT", "GND"),
+        row("SW_NODE", CircuitPortRow::Probe,  "NET_SW",   "GND"),
+    };
+}
+
+// ── フォトニック回路: ネットリストの既定 5 行 ───────────────────────────────
+// 2 入力 MZI + リング共振器 + 2 光検出器の初期構成 (計算結果ではない)。
+QVector<PhotonicNetRow> ofd::defaultPhotonicNetlist()
+{
+    auto row = [](const char *from, const char *to, const char *wl) {
+        PhotonicNetRow r;
+        r.from = QString::fromUtf8(from);
+        r.to = QString::fromUtf8(to);
+        r.wavelength = QString::fromUtf8(wl);
+        return r;
+    };
+    return {
+        row("LASER1.out", "MZI1.in1", "1530~1570nm"),
+        row("LASER2.out", "MZI1.in2", "1530~1570nm"),
+        row("MZI1.out1",  "RING1.in", "—"),
+        row("RING1.drop", "PD1.in",   "—"),
+        row("RING1.thru", "PD2.in",   "—"),
+    };
+}
+
 Project::Project(QObject *parent) : QObject(parent)
 {
     clear();
@@ -76,6 +116,8 @@ void Project::clear()
     m_probes.clear();
     m_post = PostOpts{};
     m_optical = OpticalOpts{};
+    m_displayOptics = DisplayOpticsOpts{};
+    m_illumination = IlluminationOpts{};
     m_acoustic = AcousticOpts{};
     // 既定の吸音バジェット (コンサートホール例, α は 125..4k Hz)
     auto absRow = [](int role, const char *name, double area,
@@ -111,6 +153,11 @@ void Project::clear()
     m_underwater.ssp = { {0, 1525}, {100, 1510}, {500, 1490}, {1000, 1485},
                          {1500, 1488}, {3000, 1510}, {5000, 1540} };
     m_tidy3d = Tidy3dOpts{};
+    // 細分化領域は既定で無し (利用者が GeometryTab で定義する)
+    m_refineRegions.clear();
+    // ポート定義 / フォトニックネットリストは既定行に戻す
+    m_circuitPorts = defaultCircuitPorts();
+    m_photonicNet = defaultPhotonicNetlist();
     m_extraLines.clear();
     m_filePath.clear();
 }

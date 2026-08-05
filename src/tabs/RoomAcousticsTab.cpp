@@ -1,6 +1,7 @@
 // RoomAcousticsTab.cpp
 #include "RoomAcousticsTab.h"
 #include "TabHelpers.h"
+#include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../core/OperaHalls.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
@@ -12,6 +13,7 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -89,8 +91,6 @@ const bool s_i18n = [] {
               "simulated IR or a measured impulse response (WAV). Measured-WAV "
               "import enables validation against the simulation.");
     I18n::reg("rah_ir_source", "IRソース", "IR source");
-    I18n::reg("rah_ir_src_sim", "シミュレーション結果 (H5)",
-              "Simulation result (H5)");
     I18n::reg("rah_ir_src_meas", "実測WAV (スイープ/バルーン)",
               "Measured WAV (sweep/balloon)");
     I18n::reg("rah_ir_file", "実測ファイル", "Measured file");
@@ -102,9 +102,6 @@ const bool s_i18n = [] {
     I18n::reg("rah_schroeder_section", "Schroeder 減衰曲線",
               "Schroeder decay curve");
     I18n::reg("rah_col_metric", "指標", "Metric");
-    I18n::reg("rah_t20t30_warn",
-              "T20/T30 乖離警告 (非線形減衰 → カップリング疑い)",
-              "Warn on T20/T30 divergence (non-linear decay → coupling)");
     I18n::reg("rah_inr_check", "INR (Impulse-to-Noise Ratio) 検査 ≥ 45dB",
               "INR (impulse-to-noise ratio) check ≥ 45 dB");
     I18n::reg("rah_validation_section", "実測 vs シミュレーション",
@@ -243,15 +240,10 @@ const bool s_i18n = [] {
     I18n::reg("rah_delay_row", "ディレイ設定", "Delay settings");
     I18n::reg("rah_haas", "距離補正を自動適用 (Haas効果)",
               "Auto distance compensation (Haas effect)");
-    I18n::reg("rah_delay_hint",
-              "C: 12.4ms, F: 3.2ms, ディレイタワー: 68ms (34m地点)",
-              "C: 12.4 ms, F: 3.2 ms, delay tower: 68 ms (at 34 m)");
     I18n::reg("rah_sti_section", "客席カバレッジ / STI マッピング",
               "Coverage / STI mapping");
     I18n::reg("rah_sti_caption", "STI分布 (緑=高明瞭度)",
               "STI map (green = high intelligibility)");
-    I18n::reg("rah_sti_avg", "STI平均 0.68", "STI mean 0.68");
-    I18n::reg("rah_sti_uniform", "±0.05 (均一性良)", "±0.05 (uniform)");
     I18n::reg("rah_gbf_section", "ハウリング余裕 (GBF)",
               "Feedback margin (GBF)");
     I18n::reg("rah_mic_pos", "マイク位置", "Mic position");
@@ -269,11 +261,6 @@ const bool s_i18n = [] {
     I18n::reg("rah_col_recommend", "推奨", "Recommended");
     I18n::reg("rah_on", "ON", "ON");
     I18n::reg("rah_off", "OFF", "OFF");
-    I18n::reg("rah_bqi_est",
-              "※ オペラ対応ホールの BQI は公表値が無いため ITDG からの推定値 "
-              "(表中 * 印, 要実測確認)。",
-              "* BQI of the Japanese opera halls is estimated from ITDG "
-              "(marked * in the table; needs measurement).");
     I18n::reg("rah_bqi_range", "≥0.55 (優良)", "≥0.55 (excellent)");
     // 空間印象の行
     I18n::reg("rah_lf", "LF (初期側方エネルギー比)",
@@ -343,9 +330,6 @@ const bool s_i18n = [] {
     I18n::reg("rah_sp_line8", "Line array 8box", "Line array 8box");
     I18n::reg("rah_sp_point", "Point source CD", "Point source CD");
     I18n::reg("rah_sp_front", "Front fill", "Front fill");
-    I18n::reg("rah_spl_badge", "SPL 94±2.5 dB", "SPL 94±2.5 dB");
-    I18n::reg("rah_gbf_badge", "GBF = 6.2 dB", "GBF = 6.2 dB");
-    I18n::reg("rah_mic_default", "0, 1.2, 7.5 (演台)", "0, 1.2, 7.5 (lectern)");
     // 残響式 (Fitzroy)
     I18n::reg("rah_fitzroy", "Fitzroy (非均一)", "Fitzroy (non-uniform)");
     // 騒音源内訳
@@ -375,6 +359,149 @@ const bool s_i18n = [] {
               "A@1k %3 Sabin → %4 Sabin ・ 検出障害 %5 件 → %6 件",
               "Estimate with all proposals applied: RT60(mid) %1 s → %2 s · "
               "A@1k %3 Sabin → %4 Sabin · defects %5 → %6");
+
+    // ── IR解析 (統計推定 / 実測WAV) ────────────────────────────────────────
+    I18n::reg("rah_ir_src_stat", "統計推定 (Sabine/Eyring + Barron)",
+              "Statistical (Sabine/Eyring + Barron)");
+    I18n::reg("rah_ir_run", "▶ 実測IRを解析", "▶ Analyse measured IR");
+    I18n::reg("rah_rcv_shared", "受音点 %1 (「エコーグラム」タブで選択)",
+              "Receiver %1 (selected on the “Echogram” tab)");
+    I18n::reg("rah_ir_method_stat",
+              "▸ 吸音バジェットの帯域別 RT60 から Barron 修正理論の Schroeder "
+              "曲線を作り、ISO 3382-1 の回帰区間 (EDT: 0〜−10 dB, T20: −5〜−25 dB, "
+              "T30: −5〜−35 dB) を最小二乗で当てて算出。C80/D50/Ts は同理論の"
+              "閉形式。%1 · V = %2 m³。FDTD/幾何音響ソルバーの実行結果ではない。",
+              "▸ Built from the octave-band RT60 of the absorption budget: the "
+              "Barron-model Schroeder curve is fitted by least squares over the "
+              "ISO 3382-1 ranges (EDT 0…−10 dB, T20 −5…−25 dB, T30 −5…−35 dB). "
+              "C80/D50/Ts come from the closed form of the same theory. %1 · "
+              "V = %2 m³. Not the output of an FDTD/geometrical solver.");
+    I18n::reg("rah_ir_method_meas",
+              "▸ 実測インパルス応答の解析値 (ISO 3382-1, src/acoustics/core)。"
+              "動的レンジ不足などで評価できない帯域は「—」。",
+              "▸ Values analysed from the measured impulse response "
+              "(ISO 3382-1). Bands that cannot be evaluated show “—”.");
+    I18n::reg("rah_ir_notloaded",
+              "▸ 実測WAVが未読込 (または未解析) のため空欄。ファイルを選んで "
+              "[▶ 実測IRを解析] を押すと実解析値で埋まる。",
+              "▸ Empty: no measured WAV loaded/analysed yet. Pick a file and "
+              "press [▶ Analyse measured IR] to fill it with real values.");
+    I18n::reg("rah_ir_status_ok", "解析済: %1", "Analysed: %1");
+    I18n::reg("rah_ir_status_err", "解析失敗: %1", "Analysis failed: %1");
+    I18n::reg("rah_ir_status_none", "未解析", "Not analysed");
+    I18n::reg("rah_t2030_ok", "T20/T30 乖離 %1 % (直線減衰)",
+              "T20/T30 divergence %1 % (linear decay)");
+    I18n::reg("rah_t2030_warn",
+              "⚠ T20/T30 乖離 %1 % — 非線形減衰 (カップルドボリューム等) の疑い",
+              "⚠ T20/T30 divergence %1 % — non-linear decay (coupled volume?)");
+    I18n::reg("rah_t2030_na", "T20/T30 乖離: 算出不能",
+              "T20/T30 divergence: not computable");
+    I18n::reg("rah_val_note_ir",
+              "▸ 実測列 = 実測IRの解析値、シミュ列 = 吸音バジェットからの統計推定 "
+              "(いずれも 1 kHz 帯域)。JND は ISO 3382-1 Table A.1。",
+              "▸ Measured column = analysis of the measured IR; Sim column = "
+              "statistical estimate from the absorption budget (both at 1 kHz). "
+              "JND values from ISO 3382-1 Table A.1.");
+    I18n::reg("rah_val_note_pub",
+              "▸ 実測列 = ホールプリセットの公表実測値、シミュ列 = 吸音バジェット"
+              "からの統計推定 (1 kHz)。プリセットは容積 V だけをモデルへ反映する"
+              "ので、両列が同じ室を表すとは限らない。実測IRを読み込むと実測列は"
+              "その解析値に置き換わる。JND は ISO 3382-1 Table A.1。",
+              "▸ Measured column = published measured data of the hall preset; "
+              "Sim column = statistical estimate from the absorption budget "
+              "(1 kHz). The preset only feeds the volume V into the model, so "
+              "the two columns need not describe the same room. Loading a "
+              "measured IR replaces the measured column. JND: ISO 3382-1 A.1.");
+    I18n::reg("rah_val_nomeas", "未読込", "not loaded");
+    I18n::reg("rah_val_est",
+              "* 印はホールの公表値が実測ではなく推定であることを示す。",
+              "* marks a published value that is an estimate, not a "
+              "measurement.");
+    I18n::reg("rah_notcomputed", "未計算", "not computed");
+    // ── 空間印象 ────────────────────────────────────────────────────────────
+    I18n::reg("rah_spatial_method",
+              "▸ LF/LFC は1次鏡像法のエコーグラムに ISO 3382-1 A.2.6 の定義を"
+              "適用した幾何推定 (2次以上の反射・拡散反射は未考慮のため参考値)。"
+              "G_late は Barron 修正理論の 80 ms 以降エネルギー。IACC 系は両耳"
+              "インパルス応答 (HRTF 受音) が必要なため未計算。%1",
+              "▸ LF/LFC are geometrical estimates: ISO 3382-1 A.2.6 applied to "
+              "the first-order image-source echogram (2nd-order and diffuse "
+              "reflections are not included, so treat them as indicative). "
+              "G_late is the post-80 ms energy of Barron's revised theory. IACC "
+              "metrics need a binaural (HRTF) impulse response and are not "
+              "computed. %1");
+    I18n::reg("rah_bqi_pub", "ホール公表値 (実測)",
+              "published measurement of the hall");
+    I18n::reg("rah_bqi_none",
+              "BQI はこのホールでは公表値が無く、両耳IRも無いため未計算。",
+              "BQI: no published value for this hall and no binaural IR — not "
+              "computed.");
+    I18n::reg("rah_iacc_need", "両耳IR (HRTF) が必要",
+              "needs a binaural (HRTF) IR");
+    // ── 電気音響設計 ────────────────────────────────────────────────────────
+    I18n::reg("rah_sp_tower", "ディレイタワー", "Delay tower");
+    I18n::reg("rah_sp_note",
+              "▸ 位置とエイミングはホール寸法から自動配置・自動算出した既定構成 "
+              "(機種選択・指向性 GLL・個別ゲインの編集は未対応、相対ゲインは "
+              "0 dB)。ディレイタワーは奥行 25 m 以上のときだけ有効にする。",
+              "▸ Positions and aiming are auto-derived from the hall dimensions "
+              "(model/GLL directivity and per-box gain editing are not "
+              "supported; relative gain is 0 dB). The delay tower is enabled "
+              "only when the hall is at least 25 m deep.");
+    I18n::reg("rah_col_designpt", "設計受音点", "Design point");
+    I18n::reg("rah_col_dmain", "d(メイン) [m]", "d(main) [m]");
+    I18n::reg("rah_col_dsp", "d(当該SP) [m]", "d(this SP) [m]");
+    I18n::reg("rah_col_delay", "ディレイ [ms]", "Delay [ms]");
+    I18n::reg("rah_delay_method",
+              "▸ Δt = (d(メイン) − d(当該SP)) / c, c = %1 m/s (20 °C 乾燥空気, "
+              "ISO 9613-1)。設計受音点は各スピーカーに最も近い解析受音点 P1..P4。"
+              "Haas 補正 ON で先行音効果のため +%2 ms する。",
+              "▸ Δt = (d(main) − d(this SP)) / c with c = %1 m/s (dry air at "
+              "20 °C, ISO 9613-1). The design point is the analysis receiver "
+              "P1..P4 closest to each loudspeaker. With Haas compensation on, "
+              "+%2 ms is added for the precedence effect.");
+    I18n::reg("rah_sti_avg_v", "STI平均 %1", "STI mean %1");
+    I18n::reg("rah_sti_sd_v", "±%1 (%2)", "±%1 (%2)");
+    I18n::reg("rah_sti_method",
+              "▸ 客席面グリッドの各点で、有効なスピーカーまでの距離から Barron "
+              "修正理論 + MTF (Houtgast–Steeneken) の STI を算出。無指向近似・"
+              "無騒音仮定・拡声系の直接音のみ (自然音源は含まない)。",
+              "▸ At each grid point of the audience area the STI is computed "
+              "from the distances to the active loudspeakers using Barron's "
+              "revised theory + the MTF method (Houtgast–Steeneken). "
+              "Omnidirectional approximation, no background noise, "
+              "reinforcement direct sound only.");
+    I18n::reg("rah_spl_uncal",
+              "▸ 絶対 SPL: スピーカー感度・駆動レベルの校正値がモデルに無いため"
+              "表示しない (未校正の絶対 SPL は出さない)。相対分布は STI マップを"
+              "参照。",
+              "▸ Absolute SPL is not shown: the model holds no loudspeaker "
+              "sensitivity/drive calibration (uncalibrated absolute SPL is "
+              "never displayed). See the STI map for the relative distribution.");
+    I18n::reg("rah_mic_auto", "%1, %2, %3 m (演台マイク: 話者の 0.5 m 前方)",
+              "%1, %2, %3 m (lectern mic: 0.5 m in front of the talker)");
+    I18n::reg("rah_gbf_d0", "D0 話者→最遠聴取点", "D0 talker → farthest seat");
+    I18n::reg("rah_gbf_d1", "D1 話者→マイク", "D1 talker → mic");
+    I18n::reg("rah_gbf_d2", "D2 スピーカー→最遠聴取点",
+              "D2 loudspeaker → farthest seat");
+    I18n::reg("rah_gbf_ds", "Ds スピーカー→マイク", "Ds loudspeaker → mic");
+    I18n::reg("rah_gbf_ead", "EAD 等価音響距離", "EAD equivalent acoustic dist.");
+    I18n::reg("rah_gbf_nag", "NAG 必要音響利得", "NAG needed acoustic gain");
+    I18n::reg("rah_gbf_pag", "PAG 可能音響利得", "PAG potential acoustic gain");
+    I18n::reg("rah_gbf_margin", "余裕 PAG − NAG", "Margin PAG − NAG");
+    I18n::reg("rah_gbf_value", "余裕 (PAG − NAG) = %1 dB",
+              "Margin (PAG − NAG) = %1 dB");
+    I18n::reg("rah_gbf_na", "余裕: 算出不能", "Margin: not computable");
+    I18n::reg("rah_gbf_method",
+              "▸ PAG/NAG 標準式 (D. Davis & E. Patronis, \"Sound System "
+              "Engineering\", 3rd ed., Focal Press 2006)。NOM=%1, FSM=%2 dB, "
+              "EAD=%3 m。マイク (演台) とスピーカーはホール寸法からの自動配置、"
+              "最遠聴取点は解析受音点 P1..P4 のうち話者から最も遠い点。",
+              "▸ Standard PAG/NAG equations (D. Davis & E. Patronis, \"Sound "
+              "System Engineering\", 3rd ed., Focal Press 2006). NOM=%1, "
+              "FSM=%2 dB, EAD=%3 m. The lectern mic and the loudspeakers are "
+              "auto-placed from the hall dimensions; the farthest seat is the "
+              "analysis receiver P1..P4 farthest from the talker.");
     return true;
 }();
 
@@ -534,44 +661,15 @@ HallView currentHallView(bool opera, int concertIdx, int operaIdx)
     return h;
 }
 
-// 電気音響設計の STI 分布ラスタ (mock の 12×16 グリッド SVG 相当)。
-// mock の乱数項は再現性のため座標ハッシュで代用する。
-class StiMapWidget : public QWidget {
-public:
-    explicit StiMapWidget(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        setMinimumSize(300, 160);
-        setMaximumWidth(360);
-    }
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.fillRect(rect(), palette().base());
-        p.setPen(QPen(palette().mid().color(), 1));
-        p.drawRect(rect().adjusted(0, 0, -1, -1));
-        p.save();
-        p.scale(width() / 300.0, height() / 160.0);
-        for (int r = 0; r < 12; ++r) {
-            for (int c = 0; c < 16; ++c) {
-                double n = std::sin(c * 12.9898 + r * 78.233) * 43758.5453;
-                n -= std::floor(n);                       // 0..1 疑似乱数
-                const double sti = 0.72
-                    - std::hypot(c - 8.0, r - 2.0) * 0.012 + (n - 0.5) * 0.02;
-                const double g = qBound(0.0, (sti - 0.45) / 0.3, 1.0);
-                p.fillRect(QRectF(10 + c * 17, 10 + r * 11, 16, 10),
-                           QColor(int(220 - g * 180), int(60 + g * 150), 40));
-            }
-        }
-        p.setPen(palette().text().color());
-        QFont f = p.font();
-        f.setPointSizeF(7.5);
-        p.setFont(f);
-        p.drawText(QRectF(0, 144, 300, 14), Qt::AlignCenter,
-                   ofd::I18n::tr("rah_sti_caption"));
-        p.restore();
-    }
-};
+// 3 次元距離
+double dist3(const double p[3], const double q[3])
+{
+    const double dx = p[0]-q[0], dy = p[1]-q[1], dz = p[2]-q[2];
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+// STI マップのグリッド数 (客席面)
+const int kStiRows = 12, kStiCols = 16;
 
 } // namespace
 
@@ -708,6 +806,94 @@ void CoverageMap::paintEvent(QPaintEvent *)
     const bool inv = (m_metric == 3);
     p.drawText(QPointF(W - 130, H - 26), QString::number(inv ? hi : lo, 'g', 3));
     p.drawText(QPointF(W - 40, H - 26), QString::number(inv ? lo : hi, 'g', 3));
+}
+
+// ── StiMapWidget ────────────────────────────────────────────────────────────
+// 客席面 (x: 0.10L〜0.95L, y: 0.08W〜0.92W, z=1.2 m) を kStiRows×kStiCols に
+// 区切り、各点で「有効な全スピーカーまでの距離」から STI を実計算する。
+// RT は中音域 (500 Hz / 1 kHz の平均) を使う。
+StiMapWidget::StiMapWidget(Project *project, QWidget *parent)
+    : QWidget(parent), m_p(project)
+{
+    setMinimumSize(300, 160);
+    setMaximumWidth(360);
+    recompute();
+}
+
+void StiMapWidget::setSpeakers(const QVector<PaSpeaker> &sp)
+{
+    m_sp = sp;
+    recompute();
+}
+
+void StiMapWidget::recompute()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const double T = (rt60(a, 2) + rt60(a, 3)) / 2.0;   // 中音域 RT60
+
+    QVector<double> dists, gains;
+    for (const PaSpeaker &s : m_sp)
+        if (s.on) gains.push_back(s.gainDb);
+
+    m_values.clear();
+    m_valid = !gains.isEmpty() && T > 0;
+    double sum = 0, sum2 = 0;
+    int n = 0;
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            if (!m_valid) { m_values.push_back(NAN); continue; }
+            const double t = (r + 0.5) / kStiRows;
+            const double u = (c + 0.5) / kStiCols;
+            const double pos[3] = { (0.10 + 0.85 * t) * a.roomL,
+                                    (0.08 + 0.84 * u) * a.roomW, 1.2 };
+            dists.clear();
+            for (const PaSpeaker &s : m_sp)
+                if (s.on) dists.push_back(dist3(s.pos, pos));
+            const SeatMetrics m = seatMetrics(dists.constData(),
+                                              gains.constData(),
+                                              int(dists.size()), T, a.volume);
+            m_values.push_back(m.STI);
+            sum += m.STI; sum2 += m.STI * m.STI; ++n;
+        }
+    }
+    m_mean = n ? sum / n : 0;
+    m_std = n ? std::sqrt(std::max(0.0, sum2 / n - m_mean * m_mean)) : 0;
+    m_valid = m_valid && n > 0;
+    update();
+}
+
+void StiMapWidget::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    p.save();
+    p.scale(width() / 300.0, height() / 160.0);
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+    if (!m_valid) {
+        p.setPen(palette().text().color());
+        p.drawText(QRectF(0, 60, 300, 20), Qt::AlignCenter,
+                   ofd::I18n::tr("rah_notcomputed"));
+        p.restore();
+        return;
+    }
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            const double sti = m_values.value(r * kStiCols + c, NAN);
+            if (std::isnan(sti)) continue;
+            // STI 0.45 (可) 〜 0.75 (優) を赤→緑で表示 (IEC 60268-16 の区分)
+            const double g = qBound(0.0, (sti - 0.45) / 0.30, 1.0);
+            p.fillRect(QRectF(10 + c * 17, 10 + r * 11, 16, 10),
+                       QColor(int(220 - g * 180), int(60 + g * 150), 40));
+        }
+    }
+    p.setPen(palette().text().color());
+    p.drawText(QRectF(0, 144, 300, 14), Qt::AlignCenter,
+               ofd::I18n::tr("rah_sti_caption"));
+    p.restore();
 }
 
 // ── RoomAcousticsTab ────────────────────────────────────────────────────────
@@ -1024,7 +1210,11 @@ QWidget *RoomAcousticsTab::buildEchogramPage()
 }
 
 // IR解析 — Schroeder 逆積分の減衰曲線 + 帯域別指標 + 実測 vs シミュレーション。
-// 値はホールプリセットの公表値からの派生 (refreshHallDerived が更新)。
+//   統計推定: 吸音バジェット → 帯域別 RT60 → Barron の Schroeder 曲線 →
+//             ISO 3382-1 の回帰区間で EDT/T20/T30、C80/D50/Ts は閉形式。
+//   実測WAV : src/acoustics/core の RirAnalyzer で実解析 (ボタン起動)。
+// 実測ファイルは OperaAcousticSettings::rirPath (実測RIR分析タブと同じ実体)
+// をモデルとして共有する。
 QWidget *RoomAcousticsTab::buildIRPage()
 {
     auto *page = new QWidget;
@@ -1033,20 +1223,31 @@ QWidget *RoomAcousticsTab::buildIRPage()
 
     auto *s = new SectionBox(I18n::tr("rah_ir_section"), page);
     s->vbox()->addWidget(makeHint(I18n::tr("rah_ir_hint"), s));
-    auto *srcBox = new QComboBox(s);
-    srcBox->addItems({ I18n::tr("rah_ir_src_sim"), I18n::tr("rah_ir_src_meas") });
-    s->form()->addRow(I18n::tr("rah_ir_source"), srcBox);
+    m_irSrcBox = new QComboBox(s);
+    m_irSrcBox->addItems({ I18n::tr("rah_ir_src_stat"),
+                           I18n::tr("rah_ir_src_meas") });
+    s->form()->addRow(I18n::tr("rah_ir_source"), m_irSrcBox);
 
     auto *fileRow = new QHBoxLayout();
-    auto *fileEdit = new QLineEdit("measured_IR_P1_sweep.wav", s);
+    m_irFileEdit = new QLineEdit(s);
     auto *browse = new QPushButton(I18n::tr("rah_browse"), s);
-    fileRow->addWidget(fileEdit, 1);
+    m_irRunBtn = new QPushButton(I18n::tr("rah_ir_run"), s);
+    m_irRunBtn->setStyleSheet("font-weight:600;");
+    fileRow->addWidget(m_irFileEdit, 1);
     fileRow->addWidget(browse);
+    fileRow->addWidget(m_irRunBtn);
     s->form()->addRow(I18n::tr("rah_ir_file"), fileRow);
+    m_irStatus = makeHint(QString(), s);
+    s->vbox()->addWidget(m_irStatus);
 
     auto *invRow = new QHBoxLayout();
-    invRow->addWidget(makeCheck(I18n::tr("rah_ess"), true, s));
-    invRow->addWidget(makeCheck(I18n::tr("rah_harm_sep"), false, s));
+    // ESS 逆畳み込み / 高調波分離は未実装 (取り込むのは IR そのもの)
+    auto *essCheck = makeCheck(I18n::tr("rah_ess"), false, s);
+    auto *harmCheck = makeCheck(I18n::tr("rah_harm_sep"), false, s);
+    tabhelp::markNotImplemented(essCheck);
+    tabhelp::markNotImplemented(harmCheck);
+    invRow->addWidget(essCheck);
+    invRow->addWidget(harmCheck);
     invRow->addStretch(1);
     s->form()->addRow(I18n::tr("rah_inv_filter"), invRow);
     v->addWidget(s);
@@ -1061,10 +1262,12 @@ QWidget *RoomAcousticsTab::buildIRPage()
         { I18n::tr("rah_col_metric"), "125", "250", "500", "1k", "2k",
           "4k [Hz]" }, 6);
     sd->vbox()->addWidget(m_irBandTable);
-    // 帯域別指標はプリセット公表値+固定係数の派生 (IR 解析は未実装)
-    sd->vbox()->addWidget(tabhelp::sampleNote(sd));
-    sd->vbox()->addWidget(makeCheck(I18n::tr("rah_t20t30_warn"), true, sd));
-    auto *inrCheck = makeCheck(I18n::tr("rah_inr_check"), true, sd);
+    // 算出方法の明示 (統計推定 / 実測解析 / 未読込 を refreshIrPage が切替)
+    m_irMethodNote = makeHint(QString(), sd);
+    sd->vbox()->addWidget(m_irMethodNote);
+    m_irT2030Note = makeHint(QString(), sd);   // T20/T30 乖離の判定結果
+    sd->vbox()->addWidget(m_irT2030Note);
+    auto *inrCheck = makeCheck(I18n::tr("rah_inr_check"), false, sd);
     tabhelp::markNotImplemented(inrCheck);   // INR 検査は未実装・未使用
     sd->vbox()->addWidget(inrCheck);
     v->addWidget(sd);
@@ -1075,16 +1278,34 @@ QWidget *RoomAcousticsTab::buildIRPage()
           I18n::tr("rah_col_sim"), I18n::tr("rah_col_diff"), "JND",
           I18n::tr("ra_verdict") }, 3);
     sv->vbox()->addWidget(m_irValTable);
-    // 「シミュ」列は実行結果ではなく固定係数による見本 (絶対規則 5)
-    sv->vbox()->addWidget(tabhelp::sampleNote(sv));
+    m_irValNote = makeHint(QString(), sv);
+    sv->vbox()->addWidget(m_irValNote);
     v->addWidget(sv);
     v->addStretch(1);
 
-    connect(browse, &QPushButton::clicked, this, [this, fileEdit] {
+    connect(browse, &QPushButton::clicked, this, [this] {
         const QString p = QFileDialog::getOpenFileName(
-            this, I18n::tr("rah_ir_file"), QString(), "WAV (*.wav)");
-        if (!p.isEmpty()) fileEdit->setText(p);
+            this, I18n::tr("rah_ir_file"), m_irFileEdit->text(), "WAV (*.wav)");
+        if (p.isEmpty()) return;
+        m_irFileEdit->setText(p);       // textEdited は出ないので明示的に反映
+        m_p->operaAcoustic().rirPath = p;
+        m_p->operaAcoustic().enabled = true;
+        m_measIr = MeasuredIrBands();   // 別ファイル → 前の解析結果は破棄
+        m_irSrcBox->setCurrentIndex(1);
+        refreshIrPage();
+        m_p->touch();
     });
+    connect(m_irFileEdit, &QLineEdit::textEdited, this, [this](const QString &t) {
+        if (m_updating) return;
+        m_p->operaAcoustic().rirPath = t;
+        m_measIr = MeasuredIrBands();   // パスが変わったら再解析が必要
+        refreshIrPage();
+        m_p->touch();
+    });
+    connect(m_irRunBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::runMeasuredIr);
+    connect(m_irSrcBox, &QComboBox::currentIndexChanged, this,
+            [this] { refreshIrPage(); });
     return page;
 }
 
@@ -1219,10 +1440,10 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
           I18n::tr("rah_col_range"), I18n::tr("rah_col_meaning"),
           I18n::tr("ra_verdict") }, 5);
     sr->vbox()->addWidget(m_spatialTable);
-    // LF/LFC/IACC は回帰推定・固定値の見本 (IACC 計算は未実装 — 絶対規則 5)
-    sr->vbox()->addWidget(tabhelp::sampleNote(sr));
+    // 算出方法と未計算項目の明示 (refreshSpatialPage が更新)
+    m_spatialNote = makeHint(QString(), sr);
+    sr->vbox()->addWidget(m_spatialNote);
     sr->vbox()->addWidget(makeHint(I18n::tr("rah_bqi_note"), sr));
-    sr->vbox()->addWidget(makeHint(I18n::tr("rah_bqi_est"), sr));
     v->addWidget(sr);
 
     auto *sm = new SectionBox(I18n::tr("rah_seatmap_section"), page);
@@ -1454,81 +1675,80 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     s->vbox()->addWidget(makeHint(I18n::tr("rah_sr_hint"), s));
     v->addWidget(s);
 
-    // ── スピーカーシステム
+    // ── スピーカーシステム (位置・エイミングは室寸法から自動算出)
     auto *sl = new SectionBox(I18n::tr("rah_ls_section"), page);
-    static const struct { const char *sp, *model, *pos, *aim, *gain; bool on; }
-    kSp[4] = {
-        { "L", "rah_sp_line8", "-4, 8, 6",  "-20° / -8°",  "0 dB",  true  },
-        { "R", "rah_sp_line8", "4, 8, 6",   "+20° / -8°",  "0 dB",  true  },
-        { "C", "rah_sp_point", "0, 8.5, 6", "0° / -12°",   "-3 dB", true  },
-        { "F", "rah_sp_front", "0, 1.2, 3", "0° / -30°",   "-9 dB", false },
-    };
-    auto *ls = makeStaticTable(sl,
+    m_spTable = makeStaticTable(sl,
         { "", "SP", I18n::tr("rah_col_model"), I18n::tr("rah_col_pos"),
           I18n::tr("rah_col_aim"), I18n::tr("rah_col_gain") }, 5);
-    for (int r = 0; r < 4; ++r) {
-        ls->setItem(r, 0, checkItem(kSp[r].on));
-        ls->setItem(r, 1, new QTableWidgetItem(QString::fromUtf8(kSp[r].sp)));
-        ls->setItem(r, 2, new QTableWidgetItem(I18n::tr(kSp[r].model)));
-        ls->setItem(r, 3, new QTableWidgetItem(QString::fromUtf8(kSp[r].pos)));
-        ls->setItem(r, 4, new QTableWidgetItem(QString::fromUtf8(kSp[r].aim)));
-        ls->setItem(r, 5, numItem(QString::fromUtf8(kSp[r].gain)));
-    }
-    auto *addSp = new QTableWidgetItem(I18n::tr("rah_add_speaker"));
-    QFont ital = addSp->font();
-    ital.setItalic(true);
-    addSp->setFont(ital);
-    ls->setItem(4, 0, addSp);
-    ls->setSpan(4, 0, 1, 6);
-    sl->vbox()->addWidget(ls);
+    sl->vbox()->addWidget(m_spTable);
+    m_spNote = makeHint(I18n::tr("rah_sp_note"), sl);
+    sl->vbox()->addWidget(m_spNote);
     auto *lsBtns = new QHBoxLayout();
-    // 自動エイミング / GLL ライブラリは未配線 (絶対規則 5)
+    // 機種追加 / 自動エイミング / GLL ライブラリは未配線 (絶対規則 5)
+    auto *addSpBtn = new QPushButton(I18n::tr("rah_add_speaker"), sl);
     auto *aimBtn = new QPushButton(I18n::tr("rah_auto_aim"), sl);
     auto *gllBtn = new QPushButton(I18n::tr("rah_gll_lib"), sl);
+    tabhelp::markNotImplemented(addSpBtn);
     tabhelp::markNotImplemented(aimBtn);
     tabhelp::markNotImplemented(gllBtn);
+    lsBtns->addWidget(addSpBtn);
     lsBtns->addWidget(aimBtn);
     lsBtns->addWidget(gllBtn);
     lsBtns->addStretch(1);
     sl->vbox()->addLayout(lsBtns);
     v->addWidget(sl);
 
-    // ── 遅延・ディレイタワー
+    // ── 遅延・ディレイタワー (Δt = Δd/c の実計算)
     auto *sd = new SectionBox(I18n::tr("rah_delay_section"), page);
-    sd->form()->addRow(I18n::tr("rah_delay_row"),
-                       makeCheck(I18n::tr("rah_haas"), true, sd));
-    sd->vbox()->addWidget(makeHint(I18n::tr("rah_delay_hint"), sd));
-    // ディレイ値は固定のサンプル (距離補正の計算は未実装 — 絶対規則 5)
-    sd->vbox()->addWidget(tabhelp::sampleNote(sd));
+    m_haasCheck = makeCheck(I18n::tr("rah_haas"), true, sd);
+    sd->form()->addRow(I18n::tr("rah_delay_row"), m_haasCheck);
+    m_delayTable = makeStaticTable(sd,
+        { "SP", I18n::tr("rah_col_designpt"), I18n::tr("rah_col_dmain"),
+          I18n::tr("rah_col_dsp"), I18n::tr("rah_col_delay") }, 0);
+    sd->vbox()->addWidget(m_delayTable);
+    m_delayNote = makeHint(QString(), sd);
+    sd->vbox()->addWidget(m_delayNote);
     v->addWidget(sd);
 
-    // ── STI マッピング
+    // ── STI マッピング (客席面グリッドで実計算)
     auto *sm = new SectionBox(I18n::tr("rah_sti_section"), page);
-    sm->vbox()->addWidget(new StiMapWidget(sm));
+    m_stiMap = new StiMapWidget(m_p, sm);
+    sm->vbox()->addWidget(m_stiMap);
     auto *badges = new QHBoxLayout();
-    badges->addWidget(makeBadge(I18n::tr("rah_sti_avg"), kOk, sm));
-    badges->addWidget(makeBadge(I18n::tr("rah_sti_uniform"), kOk, sm));
-    badges->addWidget(makeBadge(I18n::tr("rah_spl_badge"), kAcc, sm));
+    m_stiBadge = makeBadge(QString(), kOk, sm);
+    m_stiUniBadge = makeBadge(QString(), kOk, sm);
+    badges->addWidget(m_stiBadge);
+    badges->addWidget(m_stiUniBadge);
     badges->addStretch(1);
     sm->vbox()->addLayout(badges);
-    // STI マップ・STI 平均・SPL バッジは固定のサンプル表示。
-    // 校正なしの絶対 SPL を実行結果として見せない (絶対規則 5・6)
-    sm->vbox()->addWidget(tabhelp::sampleNote(sm));
+    sm->vbox()->addWidget(makeHint(I18n::tr("rah_sti_method"), sm));
+    // 校正が無い以上、絶対 SPL は出さない (絶対規則 6)
+    m_splNote = makeHint(I18n::tr("rah_spl_uncal"), sm);
+    sm->vbox()->addWidget(m_splNote);
     v->addWidget(sm);
 
-    // ── ハウリング余裕 (GBF)
+    // ── ハウリング余裕 (PAG/NAG)
     auto *sg = new SectionBox(I18n::tr("rah_gbf_section"), page);
-    sg->form()->addRow(I18n::tr("rah_mic_pos"),
-                       new QLineEdit(I18n::tr("rah_mic_default"), sg));
+    m_micPos = makeHint(QString(), sg);
+    sg->form()->addRow(I18n::tr("rah_mic_pos"), m_micPos);
+    m_gbfTable = makeStaticTable(sg,
+        { I18n::tr("rah_col_metric"), I18n::tr("rah_col_value") }, 8);
+    sg->vbox()->addWidget(m_gbfTable);
     auto *gbf = new QHBoxLayout();
-    gbf->addWidget(makeBadge(I18n::tr("rah_gbf_badge"), kOk, sg));
+    m_gbfBadge = makeBadge(QString(), kOk, sg);
+    gbf->addWidget(m_gbfBadge);
     gbf->addWidget(makeHint(I18n::tr("rah_gbf_hint"), sg), 1);
     sg->vbox()->addLayout(gbf);
-    // GBF 値は固定のサンプル (ハウリング解析は未実装 — 絶対規則 5)
-    sg->vbox()->addWidget(tabhelp::sampleNote(sg));
-    sg->vbox()->addWidget(makeCheck(I18n::tr("rah_notch"), false, sg));
+    m_gbfNote = makeHint(QString(), sg);
+    sg->vbox()->addWidget(m_gbfNote);
+    auto *notch = makeCheck(I18n::tr("rah_notch"), false, sg);
+    tabhelp::markNotImplemented(notch);   // notch 自動提案は未実装
+    sg->vbox()->addWidget(notch);
     v->addWidget(sg);
     v->addStretch(1);
+
+    connect(m_haasCheck, &QCheckBox::toggled, this,
+            [this] { refreshReinforcePage(); });
     return page;
 }
 
@@ -1882,89 +2102,465 @@ void RoomAcousticsTab::refreshHallDerived()
         .arg(QString::number(H.RT, 'f', 2), QString::number(H.C80, 'f', 1),
              QString::number(H.G, 'f', 1), QString::number(H.ITDG)));
 
-    // ── IR解析: Schroeder 減衰曲線 (初期減衰を急にした二段近似)
-    MiniSeries decay;
-    decay.color = QColor(kAcc);
-    const double RT = H.RT > 0.05 ? H.RT : 1.0;
-    for (int i = 0; i < 100; ++i) {
-        const double tt = i * 0.025;
-        const double lin = -60.0 * tt / RT;
-        decay.pts.push_back(
-            { tt, std::max(lin + (tt < 0.1 ? -tt * 18.0 : 0.0), -75.0) });
-    }
-    m_schroederPlot->setSeries({ decay });
-
-    // 帯域別指標 (mock の係数をそのまま)
-    static const double kEdtK[6] = { 1.10, 1.05, 1.02, 1.00, 0.92, 0.78 };
-    static const double kT20K[6] = { 1.12, 1.06, 1.02, 1.00, 0.93, 0.80 };
-    static const double kT30K[6] = { 1.13, 1.07, 1.03, 1.01, 0.94, 0.81 };
-    static const double kC80D[6] = { -1.2, -0.6, -0.2, 0.0, 0.5, 1.3 };
-    static const char *kD50[6] = { "0.38", "0.42", "0.45", "0.48", "0.52",
-                                   "0.57" };
-    static const char *kTs[6]  = { "142", "131", "124", "118", "108", "92" };
-    static const char *kIrRow[6] = { "EDT [s]", "T20 [s]", "T30 [s]",
-                                     "C80 [dB]", "D50 [-]", "Ts [ms]" };
-    for (int r = 0; r < 6; ++r)
-        m_irBandTable->setItem(r, 0, new QTableWidgetItem(
-            QString::fromUtf8(kIrRow[r])));
-    for (int b = 0; b < 6; ++b) {
-        m_irBandTable->setItem(0, b + 1,
-            numItem(QString::number(H.EDT * kEdtK[b], 'f', 2)));
-        m_irBandTable->setItem(1, b + 1,
-            numItem(QString::number(H.RT * kT20K[b], 'f', 2)));
-        m_irBandTable->setItem(2, b + 1,
-            numItem(QString::number(H.RT * kT30K[b], 'f', 2)));
-        m_irBandTable->setItem(3, b + 1,
-            numItem(QString::number(H.C80 + kC80D[b], 'f', 1)));
-        m_irBandTable->setItem(4, b + 1, numItem(QString::fromUtf8(kD50[b])));
-        m_irBandTable->setItem(5, b + 1, numItem(QString::fromUtf8(kTs[b])));
-    }
-
-    // 実測 vs シミュレーション (@1kHz)
-    setRowCells(m_irValTable, 0, { "T30",
-        QString::number(H.RT, 'f', 2) + "s",
-        QString::number(H.RT * 1.03, 'f', 2) + "s",
-        "+" + QString::number(H.RT * 0.03, 'f', 2) + "s", "5%" });
-    m_irValTable->setItem(0, 5, badgeItem(I18n::tr("rah_jnd_ok"), kOk));
-    setRowCells(m_irValTable, 1, { "EDT",
-        QString::number(H.EDT, 'f', 2) + "s",
-        QString::number(H.EDT * 0.94, 'f', 2) + "s",
-        "-" + QString::number(H.EDT * 0.06, 'f', 2) + "s", "5%" });
-    m_irValTable->setItem(1, 5, badgeItem(I18n::tr("ra_check"), kWarn));
-    setRowCells(m_irValTable, 2, { "C80",
-        QString::number(H.C80, 'f', 1) + "dB",
-        QString::number(H.C80 + 0.4, 'f', 1) + "dB", "+0.4dB", "1dB" });
-    m_irValTable->setItem(2, 5, badgeItem(I18n::tr("rah_jnd_ok"), kOk));
-
-    // ── 空間印象 (LF/LFC は BQI からの回帰推定, mock の式)
-    const bool bqiOk = H.BQI >= 0.55;
-    setRowCells(m_spatialTable, 0, { I18n::tr("rah_lf"),
-        QString::number(0.15 + H.BQI * 0.2, 'f', 2),
-        QString::fromUtf8("0.10–0.35"), I18n::tr("rah_mean_asw") });
-    setRowCells(m_spatialTable, 1, { I18n::tr("rah_lfc"),
-        QString::number(0.18 + H.BQI * 0.2, 'f', 2),
-        QString::fromUtf8("—"), I18n::tr("rah_mean_lfc") });
-    setRowCells(m_spatialTable, 2, { I18n::tr("rah_bqi_row"),
-        QString::number(H.BQI, 'f', 2) + (H.bqiEstimated ? " *" : ""),
-        I18n::tr("rah_bqi_range"), I18n::tr("rah_mean_bqi") });
-    setRowCells(m_spatialTable, 3, { I18n::tr("rah_iacc_l"), "0.13",
-        QString::fromUtf8("≤0.28"), I18n::tr("rah_mean_lev") });
-    setRowCells(m_spatialTable, 4, { I18n::tr("rah_glate"),
-        QString::number(H.G - 2.4, 'f', 1) + " dB",
-        QString::fromUtf8("≥ 0 dB"), I18n::tr("rah_mean_late") });
-    for (int r = 0; r < 5; ++r) {
-        if (auto *it = m_spatialTable->item(r, 1))
-            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_spatialTable->setItem(r, 4, r == 2
-            ? badgeItem(I18n::tr(bqiOk ? "ra_excellent" : "ra_fair"),
-                        bqiOk ? kOk : kWarn)
-            : badgeItem(I18n::tr("rah_ok"), kOk));
-    }
+    // IR解析 / 空間印象は実計算 (refreshIrPage / refreshSpatialPage) 側で更新。
 
     // ── ステージ: 反射板設置時の RT (mock の +0.35 s)
     m_stageRtBadge->setText(I18n::tr("rah_va_now")
         .arg(QString::number(H.RT, 'f', 2),
              QString::number(H.RT + 0.35, 'f', 2)));
+}
+
+// ── IR解析ページ ────────────────────────────────────────────────────────────
+// 統計推定: 吸音バジェット → 帯域別 RT60 (roomac::rt60) → Barron の Schroeder
+// 曲線 → ISO 3382-1 の回帰区間で EDT/T20/T30。C80/D50/Ts は Barron の閉形式。
+// 実測WAV : RirAnalyzer (src/acoustics/core) の解析値。評価不能な帯域は「—」。
+void RoomAcousticsTab::refreshIrPage()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QString dash = QString::fromUtf8("—");
+    const bool wantMeas = (m_irSrcBox->currentIndex() == 1);
+    const bool measOk = wantMeas && m_measIr.loaded;
+    const int rcvIdx = qBound(0, m_rcvBox->currentIndex(), 3);
+
+    // 実測ファイル欄はモデル (OperaAcousticSettings::rirPath) の View
+    const QString path = m_p->operaAcoustic().rirPath;
+    if (m_irFileEdit->text() != path) {
+        const bool prev = m_updating;
+        m_updating = true;
+        m_irFileEdit->setText(path);
+        m_updating = prev;
+    }
+    m_irRunBtn->setEnabled(!path.trimmed().isEmpty());
+    m_irStatus->setText(m_measIr.status.isEmpty()
+        ? I18n::tr("rah_ir_status_none") : m_measIr.status);
+
+    double src[3], rcv[3];
+    sourcePos(src);
+    receiverPos(rcvIdx, rcv);
+    const double r = dist3(src, rcv);
+
+    // 統計推定 (検証表の「シミュ」列にも使うので常に計算する)
+    DecayTimes st[6];
+    SeatMetrics sm[6];
+    for (int b = 0; b < 6; ++b) {
+        const double T = rt60(a, b);
+        st[b] = decayTimes(schroederCurve(r, T, a.volume,
+                                          std::max(0.5, 1.6 * T), 400));
+        sm[b] = seatMetrics(r, T, a.volume);
+    }
+
+    // ── 帯域別指標
+    static const char *kIrRow[6] = { "EDT [s]", "T20 [s]", "T30 [s]",
+                                     "C80 [dB]", "D50 [-]", "Ts [ms]" };
+    for (int i = 0; i < 6; ++i)
+        m_irBandTable->setItem(i, 0,
+            new QTableWidgetItem(QString::fromUtf8(kIrRow[i])));
+    auto mv = [&](const MeasuredValue &x, int dec) {
+        return x.ok ? QString::number(x.v, 'f', dec) : dash;
+    };
+    auto sv = [&](double x, int dec) {
+        return x > 0 ? QString::number(x, 'f', dec) : dash;
+    };
+    for (int b = 0; b < 6; ++b) {
+        QString c[6];
+        if (wantMeas && !measOk) {
+            for (int i = 0; i < 6; ++i) c[i] = dash;
+        } else if (measOk) {
+            c[0] = mv(m_measIr.edt[b], 2); c[1] = mv(m_measIr.t20[b], 2);
+            c[2] = mv(m_measIr.t30[b], 2); c[3] = mv(m_measIr.c80[b], 1);
+            c[4] = mv(m_measIr.d50[b], 2); c[5] = mv(m_measIr.ts[b], 0);
+        } else {
+            c[0] = sv(st[b].EDT, 2); c[1] = sv(st[b].T20, 2);
+            c[2] = sv(st[b].T30, 2);
+            c[3] = QString::number(sm[b].C80, 'f', 1);
+            c[4] = QString::number(sm[b].D50, 'f', 2);
+            c[5] = QString::number(sm[b].Ts, 'f', 0);
+        }
+        for (int i = 0; i < 6; ++i)
+            m_irBandTable->setItem(i, b + 1, numItem(c[i]));
+    }
+
+    // ── 算出方法の明示
+    if (wantMeas && !measOk) {
+        m_irMethodNote->setText(I18n::tr("rah_ir_notloaded"));
+    } else if (measOk) {
+        m_irMethodNote->setText(I18n::tr("rah_ir_method_meas"));
+    } else {
+        m_irMethodNote->setText(I18n::tr("rah_ir_method_stat")
+            .arg(I18n::tr("rah_rcv_shared").arg(I18n::tr(kReceivers[rcvIdx].key)),
+                 QString::number(a.volume, 'f', 0)));
+    }
+
+    // ── Schroeder 減衰曲線
+    MiniSeries decay;
+    decay.color = QColor(kAcc);
+    if (measOk) {
+        decay.pts = m_measDecay;
+    } else if (!wantMeas) {
+        const double T = rt60(a, 3);   // 1 kHz
+        decay.pts = schroederCurve(r, T, a.volume,
+                                   std::max(0.5, 1.6 * T), 400);
+    }
+    m_schroederPlot->setSeries({ decay });
+
+    // ── T20/T30 乖離 (非線形減衰の検知)
+    double t20 = 0, t30 = 0;
+    if (measOk) {
+        if (m_measIr.t20[3].ok) t20 = m_measIr.t20[3].v;
+        if (m_measIr.t30[3].ok) t30 = m_measIr.t30[3].v;
+    } else if (!wantMeas) {
+        t20 = st[3].T20; t30 = st[3].T30;
+    }
+    if (t20 > 0 && t30 > 0) {
+        const double dev = std::fabs(t20 - t30) / t30 * 100.0;
+        m_irT2030Note->setText(I18n::tr(dev < 5.0 ? "rah_t2030_ok"
+                                                 : "rah_t2030_warn")
+                                   .arg(QString::number(dev, 'f', 1)));
+    } else {
+        m_irT2030Note->setText(I18n::tr("rah_t2030_na"));
+    }
+
+    // ── 実測 vs シミュレーション (@1 kHz)
+    // 実測列: 実測IRの解析値 > ホールプリセットの公表実測値 の順で採用する。
+    const HallView H = currentHallView(m_catOpera->isChecked(),
+                                       m_hallBox->currentIndex(),
+                                       m_operaBox->currentIndex());
+    struct ValRow {
+        const char *name;
+        double meas; bool measOk;
+        double sim;  bool simOk;
+        double jnd; bool relative;   // relative=true → JND は %
+        const char *unit;
+        int dec;
+    };
+    const bool fromIr = m_measIr.loaded;
+    ValRow rows[3] = {
+        { "T30", fromIr ? m_measIr.t30[3].v : H.RT,
+          fromIr ? m_measIr.t30[3].ok : H.RT > 0,
+          st[3].T30, st[3].T30 > 0, 5.0, true, " s", 2 },
+        { "EDT", fromIr ? m_measIr.edt[3].v : H.EDT,
+          fromIr ? m_measIr.edt[3].ok : H.EDT > 0,
+          st[3].EDT, st[3].EDT > 0, 5.0, true, " s", 2 },
+        { "C80", fromIr ? m_measIr.c80[3].v : H.C80,
+          fromIr ? m_measIr.c80[3].ok : true,
+          sm[3].C80, true, 1.0, false, " dB", 1 },
+    };
+    for (int i = 0; i < 3; ++i) {
+        const ValRow &v = rows[i];
+        // 公表値が実測でなく推定のホール (OperaHall::rtMeasured=false) は * 印
+        const QString measTxt = v.measOk
+            ? QString::number(v.meas, 'f', v.dec) + v.unit
+              + (!fromIr && !H.measured ? QStringLiteral(" *") : QString())
+            : I18n::tr("rah_val_nomeas");
+        const QString simTxt = v.simOk
+            ? QString::number(v.sim, 'f', v.dec) + v.unit : dash;
+        QString diffTxt = dash, jndTxt, verdict = dash;
+        const char *color = kWarn;
+        jndTxt = v.relative ? QString::number(v.jnd, 'f', 0) + "%"
+                            : QString::number(v.jnd, 'f', 0) + " dB";
+        if (v.measOk && v.simOk) {
+            const double d = v.sim - v.meas;
+            diffTxt = (d >= 0 ? QStringLiteral("+") : QString())
+                    + QString::number(d, 'f', v.dec) + v.unit;
+            const double lim = v.relative
+                ? v.jnd / 100.0 * std::fabs(v.meas) : v.jnd;
+            const bool ok = std::fabs(d) <= lim;
+            verdict = I18n::tr(ok ? "rah_jnd_ok" : "ra_check");
+            color = ok ? kOk : kWarn;
+        }
+        setRowCells(m_irValTable, i,
+                    { QString::fromUtf8(v.name), measTxt, simTxt, diffTxt,
+                      jndTxt });
+        m_irValTable->setItem(i, 5, badgeItem(verdict, color));
+    }
+    m_irValNote->setText(I18n::tr(fromIr ? "rah_val_note_ir"
+                                         : "rah_val_note_pub")
+        + (!fromIr && !H.measured ? " " + I18n::tr("rah_val_est") : QString()));
+}
+
+// ── 空間印象ページ ──────────────────────────────────────────────────────────
+// LF / LFC : 1次鏡像法のエコーグラム + ISO 3382-1 A.2.6 (幾何推定)
+// G_late   : Barron 修正理論の 80 ms 以降エネルギー
+// BQI      : ホールの公表実測値のみ (非公表なら未計算)
+// IACC_late: 両耳IRが必要 → 未計算
+void RoomAcousticsTab::refreshSpatialPage()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QString dash = QString::fromUtf8("—");
+    const int rcvIdx = qBound(0, m_rcvBox->currentIndex(), 3);
+    double src[3], rcv[3];
+    sourcePos(src);
+    receiverPos(rcvIdx, rcv);
+
+    const LateralEnergy le = lateralEnergy(a, src, rcv);
+    const double Tmid = (rt60(a, 2) + rt60(a, 3)) / 2.0;
+    const SeatMetrics m = seatMetrics(dist3(src, rcv), Tmid, a.volume);
+    const HallView H = currentHallView(m_catOpera->isChecked(),
+                                       m_hallBox->currentIndex(),
+                                       m_operaBox->currentIndex());
+    const bool bqiPub = !H.bqiEstimated && H.BQI > 0;
+
+    auto cell = [&](int row, const QString &value, const QString &range,
+                    const char *meaning, const QString &verdict,
+                    const char *color) {
+        setRowCells(m_spatialTable, row,
+                    { I18n::tr(row == 0 ? "rah_lf" : row == 1 ? "rah_lfc"
+                             : row == 2 ? "rah_bqi_row"
+                             : row == 3 ? "rah_iacc_l" : "rah_glate"),
+                      value, range, I18n::tr(meaning) });
+        if (auto *it = m_spatialTable->item(row, 1))
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_spatialTable->setItem(row, 4, badgeItem(verdict, color));
+    };
+    const bool lfOk = le.valid && le.LF >= 0.10 && le.LF <= 0.35;
+    cell(0, le.valid ? QString::number(le.LF, 'f', 2) : dash,
+         QString::fromUtf8("0.10–0.35"), "rah_mean_asw",
+         le.valid ? I18n::tr(lfOk ? "rah_ok" : "ra_check")
+                  : I18n::tr("rah_notcomputed"),
+         le.valid ? (lfOk ? kOk : kWarn) : kWarn);
+    cell(1, le.valid ? QString::number(le.LFC, 'f', 2) : dash, dash,
+         "rah_mean_lfc",
+         le.valid ? I18n::tr("rah_ok") : I18n::tr("rah_notcomputed"),
+         le.valid ? kOk : kWarn);
+    cell(2, bqiPub ? QString::number(H.BQI, 'f', 2) : dash,
+         I18n::tr("rah_bqi_range"), "rah_mean_bqi",
+         bqiPub ? I18n::tr(H.BQI >= 0.55 ? "ra_excellent" : "ra_fair")
+                : I18n::tr("rah_notcomputed"),
+         bqiPub ? (H.BQI >= 0.55 ? kOk : kWarn) : kWarn);
+    cell(3, dash, QString::fromUtf8("≤0.28"), "rah_mean_lev",
+         I18n::tr("rah_notcomputed"), kWarn);
+    cell(4, QString::number(m.Glate, 'f', 1) + " dB",
+         QString::fromUtf8("≥ 0 dB"), "rah_mean_late",
+         I18n::tr(m.Glate >= 0 ? "rah_ok" : "ra_check"),
+         m.Glate >= 0 ? kOk : kWarn);
+
+    m_spatialNote->setText(I18n::tr("rah_spatial_method")
+        .arg(I18n::tr("rah_rcv_shared").arg(I18n::tr(kReceivers[rcvIdx].key))
+             + (bqiPub ? " · BQI: " + I18n::tr("rah_bqi_pub")
+                       : " · " + I18n::tr("rah_bqi_none"))));
+}
+
+// ── 電気音響設計ページ ──────────────────────────────────────────────────────
+// スピーカーは室寸法から自動配置し、ディレイは距離差から Δt = Δd/c で算出、
+// STI は客席面グリッドで実計算、ハウリング余裕は PAG/NAG 標準式で算出する。
+QVector<PaSpeaker> RoomAcousticsTab::speakerLayout() const
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const double L = a.roomL, W = a.roomW, H = a.roomH;
+    QVector<PaSpeaker> sp;
+    auto add = [&](const char *id, const char *kind,
+                   double x, double y, double z, bool on) {
+        PaSpeaker s;
+        s.id = QString::fromUtf8(id);
+        s.kindKey = QString::fromUtf8(kind);
+        s.pos[0] = x; s.pos[1] = y; s.pos[2] = z;
+        s.on = on;
+        sp.push_back(s);
+    };
+    // プロセニアム両脇のメイン (L/R)、センタークラスタ (C)、
+    // フロントフィル (F, 既定 OFF)、ディレイタワー (T, 奥行 25m 以上で ON)
+    add("L", "rah_sp_line8", 0.04 * L, 0.22 * W, 0.55 * H, true);
+    add("R", "rah_sp_line8", 0.04 * L, 0.78 * W, 0.55 * H, true);
+    add("C", "rah_sp_point", 0.03 * L, 0.50 * W, 0.62 * H, true);
+    add("F", "rah_sp_front", 0.08 * L, 0.50 * W, 0.12 * H, false);
+    add("T", "rah_sp_tower", 0.60 * L, 0.50 * W, 0.35 * H, L >= 25.0);
+    for (PaSpeaker &s : sp) {   // 設計受音点 = 最も近い解析受音点 P1..P4
+        double best = 1e300;
+        for (int i = 0; i < 4; ++i) {
+            double p[3];
+            receiverPos(i, p);
+            const double d = dist3(s.pos, p);
+            if (d < best) { best = d; s.designRcv = i; }
+        }
+    }
+    return sp;
+}
+
+void RoomAcousticsTab::refreshReinforcePage()
+{
+    const QString dash = QString::fromUtf8("—");
+    const QVector<PaSpeaker> sp = speakerLayout();
+
+    // ── スピーカー表 (位置・エイミングは設計受音点への方向から算出)
+    m_spTable->setRowCount(sp.size());
+    for (int i = 0; i < sp.size(); ++i) {
+        const PaSpeaker &s = sp[i];
+        double p[3];
+        receiverPos(s.designRcv, p);
+        const double dx = p[0]-s.pos[0], dy = p[1]-s.pos[1], dz = p[2]-s.pos[2];
+        const double az = std::atan2(dy, dx) * 180.0 / M_PI;   // +y 側が正
+        const double el = std::atan2(dz, std::hypot(dx, dy)) * 180.0 / M_PI;
+        m_spTable->setItem(i, 0, checkItem(s.on));
+        m_spTable->setItem(i, 1, new QTableWidgetItem(s.id));
+        m_spTable->setItem(i, 2, new QTableWidgetItem(I18n::tr(s.kindKey)));
+        m_spTable->setItem(i, 3, numItem(QStringLiteral("%1, %2, %3")
+            .arg(QString::number(s.pos[0], 'f', 1),
+                 QString::number(s.pos[1], 'f', 1),
+                 QString::number(s.pos[2], 'f', 1))));
+        m_spTable->setItem(i, 4, numItem(QStringLiteral("%1° / %2°")
+            .arg(QString::number(az, 'f', 0), QString::number(el, 'f', 0))));
+        m_spTable->setItem(i, 5, numItem(
+            QString::number(s.gainDb, 'f', 0) + " dB"));
+    }
+
+    // ── ディレイ (メイン L/R との距離差から Δt = Δd/c)
+    const double haasMs = 10.0;   // 先行音効果のための上乗せ (慣用 10〜20 ms)
+    QVector<int> delayRows;
+    for (int i = 0; i < sp.size(); ++i)
+        if (sp[i].on && sp[i].id != "L" && sp[i].id != "R")
+            delayRows.push_back(i);
+    m_delayTable->setRowCount(delayRows.size());
+    for (int k = 0; k < delayRows.size(); ++k) {
+        const PaSpeaker &s = sp[delayRows[k]];
+        double p[3];
+        receiverPos(s.designRcv, p);
+        double dMain = 1e300;
+        for (const PaSpeaker &m : sp)
+            if (m.on && (m.id == "L" || m.id == "R"))
+                dMain = std::min(dMain, dist3(m.pos, p));
+        const double dSp = dist3(s.pos, p);
+        const bool hasMain = dMain < 1e299;
+        const double dt = hasMain
+            ? alignmentDelayMs(dMain, dSp)
+              + (m_haasCheck->isChecked() ? haasMs : 0.0) : 0.0;
+        setRowCells(m_delayTable, k,
+            { s.id, I18n::tr(kReceivers[s.designRcv].key),
+              hasMain ? QString::number(dMain, 'f', 1) : dash,
+              QString::number(dSp, 'f', 1),
+              hasMain ? QString::number(dt, 'f', 1) : dash });
+        for (int c = 2; c < 5; ++c)
+            if (auto *it = m_delayTable->item(k, c))
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+    m_delayNote->setText(I18n::tr("rah_delay_method")
+        .arg(QString::number(soundSpeed(20.0), 'f', 1),
+             QString::number(m_haasCheck->isChecked() ? haasMs : 0.0, 'f', 0)));
+
+    // ── STI マップ
+    m_stiMap->setSpeakers(sp);
+    if (m_stiMap->valid()) {
+        m_stiBadge->setText(I18n::tr("rah_sti_avg_v")
+            .arg(QString::number(m_stiMap->mean(), 'f', 2)));
+        const bool uni = m_stiMap->stddev() < 0.05;
+        m_stiUniBadge->setText(I18n::tr("rah_sti_sd_v")
+            .arg(QString::number(m_stiMap->stddev(), 'f', 2),
+                 I18n::tr(uni ? "ra_good" : "ra_check")));
+    } else {
+        m_stiBadge->setText(I18n::tr("rah_sti_avg_v").arg(dash));
+        m_stiUniBadge->setText(I18n::tr("rah_notcomputed"));
+    }
+
+    // ── ハウリング余裕 (PAG/NAG)
+    // 話者は音源位置、マイクは演台マイクの標準的な収音距離として話者の
+    // 0.5 m 前方 (客席側) の高さ 1.2 m に置く。収音距離は室寸法に依存しない。
+    double talker[3];
+    sourcePos(talker);
+    const double mic[3] = { talker[0] + 0.5, talker[1], 1.2 };
+    m_micPos->setText(I18n::tr("rah_mic_auto")
+        .arg(QString::number(mic[0], 'f', 1), QString::number(mic[1], 'f', 1),
+             QString::number(mic[2], 'f', 1)));
+
+    double far[3] = { 0, 0, 0 };
+    double D0 = 0;
+    for (int i = 0; i < 4; ++i) {            // 最遠聴取点 = 話者から最も遠い P
+        double p[3];
+        receiverPos(i, p);
+        const double d = dist3(talker, p);
+        if (d > D0) { D0 = d; far[0] = p[0]; far[1] = p[1]; far[2] = p[2]; }
+    }
+    double D2 = 1e300, Ds = 1e300;
+    for (const PaSpeaker &s : sp) {
+        if (!s.on) continue;
+        D2 = std::min(D2, dist3(s.pos, far));   // 最遠聴取点を受け持つ SP
+        Ds = std::min(Ds, dist3(s.pos, mic));   // 帰還は最も近い SP が支配
+    }
+    const double D1 = dist3(talker, mic);
+    const int    NOM = 1;      // 開マイク数 (演台 1 本)
+    const double EAD = 2.4;    // 等価音響距離 [m] (音声の設計既定値)
+    const double FSM = 6.0;    // 安定余裕 [dB]
+    const GainBeforeFeedback g = (D2 < 1e299 && Ds < 1e299)
+        ? pagNag(D0, D1, D2, Ds, NOM, EAD, FSM) : GainBeforeFeedback();
+    static const char *kGbfRow[8] = { "rah_gbf_d0", "rah_gbf_d1", "rah_gbf_d2",
+                                      "rah_gbf_ds", "rah_gbf_ead",
+                                      "rah_gbf_nag", "rah_gbf_pag",
+                                      "rah_gbf_margin" };
+    const double vals[8] = { g.D0, g.D1, g.D2, g.Ds, g.EAD,
+                             g.NAG, g.PAG, g.margin };
+    for (int i = 0; i < 8; ++i) {
+        m_gbfTable->setItem(i, 0, new QTableWidgetItem(I18n::tr(kGbfRow[i])));
+        m_gbfTable->setItem(i, 1, numItem(g.valid
+            ? QString::number(vals[i], 'f', i < 5 ? 2 : 1)
+              + QString::fromUtf8(i < 5 ? " m" : " dB")
+            : dash));
+    }
+    if (g.valid) {
+        m_gbfBadge->setText(I18n::tr("rah_gbf_value")
+                                .arg(QString::number(g.margin, 'f', 1)));
+        m_gbfBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+            .arg(QLatin1String(g.margin >= 6.0 ? kOk : kWarn)));
+    } else {
+        m_gbfBadge->setText(I18n::tr("rah_gbf_na"));
+    }
+    m_gbfNote->setText(I18n::tr("rah_gbf_method")
+        .arg(QString::number(NOM), QString::number(FSM, 'f', 0),
+             QString::number(EAD, 'f', 1)));
+}
+
+// ── 実測 IR (WAV) の解析 ────────────────────────────────────────────────────
+// 実測RIR分析タブと同じ OperaAcousticSettings を使って RirAnalyzer を回す。
+// ボタン起動の単発処理 (自動実行はしない — GUI スレッドを長く占有しない)。
+void RoomAcousticsTab::runMeasuredIr()
+{
+    m_measIr = MeasuredIrBands();
+    m_measDecay.clear();
+    const OperaAcousticSettings &s = m_p->operaAcoustic();
+    if (s.rirPath.trimmed().isEmpty()) {
+        m_measIr.status = I18n::tr("rah_ir_status_none");
+        refreshIrPage();
+        return;
+    }
+    std::vector<double> samples;
+    double fs = 0.0;
+    const acoustics::AcousticResult<acoustics::RirAnalysisResult> res =
+        QtAcousticAdapter::analyzeFile(s, &samples, &fs);
+    if (!res.success()) {
+        m_measIr.status = I18n::tr("rah_ir_status_err")
+            .arg(QString::fromStdString(res.message()));
+        refreshIrPage();
+        return;
+    }
+    const acoustics::RirAnalysisResult &r = res.value();
+    // bandSet=Compat6 のとき bands は 125/250/500/1k/2k/4k の順
+    const int n = std::min(6, int(r.bands.size()));
+    auto put = [](MeasuredValue &dst, const acoustics::MetricValue &src,
+                  double scale) {
+        dst.ok = src.valid;
+        dst.v = src.value * scale;
+    };
+    for (int b = 0; b < n; ++b) {
+        const acoustics::AcousticMetricsSet &m = r.bands[std::size_t(b)].metrics;
+        put(m_measIr.edt[b], m.edt, 1.0);
+        put(m_measIr.t20[b], m.t20, 1.0);
+        put(m_measIr.t30[b], m.t30, 1.0);
+        put(m_measIr.c80[b], m.c80, 1.0);
+        put(m_measIr.d50[b], m.d50, 1.0);
+        put(m_measIr.ts[b],  m.ts, 1000.0);   // [s] → [ms]
+    }
+    m_measIr.loaded = n > 0;
+    m_measIr.status = I18n::tr("rah_ir_status_ok")
+        .arg(QFileInfo(s.rirPath).fileName());
+
+    // 広帯域 Schroeder 減衰カーブ (プロット用, 秒スケール)
+    const acoustics::SchroederResult decay =
+        QtAcousticAdapter::decayCurve(samples, fs, s);
+    if (decay.valid && !decay.decayDb.empty() && fs > 0) {
+        const int nd = int(decay.decayDb.size());
+        const int stride = std::max(1, nd / 1200);
+        for (int i = 0; i < nd; i += stride)
+            m_measDecay.push_back(QPointF(i / fs, decay.decayDb[std::size_t(i)]));
+    }
+    m_irSrcBox->setCurrentIndex(1);   // 実測を表示 (currentIndexChanged で再描画)
+    refreshIrPage();
 }
 
 // A=αS@1k 派生列のみ再表示 (cellChanged の再入は m_updating で防ぐ)
@@ -2158,6 +2754,11 @@ void RoomAcousticsTab::recomputeAll()
     if (rec.isEmpty()) rec = I18n::tr("ra_rec_none");
     rec += "<br><i>" + I18n::tr("ra_defect_note") + "</i>";
     m_recommend->setText(rec);
+
+    // IR解析 / 空間印象 / 電気音響 (いずれもモデルからの実計算)
+    refreshIrPage();
+    refreshSpatialPage();
+    refreshReinforcePage();
 }
 
 // ── レポート出力 ────────────────────────────────────────────────────────────

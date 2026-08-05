@@ -19,6 +19,35 @@ static QString joinNums(const double *v, int n) {
     return s;
 }
 
+// 音源リスト 1 行の .ofdx 表現 (室内音響 / 水中音響で共用)。
+// 追加キーのみ — 既存キーの改名・削除・型変更は禁止。
+static QJsonObject sourceRowToJson(const AcousticSourceRow &r) {
+    return QJsonObject{
+        {"enabled", r.enabled}, {"name", r.name}, {"kind", r.kind},
+        {"pos_m", QJsonArray{ r.x_m, r.y_m, r.z_m }},
+        {"aim", r.aim}, {"signal", r.signal}, {"level_db", r.level_dB} };
+}
+
+static AcousticSourceRow sourceRowFromJson(const QJsonObject &o) {
+    AcousticSourceRow r;
+    r.enabled = o.value("enabled").toBool(r.enabled);
+    r.name    = o.value("name").toString(r.name);
+    // 壊れたファイルの範囲外値で不正な種別を作らない (0..3 にクランプ)
+    r.kind    = qBound(int(AcousticSourceRow::Omni),
+                       o.value("kind").toInt(r.kind),
+                       int(AcousticSourceRow::Directional));
+    const QJsonArray pos = o.value("pos_m").toArray();
+    if (pos.size() >= 3) {
+        r.x_m = pos[0].toDouble(r.x_m);
+        r.y_m = pos[1].toDouble(r.y_m);
+        r.z_m = pos[2].toDouble(r.z_m);
+    }
+    r.aim      = o.value("aim").toString(r.aim);
+    r.signal   = o.value("signal").toString(r.signal);
+    r.level_dB = o.value("level_db").toDouble(r.level_dB);
+    return r;
+}
+
 // Split off a trailing " # name" comment (GUI metadata the kernel tokenizer
 // simply ignores as extra tokens). Returns the name, shortens the line.
 static QString takeTrailingName(QString &line) {
@@ -290,6 +319,13 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
     PostOpts    &po = project.post();
     po.plotiter = false;   // file decides what is on
     g.hasF1 = g.hasF2 = false;
+
+    // モニター定義 / 解析グループは .ofd に持たない (.ofdx 側のデータ)。
+    // サイドカーが無い .ofd を開いたとき、直前のプロジェクトで編集した一覧が
+    // 残らないようドメインの既定へ戻す。サイドカーがあれば直後の
+    // OfdxIO::load が上書きする (キーが無ければ同じ既定で埋め直す)。
+    project.monitors() = defaultMonitors(project.activeDomain());
+    project.analysisGroups() = defaultAnalysisGroups(project.activeDomain());
 
     bool header = false;
     const QStringList lines = text.split('\n');
@@ -661,6 +697,18 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             noiseSrc.append(QJsonObject{
                 {"enabled", r.enabled}, {"name", r.name},
                 {"level_dba", r.level_dBA}, {"measure", r.measure} });
+        // 受音点リスト (AcousticTab の受音点表) — 追加キーのみ。
+        // 既存の mic_count は受音点数として残す (行数と常に一致する)。
+        QJsonArray recv;
+        for (const ReceiverRow &r : a.receivers)
+            recv.append(QJsonObject{
+                {"enabled", r.enabled},
+                {"pos_m", QJsonArray{ r.x, r.y, r.z }},
+                {"type", r.type}, {"name", r.name} });
+        // 音源リスト (AcousticSourceTab の音源一覧) — 追加キーのみ。
+        QJsonArray srcList;
+        for (const AcousticSourceRow &r : a.sources)
+            srcList.append(sourceRowToJson(r));
         QJsonObject ac{
             {"rt60", a.rt60}, {"c80", a.c80}, {"d50", a.d50},
             {"sti", a.sti}, {"edt", a.edt},
@@ -682,7 +730,8 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
             {"absorption", budget}, {"noise_levels", noise},
-            {"noise_sources", noiseSrc} };
+            {"noise_sources", noiseSrc}, {"receivers", recv},
+            {"sources", srcList} };
         // 実測 RIR 分析 (RirAnalysisTab, 指示書 §15) — 追加キーのみ。
         // 既存キーの改名・削除・型変更は後方互換のため禁止。
         const OperaAcousticSettings &oa = p.operaAcoustic();
@@ -725,6 +774,10 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         QJsonArray ssp;
         for (const SSPPoint &pt : u.ssp)
             ssp.append(QJsonObject{ {"depth_m", pt.depth_m}, {"c_mps", pt.c_mps} });
+        // ソナー送信源リスト (AcousticSourceTab の音源一覧・水中) — 追加キーのみ
+        QJsonArray uwSrc;
+        for (const AcousticSourceRow &r : u.sources)
+            uwSrc.append(sourceRowToJson(r));
         root["underwater"] = QJsonObject{
             {"temp_C", u.waterTemp_C}, {"salinity_psu", u.salinity_psu},
             {"ssp", ssp}, {"sofar", u.sofar},
@@ -736,7 +789,8 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"bottom_alpha_db_lambda", u.bottomAlpha_dBlambda},
             {"sonar_freq_khz", u.sonarFreq_kHz},
             {"sonar_sl_db", u.sonarSL_dB},
-            {"range_max_km", u.rangeMax_km} };
+            {"range_max_km", u.rangeMax_km},
+            {"sources", uwSrc} };
     }
     {
         // API key is NOT persisted here — it lives in QSettings
@@ -745,6 +799,185 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"project_name", t.projectName},
             {"resolution", t.resolution},
             {"auto_pml", t.autoPml} };
+    }
+    // ── ジオメトリ拡張 (.ofdx "geometry") — 追加キーのみ ────────────────────
+    // メッシュ細分化領域 (GeometryTab の「細分化領域」表)。領域が 1 つも
+    // 定義されていない既定状態では **キー自体を書かない** ので、この機能を
+    // 使わない限り .ofdx の出力は従来とバイト一致になる。
+    if (!p.refineRegions().isEmpty()) {
+        QJsonArray regs;
+        for (const RefineRegion &r : p.refineRegions())
+            regs.append(QJsonObject{
+                {"enabled", r.enabled}, {"name", r.name},
+                {"min_m", QJsonArray{ r.min_m[0], r.min_m[1], r.min_m[2] }},
+                {"max_m", QJsonArray{ r.max_m[0], r.max_m[1], r.max_m[2] }},
+                {"ratio", r.ratio} });
+        root["geometry"] = QJsonObject{ {"refine_regions", regs} };
+    }
+
+    // ── 回路系電磁解析のポート定義 (.ofdx "circuit") — 追加キーのみ ──────────
+    // 既定 3 行のままなら **キー自体を書かない** ので、表を編集しない限り
+    // .ofdx の出力は従来とバイト一致になる。
+    {
+        auto toJson = [](const QVector<CircuitPortRow> &ports) {
+            QJsonArray a;
+            for (const CircuitPortRow &r : ports)
+                a.append(QJsonObject{
+                    {"enabled", r.enabled}, {"name", r.name},
+                    {"kind", r.kind}, {"net", r.net}, {"ref", r.ref} });
+            return a;
+        };
+        const QJsonArray cur = toJson(p.circuitPorts());
+        if (cur != toJson(defaultCircuitPorts()))
+            root["circuit"] = QJsonObject{ {"ports", cur} };
+    }
+
+    // ── フォトニック回路のネットリスト (.ofdx "schematic") — 追加キーのみ ────
+    // 同上: 既定 5 行のままならキー自体を書かない。
+    {
+        auto toJson = [](const QVector<PhotonicNetRow> &net) {
+            QJsonArray a;
+            for (const PhotonicNetRow &r : net)
+                a.append(QJsonObject{
+                    {"enabled", r.enabled}, {"from", r.from}, {"to", r.to},
+                    {"wavelength", r.wavelength} });
+            return a;
+        };
+        const QJsonArray cur = toJson(p.photonicNetlist());
+        if (cur != toJson(defaultPhotonicNetlist()))
+            root["schematic"] = QJsonObject{ {"netlist", cur} };
+    }
+
+    // ── モニター定義 (.ofdx "monitors") — 追加キーのみ ──────────────────────
+    // 現ドメインの既定行のままなら **キー自体を書かない** (旧 .ofdx と
+    // バイト一致)。読み込み側もキーが無ければドメインの既定行で埋める。
+    {
+        auto toJson = [](const QVector<MonitorRow> &rows) {
+            QJsonArray a;
+            for (const MonitorRow &r : rows)
+                a.append(QJsonObject{
+                    {"enabled", r.enabled}, {"type", r.type}, {"name", r.name},
+                    {"region", r.region}, {"band", r.band} });
+            return a;
+        };
+        const QJsonArray cur = toJson(p.monitors());
+        if (cur != toJson(defaultMonitors(p.activeDomain())))
+            root["monitors"] = cur;
+    }
+
+    // ── 解析グループ (.ofdx "analysis_groups") — 追加キーのみ ────────────────
+    // 同上: 現ドメインの既定行のままならキー自体を書かない。
+    {
+        auto toJson = [](const QVector<AnalysisGroupRow> &rows) {
+            QJsonArray a;
+            for (const AnalysisGroupRow &r : rows)
+                a.append(QJsonObject{
+                    {"enabled", r.enabled}, {"name", r.name},
+                    {"monitors", r.monitors}, {"output", r.output} });
+            return a;
+        };
+        const QJsonArray cur = toJson(p.analysisGroups());
+        if (cur != toJson(defaultAnalysisGroups(p.activeDomain())))
+            root["analysis_groups"] = cur;
+    }
+
+    // ── ディスプレイ / AR-VR 光学 (.ofdx "display_optics") — 追加キーのみ ────
+    // 既定値のままなら **キー自体を書かない** ので、この機能を使わない限り
+    // .ofdx の出力は従来とバイト一致になる (既定値との比較で判定する)。
+    {
+        auto toJson = [](const DisplayOpticsOpts &d) {
+            return QJsonObject{
+                {"device", d.device},
+                {"waveguide", QJsonObject{
+                    {"type", d.wgType},
+                    {"substrate_thickness_mm", d.subThick_mm},
+                    {"substrate_index", d.subIndex},
+                    {"period_nm", d.gratPeriod_nm},
+                    {"depth_nm", d.gratDepth_nm},
+                    {"slant_deg", d.gratSlant_deg},
+                    {"three_gratings", d.threeGratings},
+                    {"rcwa_optimize", d.rcwaOptimize},
+                    {"design_lambda_nm", d.designLambda_nm},
+                    {"guide_max_angle_deg", d.guideMaxAngle_deg},
+                    {"outcoupler_len_mm", d.outcouplerLen_mm},
+                    {"eye_relief_mm", d.eyeRelief_mm} }},
+                {"targets", QJsonObject{
+                    {"fov_deg", d.fovTarget_deg},
+                    {"eyebox_mm", d.eyeboxTarget_mm},
+                    {"see_through_pct", d.seeThroughTarget_pct} }},
+                {"oled", QJsonObject{
+                    {"bottom_emission", d.bottomEmission},
+                    {"top_emission", d.topEmission},
+                    {"microcavity", d.microcavity},
+                    {"separate_iqe", d.sepIqe},
+                    {"separate_spp", d.sepSpp},
+                    {"separate_waveguide", d.sepWaveguide},
+                    {"structure", d.outcouplingStruct},
+                    {"index", d.oledIndex},
+                    {"iqe", d.oledIqe} }},
+                {"microled", QJsonObject{
+                    {"chip_size_um", d.chipSize_um},
+                    {"sidewall_recomb", d.sidewallRecomb},
+                    {"sidewall_dbr", d.sidewallDbr},
+                    {"directional", d.directional},
+                    {"index", d.mlIndex},
+                    {"iqe", d.mlIqe},
+                    {"surface_velocity_cm_s", d.mlSurfVel_cm_s},
+                    {"lifetime_ns", d.mlLifetime_ns} }},
+                {"lcd", QJsonObject{
+                    {"mode", d.lcdMode},
+                    {"anisotropy", d.lcAnisotropy},
+                    {"comp_film", d.compFilm},
+                    {"peak_luminance_cdm2", d.lcdPeakLum_cdm2},
+                    {"darkroom_cr", d.lcdDarkroomCr},
+                    {"ambient_lx", d.lcdAmbient_lx},
+                    {"reflectance", d.lcdReflectance} }} };
+        };
+        const QJsonObject cur = toJson(p.displayOptics());
+        if (cur != toJson(DisplayOpticsOpts{})) root["display_optics"] = cur;
+    }
+
+    // ── 照明光学・測色 (.ofdx "illumination") — 追加キーのみ ────────────────
+    // 同上: 既定値のままならキー自体を書かない。
+    {
+        auto toJson = [](const IlluminationOpts &i) {
+            return QJsonObject{
+                {"app", i.app},
+                {"source_model", i.srcModel},
+                {"ray_file", i.rayFile},
+                {"spectrum", i.spectrum},
+                {"flux_lm", i.flux_lm},
+                {"rays", i.rays},
+                {"optics", QJsonObject{
+                    {"reflector", i.reflector},
+                    {"tir_lens", i.tirLens},
+                    {"diffuser", i.diffuser},
+                    {"light_guide", i.lightGuide},
+                    {"phosphor", i.phosphor},
+                    {"surface", i.surface} }},
+                {"white_led", QJsonObject{
+                    {"blue_peak_nm", i.bluePeak_nm},
+                    {"blue_fwhm_nm", i.blueFwhm_nm},
+                    {"phosphor_peak_nm", i.phosPeak_nm},
+                    {"phosphor_fwhm_nm", i.phosFwhm_nm},
+                    {"phosphor_ratio", i.phosRatio} }},
+                {"rgb", QJsonObject{
+                    {"r_peak_nm", i.rPeak_nm}, {"r_fwhm_nm", i.rFwhm_nm},
+                    {"r_ratio", i.rRatio},
+                    {"g_peak_nm", i.gPeak_nm}, {"g_fwhm_nm", i.gFwhm_nm},
+                    {"g_ratio", i.gRatio},
+                    {"b_peak_nm", i.bPeak_nm}, {"b_fwhm_nm", i.bFwhm_nm},
+                    {"b_ratio", i.bRatio} }},
+                {"blackbody_k", i.blackbody_K},
+                {"mono", QJsonObject{
+                    {"peak_nm", i.monoPeak_nm}, {"fwhm_nm", i.monoFwhm_nm} }},
+                {"targets", QJsonObject{
+                    {"cct_k", i.cctTarget_K},
+                    {"cct_tol_k", i.cctTol_K},
+                    {"duv_tol", i.duvTol} }} };
+        };
+        const QJsonObject cur = toJson(p.illumination());
+        if (cur != toJson(IlluminationOpts{})) root["illumination"] = cur;
     }
 
     QFile f(path);
@@ -947,6 +1180,37 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 a.noiseSources.push_back(r);
             }
         }
+        // 音源リスト — 追加キー。キーが無い旧ファイルは既定 3 行のまま
+        // (旧ファイル互換)。空配列は「音源なし」として尊重する。
+        if (ac.contains("sources")) {
+            a.sources.clear();
+            for (const QJsonValue &v : ac["sources"].toArray())
+                a.sources.push_back(sourceRowFromJson(v.toObject()));
+        }
+        // 受音点リスト — 追加キー。キーが無い旧ファイルは既存の mic_count 個
+        // の既定点で埋め、「受音点数」と表の行数が食い違わないようにする。
+        // 読み込み後は必ず micCount = receivers.size() (同一データの不変条件)。
+        if (ac.contains("receivers")) {
+            a.receivers.clear();
+            for (const QJsonValue &v : ac["receivers"].toArray()) {
+                const QJsonObject o = v.toObject();
+                ReceiverRow r;
+                r.enabled = o.value("enabled").toBool(true);
+                const QJsonArray pos = o["pos_m"].toArray();
+                if (pos.size() >= 3) {
+                    r.x = pos[0].toDouble(r.x);
+                    r.y = pos[1].toDouble(r.y);
+                    r.z = pos[2].toDouble(r.z);
+                }
+                r.type = qBound(0, o.value("type").toInt(r.type), 2);
+                r.name = o.value("name").toString();
+                a.receivers.push_back(r);
+            }
+        }
+        // キーが無い / 空の旧ファイルは mic_count 個の既定点へ (受音点は 1 点以上)
+        if (!ac.contains("receivers") || a.receivers.isEmpty())
+            a.receivers = defaultReceivers(qBound(1, a.micCount, 256));
+        a.micCount = a.receivers.size();
         // 実測 RIR 分析設定 — 欠落キーは既定値のまま (旧ファイル互換)
         if (ac.contains("opera_analysis")) {
             const QJsonObject oa = ac["opera_analysis"].toObject();
@@ -1013,6 +1277,12 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         u.sonarFreq_kHz = uw.value("sonar_freq_khz").toDouble(u.sonarFreq_kHz);
         u.sonarSL_dB = uw.value("sonar_sl_db").toDouble(u.sonarSL_dB);
         u.rangeMax_km = uw.value("range_max_km").toDouble(u.rangeMax_km);
+        // ソナー送信源リスト — 追加キー。欠落時は既定 2 行のまま (旧ファイル互換)
+        if (uw.contains("sources")) {
+            u.sources.clear();
+            for (const QJsonValue &v : uw["sources"].toArray())
+                u.sources.push_back(sourceRowFromJson(v.toObject()));
+        }
     }
     if (root.contains("tidy3d")) {
         const QJsonObject t3 = root["tidy3d"].toObject();
@@ -1020,6 +1290,194 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         t.projectName = t3.value("project_name").toString(t.projectName);
         t.resolution = t3.value("resolution").toString(t.resolution);
         t.autoPml = t3.value("auto_pml").toBool(t.autoPml);
+    }
+    // ジオメトリ拡張 — キーが無い旧ファイルは細分化領域なし (既定値のまま)
+    if (root.contains("geometry")) {
+        const QJsonObject geo = root["geometry"].toObject();
+        if (geo.contains("refine_regions")) {
+            QVector<RefineRegion> &regs = p.refineRegions();
+            regs.clear();
+            for (const QJsonValue &v : geo["refine_regions"].toArray()) {
+                const QJsonObject o = v.toObject();
+                RefineRegion r;
+                r.enabled = o.value("enabled").toBool(true);
+                r.name = o.value("name").toString();
+                const QJsonArray lo = o["min_m"].toArray();
+                const QJsonArray hi = o["max_m"].toArray();
+                for (int a = 0; a < 3; ++a) {
+                    if (a < lo.size()) r.min_m[a] = lo[a].toDouble(r.min_m[a]);
+                    if (a < hi.size()) r.max_m[a] = hi[a].toDouble(r.max_m[a]);
+                }
+                r.ratio = o.value("ratio").toDouble(r.ratio);
+                regs.push_back(r);
+            }
+        }
+    }
+    // 回路系電磁解析のポート定義 — キーが無い旧ファイルは既定 3 行のまま
+    if (root.contains("circuit")) {
+        const QJsonObject cj = root["circuit"].toObject();
+        if (cj.contains("ports")) {
+            QVector<CircuitPortRow> &ports = p.circuitPorts();
+            ports.clear();
+            for (const QJsonValue &v : cj["ports"].toArray()) {
+                const QJsonObject o = v.toObject();
+                CircuitPortRow r;
+                r.enabled = o.value("enabled").toBool(true);
+                r.name = o.value("name").toString();
+                r.kind = qBound(0, o.value("kind").toInt(r.kind), 1);
+                r.net = o.value("net").toString();
+                r.ref = o.value("ref").toString();
+                ports.push_back(r);
+            }
+        }
+    }
+    // フォトニック回路のネットリスト — キーが無い旧ファイルは既定 5 行のまま
+    if (root.contains("schematic")) {
+        const QJsonObject sj = root["schematic"].toObject();
+        if (sj.contains("netlist")) {
+            QVector<PhotonicNetRow> &net = p.photonicNetlist();
+            net.clear();
+            for (const QJsonValue &v : sj["netlist"].toArray()) {
+                const QJsonObject o = v.toObject();
+                PhotonicNetRow r;
+                r.enabled = o.value("enabled").toBool(true);
+                r.from = o.value("from").toString();
+                r.to = o.value("to").toString();
+                r.wavelength = o.value("wavelength").toString();
+                net.push_back(r);
+            }
+        }
+    }
+    // モニター定義 — キーが無い旧ファイルは *読み込んだドメイン* の既定行。
+    // (ドメインは冒頭の setActiveDomain で確定済み)
+    if (root.contains("monitors")) {
+        QVector<MonitorRow> &mons = p.monitors();
+        mons.clear();
+        for (const QJsonValue &v : root["monitors"].toArray()) {
+            const QJsonObject o = v.toObject();
+            MonitorRow r;
+            r.enabled = o.value("enabled").toBool(true);
+            r.type = o.value("type").toString();
+            r.name = o.value("name").toString();
+            r.region = o.value("region").toString();
+            r.band = o.value("band").toString();
+            mons.push_back(r);
+        }
+    } else {
+        p.monitors() = defaultMonitors(p.activeDomain());
+    }
+    // 解析グループ — 同上
+    if (root.contains("analysis_groups")) {
+        QVector<AnalysisGroupRow> &grps = p.analysisGroups();
+        grps.clear();
+        for (const QJsonValue &v : root["analysis_groups"].toArray()) {
+            const QJsonObject o = v.toObject();
+            AnalysisGroupRow r;
+            r.enabled = o.value("enabled").toBool(false);
+            r.name = o.value("name").toString();
+            r.monitors = o.value("monitors").toString();
+            r.output = o.value("output").toString();
+            grps.push_back(r);
+        }
+    } else {
+        p.analysisGroups() = defaultAnalysisGroups(p.activeDomain());
+    }
+    // ディスプレイ / AR-VR 光学 — キーが無い旧ファイルは既定値のまま
+    if (root.contains("display_optics")) {
+        const QJsonObject dj = root["display_optics"].toObject();
+        DisplayOpticsOpts &d = p.displayOptics();
+        d.device = qBound(0, dj.value("device").toInt(d.device), 3);
+        const QJsonObject wg = dj["waveguide"].toObject();
+        d.wgType = qBound(0, wg.value("type").toInt(d.wgType), 3);
+        d.subThick_mm = wg.value("substrate_thickness_mm").toDouble(d.subThick_mm);
+        d.subIndex = wg.value("substrate_index").toDouble(d.subIndex);
+        d.gratPeriod_nm = wg.value("period_nm").toDouble(d.gratPeriod_nm);
+        d.gratDepth_nm = wg.value("depth_nm").toDouble(d.gratDepth_nm);
+        d.gratSlant_deg = wg.value("slant_deg").toDouble(d.gratSlant_deg);
+        d.threeGratings = wg.value("three_gratings").toBool(d.threeGratings);
+        d.rcwaOptimize = wg.value("rcwa_optimize").toBool(d.rcwaOptimize);
+        d.designLambda_nm = wg.value("design_lambda_nm").toDouble(d.designLambda_nm);
+        d.guideMaxAngle_deg =
+            wg.value("guide_max_angle_deg").toDouble(d.guideMaxAngle_deg);
+        d.outcouplerLen_mm = wg.value("outcoupler_len_mm").toDouble(d.outcouplerLen_mm);
+        d.eyeRelief_mm = wg.value("eye_relief_mm").toDouble(d.eyeRelief_mm);
+        const QJsonObject tg = dj["targets"].toObject();
+        d.fovTarget_deg = tg.value("fov_deg").toDouble(d.fovTarget_deg);
+        d.eyeboxTarget_mm = tg.value("eyebox_mm").toDouble(d.eyeboxTarget_mm);
+        d.seeThroughTarget_pct =
+            tg.value("see_through_pct").toDouble(d.seeThroughTarget_pct);
+        const QJsonObject ol = dj["oled"].toObject();
+        d.bottomEmission = ol.value("bottom_emission").toBool(d.bottomEmission);
+        d.topEmission = ol.value("top_emission").toBool(d.topEmission);
+        d.microcavity = ol.value("microcavity").toBool(d.microcavity);
+        d.sepIqe = ol.value("separate_iqe").toBool(d.sepIqe);
+        d.sepSpp = ol.value("separate_spp").toBool(d.sepSpp);
+        d.sepWaveguide = ol.value("separate_waveguide").toBool(d.sepWaveguide);
+        d.outcouplingStruct =
+            qBound(0, ol.value("structure").toInt(d.outcouplingStruct), 3);
+        d.oledIndex = ol.value("index").toDouble(d.oledIndex);
+        d.oledIqe = ol.value("iqe").toDouble(d.oledIqe);
+        const QJsonObject ml = dj["microled"].toObject();
+        d.chipSize_um = ml.value("chip_size_um").toDouble(d.chipSize_um);
+        d.sidewallRecomb = ml.value("sidewall_recomb").toBool(d.sidewallRecomb);
+        d.sidewallDbr = ml.value("sidewall_dbr").toBool(d.sidewallDbr);
+        d.directional = ml.value("directional").toBool(d.directional);
+        d.mlIndex = ml.value("index").toDouble(d.mlIndex);
+        d.mlIqe = ml.value("iqe").toDouble(d.mlIqe);
+        d.mlSurfVel_cm_s =
+            ml.value("surface_velocity_cm_s").toDouble(d.mlSurfVel_cm_s);
+        d.mlLifetime_ns = ml.value("lifetime_ns").toDouble(d.mlLifetime_ns);
+        const QJsonObject lc = dj["lcd"].toObject();
+        d.lcdMode = qBound(0, lc.value("mode").toInt(d.lcdMode), 2);
+        d.lcAnisotropy = lc.value("anisotropy").toBool(d.lcAnisotropy);
+        d.compFilm = lc.value("comp_film").toBool(d.compFilm);
+        d.lcdPeakLum_cdm2 =
+            lc.value("peak_luminance_cdm2").toDouble(d.lcdPeakLum_cdm2);
+        d.lcdDarkroomCr = lc.value("darkroom_cr").toDouble(d.lcdDarkroomCr);
+        d.lcdAmbient_lx = lc.value("ambient_lx").toDouble(d.lcdAmbient_lx);
+        d.lcdReflectance = lc.value("reflectance").toDouble(d.lcdReflectance);
+    }
+    // 照明光学・測色 — キーが無い旧ファイルは既定値のまま
+    if (root.contains("illumination")) {
+        const QJsonObject ij = root["illumination"].toObject();
+        IlluminationOpts &i = p.illumination();
+        i.app = qBound(0, ij.value("app").toInt(i.app), 3);
+        i.srcModel = qBound(0, ij.value("source_model").toInt(i.srcModel), 2);
+        i.rayFile = ij.value("ray_file").toString(i.rayFile);
+        i.spectrum = qBound(0, ij.value("spectrum").toInt(i.spectrum), 3);
+        i.flux_lm = ij.value("flux_lm").toDouble(i.flux_lm);
+        i.rays = ij.value("rays").toDouble(i.rays);
+        const QJsonObject op = ij["optics"].toObject();
+        i.reflector = op.value("reflector").toBool(i.reflector);
+        i.tirLens = op.value("tir_lens").toBool(i.tirLens);
+        i.diffuser = op.value("diffuser").toBool(i.diffuser);
+        i.lightGuide = op.value("light_guide").toBool(i.lightGuide);
+        i.phosphor = op.value("phosphor").toBool(i.phosphor);
+        i.surface = qBound(0, op.value("surface").toInt(i.surface), 3);
+        const QJsonObject wl = ij["white_led"].toObject();
+        i.bluePeak_nm = wl.value("blue_peak_nm").toDouble(i.bluePeak_nm);
+        i.blueFwhm_nm = wl.value("blue_fwhm_nm").toDouble(i.blueFwhm_nm);
+        i.phosPeak_nm = wl.value("phosphor_peak_nm").toDouble(i.phosPeak_nm);
+        i.phosFwhm_nm = wl.value("phosphor_fwhm_nm").toDouble(i.phosFwhm_nm);
+        i.phosRatio = wl.value("phosphor_ratio").toDouble(i.phosRatio);
+        const QJsonObject rgb = ij["rgb"].toObject();
+        i.rPeak_nm = rgb.value("r_peak_nm").toDouble(i.rPeak_nm);
+        i.rFwhm_nm = rgb.value("r_fwhm_nm").toDouble(i.rFwhm_nm);
+        i.rRatio = rgb.value("r_ratio").toDouble(i.rRatio);
+        i.gPeak_nm = rgb.value("g_peak_nm").toDouble(i.gPeak_nm);
+        i.gFwhm_nm = rgb.value("g_fwhm_nm").toDouble(i.gFwhm_nm);
+        i.gRatio = rgb.value("g_ratio").toDouble(i.gRatio);
+        i.bPeak_nm = rgb.value("b_peak_nm").toDouble(i.bPeak_nm);
+        i.bFwhm_nm = rgb.value("b_fwhm_nm").toDouble(i.bFwhm_nm);
+        i.bRatio = rgb.value("b_ratio").toDouble(i.bRatio);
+        i.blackbody_K = ij.value("blackbody_k").toDouble(i.blackbody_K);
+        const QJsonObject mo = ij["mono"].toObject();
+        i.monoPeak_nm = mo.value("peak_nm").toDouble(i.monoPeak_nm);
+        i.monoFwhm_nm = mo.value("fwhm_nm").toDouble(i.monoFwhm_nm);
+        const QJsonObject tg = ij["targets"].toObject();
+        i.cctTarget_K = tg.value("cct_k").toDouble(i.cctTarget_K);
+        i.cctTol_K = tg.value("cct_tol_k").toDouble(i.cctTol_K);
+        i.duvTol = tg.value("duv_tol").toDouble(i.duvTol);
     }
     return true;
 }

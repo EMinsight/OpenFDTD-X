@@ -1193,7 +1193,9 @@ void AudioEditorTab::showAnalysis(
         m_metricsTable->setItem(r, 1, roItem(value));
         m_metricsTable->setItem(r, 2, roItem(note));
     };
-    auto rtVal = [this](bool has, double sec) {
+    // I18n::tr は静的関数なので this の捕捉は不要
+    // (Apple clang が -Wunused-lambda-capture で警告する)
+    auto rtVal = [](bool has, double sec) {
         return has ? QStringLiteral("%1 s").arg(sec, 0, 'f', 3)
                    : I18n::tr("ae_m_range_short");
     };

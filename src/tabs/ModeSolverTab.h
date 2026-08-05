@@ -8,9 +8,11 @@
 // 実計算する量: neff / ng (=neff−λ·dneff/dλ) / 閉込め係数 Γ / 実効断面積 Aeff /
 //               群速度分散 D / 複屈折 Δn / dneff/dT / dneff/dw /
 //               プロセスコーナーの neff・ng・リング共振波長シフト。
+//               曲げ導波路の直線⇄曲げ モード不整合損と放射カウスティック位置
+//               (共形変換 n_eq(x) = n(x)(1+x/R) の等価断面を解いて求める)。
 // 本ソルバの範囲外 (画面に明示する — CLAUDE.md 絶対規則 5):
 //   - 伝搬損失 [dB/cm] : 実屈折率のみを扱うため散乱損・吸収損は求まらない
-//   - 曲げ損失         : 曲がり導波路の漏れモード解析が別途必要 (固定サンプル値)
+//   - 曲げの放射損失   : 漏れモード (複素 neff) 解析が別途必要 → 「未計算」表示
 //   - モード波源 / モード展開モニター / Schematic への受け渡し (受け側モデル未実装)
 #pragma once
 #include <QPointF>
@@ -69,6 +71,17 @@ struct Dispersion {
     QString xLabel, note;
 };
 
+// 曲げ半径 1 点 (共形変換による等価直線断面の解)
+struct BendRow {
+    double R_um = 0.0;
+    bool   ok = false;              // 等価断面の導波モードが求まったか
+    double neffBend = 0.0;
+    double mismatchDb = 0.0;        // 直線⇄曲げ接続のモード不整合損 [dB]
+    bool   hasCaustic = false;
+    double caustic_um = 0.0;        // 放射カウスティック x_c = R(neff/nclad − 1)
+    double ratio = 0.0;             // 窓端での |x|/R (1 次近似の妥当性)
+};
+
 // プロセスコーナー 1 点
 struct CornerRow {
     QString name;
@@ -98,9 +111,11 @@ private:
     void runModes();
     void runSweep();
     void runCorners();
+    void runBend();
     void showModes();
     void showDispersion();
     void showCorners();
+    void showBend();
     void updateFieldView();
 
     Project *m_p;
@@ -113,7 +128,8 @@ private:
     QLabel         *m_indexLabel = nullptr; // n(λ,T) のプレビュー / 入力エラー
     QLabel         *m_status = nullptr;     // 計算状態
     QPushButton    *m_btnRun = nullptr, *m_btnSweep = nullptr,
-                   *m_btnCorner = nullptr, *m_btnField = nullptr;
+                   *m_btnCorner = nullptr, *m_btnField = nullptr,
+                   *m_btnBend = nullptr;
     QVector<QWidget *> m_inputs;            // 計算中に無効化する入力群
 
     QTableWidget *m_modeTable = nullptr;
@@ -127,6 +143,8 @@ private:
     QLabel       *m_dispNote = nullptr;      // 未算出の理由・除外点の注記
     QTableWidget *m_cornerTable = nullptr;
     QLabel       *m_cornerNote = nullptr;
+    QTableWidget *m_bendTable = nullptr;
+    QLabel       *m_bendNote = nullptr;
 
     // 非同期実行 (GUI スレッドを塞がない — .claude/rules/gui.md)
     bool  m_busy = false;
@@ -138,6 +156,8 @@ private:
     QVector<mds::ModeRow>   m_modes;
     mds::Dispersion         m_disp;
     QVector<mds::CornerRow> m_corners;
+    QVector<mds::BendRow>   m_bends;
+    double                  m_bendRatio = 0.0;   // 窓端 |x|/R の最悪値
 };
 
 } // namespace ofd

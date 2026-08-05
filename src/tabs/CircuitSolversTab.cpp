@@ -4,6 +4,7 @@
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
+#include "../em/LumpedRlc.h"
 #include "../I18n.h"
 #include "../Theme.h"
 
@@ -91,7 +92,17 @@ const bool s_i18n = [] {
     I18n::reg("cir_col_ref", "基準", "Reference");
     I18n::reg("cir_kind_lumped", "集中ポート", "Lumped port");
     I18n::reg("cir_kind_probe", "内部観測", "Internal probe");
-    I18n::reg("cir_port_add", "＋ ポートを追加…", "+ Add a port…");
+    I18n::reg("cir_port_add", "＋ ポートを追加", "+ Add a port");
+    I18n::reg("cir_port_del", "− 選択行を削除", "− Delete selected row");
+    I18n::reg("cir_port_hint",
+              "ポートは編集でき、プロジェクト (.ofdx) に保存されます。"
+              "チェックを外した行は無効なポートとして保存されます。"
+              "抽出エンジン (PEEC/FEM) の起動は未実装のため、この表は"
+              "ポート定義の記録であり計算には渡されません。",
+              "Ports are editable and saved with the project (.ofdx); unchecked "
+              "rows are stored as disabled. Launching the extraction engine "
+              "(PEEC/FEM) is not implemented, so this table only records the port "
+              "definitions and is not passed to any computation.");
 
     // 抽出設定
     I18n::reg("cir_extract", "抽出設定", "Extraction");
@@ -162,12 +173,42 @@ const bool s_i18n = [] {
     I18n::reg("cir_run_spice", "▶ 共シミュレーション実行", "▶ Run co-simulation");
 
     // 結果
-    I18n::reg("cir_results", "抽出結果", "Extracted parameters");
+    I18n::reg("cir_results", "結果 / 集中定数モデルの |Z|",
+              "Results / |Z| of the lumped model");
     I18n::reg("cir_col_item", "項目", "Item");
-    I18n::reg("cir_res_l", "L (VIN→VOUT ループ)", "L (VIN→VOUT loop)");
-    I18n::reg("cir_res_r", "R (表皮効果込み)", "R (skin effect included)");
-    I18n::reg("cir_res_c", "C (VBUS-GND)", "C (VBUS-GND)");
-    I18n::reg("cir_res_z", "Z (PDNインピーダンス)", "Z (PDN impedance)");
+    I18n::reg("cir_res_note",
+              "▸ PEEC/FEM による寄生抽出は未実装のため、抽出された R/L/C・"
+              "S パラメータはまだありません (表示できる実測値・解析値なし)。"
+              "ここに出るのは下で入力した集中定数 RLC の解析式 "
+              "Z = R + jωL + 1/(jωC) (直列) / Y = 1/R + 1/(jωL) + jωC (並列) "
+              "による値です。抽出を実行すると、この表と曲線は抽出結果で置き換わります。",
+              "▸ Parasitic extraction by PEEC/FEM is not implemented, so no "
+              "extracted R/L/C or S-parameters exist yet (there is no measured or "
+              "computed value to show). What follows is evaluated from the lumped "
+              "RLC entered below via Z = R + jωL + 1/(jωC) (series) / "
+              "Y = 1/R + 1/(jωL) + jωC (parallel). Once extraction runs, this "
+              "table and curve are replaced by the extracted values.");
+    I18n::reg("cir_model", "集中定数モデル (入力)", "Lumped model (input)");
+    I18n::reg("cir_topology", "構成", "Topology");
+    I18n::reg("cir_topo_series", "直列 RLC", "Series RLC");
+    I18n::reg("cir_topo_parallel", "並列 RLC", "Parallel RLC");
+    I18n::reg("cir_row_r", "R [Ω]", "R [Ω]");
+    I18n::reg("cir_row_xl", "ωL [Ω]", "ωL [Ω]");
+    I18n::reg("cir_row_xc", "1/ωC [Ω]", "1/ωC [Ω]");
+    I18n::reg("cir_row_z", "|Z| [Ω]", "|Z| [Ω]");
+    I18n::reg("cir_res_f0", "LC 共振 f0 = %1", "LC resonance f0 = %1");
+    I18n::reg("cir_res_f0_none", "LC 共振 f0: — (L と C の両方が必要)",
+              "LC resonance f0: — (needs both L and C)");
+    I18n::reg("cir_res_loads",
+              "プロジェクトの load 行 (集中定数) から初期化しました: R=%1 個, "
+              "L=%2 個, C=%3 個",
+              "Initialized from the project's load lines (lumped elements): "
+              "R=%1, L=%2, C=%3");
+    I18n::reg("cir_res_noloads",
+              "プロジェクトに load 行が無いため既定値を表示しています "
+              "(値は自由に編集できます)。",
+              "The project has no load lines, so default values are shown "
+              "(they can be edited freely).");
     I18n::reg("cir_exp_snp", "📁 Touchstone .s3p 書出", "📁 Export Touchstone .s3p");
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
     I18n::reg("cir_exp_h5", "💾 HDF5 保存", "💾 Save HDF5");
@@ -179,22 +220,12 @@ const bool s_i18n = [] {
 const char *kDescKeys[3] = { "cir_desc_peec", "cir_desc_femq", "cir_desc_femw" };
 const char *kEstKeys[3]  = { "cir_est_peec", "cir_est_femq", "cir_est_femw" };
 
-// ポート定義表 (モックの <tbody> をそのまま)
-struct PortRow { const char *num, *name, *kind, *net, *ref; bool on; };
-const PortRow kPorts[3] = {
-    { "1", "VIN",     "cir_kind_lumped", "NET_VBUS", "GND", true },
-    { "2", "VOUT",    "cir_kind_lumped", "NET_VOUT", "GND", true },
-    { "3", "SW_NODE", "cir_kind_probe",  "NET_SW",   "GND", true },
-};
+// 結果表を評価する周波数 (列見出し @1MHz / @10MHz / @100MHz と対応)
+const double kEvalFreqHz[3] = { 1.0e6, 1.0e7, 1.0e8 };
 
-// 抽出結果表 (モックの数値をそのまま)
-struct ResRow { const char *itemKey, *f1, *f10, *f100; };
-const ResRow kResults[4] = {
-    { "cir_res_l", "48.2 nH", "45.1 nH", "43.8 nH" },
-    { "cir_res_r", "3.2 mΩ",  "8.5 mΩ",  "26.4 mΩ" },
-    { "cir_res_c", "182 pF",  "180 pF",  "178 pF"  },
-    { "cir_res_z", "0.31 Ω",  "2.9 Ω",   "1.1 Ω"   },
-};
+// |Z(f)| 曲線の描画範囲 (log10 f[MHz] = -2 … 2 → 0.01 MHz 〜 100 MHz)
+const double kZPlotLogMin = -2.0, kZPlotLogMax = 2.0;
+const int    kZPlotPoints = 121;
 
 QLabel *hintLabel(const QString &text, QWidget *parent)
 {
@@ -274,7 +305,8 @@ CircuitSolversTab::CircuitSolversTab(Project *project, QWidget *parent)
     connect(m_solver, &QComboBox::currentIndexChanged,
             this, &CircuitSolversTab::solverChanged);
     solverChanged(0);                    // 既定 "peec"
-    updateZPlot();
+    connect(project, &Project::loaded, this, &CircuitSolversTab::refresh);
+    refresh();
 }
 
 void CircuitSolversTab::solverChanged(int index)
@@ -320,10 +352,10 @@ QWidget *CircuitSolversTab::buildModelPage()
     sStr->form()->addRow(optRow);
     v->addWidget(sStr);
 
-    // ポート定義 / Ports — 表の中身はモック由来の固定サンプル (絶対規則 5)
+    // ポート定義 / Ports — Project::circuitPorts() のビュー。
+    // 編集は即座にモデルへ書き戻し .ofdx ("circuit.ports") へ保存される。
     auto *sPort = new SectionBox(I18n::tr("cir_ports"), page);
-    sPort->vbox()->addWidget(tabhelp::sampleNote(sPort));
-    m_portTable = new QTableWidget(4, 6, sPort);
+    m_portTable = new QTableWidget(0, 6, sPort);
     m_portTable->setHorizontalHeaderLabels({ QString(), "#", I18n::tr("cir_col_name"),
                                              I18n::tr("cir_col_kind"),
                                              I18n::tr("cir_col_net"),
@@ -333,59 +365,110 @@ QWidget *CircuitSolversTab::buildModelPage()
     m_portTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_portTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_portTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_portTable->setMaximumHeight(140);
+    m_portTable->setMaximumHeight(160);
 
-    QFont mono;
-    mono.setStyleHint(QFont::Monospace);
+    m_mono.setStyleHint(QFont::Monospace);
     // 実在するファミリのみ指定 (Theme が環境ごとに解決済み)
     if (const QString mf = Theme::monoFontFamily(); !mf.isEmpty())
-        mono.setFamily(mf);
+        m_mono.setFamily(mf);
 
-    for (int r = 0; r < 3; ++r) {
-        const PortRow &p = kPorts[r];
+    sPort->vbox()->addWidget(m_portTable);
+    sPort->vbox()->addWidget(hintLabel(I18n::tr("cir_port_hint"), sPort));
+
+    auto *portBtns = new QHBoxLayout();
+    auto *addBtn = new QPushButton(I18n::tr("cir_port_add"), sPort);
+    auto *delBtn = new QPushButton(I18n::tr("cir_port_del"), sPort);
+    portBtns->addWidget(addBtn);
+    portBtns->addWidget(delBtn);
+    portBtns->addStretch(1);
+    sPort->vbox()->addLayout(portBtns);
+    v->addWidget(sPort);
+
+    connect(addBtn, &QPushButton::clicked, this, [this] {
+        QVector<CircuitPortRow> &ports = m_p->circuitPorts();
+        CircuitPortRow r;
+        r.name = QStringLiteral("PORT%1").arg(ports.size() + 1);
+        r.ref = QStringLiteral("GND");
+        ports.push_back(r);
+        m_p->touch();
+        refreshPorts();
+        m_portTable->setCurrentCell(m_portTable->rowCount() - 1, 2);
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this] {
+        const int row = m_portTable->currentRow();
+        QVector<CircuitPortRow> &ports = m_p->circuitPorts();
+        if (row < 0 || row >= ports.size()) return;
+        ports.remove(row);
+        m_p->touch();
+        refreshPorts();
+    });
+    connect(m_portTable, &QTableWidget::itemChanged,
+            this, &CircuitSolversTab::onPortItemChanged);
+
+    v->addStretch(1);
+    return page;
+}
+
+// モデル → ポート表 (行数が変わるので毎回作り直す)
+void CircuitSolversTab::refreshPorts()
+{
+    m_updating = true;
+    const QVector<CircuitPortRow> &ports = m_p->circuitPorts();
+    m_portTable->setRowCount(ports.size());
+    for (int r = 0; r < ports.size(); ++r) {
+        const CircuitPortRow &p = ports[r];
+
         auto *sel = new QTableWidgetItem();
         sel->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-        sel->setCheckState(p.on ? Qt::Checked : Qt::Unchecked);
+        sel->setCheckState(p.enabled ? Qt::Checked : Qt::Unchecked);
         m_portTable->setItem(r, 0, sel);
 
-        auto *num = new QTableWidgetItem(QString::fromUtf8(p.num));
+        auto *num = new QTableWidgetItem(QString::number(r + 1));
         num->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         num->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         m_portTable->setItem(r, 1, num);
 
-        // 名前だけ編集可 (モックの <input className="cell-input">)
-        m_portTable->setItem(r, 2, new QTableWidgetItem(QString::fromUtf8(p.name)));
+        m_portTable->setItem(r, 2, new QTableWidgetItem(p.name));
 
-        auto *kind = new QTableWidgetItem(I18n::tr(p.kind));
-        kind->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        m_portTable->setItem(r, 3, kind);
+        // 種類は 2 択なのでセル内コンボ (行を作り直すたびに張り替える)
+        auto *kind = new QComboBox(m_portTable);
+        kind->addItem(I18n::tr("cir_kind_lumped"));
+        kind->addItem(I18n::tr("cir_kind_probe"));
+        kind->setCurrentIndex(qBound(0, p.kind, 1));
+        connect(kind, &QComboBox::currentIndexChanged, this, [this, r](int idx) {
+            if (m_updating) return;
+            QVector<CircuitPortRow> &v = m_p->circuitPorts();
+            if (r < 0 || r >= v.size()) return;
+            v[r].kind = idx;
+            m_p->touch();
+        });
+        m_portTable->setCellWidget(r, 3, kind);
 
-        for (int c = 0; c < 2; ++c) {
-            auto *it = new QTableWidgetItem(
-                QString::fromUtf8(c == 0 ? p.net : p.ref));
-            it->setFont(mono);
-            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-            m_portTable->setItem(r, 4 + c, it);
-        }
+        auto *net = new QTableWidgetItem(p.net);
+        net->setFont(m_mono);
+        m_portTable->setItem(r, 4, net);
+        auto *ref = new QTableWidgetItem(p.ref);
+        ref->setFont(m_mono);
+        m_portTable->setItem(r, 5, ref);
     }
-    // 追加行 (チェック無し + 5列結合のイタリック行)
-    auto *addSel = new QTableWidgetItem();
-    addSel->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-    addSel->setCheckState(Qt::Unchecked);
-    m_portTable->setItem(3, 0, addSel);
-    auto *addIt = new QTableWidgetItem(I18n::tr("cir_port_add"));
-    QFont italic = addIt->font();
-    italic.setItalic(true);
-    addIt->setFont(italic);
-    addIt->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    m_portTable->setItem(3, 1, addIt);
-    m_portTable->setSpan(3, 1, 1, 5);
+    m_updating = false;
+}
 
-    sPort->vbox()->addWidget(m_portTable);
-    v->addWidget(sPort);
-
-    v->addStretch(1);
-    return page;
+// ポート表 → モデル (1 セル分)
+void CircuitSolversTab::onPortItemChanged(QTableWidgetItem *item)
+{
+    if (m_updating || !item) return;
+    QVector<CircuitPortRow> &ports = m_p->circuitPorts();
+    const int row = item->row();
+    if (row < 0 || row >= ports.size()) return;
+    switch (item->column()) {
+    case 0: ports[row].enabled = (item->checkState() == Qt::Checked); break;
+    case 2: ports[row].name = item->text(); break;
+    case 4: ports[row].net = item->text(); break;
+    case 5: ports[row].ref = item->text(); break;
+    default: return;
+    }
+    m_p->touch();
 }
 
 // ── 抽出設定 (ソルバ別) + FDTD連成 ─────────────────────────────────────────
@@ -566,7 +649,7 @@ QWidget *CircuitSolversTab::buildSpicePage()
     return page;
 }
 
-// ── 結果 (抽出パラメータ表 + |Z| プロット) ──────────────────────────────────
+// ── 結果 (集中定数モデルの |Z| — 抽出は未実装) ──────────────────────────────
 QWidget *CircuitSolversTab::buildResultsPage()
 {
     auto *page = new QWidget;
@@ -574,8 +657,33 @@ QWidget *CircuitSolversTab::buildResultsPage()
     v->setSpacing(8);
 
     auto *s = new SectionBox(I18n::tr("cir_results"), page);
-    // 表と |Z| 曲線はモック由来の固定サンプル値 — 実行結果ではない (絶対規則 5)
-    s->vbox()->addWidget(tabhelp::sampleNote(s));
+    // 抽出は未実行 (未実装) — 何が無くて何を表示しているのかを明示する
+    s->vbox()->addWidget(hintLabel(I18n::tr("cir_res_note"), s));
+
+    // 集中定数モデルの入力 (プロジェクトの load 行があればそこから初期化)
+    auto *modelForm = new QFormLayout();
+    modelForm->setContentsMargins(0, 0, 0, 0);
+    m_rlcTopology = new QComboBox(s);
+    m_rlcTopology->addItem(I18n::tr("cir_topo_series"));
+    m_rlcTopology->addItem(I18n::tr("cir_topo_parallel"));
+    modelForm->addRow(I18n::tr("cir_topology"), m_rlcTopology);
+
+    auto *rlcRow = new QHBoxLayout();
+    m_rlcR = numEdit("0.01", 80, s);
+    m_rlcL = numEdit("50", 80, s);
+    m_rlcC = numEdit("200", 80, s);
+    rlcRow->addWidget(new QLabel("R [Ω]", s));
+    rlcRow->addWidget(m_rlcR);
+    rlcRow->addWidget(new QLabel("L [nH]", s));
+    rlcRow->addWidget(m_rlcL);
+    rlcRow->addWidget(new QLabel("C [pF]", s));
+    rlcRow->addWidget(m_rlcC);
+    rlcRow->addStretch(1);
+    modelForm->addRow(I18n::tr("cir_model"), rlcRow);
+    s->vbox()->addLayout(modelForm);
+
+    m_rlcSource = hintLabel(QString(), s);
+    s->vbox()->addWidget(m_rlcSource);
 
     m_resultTable = new QTableWidget(4, 4, s);
     m_resultTable->setHorizontalHeaderLabels({ I18n::tr("cir_col_item"), "@1MHz",
@@ -585,23 +693,33 @@ QWidget *CircuitSolversTab::buildResultsPage()
     m_resultTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_resultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_resultTable->setMaximumHeight(140);
+    const char *rowKeys[4] = { "cir_row_r", "cir_row_xl", "cir_row_xc",
+                               "cir_row_z" };
     for (int r = 0; r < 4; ++r) {
-        const ResRow &row = kResults[r];
-        m_resultTable->setItem(r, 0, new QTableWidgetItem(I18n::tr(row.itemKey)));
-        const char *vals[3] = { row.f1, row.f10, row.f100 };
+        m_resultTable->setItem(r, 0, new QTableWidgetItem(I18n::tr(rowKeys[r])));
         for (int c = 0; c < 3; ++c) {
-            auto *it = new QTableWidgetItem(QString::fromUtf8(vals[c]));
+            auto *it = new QTableWidgetItem(QStringLiteral("—"));
             it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             m_resultTable->setItem(r, c + 1, it);
         }
     }
     s->vbox()->addWidget(m_resultTable);
 
-    // |Z| (PDN インピーダンス) — モックの MiniPlot data と同じ数式
+    m_resonance = hintLabel(QString(), s);
+    s->vbox()->addWidget(m_resonance);
+
+    // |Z(f)| — 集中定数モデルの解析式 (log10 f[MHz] 軸、縦軸 dBΩ)
     m_zPlot = new MiniPlot(s);
-    m_zPlot->setLabels("log f [MHz]", "|Z| [Ω]");
+    m_zPlot->setLabels("f [MHz]", "20log10|Z| [dBΩ]");
+    m_zPlot->setXTickPow10(true);        // x は log10 値 → 目盛りは実周波数
     m_zPlot->setMinimumSize(340, 120);
     s->vbox()->addWidget(m_zPlot);
+
+    for (QLineEdit *e : { m_rlcR, m_rlcL, m_rlcC })
+        connect(e, &QLineEdit::textChanged, this,
+                &CircuitSolversTab::updateResults);
+    connect(m_rlcTopology, &QComboBox::currentIndexChanged,
+            this, &CircuitSolversTab::updateResults);
 
     // 書出/適用ボタンはいずれも未配線 (絶対規則 5)
     auto *btnRow = new QHBoxLayout();
@@ -621,16 +739,80 @@ QWidget *CircuitSolversTab::buildResultsPage()
     return page;
 }
 
-// モック: f = i/39*4 (log10 f: 0.01..100MHz → 0..4),
-//         y = |sin(f*2.2) + 0.3| * 2 + f*0.4
-void CircuitSolversTab::updateZPlot()
+// ── モデル → 集中定数フォーム (プロジェクトの load 行から初期化) ────────────
+// .ofd の `load = dir x y z R|L|C value` は集中定数素子そのものなので、
+// 定義されていれば最初の R/L/C をモデルの初期値に使う (無ければ既定値)。
+void CircuitSolversTab::refresh()
 {
+    m_updating = true;
+    refreshPorts();
+
+    int nR = 0, nL = 0, nC = 0;
+    double r = -1, l = -1, c = -1;
+    for (const Load &ld : m_p->loads()) {
+        const QChar k = ld.kind.toUpper();
+        if (k == QLatin1Char('R')) { if (nR++ == 0) r = ld.value; }
+        else if (k == QLatin1Char('L')) { if (nL++ == 0) l = ld.value; }
+        else if (k == QLatin1Char('C')) { if (nC++ == 0) c = ld.value; }
+    }
+    if (nR + nL + nC > 0) {
+        // load が 1 つでもあれば、その値で埋める (欠けている種類は 0 = 素子なし)
+        m_rlcR->setText(QString::number(r >= 0 ? r : 0.0, 'g', 6));
+        m_rlcL->setText(QString::number(l >= 0 ? l * 1e9 : 0.0, 'g', 6));
+        m_rlcC->setText(QString::number(c >= 0 ? c * 1e12 : 0.0, 'g', 6));
+        m_rlcSource->setText(I18n::tr("cir_res_loads")
+                                 .arg(nR).arg(nL).arg(nC));
+    } else {
+        m_rlcSource->setText(I18n::tr("cir_res_noloads"));
+    }
+    m_updating = false;
+    updateResults();
+}
+
+// ── 集中定数モデル → 表 + |Z(f)| 曲線 (解析式、em/LumpedRlc) ────────────────
+void CircuitSolversTab::updateResults()
+{
+    em::RlcModel m;
+    m.r_ohm = m_rlcR->text().toDouble();          // [Ω]
+    m.l_H   = m_rlcL->text().toDouble() * 1e-9;   // nH → H
+    m.c_F   = m_rlcC->text().toDouble() * 1e-12;  // pF → F
+    m.topology = (m_rlcTopology->currentIndex() == 1) ? em::RlcTopology::Parallel
+                                                      : em::RlcTopology::Series;
+
+    auto cell = [](double v) {
+        return (v > 0) ? QString::number(v, 'g', 4) : QStringLiteral("—");
+    };
+    for (int c = 0; c < 3; ++c) {
+        const em::RlcImpedance z = em::rlcImpedance(m, kEvalFreqHz[c]);
+        const QString vals[4] = {
+            (m.r_ohm > 0) ? QString::number(m.r_ohm, 'g', 4) : QStringLiteral("—"),
+            z.valid ? cell(z.xL_ohm) : QStringLiteral("—"),
+            z.valid ? cell(z.xC_ohm) : QStringLiteral("—"),
+            z.valid ? QString::number(z.magnitude_ohm, 'g', 4)
+                    : QStringLiteral("—"),
+        };
+        for (int r = 0; r < 4; ++r)
+            if (auto *it = m_resultTable->item(r, c + 1)) it->setText(vals[r]);
+    }
+
+    const double f0 = em::rlcResonanceHz(m.l_H, m.c_F);
+    m_resonance->setText(f0 > 0
+        ? I18n::tr("cir_res_f0")
+              .arg(QString::number(f0 * 1e-6, 'f', 3) + QStringLiteral(" MHz"))
+        : I18n::tr("cir_res_f0_none"));
+
+    // |Z(f)| を dBΩ で描く (0.01 MHz 〜 100 MHz の対数軸)。
+    // |Z| = 0 (完全短絡) の点は dB に落とせないので打たない。
     MiniSeries z;
     z.color = QColor("#0078D4");
-    for (int i = 0; i < 40; ++i) {
-        const double f = i / 39.0 * 4.0;
-        const double y = std::fabs(std::sin(f * 2.2) + 0.3) * 2.0 + f * 0.4;
-        z.pts.push_back({ f, y });
+    for (int i = 0; i < kZPlotPoints; ++i) {
+        const double lg = kZPlotLogMin
+                        + (kZPlotLogMax - kZPlotLogMin) * i / (kZPlotPoints - 1);
+        const double f_Hz = std::pow(10.0, lg) * 1e6;
+        const em::RlcImpedance zi = em::rlcImpedance(m, f_Hz);
+        if (!zi.valid || zi.magnitude_ohm <= 0) continue;
+        // x は log10(f[MHz])。MiniPlot::setXTickPow10 が 10^x = MHz で目盛る
+        z.pts.push_back({ lg, 20.0 * std::log10(zi.magnitude_ohm) });
     }
     m_zPlot->setSeries({ z });
 }

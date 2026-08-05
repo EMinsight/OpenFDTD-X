@@ -104,14 +104,34 @@ const Tr kTr[] = {
     { "geoc_tess_curv", "曲率適応細分", "Curvature-adaptive refinement" },
 
     // ── アセンブリツリー / Assembly tree ────────────────────────────────────
+    // STEP の部品階層は取込未実装 (外部 CAD カーネルが必要)。取込済みの
+    // STL があればその実測値を単一部品として表示する。
     { "geoc_asm_section", "アセンブリツリー / Assembly tree", "Assembly tree" },
     { "geoc_asm_hint",
-      "STEPファイルの階層構造。部品ごとに材質・有効/無効を設定。",
-      "The STEP file hierarchy — set material and enable/disable per part." },
-    { "geoc_asm_root_info", "3 solids · 1 unit=mm", "3 solids · 1 unit=mm" },
-    { "geoc_asm_ignore", "無視", "ignored" },
-    { "geoc_asm_csys", "座標系: Z-up, 原点=底面中心",
-      "Coordinate system: Z-up, origin = bottom centre" },
+      "取込済みメッシュの構成を表示します (実測値)。",
+      "Shows the structure of the imported mesh (measured values)." },
+    { "geoc_asm_none",
+      "取込済みモデルがありません — 上の「3Dモデル取込」または「取込プレビュー」"
+      "の「📥 取込実行」で STL を取り込むと、ここに実測値が表示されます。",
+      "No model imported yet — load an STL with \"📥 Run import\" (in "
+      "\"Import 3D CAD model\" or \"Import preview\" above) and the measured "
+      "values will appear here." },
+    { "geoc_asm_note",
+      "▸ STEP/IGES の部品階層 (アセンブリ) の取込は外部 CAD カーネルを要する"
+      "ため未実装です。STL は単一メッシュなので 1 部品として表示されます。",
+      "▸ Importing the STEP/IGES part hierarchy needs an external CAD kernel "
+      "and is not implemented. An STL is a single mesh, so it shows as one "
+      "part." },
+    { "geoc_asm_root_fmt", "1 mesh · %1 三角形 · 単位=m",
+      "1 mesh · %1 triangles · unit=m" },
+    { "geoc_asm_tri", "三角形数", "Triangles" },
+    { "geoc_asm_vert", "頂点数 (溶接後)", "Vertices (welded)" },
+    { "geoc_asm_vert_na", "— (検査省略)", "— (check skipped)" },
+    { "geoc_asm_bbox", "bbox", "bbox" },
+    { "geoc_asm_area", "表面積", "Surface area" },
+    { "geoc_asm_vol", "体積 (閉メッシュ前提)", "Volume (closed mesh assumed)" },
+    { "geoc_asm_placed", "配置・変換の適用後の座標",
+      "Coordinates after placement" },
     { "geoc_asm_assign", "材質一括割当", "Assign materials in bulk" },
     { "geoc_asm_autoignore", "小部品を自動無視 (<λ/20)",
       "Auto-ignore small parts (<λ/20)" },
@@ -134,34 +154,52 @@ const Tr kTr[] = {
       "reflected in the preview, measurement and voxelization." },
 
     // ── ジオメトリ修復 / Healing ────────────────────────────────────────────
-    { "geoc_heal_section", "ジオメトリ修復 / Healing (CAD cleanup)",
-      "Healing (CAD cleanup)" },
+    // 「検出」は io/MeshDiagnostics が取込メッシュから実計算した値。
+    // 「修復」(縫合・法線統一・デシメーション) は未実装 — 検出のみ。
+    { "geoc_heal_section", "ジオメトリ検査 / Mesh check",
+      "Mesh check" },
     { "geoc_heal_hint",
-      "取込CADにありがちな不具合を自動修復。FDTD成立に必須。",
-      "Auto-repairs the defects typical of imported CAD — required for a valid "
-      "FDTD model." },
-    { "geoc_col_process", "処理", "Process" },
+      "取込メッシュの位相・幾何を実際に検査します。ボクセル化 (内外判定) は"
+      "閉じた多様体メッシュを前提とするため、境界エッジ・非多様体エッジが 0 で"
+      "あることが目安です。",
+      "Runs an actual topological/geometric check on the imported mesh. "
+      "Voxelization (inside/outside test) assumes a closed manifold mesh, so "
+      "boundary and non-manifold edge counts should be zero." },
+    { "geoc_col_process", "検査項目", "Check" },
     { "geoc_col_detect", "検出", "Detected" },
     { "geoc_col_state", "状態", "State" },
-    { "geoc_hl1_p", "隙間/重複面の縫合 (sew)", "Sew gaps / duplicate faces" },
-    { "geoc_hl1_d", "3 箇所", "3 spots" },
-    { "geoc_hl1_s", "修復可", "fixable" },
-    { "geoc_hl2_p", "微小面・スリバー除去", "Remove tiny / sliver faces" },
-    { "geoc_hl2_d", "12 面", "12 faces" },
-    { "geoc_hl2_s", "修復可", "fixable" },
-    { "geoc_hl3_p", "法線方向の統一", "Unify normal orientation" },
-    { "geoc_hl3_d", "—", "—" },
-    { "geoc_hl3_s", "OK", "OK" },
-    { "geoc_hl4_p", "フィレット/面取り簡略化", "Simplify fillets / chamfers" },
-    { "geoc_hl4_d", "8 箇所", "8 spots" },
-    { "geoc_hl4_s", "任意", "optional" },
-    { "geoc_hl5_p", "閉ソリッド化チェック", "Closed-solid check" },
-    { "geoc_hl5_d", "—", "—" },
-    { "geoc_hl5_s", "水密 OK", "watertight OK" },
-    { "geoc_hl6_p", "デシメーション (三角形削減)",
-      "Decimation (triangle reduction)" },
-    { "geoc_hl6_d", "→ 60%", "→ 60%" },
-    { "geoc_hl6_s", "任意", "optional" },
+    { "geoc_hd1_p", "重複頂点 (溶接対象)", "Duplicate vertices (weldable)" },
+    { "geoc_hd2_p", "縮退三角形 (面積 0)", "Degenerate triangles (zero area)" },
+    { "geoc_hd3_p", "境界エッジ (穴・隙間)", "Boundary edges (holes / gaps)" },
+    { "geoc_hd4_p", "非多様体エッジ (3面以上が共有)",
+      "Non-manifold edges (shared by ≥3 faces)" },
+    { "geoc_hd5_p", "法線の向きの不一致", "Inconsistent normal orientation" },
+    { "geoc_hd6_p", "閉ソリッド判定 (水密)", "Closed-solid check (watertight)" },
+    { "geoc_heal_cnt", "%1 件", "%1" },
+    { "geoc_heal_ok", "OK", "OK" },
+    { "geoc_heal_info", "情報", "info" },
+    { "geoc_heal_ng", "要修正", "needs fixing" },
+    { "geoc_heal_wt_ok", "水密", "watertight" },
+    { "geoc_heal_wt_ng", "非水密", "not watertight" },
+    { "geoc_heal_pending", "— (未取込)", "— (not imported)" },
+    { "geoc_heal_none",
+      "▸ モデル未取込 — STL を取り込むと、この表は実メッシュから計算した"
+      "検出数で埋まります。",
+      "▸ No model imported — once an STL is loaded this table is filled with "
+      "counts computed from the actual mesh." },
+    { "geoc_heal_note",
+      "▸ 検出数はこの表で実計算した値です。自動修復 (縫合・法線統一・"
+      "デシメーション) は未実装のため、修正はモデリング側で行ってください。",
+      "▸ The counts above are computed here from the mesh. Auto-repair "
+      "(sewing, normal unification, decimation) is not implemented — fix the "
+      "model in your CAD/mesh tool." },
+    { "geoc_heal_skip",
+      "▸ 三角形数が %1 を超えるため検査を省略しました "
+      "(GUI の応答性確保のため)。",
+      "▸ The check was skipped because the mesh exceeds %1 triangles (to keep "
+      "the GUI responsive)." },
+    { "geoc_heal_tol", "▸ 頂点溶接の許容差: %1 m (bbox 対角 × 1e-6)",
+      "▸ Vertex weld tolerance: %1 m (bbox diagonal × 1e-6)" },
     { "geoc_heal_run", "🔧 自動修復実行", "🔧 Run auto-heal" },
     { "geoc_heal_next", "後処理: ボクセル化へ", "Next: voxelization" },
 
@@ -187,16 +225,19 @@ const Tr kTr[] = {
       "3 — sediment (ρ=1600, c=1600)" },
 
     // ── 取込プレビュー / Preview ────────────────────────────────────────────
+    // 取込前は実測値が無いので「—」を出す (固定サンプル値は出さない)。
     { "geoc_prev_section", "取込プレビュー / Preview", "Import preview" },
-    { "geoc_prev_tri", "18,440 三角形", "18,440 triangles" },
+    { "geoc_prev_dash", "—", "—" },
     { "geoc_prev_tri_fmt", "%1 三角形", "%1 triangles" },
-    { "geoc_prev_solid", "3 ソリッド · 水密", "3 solids · watertight" },
     { "geoc_prev_solid_fmt", "1 ソリッド · 表面積 %1 m²",
       "1 solid · area %1 m²" },
-    { "geoc_prev_vol", "体積 2.27 cm³", "volume 2.27 cm³" },
     { "geoc_prev_vol_fmt", "体積 %1 cm³", "volume %1 cm³" },
-    { "geoc_prev_bbox", "bbox 60×60×32 mm", "bbox 60×60×32 mm" },
     { "geoc_prev_bbox_fmt", "bbox %1×%2×%3 mm", "bbox %1×%2×%3 mm" },
+    { "geoc_prev_none",
+      "▸ モデル未取込 — 「📥 取込実行」で STL を取り込むと、実測した"
+      "三角形数・表面積・体積・bbox がここに表示されます。",
+      "▸ No model imported — run \"📥 Run import\" on an STL and the measured "
+      "triangle count, area, volume and bbox appear here." },
     { "geoc_prev_import", "📥 取込実行", "📥 Run import" },
     { "geoc_prev_3d", "👁 3Dプレビュー", "👁 3D preview" },
     { "geoc_prev_measure", "📐 寸法測定", "📐 Measure" },
@@ -230,15 +271,15 @@ const Tr kTr[] = {
     { "geoc_col_tri", "三角形", "Triangles" },
     { "geoc_col_vol", "体積", "Volume" },
     { "geoc_col_matcol", "物性", "Material" },
-    { "geoc_models_edit", "編集", "Edit" },
-    { "geoc_mdl_multi", "多材質", "multi-material" },
-    { "geoc_mdl_diel", "2 誘電体", "2 dielectric" },
-    { "geoc_mdl_pec", "1 PEC", "1 PEC" },
     { "geoc_models_hint",
       "▸ 取込後は「ボクセル化」で Yee 格子へ変換 → FDTD 計算へ",
       "▸ After import, convert to the Yee grid in Voxelization → FDTD run" },
     { "geoc_mdl_live", "%1 (現在の取込)", "%1 (live import)" },
-    { "geoc_mdl_sample_fmt", "%1 (例)", "%1 (sample)" },
+    { "geoc_models_none",
+      "▸ 取込済みモデルはありません — 「📥 取込実行」で STL を取り込むと"
+      "一覧に追加されます (同時に保持できるのは 1 モデルです)。",
+      "▸ No imported models — run \"📥 Run import\" on an STL to add one "
+      "(only one model is held at a time)." },
 
     // ── ボクセル化 / Voxelization ───────────────────────────────────────────
     { "geoc_vox_section", "ボクセル化 / Voxelization", "Voxelization" },
@@ -343,17 +384,37 @@ const Tr kTr[] = {
     { "geoc_ref_autocheck", "自動チェック", "Auto check" },
     { "geoc_ref_showviol", "違反箇所を赤表示", "Highlight violations in red" },
     { "geoc_ref_run", "▶ 自動細分化", "▶ Auto-refine" },
-    { "geoc_ref_badge_fmt", "セル増加: +%1% (机上の目安 — 実測値ではありません)",
-      "Cell growth: +%1% (rough paper estimate — not measured)" },
+    // セル増加は「細分化領域」表の定義と現在の基本格子から数えた実際の値。
+    // 格子そのものは変わらない (細分化エンジン未実装) ので机上値と明記する。
+    { "geoc_ref_growth_fmt",
+      "セル増加見積り: %1 セル (基本 %2 セル比 %3%) — 領域定義からの机上値",
+      "Estimated cell growth: %1 cells (%3% of the %2 base cells) — computed "
+      "from the region definitions" },
+    { "geoc_ref_growth_none",
+      "セル増加見積り: — (細分化領域が未定義)",
+      "Estimated cell growth: — (no refined region defined)" },
+    { "geoc_ref_growth_nomesh",
+      "セル増加見積り: — (格子が未定義)",
+      "Estimated cell growth: — (no mesh defined)" },
 
     // ── 細分化領域 / Refined regions ────────────────────────────────────────
     { "geoc_regions_section", "細分化領域 / Refined regions",
       "Refined regions" },
     { "geoc_col_region", "領域", "Region" },
-    { "geoc_col_range", "範囲", "Range" },
-    { "geoc_col_ratio", "比率", "Ratio" },
-    { "geoc_col_dcells", "セル増", "ΔCells" },
-    { "geoc_rr2_range", "球φ2mm @ origin", "sphere ⌀2 mm @ origin" },
+    { "geoc_col_ratio", "比率 r", "Ratio r" },
+    { "geoc_col_dcells", "セル増 (計算)", "ΔCells (computed)" },
+    { "geoc_rr_add", "+ 領域追加", "+ Add region" },
+    { "geoc_rr_del", "− 削除", "− Delete" },
+    { "geoc_rr_new_name", "領域%1", "region%1" },
+    { "geoc_rr_nomesh", "— (格子未定義)", "— (no mesh)" },
+    { "geoc_rr_note",
+      "▸ 領域の定義は .ofdx に保存されます。細分化の実行は未実装のため格子は"
+      "変わりません — 「セル増」は現在の基本格子から数えた見積り "
+      "(領域内セル数 × (r³−1)) で、r > 1 で細かく・r < 1 で粗くなります。",
+      "▸ The region definitions are saved to .ofdx. Refinement itself is not "
+      "implemented, so the grid is unchanged — \"ΔCells\" is an estimate "
+      "counted on the current base grid (cells inside × (r³−1)); r > 1 "
+      "refines, r < 1 coarsens." },
 
     // ── ユニット編集 / Unit transform (tabs.jsx:409-494) ────────────────────
     { "geoc_xf_section", "ユニット編集 / Unit transform", "Unit transform" },
@@ -1151,6 +1212,9 @@ QWidget *GeometryTab::buildTessellationSection()
 }
 
 // ── アセンブリツリー / Assembly tree ───────────────────────────────────────
+// STEP の部品階層取込は外部 CAD カーネルを要するため未実装 (依存は増やさない)。
+// 代わりに **取込済み STL の実測値** を単一部品として出す。未取込のときは
+// 空表示 + 「どこから取り込むか」の導線だけを出す (偽のツリーは出さない)。
 QWidget *GeometryTab::buildAssemblySection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_asm_section"));
@@ -1163,29 +1227,13 @@ QWidget *GeometryTab::buildAssemblySection()
     m_asmTree->setIndentation(16);
     m_asmTree->setMaximumHeight(200);
     m_asmTree->setMinimumHeight(140);
-
-    auto *root = new QTreeWidgetItem(m_asmTree,
-        { "📦 radome_assembly.step", I18n::tr("geoc_asm_root_info") });
-    root->setCheckState(0, Qt::Checked);
-    root->setForeground(1, QColor(kMuted));
-
-    auto part = [root](const QString &name, const QString &tag, bool on) {
-        auto *it = new QTreeWidgetItem(root, { "🔧 " + name, tag });
-        it->setCheckState(0, on ? Qt::Checked : Qt::Unchecked);
-        it->setForeground(1, QColor(on ? kAcc : kMuted));
-        return it;
-    };
-    part("radome_shell", "FR-4", true);
-    part("mounting_ring", "PEC", true);
-    part("bolt_set (×6)", I18n::tr("geoc_asm_ignore"), false);
-    auto *csys = new QTreeWidgetItem(root, { "📐 " + I18n::tr("geoc_asm_csys") });
-    csys->setForeground(0, QColor(kMuted));
-
-    m_asmTree->expandAll();
-    m_asmTree->resizeColumnToContents(0);
     s->vbox()->addWidget(m_asmTree);
-    // ツリー内容は STEP 取込が未実装のため固定サンプル
-    s->vbox()->addWidget(tabhelp::sampleNote(s));
+
+    // 未取込のあいだ表示する導線 (取込後は refreshAssemblyTree() が隠す)
+    m_asmNone = makeHint(I18n::tr("geoc_asm_none"), s);
+    s->vbox()->addWidget(m_asmNone);
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_asm_note"), s));
+    refreshAssemblyTree();
 
     auto *br = new QHBoxLayout();
     auto *assignBtn = new QPushButton(I18n::tr("geoc_asm_assign"), s);
@@ -1271,31 +1319,33 @@ QWidget *GeometryTab::buildPlacementSection()
     return s;
 }
 
-// ── ジオメトリ修復 / Healing (CAD cleanup) ─────────────────────────────────
+// ── ジオメトリ検査 / Mesh check ────────────────────────────────────────────
+// 検出は io/MeshDiagnostics による実計算 (取込メッシュの位相・幾何)。
+// 修復 (縫合・法線統一・デシメーション) は未実装なので検出のみと明記する。
 QWidget *GeometryTab::buildHealingSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_heal_section"));
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_heal_hint"), s));
 
-    m_healTable = makeTable({ QString(), I18n::tr("geoc_col_process"),
+    m_healTable = makeTable({ I18n::tr("geoc_col_process"),
                               I18n::tr("geoc_col_detect"),
                               I18n::tr("geoc_col_state") }, 6, s);
-    static const bool kOn[6] = { true, true, true, false, true, false };
-    static const char *kColor[6] = { kOk, kOk, kOk, kWarn, kOk, kMuted };
     for (int r = 0; r < 6; ++r) {
-        const QString base = QStringLiteral("geoc_hl%1_").arg(r + 1);
-        m_healTable->setItem(r, 0, checkItem(kOn[r]));
-        m_healTable->setItem(r, 1, textItem(I18n::tr(base + "p")));
-        m_healTable->setItem(r, 2, numItem(I18n::tr(base + "d")));
-        m_healTable->setItem(r, 3, badgeItem(I18n::tr(base + "s"), kColor[r]));
+        m_healTable->setItem(r, 0, textItem(
+            I18n::tr(QStringLiteral("geoc_hd%1_p").arg(r + 1))));
+        m_healTable->setItem(r, 1, numItem(I18n::tr("geoc_heal_pending")));
+        m_healTable->setItem(r, 2, badgeItem(I18n::tr("geoc_heal_pending"),
+                                             kMuted));
     }
     s->vbox()->addWidget(m_healTable);
-    // 検出数 (「3 箇所」等) は固定のサンプル — 修復エンジン自体が未実装
-    s->vbox()->addWidget(tabhelp::sampleNote(s));
+    // 未取込 / 検査省略の説明 (取込後は検出条件の補足に差し替わる)
+    m_healNone = makeHint(I18n::tr("geoc_heal_none"), s);
+    s->vbox()->addWidget(m_healNone);
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_heal_note"), s));
 
     auto *br = new QHBoxLayout();
     auto *healBtn = new QPushButton(I18n::tr("geoc_heal_run"), s);
-    tabhelp::markNotImplemented(healBtn);
+    tabhelp::markNotImplemented(healBtn);   // 自動修復は未実装 (検出のみ)
     br->addWidget(healBtn);
     br->addStretch(1);
     br->addWidget(makeHint(I18n::tr("geoc_heal_next"), s));
@@ -1327,11 +1377,14 @@ QWidget *GeometryTab::buildPreviewSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_prev_section"));
 
+    // 取込前は実測値が無いので「—」を出す (固定サンプル値は出さない)。
+    // 実取込後に refreshImportBadges() が実測値へ上書きし、下の注記を隠す。
     auto *br = new QHBoxLayout();
-    m_prevTri   = makeBadge(I18n::tr("geoc_prev_tri"), kOk, s);
-    m_prevSolid = makeBadge(I18n::tr("geoc_prev_solid"), kOk, s);
-    m_prevVol   = makeBadge(I18n::tr("geoc_prev_vol"), kMuted, s);
-    m_prevBbox  = makeBadge(I18n::tr("geoc_prev_bbox"), kMuted, s);
+    const QString dash = I18n::tr("geoc_prev_dash");
+    m_prevTri   = makeBadge(dash, kMuted, s);
+    m_prevSolid = makeBadge(dash, kMuted, s);
+    m_prevVol   = makeBadge(dash, kMuted, s);
+    m_prevBbox  = makeBadge(dash, kMuted, s);
     br->addWidget(m_prevTri);
     br->addWidget(m_prevSolid);
     br->addWidget(m_prevVol);
@@ -1339,11 +1392,8 @@ QWidget *GeometryTab::buildPreviewSection()
     br->addStretch(1);
     s->vbox()->addLayout(br);
 
-    // 取込前のバッジは固定サンプル値 — 実取込後 refreshImportBadges() が
-    // 実測値へ上書きし、この注記を隠す
-    auto *note = tabhelp::sampleNote(s);
-    note->setObjectName(QStringLiteral("geoPrevSampleNote"));
-    s->vbox()->addWidget(note);
+    m_prevNone = makeHint(I18n::tr("geoc_prev_none"), s);
+    s->vbox()->addWidget(m_prevNone);
 
     auto *hr = new QHBoxLayout();
     auto *runImport = new QPushButton(I18n::tr("geoc_prev_import"), s);
@@ -1365,6 +1415,8 @@ QWidget *GeometryTab::buildPreviewSection()
 }
 
 // ── 取込済みモデル / Imported models ───────────────────────────────────────
+// モック由来の「(例)」行は廃止。実際に取り込んだ STL の行だけを出す
+// (refreshImportBadges() が挿入・更新する)。取込前は空表示 + 導線。
 QWidget *GeometryTab::buildImportedSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_models_section"));
@@ -1373,36 +1425,11 @@ QWidget *GeometryTab::buildImportedSection()
                                I18n::tr("geoc_col_format"),
                                I18n::tr("geoc_col_tri"),
                                I18n::tr("geoc_col_vol"),
-                               I18n::tr("geoc_col_matcol"), QString() },
-                             4, s);
-    struct Mdl { const char *name; const char *fmt; const char *tri;
-                 const char *vol; const char *mat; bool on; };
-    static const Mdl kMdl[4] = {
-        { "radome_assembly.step", "STEP", "18,440", "2.27 cm³",
-          "geoc_mdl_multi", true },
-        { "antenna_housing.stl",  "STL",  "12,847", "1.45 cm³",
-          "geoc_mdl_diel", true },
-        { "connector.igs",        "IGES", "5,210",  "0.08 cm³",
-          "geoc_mdl_pec", false },
-        { "obstacle_metal.obj",   "OBJ",  "3,890",  "0.12 cm³",
-          "geoc_mdl_pec", false },
-    };
-    for (int r = 0; r < 4; ++r) {
-        m_modelTable->setItem(r, 0, checkItem(kMdl[r].on));
-        // 固定行はサンプル — 実取込行 (geoc_mdl_live) と区別できるよう「(例)」
-        m_modelTable->setItem(r, 1, textItem(I18n::tr("geoc_mdl_sample_fmt")
-            .arg(QString::fromUtf8(kMdl[r].name))));
-        m_modelTable->setItem(r, 2, textItem(QString::fromLatin1(kMdl[r].fmt)));
-        m_modelTable->setItem(r, 3, numItem(QString::fromLatin1(kMdl[r].tri)));
-        m_modelTable->setItem(r, 4, numItem(QString::fromUtf8(kMdl[r].vol)));
-        m_modelTable->setItem(r, 5, textItem(I18n::tr(kMdl[r].mat)));
-        auto *editBtn = new QPushButton(I18n::tr("geoc_models_edit"),
-                                        m_modelTable);
-        tabhelp::markNotImplemented(editBtn);
-        m_modelTable->setCellWidget(r, 6, editBtn);
-    }
+                               I18n::tr("geoc_col_matcol") },
+                             0, s, 80);
     s->vbox()->addWidget(m_modelTable);
-    s->vbox()->addWidget(tabhelp::sampleNote(s));   // 「(例)」行はモック由来
+    m_modelNone = makeHint(I18n::tr("geoc_models_none"), s);
+    s->vbox()->addWidget(m_modelNone);
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_models_hint"), s));
     return s;
 }
@@ -1555,54 +1582,210 @@ QWidget *GeometryTab::buildRefineSection()
 
     auto *rr = new QHBoxLayout();
     auto *refineBtn = new QPushButton(I18n::tr("geoc_ref_run"), s);
-    tabhelp::markNotImplemented(refineBtn);
+    tabhelp::markNotImplemented(refineBtn);   // 細分化エンジンは未実装
     rr->addWidget(refineBtn);
-    m_refBadge = makeBadge(QString(), kWarn, s);
+    m_refBadge = makeBadge(QString(), kMuted, s);
     rr->addWidget(m_refBadge);
     rr->addStretch(1);
     s->vbox()->addLayout(rr);
-
-    // モックの "+312% (推定)" は「全セルの 12% を r³ に分割」した増加率
-    //   増加率 = 0.12 · (r³ − 1) · 100  →  r = 3 で +312%
-    auto updateBadge = [this] {
-        const double r = m_refRatio->value();
-        const double inc = 0.12 * (r * r * r - 1.0) * 100.0;
-        m_refBadge->setText(
-            I18n::tr("geoc_ref_badge_fmt").arg(qRound(inc)));
-    };
-    updateBadge();
-    connect(m_refRatio, &QSpinBox::valueChanged, this,
-            [updateBadge](int) { updateBadge(); });
     return s;
 }
 
 // ── 細分化領域 / Refined regions ───────────────────────────────────────────
+// Project::refineRegions() (.ofdx へ永続化) を編集する表。領域の定義自体は
+// 利用者の入力データなので実データとして持ち、「セル増」は現在の基本格子
+// (xmesh/ymesh/zmesh) から数えた見積りを表示する。細分化の実行そのものは
+// 未実装で、格子・.ofd の出力は一切変わらない (注記で明示)。
 QWidget *GeometryTab::buildRefinedRegionsSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_regions_section"));
-    m_refTable = makeTable({ QString(), I18n::tr("geoc_col_region"),
-                             I18n::tr("geoc_col_range"),
-                             I18n::tr("geoc_col_ratio"),
-                             I18n::tr("geoc_col_dcells") }, 3, s);
-    struct Reg { bool on; const char *name; const char *range;
-                 const char *ratio; const char *dcells; };
-    static const Reg kReg[3] = {
-        { true,  "patch_edge", "[-5,5]×[-1,1]×[0,1] mm", "3x",   "+1,420" },
-        { true,  "via_region", nullptr,                  "5x",   "+800"   },
-        { false, "far_region", "[-30,30]³ mm",           "0.5x", "-2,100" },
-    };
-    for (int r = 0; r < 3; ++r) {
-        m_refTable->setItem(r, 0, checkItem(kReg[r].on));
-        m_refTable->setItem(r, 1, textItem(QString::fromLatin1(kReg[r].name)));
-        m_refTable->setItem(r, 2, textItem(kReg[r].range
-            ? QString::fromUtf8(kReg[r].range) : I18n::tr("geoc_rr2_range")));
-        m_refTable->setItem(r, 3, numItem(QString::fromLatin1(kReg[r].ratio)));
-        m_refTable->setItem(r, 4, numItem(QString::fromLatin1(kReg[r].dcells)));
+
+    QStringList headers { QString(), I18n::tr("geoc_col_region") };
+    static const char *kAxis[3] = { "X", "Y", "Z" };
+    for (const char *ax : kAxis) {
+        headers << QStringLiteral("%1min [mm]").arg(QLatin1String(ax));
+        headers << QStringLiteral("%1max [mm]").arg(QLatin1String(ax));
     }
+    headers << I18n::tr("geoc_col_ratio") << I18n::tr("geoc_col_dcells");
+
+    m_refTable = makeTable(headers, 0, s, 120);
+    // 一覧は編集可能 (セル増の列だけ読取専用にする — refreshRegionTable)
+    m_refTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                | QAbstractItemView::EditKeyPressed
+                                | QAbstractItemView::AnyKeyPressed);
     s->vbox()->addWidget(m_refTable);
-    // 細分化未実装のため領域一覧は固定サンプル
-    s->vbox()->addWidget(tabhelp::sampleNote(s));
+
+    auto *br = new QHBoxLayout();
+    auto *addBtn = new QPushButton(I18n::tr("geoc_rr_add"), s);
+    auto *delBtn = new QPushButton(I18n::tr("geoc_rr_del"), s);
+    br->addWidget(addBtn);
+    br->addWidget(delBtn);
+    br->addStretch(1);
+    s->vbox()->addLayout(br);
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_rr_note"), s));
+
+    // 追加: 現在の格子いっぱいの領域を既定にする (ユニット追加と同じ流儀)。
+    // 分割比の初期値は上の「細分化比率」スピンの現在値。
+    connect(addBtn, &QPushButton::clicked, this, [this] {
+        auto &regs = m_p->refineRegions();
+        RefineRegion r;
+        r.name = I18n::tr("geoc_rr_new_name").arg(regs.size() + 1);
+        for (int a = 0; a < 3; ++a) {
+            r.min_m[a] = m_p->mesh(a).min();
+            r.max_m[a] = m_p->mesh(a).max();
+        }
+        if (m_refRatio) r.ratio = m_refRatio->value();
+        regs.push_back(r);
+        refreshRegionTable();
+        updateRefineBadge();
+        m_p->touch();
+    });
+    connect(delBtn, &QPushButton::clicked, this, [this] {
+        const int r = m_refTable->currentRow();
+        auto &regs = m_p->refineRegions();
+        if (r < 0 || r >= regs.size()) return;
+        regs.removeAt(r);
+        refreshRegionTable();
+        updateRefineBadge();
+        m_p->touch();
+    });
+    connect(m_refTable, &QTableWidget::cellChanged, this, [this](int, int) {
+        if (m_updating) return;
+        applyRegionTable();
+        refreshRegionTable();   // 正規化した値とセル増を表示に反映
+        updateRefineBadge();
+        m_p->touch();
+    });
     return s;
+}
+
+// タブ表示時: 別タブで格子 (xmesh/ymesh/zmesh) が変わっていることがあるので
+// セル増の見積りを取り直す (古い数字を残さない)。
+void GeometryTab::showEvent(QShowEvent *e)
+{
+    QScrollArea::showEvent(e);
+    refreshRegionTable();
+    updateRefineBadge();
+}
+
+// 領域内に中心を持つ基本セルの数 (現在の xmesh/ymesh/zmesh から数える)。
+// 格子が不正 (未定義) なら -1 を返す。
+qint64 GeometryTab::cellsInRegion(const RefineRegion &r) const
+{
+    qint64 n = 1;
+    for (int a = 0; a < 3; ++a) {
+        const MeshAxis &m = m_p->mesh(a);
+        if (!m.isValid()) return -1;
+        const double lo = qMin(r.min_m[a], r.max_m[a]);
+        const double hi = qMax(r.min_m[a], r.max_m[a]);
+        qint64 cnt = 0;
+        for (int i = 0; i < m.divs.size(); ++i) {
+            const double d = (m.nodes[i + 1] - m.nodes[i]) / m.divs[i];
+            for (int k = 0; k < m.divs[i]; ++k) {
+                const double c = m.nodes[i] + d * (k + 0.5);   // セル中心
+                if (c >= lo && c <= hi) ++cnt;
+            }
+        }
+        n *= cnt;
+        if (n == 0) return 0;
+    }
+    return n;
+}
+
+// 細分化領域の一覧 (model → widgets)。セル増の列は基本格子から数えた値。
+void GeometryTab::refreshRegionTable()
+{
+    if (!m_refTable) return;
+    const bool prev = m_updating;
+    m_updating = true;
+    const auto &regs = m_p->refineRegions();
+    m_refTable->setRowCount(regs.size());
+    for (int i = 0; i < regs.size(); ++i) {
+        const RefineRegion &r = regs[i];
+        m_refTable->setItem(i, 0, checkItem(r.enabled));
+        m_refTable->setItem(i, 1, textItem(r.name));
+        for (int a = 0; a < 3; ++a) {
+            m_refTable->setItem(i, 2 + a * 2,
+                                numItem(QString::number(r.min_m[a] * 1e3, 'g', 8)));
+            m_refTable->setItem(i, 3 + a * 2,
+                                numItem(QString::number(r.max_m[a] * 1e3, 'g', 8)));
+        }
+        m_refTable->setItem(i, 8, numItem(QString::number(r.ratio, 'g', 4)));
+
+        const qint64 base = cellsInRegion(r);
+        QString delta;
+        if (base < 0) {
+            delta = I18n::tr("geoc_rr_nomesh");
+        } else {
+            const double d = double(base) * (r.ratio * r.ratio * r.ratio - 1.0);
+            const qint64 n = qint64(qRound(d));
+            delta = (n > 0 ? QStringLiteral("+") : QString()) + groupNum(n);
+        }
+        auto *it = numItem(delta);
+        it->setFlags(it->flags() & ~Qt::ItemIsEditable);   // 計算値 (読取専用)
+        m_refTable->setItem(i, 9, it);
+    }
+    m_updating = prev;
+}
+
+// 細分化領域の一覧 (widgets → model)。不正値は前の値を保つ。
+void GeometryTab::applyRegionTable()
+{
+    if (!m_refTable) return;
+    auto &regs = m_p->refineRegions();
+    for (int i = 0; i < m_refTable->rowCount() && i < regs.size(); ++i) {
+        RefineRegion &r = regs[i];
+        auto cell = [this, i](int c) {
+            auto *it = m_refTable->item(i, c);
+            return it ? it->text() : QString();
+        };
+        if (auto *chk = m_refTable->item(i, 0))
+            r.enabled = (chk->checkState() == Qt::Checked);
+        r.name = cell(1);
+        for (int a = 0; a < 3; ++a) {
+            bool ok = false;
+            const double lo = cell(2 + a * 2).toDouble(&ok);
+            if (ok) r.min_m[a] = lo * 1e-3;             // mm → m
+            const double hi = cell(3 + a * 2).toDouble(&ok);
+            if (ok) r.max_m[a] = hi * 1e-3;
+        }
+        bool ok = false;
+        const double ratio = cell(8).toDouble(&ok);
+        if (ok && ratio > 0.0) r.ratio = ratio;         // r ≤ 0 は無意味
+    }
+}
+
+// 「メッシュ細分化」節のセル増加見積り。有効な領域の (領域内セル数 ×
+// (r³−1)) の総和を、基本格子の総セル数と比べて示す。細分化の実行は未実装
+// なので、あくまで領域定義から計算した机上値であることを文言で明示する。
+void GeometryTab::updateRefineBadge()
+{
+    if (!m_refBadge) return;
+    const auto &regs = m_p->refineRegions();
+    bool any = false;
+    double delta = 0.0;
+    for (const RefineRegion &r : regs) {
+        if (!r.enabled) continue;
+        const qint64 base = cellsInRegion(r);
+        if (base < 0) {   // 格子が未定義 → 計算できない
+            m_refBadge->setText(I18n::tr("geoc_ref_growth_nomesh"));
+            return;
+        }
+        any = true;
+        delta += double(base) * (r.ratio * r.ratio * r.ratio - 1.0);
+    }
+    if (!any) {
+        m_refBadge->setText(I18n::tr("geoc_ref_growth_none"));
+        return;
+    }
+    const qint64 total = m_p->totalCells();
+    const double pct = total > 0 ? 100.0 * delta / double(total) : 0.0;
+    const qint64 d = qint64(qRound(delta));
+    m_refBadge->setText(I18n::tr("geoc_ref_growth_fmt")
+                            .arg((d > 0 ? QStringLiteral("+") : QString())
+                                     + groupNum(d),
+                                 groupNum(total),
+                                 QString::number(pct, 'f', 1)));
 }
 
 void GeometryTab::importStl()
@@ -1623,6 +1806,9 @@ void GeometryTab::importStl()
     m_rawMesh = mesh;
     m_lastMesh = applyPlacement(mesh);
     m_hasMesh = true;
+    // 位相検査は取込時に 1 度だけ (アフィン変換で位相は変わらないので
+    // 配置・変換のたびに数え直さない)。
+    m_diag = analyzeMesh(m_rawMesh);
     m_voxBtn->setEnabled(true);
     if (m_cadFile) m_cadFile->setText(path);
 
@@ -1637,6 +1823,8 @@ void GeometryTab::importStl()
         .arg(I18n::tr("ge_voxelize_hint")));
 
     refreshImportBadges();
+    refreshAssemblyTree();
+    refreshHealing();
 }
 
 // ── 配置・変換 (placement) の適用 ──────────────────────────────────────────
@@ -1712,6 +1900,7 @@ void GeometryTab::reapplyPlacement()
     if (!m_hasMesh) return;
     m_lastMesh = applyPlacement(m_rawMesh);
     refreshImportBadges();
+    refreshAssemblyTree();   // bbox / 面積 / 体積は変換で変わる (位相は不変)
 }
 
 // ── 寸法測定 / Measure ─────────────────────────────────────────────────────
@@ -1793,9 +1982,14 @@ void GeometryTab::refreshImportBadges()
 {
     if (!m_hasMesh || !m_prevTri) return;
 
-    // 実測値で置き換わるので「サンプル表示」の注記を隠す
-    if (auto *note = findChild<QLabel *>(QStringLiteral("geoPrevSampleNote")))
-        note->hide();
+    // 実測値で置き換わるので「未取込」の導線を隠す
+    if (m_prevNone)  m_prevNone->hide();
+    if (m_modelNone) m_modelNone->hide();
+
+    // 実測値になったのでバッジの色も muted → ok にする
+    for (QLabel *b : { m_prevTri, m_prevSolid })
+        b->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+                             .arg(QLatin1String(kOk)));
 
     const double volCm3 = meshVolume(m_lastMesh) * 1e6;   // m³ → cm³
     const double sx = (m_lastMesh.bbox[3] - m_lastMesh.bbox[0]) * 1e3;
@@ -1830,6 +2024,113 @@ void GeometryTab::refreshImportBadges()
                           numItem(QString::number(volCm3, 'f', 2) + " cm³"));
     m_modelTable->setItem(m_liveModelRow, 5,
                           textItem(QString::number(m_voxMat->value())));
+}
+
+// ── アセンブリツリーを取込メッシュの実測値で作り直す ───────────────────────
+// STEP の部品階層は未実装なので「1 メッシュ = 1 部品」として、実際に測った
+// 値 (三角形数・溶接後頂点数・bbox・表面積・体積) だけを並べる。
+// 未取込のときはツリーを空にして導線ラベルだけを出す。
+void GeometryTab::refreshAssemblyTree()
+{
+    if (!m_asmTree) return;
+    m_asmTree->clear();
+    if (!m_hasMesh) {
+        m_asmTree->setVisible(false);
+        if (m_asmNone) m_asmNone->setVisible(true);
+        return;
+    }
+    m_asmTree->setVisible(true);
+    if (m_asmNone) m_asmNone->setVisible(false);
+
+    const ImportedMesh &m = m_lastMesh;
+    const QString file = QFileInfo(m.sourcePath).fileName();
+    auto *root = new QTreeWidgetItem(m_asmTree,
+        { "📦 " + (file.isEmpty() ? m.name : file),
+          I18n::tr("geoc_asm_root_fmt").arg(groupNum(m.numTriangles)) });
+    root->setForeground(1, QColor(kMuted));
+
+    auto row = [root](const QString &label, const QString &value) {
+        auto *it = new QTreeWidgetItem(root, { "🔧 " + label, value });
+        it->setForeground(1, QColor(kAcc));
+        return it;
+    };
+    row(I18n::tr("geoc_asm_tri"), groupNum(m.numTriangles));
+    row(I18n::tr("geoc_asm_vert"),
+        m_diag.valid ? groupNum(m_diag.uniqueVertices)
+                     : I18n::tr("geoc_asm_vert_na"));
+    row(I18n::tr("geoc_asm_bbox"),
+        QString::fromUtf8("%1 × %2 × %3 mm")
+            .arg(QString::number((m.bbox[3] - m.bbox[0]) * 1e3, 'f', 1),
+                 QString::number((m.bbox[4] - m.bbox[1]) * 1e3, 'f', 1),
+                 QString::number((m.bbox[5] - m.bbox[2]) * 1e3, 'f', 1)));
+    row(I18n::tr("geoc_asm_area"),
+        QString::number(m.surfaceArea, 'g', 4) + QString::fromUtf8(" m²"));
+    row(I18n::tr("geoc_asm_vol"),
+        QString::number(meshVolume(m) * 1e6, 'f', 2) + QString::fromUtf8(" cm³"));
+
+    auto *note = new QTreeWidgetItem(root, { "📐 " + I18n::tr("geoc_asm_placed") });
+    note->setForeground(0, QColor(kMuted));
+
+    m_asmTree->expandAll();
+    m_asmTree->resizeColumnToContents(0);
+}
+
+// ── ジオメトリ検査の表を実検出数で更新する ─────────────────────────────────
+// 6 行はすべて io/MeshDiagnostics が実メッシュから数えた値。取込前は「—」、
+// 三角形数の上限を超えて検査を省略した場合はその旨を出す (偽の OK は出さない)。
+void GeometryTab::refreshHealing()
+{
+    if (!m_healTable) return;
+
+    // 取込前 / 検査省略: 数値を出さずに理由を示す
+    if (!m_diag.valid) {
+        for (int r = 0; r < 6; ++r) {
+            m_healTable->item(r, 1)->setText(I18n::tr("geoc_heal_pending"));
+            auto *st = m_healTable->item(r, 2);
+            st->setText(I18n::tr("geoc_heal_pending"));
+            st->setForeground(QColor(kMuted));
+        }
+        if (m_healNone)
+            m_healNone->setText(m_diag.skippedTooLarge
+                ? I18n::tr("geoc_heal_skip")
+                      .arg(groupNum(kMeshDiagnosticsMaxTriangles))
+                : I18n::tr("geoc_heal_none"));
+        return;
+    }
+
+    // 検出数と状態。重複頂点・縮退三角形は「あっても致命的ではない」ので
+    // 情報扱い、境界/非多様体/法線不一致はボクセル化を壊すので要修正扱い。
+    struct Row { int count; bool critical; };
+    const Row rows[5] = {
+        { m_diag.duplicateVertices,   false },
+        { m_diag.degenerateTriangles, false },
+        { m_diag.boundaryEdges,       true  },
+        { m_diag.nonManifoldEdges,    true  },
+        { m_diag.inconsistentEdges,   true  },
+    };
+    for (int r = 0; r < 5; ++r) {
+        m_healTable->item(r, 1)->setText(
+            I18n::tr("geoc_heal_cnt").arg(groupNum(rows[r].count)));
+        auto *st = m_healTable->item(r, 2);
+        const bool ok = rows[r].count == 0;
+        st->setText(ok ? I18n::tr("geoc_heal_ok")
+                       : I18n::tr(rows[r].critical ? "geoc_heal_ng"
+                                                   : "geoc_heal_info"));
+        st->setForeground(QColor(ok ? kOk : (rows[r].critical ? kWarn : kMuted)));
+    }
+    // 6 行目: 閉ソリッド (水密) 判定 — 境界/非多様体エッジが 0 かどうか
+    const bool wt = m_diag.watertight();
+    m_healTable->item(5, 1)->setText(
+        I18n::tr("geoc_heal_cnt").arg(groupNum(m_diag.boundaryEdges
+                                               + m_diag.nonManifoldEdges)));
+    m_healTable->item(5, 2)->setText(
+        I18n::tr(wt ? "geoc_heal_wt_ok" : "geoc_heal_wt_ng"));
+    m_healTable->item(5, 2)->setForeground(QColor(wt ? kOk : kWarn));
+
+    if (m_healNone)
+        m_healNone->setText(I18n::tr("geoc_heal_tol")
+                                .arg(QString::number(m_diag.weldTolerance,
+                                                     'g', 3)));
 }
 
 // ボクセル統計を実際の staircase ボクセル化結果で置き換える。
@@ -1907,4 +2208,9 @@ void GeometryTab::refresh()
     }
     m_nav->setRange(gs.size());
     m_updating = false;
+
+    // 細分化領域 (.ofdx) はファイル読込で入れ替わるので併せて再表示し、
+    // セル増の見積り (格子に依存) も取り直す
+    refreshRegionTable();
+    updateRefineBadge();
 }

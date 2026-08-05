@@ -1,20 +1,29 @@
 // ThinFilmTab.h — 薄膜多層膜設計タブ (optical-applications.jsx ThinFilmTab 相当)。
 // Essential Macleod / OptiLayer / TFCalc 相当の設計環境:
 //   - プリセット (ARコート / DBR / バンドパス / ダイクロイック / Low-E / 偏光子)
-//     を選ぶと層数バッジと目標仕様が切り替わる
-//   - 層構成   : 基板 + 層スタック表 (材料/n/膜厚/QWOT/役割) + 周期記法
-//   - 分光特性 : 入射角・波長範囲 + R/T スペクトル MiniPlot + 指標判定表
-//   - 最適化設計: 手法 (単純降下/ニードル/トンネル/GA) + 変数 + ターゲット表
-//   - 製造・誤差: 成膜法・膜厚誤差・モニタリング + モンテカルロ歩留まり
-// 表示専用 (.ofd に対応フィールドが無いため状態はすべてローカル)。
+//     を選ぶと λ₀ における四分の一波長 (QWOT) 起点の層構成が組み上がる
+//   - 層構成   : 入射媒質 + 層スタック表 (材料/n/k/物理膜厚/nd·λ₀⁻¹/役割) + 基板
+//   - 分光特性 : 入射角・波長範囲 + R/T スペクトル MiniPlot + 指標表
+//   - 最適化設計: ターゲット表とメリット関数 (最適化アルゴリズムは未実装)
+//   - 製造・誤差: 膜厚誤差のモンテカルロ歩留まりと膜厚感度
+//
+// 数値はすべて src/optics/ThinFilmStack (特性行列法, Qt 非依存) による実計算で、
+// 屈折率は src/optics/MaterialDispersion (公刊 Sellmeier) と core/GlassCatalog
+// から取る。層構成はこのタブが保持する編集可能なデータで、表の編集が
+// そのまま計算に反映される (.ofd / .ofdx への永続化は未対応)。
 #pragma once
 #include <QScrollArea>
+#include <QString>
+#include <QVector>
+
+#include "../optics/ThinFilmStack.h"
 
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTableWidget;
 class QTabWidget;
 
@@ -29,16 +38,52 @@ public:
     explicit ThinFilmTab(Project *project, QWidget *parent = nullptr);
 
 private slots:
-    void presetChanged(int index);      // プリセット切替 → 層数バッジ・目標・スペクトル
+    void presetChanged(int index);      // プリセット → 層構成・波長・ターゲット
+    void recompute();                   // 層構成 → TMM → 図・指標・Merit・感度
+    void runMonteCarlo();               // 製造誤差モンテカルロ (ボタン)
 
 private:
-    QWidget *buildStackPage();          // 層構成
-    QWidget *buildSpecPage();           // 分光特性
-    QWidget *buildDesignPage();         // 最適化設計
-    QWidget *buildMfgPage();            // 製造・誤差
-    void     updateSpecPlot();          // モックの数式で R/T スペクトルを生成
+    // 編集対象の層 1 枚 (表と 1:1)
+    struct StackLayer {
+        QString mat;                    // MaterialDispersion の材料 id
+        double  k = 0.0;                // 消衰係数 (利用者入力。カタログには無い)
+        double  d_nm = 0.0;             // 物理膜厚 [nm]
+        bool    enabled = true;         // 計算に含めるか
+    };
+    // ターゲット表 1 行 (メリット関数・歩留まり判定の入力)
+    struct TargetRow {
+        double lam0 = 400, lam1 = 700;  // [nm]
+        int    quantity = 0;            // 0=R 1=T
+        int    pol = 0;                 // 0=平均 1=s 2=p
+        double goal = 0.0;              // [%]
+        double tol = 0.5;               // [%]
+        double weight = 1.0;
+        int    samples = 21;
+    };
+
+    QWidget *buildStackPage();
+    QWidget *buildSpecPage();
+    QWidget *buildDesignPage();
+    QWidget *buildMfgPage();
+
+    void applyLayerTable();             // 表 → m_stack (膜厚・k・有効)
+    void rebuildLayerTable();           // m_stack → 表 (行構成ごと作り直す)
+    void updateDerivedCells();          // n(λ₀)・光学膜厚・役割だけ更新
+    void applyTargetTable();            // 表 → m_targets
+    void rebuildTargetTable();          // m_targets → 表
+
+    std::vector<optics::TargetBand> targetBands() const;
+    // 現在の設定で λ [nm] の層構成を返すコールバックを作る
+    optics::StackAtLambda makeStackFn() const;
+    double lambda0() const;
+    double aoiDeg() const;
 
     Project      *m_p;
+    bool          m_updating;
+
+    // 設計データ (表の実体)
+    QVector<StackLayer> m_stack;
+    QVector<TargetRow>  m_targets;
 
     // 上段 (プリセット)
     QComboBox    *m_preset;
@@ -47,7 +92,9 @@ private:
     QTabWidget   *m_tabs;
 
     // 層構成
+    QComboBox    *m_incident;
     QComboBox    *m_substrate;
+    QLineEdit    *m_lambda0;
     QTableWidget *m_layerTable;
     QLineEdit    *m_periodic;
     QCheckBox    *m_useDispersion;
@@ -61,6 +108,7 @@ private:
     QLineEdit    *m_lamMax;
     MiniPlot     *m_specPlot;
     QTableWidget *m_specTable;
+    QLabel       *m_specNote;           // 評価波長域・除外点数
 
     // 最適化設計
     QButtonGroup *m_method;
@@ -68,6 +116,7 @@ private:
     QCheckBox    *m_varCount;
     QCheckBox    *m_varMaterial;
     QTableWidget *m_targetTable;
+    QLabel       *m_meritLabel;
 
     // 製造・誤差
     QButtonGroup *m_deposition;
@@ -75,6 +124,7 @@ private:
     QCheckBox    *m_systematic;
     QCheckBox    *m_correlated;
     QButtonGroup *m_monitoring;
+    QPushButton  *m_mcButton;
     QLabel       *m_yieldBadge;
     QLabel       *m_sensitiveLabel;
 };

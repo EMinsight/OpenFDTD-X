@@ -1,13 +1,19 @@
 // SoundproofTab.h — 防音・遮音設計タブ (soundproof.jsx 相当)。
 // 8つの解析シナリオをカードで切替える:
-//   間仕切壁 (Airborne)  — 壁構成テーブル + 質量則/コインシデンスの R(f) カーブ
-//                          + Rw/STC/C/Ctr/DnT,w シングルナンバー評価
-//   外壁・窓 (Facade)    — 交通騒音スペクトル C_tr と室内 SPL 予測
-//   床衝撃音 (Impact)    — 床構成 + タッピングマシン → Ln,w / IIC / JIS 等級
-//   側路伝搬 (Flanking)  — Dd/Ff/Df/Fd 経路合成 R'w と改善案
-//   ダクト・配管音 / 設備機器囲い (挿入損失 IL) / 室内残響対策 / 会話プライバシー
-// 音響ドメイン選択時のみ表示。モックは静的プロトタイプのため、
-// 設定はローカル state (メンバ既定値) のみで Project へは永続化しない。
+//   間仕切壁 (Airborne)  — 壁構成テーブル → 質量則/コインシデンスの R(f)
+//                          + Rw/STC/C/Ctr/DnT,w (ISO 717-1 / ASTM E413)
+//   外壁・窓 (Facade)    — 複合 R と室内 Lp2 = Lp1 − R + 10log10(S/A)
+//   床衝撃音 (Impact)    — 素床 Ln,w − ΔLw のみ計算 (EN 12354-2 の予測は未実装、
+//                          IIC / JIS 等級はスペクトルが要るため未計算)
+//   側路伝搬 (Flanking)  — Dd/Ff/Df/Fd 経路合成 R'w (経路別 R は入力値)
+//   ダクト・配管音       — ASHRAE の減衰式 → 帯域別 Lp → dB(A) / NC
+//   設備機器囲い         — 挿入損失 IL = R_eff − 10log10(S/A_in) (ISO 11546)
+//   室内残響対策         — Sabine RT60 (core/RoomAcoustics)
+//   会話プライバシー     — STI (IEC 60268-16 の MTF 法)
+// 物理計算はすべて Qt 非依存の src/acoustics/core/SoundInsulation にあり、
+// selftest から規格の不変量と直接突き合わせている。このタブは入力の収集と
+// 表示だけを行う。設定はローカル state のみで Project へは永続化しない。
+// 音響ドメイン選択時のみ表示。
 #pragma once
 #include <QScrollArea>
 
