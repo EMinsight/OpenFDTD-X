@@ -211,11 +211,16 @@ void PlotPanel::savePngDialog()
         this, I18n::tr("ppb_png_tip"), "plot.png", "PNG (*.png)");
     if (path.isEmpty()) return;
     // ボタンを写し込まないため一時的に隠して grab する
-    m_csvBtn->setVisible(false);
-    m_pngBtn->setVisible(false);
+    // (モードボタンはドメインで出し分けているので元の可視状態へ戻す)
+    QToolButton *btns[] = { m_csvBtn, m_pngBtn,
+                            m_btnWave, m_btnConv, m_btnFreq, m_btnFar };
+    bool vis[6];
+    for (int i = 0; i < 6; ++i) {
+        vis[i] = btns[i]->isVisible();
+        btns[i]->setVisible(false);
+    }
     grab().save(path);
-    m_csvBtn->setVisible(true);
-    m_pngBtn->setVisible(true);
+    for (int i = 0; i < 6; ++i) btns[i]->setVisible(vis[i]);
 }
 
 void PlotPanel::clearConvergence()
@@ -264,7 +269,7 @@ bool PlotPanel::exportCsv(const QString &path) const
 void PlotPanel::paintFreqChar(QPainter &p, const QRectF &plot,
                               const QColor &accent)
 {
-    p.drawText(QPointF(plot.left(), 18), I18n::tr("pp_freqchar"));
+    p.drawText(QPointF(plot.left(), plot.top() - 8), I18n::tr("pp_freqchar"));
     const FeedSweep &s = m_sweeps.first();
     const QVector<FeedSweepPoint> &pts = s.points;
     if (pts.isEmpty()) return;
@@ -326,7 +331,8 @@ void PlotPanel::paintFreqChar(QPainter &p, const QRectF &plot,
 void PlotPanel::paintFarPattern(QPainter &p, const QRectF &plot,
                                 const QColor &accent)
 {
-    p.drawText(QPointF(plot.left(), 18), I18n::tr("pp_farpattern"));
+    p.drawText(QPointF(plot.left(), plot.top() - 8),
+               I18n::tr("pp_farpattern"));
     double dbMax = -1e300;
     for (const FarPattern &pat : m_patterns)
         for (double v : pat.eAbsDb) dbMax = std::max(dbMax, v);
@@ -369,7 +375,11 @@ void PlotPanel::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing);
     p.fillRect(rect(), palette().base());
 
-    const QRectF plot(56, 28, width() - 76, height() - 64);
+    // モードボタン行 (子ウィジェット) の下から描く — タイトル文字が
+    // ボタンと重ならないよう、ボタン行の実高さぶんプロットを下げる
+    const int hdr = m_btnConv->geometry().bottom() + 6;
+    const QRectF plot(56, hdr + 22, width() - 76, height() - hdr - 58);
+    const qreal titleY = plot.top() - 8;
     const QColor accent(accentColor(m_domain));
 
     p.setPen(QPen(palette().mid().color(), 1));
@@ -398,7 +408,7 @@ void PlotPanel::paintEvent(QPaintEvent *)
     }
 
     if (m_mode == Waveform) {
-        p.drawText(QPointF(plot.left(), 18), I18n::tr("pp_waveform"));
+        p.drawText(QPointF(plot.left(), titleY), I18n::tr("pp_waveform"));
 
         // gaussian pulse exactly as the kernel computes it:
         //   v(t) = exp(-((t - 4σ)/σ)²·π) 系の正規化パルス。
@@ -429,7 +439,7 @@ void PlotPanel::paintEvent(QPaintEvent *)
                             QString::number(dt, 'g', 3),
                             QString::number(tw, 'g', 3)));
     } else {
-        p.drawText(QPointF(plot.left(), 18), I18n::tr("pp_convergence"));
+        p.drawText(QPointF(plot.left(), titleY), I18n::tr("pp_convergence"));
         if (m_steps.isEmpty()) {
             p.drawText(plot, Qt::AlignCenter,
                        QStringLiteral("no data — run the solver"));

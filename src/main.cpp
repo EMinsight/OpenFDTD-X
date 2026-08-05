@@ -59,6 +59,9 @@ int main(int argc, char *argv[])
     QCommandLineOption tabOpt("left-tab",
         "Select the left tab whose title contains <text> (for CI)", "text");
     cli.addOption(tabOpt);
+    QCommandLineOption ctabOpt("center-tab",
+        "Select the center tab whose title contains <text> (for CI)", "text");
+    cli.addOption(ctabOpt);
     cli.process(app);
 
     // i18n: CLI option > saved setting > ja
@@ -104,6 +107,8 @@ int main(int argc, char *argv[])
         w.setDomain(ofd::domainFromKey(cli.value(domainOpt)));
     if (cli.isSet(tabOpt))
         w.selectLeftTab(cli.value(tabOpt));
+    if (cli.isSet(ctabOpt))
+        w.selectCenterTab(cli.value(ctabOpt));
     if (cli.isSet(viewOpt)) {
         const QString v = cli.value(viewOpt);
         const int idx = (v == "wire") ? 0 : (v == "field") ? 2

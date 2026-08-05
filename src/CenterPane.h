@@ -42,6 +42,8 @@ public:
     void setViewStyleIndex(int i);   // 0=Wire 1=Solid 2=Field 3=Rays (CLI/メニュー用)
     void showViewport();      // 3D シーンへ切替 (図形表示3D)
     void showPlot();          // 結果プロットへ切替 (図形表示2D)
+    // タブ名の部分一致で切替 (CLI --center-tab / CI スクリーンショット用)
+    void selectTabContaining(const QString &titlePart);
 
     // カーネルの HDF5 出力 (time_series_data.h5) から 2D 断面へ実データを
     // 反映する。/field/Ixz (obpm 伝搬マップ) → |Efinal| → ofd/orcwa の

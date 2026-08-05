@@ -379,6 +379,15 @@ void CenterPane::setViewStyleIndex(int i)
 void CenterPane::showViewport() { m_tabs->setCurrentIndex(0); }
 void CenterPane::showPlot()     { m_tabs->setCurrentIndex(2); }
 
+void CenterPane::selectTabContaining(const QString &titlePart)
+{
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (m_tabs->tabText(i).contains(titlePart, Qt::CaseInsensitive)) {
+            m_tabs->setCurrentIndex(i);
+            return;
+        }
+}
+
 void CenterPane::saveSnapshot()
 {
     const QString path = QFileDialog::getSaveFileName(

@@ -1153,6 +1153,11 @@ void MainWindow::selectLeftTab(const QString &titlePart)
     m_nav->selectByLabel(titlePart);
 }
 
+void MainWindow::selectCenterTab(const QString &titlePart)
+{
+    m_center->selectTabContaining(titlePart);
+}
+
 void MainWindow::show2DPlot()
 {
     m_center->showPlot();
