@@ -704,7 +704,10 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             recv.append(QJsonObject{
                 {"enabled", r.enabled},
                 {"pos_m", QJsonArray{ r.x, r.y, r.z }},
-                {"type", r.type}, {"name", r.name} });
+                {"type", r.type}, {"name", r.name},
+                // 受音点ごとの RIR WAV (可聴化の一括レンダリング入力) —
+                // 追加キーのみ。欠落時は空 (旧ファイル互換)
+                {"rir_file", r.rirFile} });
         // 音源リスト (AcousticSourceTab の音源一覧) — 追加キーのみ。
         QJsonArray srcList;
         for (const AcousticSourceRow &r : a.sources)
@@ -1204,6 +1207,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 }
                 r.type = qBound(0, o.value("type").toInt(r.type), 2);
                 r.name = o.value("name").toString();
+                // 追加キー rir_file — 無い旧ファイルは空 (未指定) のまま
+                r.rirFile = o.value("rir_file").toString();
                 a.receivers.push_back(r);
             }
         }

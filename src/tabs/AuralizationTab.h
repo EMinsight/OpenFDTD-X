@@ -5,19 +5,33 @@
 //   ① 入力   — ドライ WAV / RIR WAV (実測RIR分析タブの rirPath を共用) /
 //               出力先 / ゲインモード (そのまま / 推奨ゲイン適用)。
 //               自動正規化は行わない
-//   ② 実行   — QtAcousticAdapter::convolveFiles で同期畳み込み + WAV 書き出し
+//   ② 実行   — QtAcousticAdapter::convolveFiles で畳み込み + WAV 書き出し
+//               (QThread::create + busy ガードで非同期 — gui.md)
 //   ③ 結果   — outputPeak / suggestedGainDb / クリップ数。fs 不一致は
-//               リサンプリングせずエラー理由を表示する
+//               RIR をドライ側 fs へリサンプリングして続行し、変換した旨を
+//               結果に明示する (core/Resampler — 負債 #12 解消)。fs 自体が
+//               不正で変換できない場合のみエラー理由を表示する
 //   ④ A/B    — ドライ / ウェット波形の MiniPlot 並置。アプリ内再生は
 //               未対応 (書き出した WAV を外部プレイヤーで比較する) と明示
-// 設定は .ofdx の acoustic/opera_analysis/auralization に永続化される。
+//   ⑤ 一括   — 複数受音点の一括可聴化。受音点リスト (AcousticOpts::receivers)
+//               の各行に受音点ごとの RIR WAV (ReceiverRow::rirFile, .ofdx
+//               追加キー) を割り当て、有効かつ RIR 指定済みの行を順に畳み込んで
+//               <ドライ名>_<受音点名>.wav を出力先フォルダへ書き出す。
+//               行ごとに QThread で非同期・行間で中断可能。受聴位置が違えば
+//               RIR は異なるため「全受音点へ同じ RIR」の導線は置かない
+// 設定は .ofdx の acoustic/opera_analysis/auralization (+ 受音点ごとの RIR は
+// acoustic.receivers[].rir_file) に永続化される。
 #pragma once
+#include <QHash>
 #include <QScrollArea>
+#include <QStringList>
+#include <QVector>
 
 class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QTableWidget;
 
 namespace ofd {
 
@@ -29,6 +43,13 @@ class AuralizationTab : public QScrollArea {
 public:
     explicit AuralizationTab(Project *project, QWidget *parent = nullptr);
 
+    // 一括レンダリングの出力ファイル名 (受音点ごと、拡張子 .wav 込み)。
+    // 命名規則 <ドライ名>_<受音点名>.wav — 空名は P<行番号>、ファイル名に
+    // 使えない文字と空白は '_'、重複は _2, _3… を付けて一意化する。
+    // 決定的な純関数 (ヘッドレス検証からも参照する)。
+    static QStringList batchOutputNames(const QString &dryPath,
+                                        const QStringList &receiverNames);
+
 private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
@@ -36,12 +57,25 @@ private slots:
     void browseRir();
     void browseOutput();
     void runConvolution();
+    // ⑤ 複数受音点の一括可聴化
+    void browseBatchOutDir();
+    void runBatch();
+    void cancelBatch();
 
 private:
     void clearResult(const QString &statusText);
+    // ⑤ 一括レンダリングの内部処理
+    void rebuildBatchTable();              // model → 受音点表 (状態列は保持)
+    void startBatchJob(int jobIdx);        // m_batchJobs[jobIdx] を非同期実行
+    void finishBatch(int nextIdx);         // 完了/中断の後始末 (nextIdx 以降は未実行)
+    void setBatchRowStatus(int row, const QString &text,
+                           const QString &tooltip = QString());
+    QString batchOutputDir() const;        // 出力先 (空なら既定の解決)
+    void updateBusyUi();                   // 単発/一括の実行ボタン排他
 
     Project *m_p;
     bool     m_updating = false;
+    bool     m_runBusy = false;    // 畳み込み実行中 (再入防止 busy ガード)
 
     // ① 入力
     QLineEdit *m_dryPath = nullptr;
@@ -62,6 +96,27 @@ private:
     // ④ A/B 波形
     MiniPlot *m_dryPlot = nullptr;
     MiniPlot *m_wetPlot = nullptr;
+
+    // ⑤ 複数受音点の一括可聴化
+    struct BatchJob {
+        int     row;       // receivers のインデックス (= 表の行)
+        QString rirPath;   // その受音点の RIR WAV
+        QString outPath;   // 書き出し先 (出力先フォルダ + 命名規則)
+    };
+    QTableWidget *m_batchTable  = nullptr;
+    QLineEdit    *m_batchOutDir = nullptr;
+    QPushButton  *m_batchRunBtn = nullptr;
+    QPushButton  *m_batchCancelBtn = nullptr;
+    QLabel       *m_batchStatus = nullptr;
+    QVector<BatchJob> m_batchJobs;
+    bool m_batchBusy   = false;   // 一括実行中 (単発実行と排他)
+    bool m_batchCancel = false;   // 中断要求 (実行中の行の完了後に停止)
+    int  m_batchDone   = 0;       // 書き出し済み行数 (今回の一括実行)
+    // 行 → 直近の結果 (状態文字列 / ツールチップ / 出力パス)。
+    // rebuildBatchTable が表を作り直しても結果表示と試聴ボタンを保つ
+    QHash<int, QString> m_batchRowText;
+    QHash<int, QString> m_batchRowTip;
+    QHash<int, QString> m_batchOutFiles;
 };
 
 } // namespace ofd

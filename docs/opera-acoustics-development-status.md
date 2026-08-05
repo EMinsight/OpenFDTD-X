@@ -48,14 +48,16 @@
 | 9 | MiniPlot に対話機能 (ズーム/カーソル) が無い (フェーズ0 調査 §2.3) | 減衰カーブの詳細確認がしづらい | フェーズ2 では現状機能で表示し、拡張は別課題 |
 | 10 | ST 系 / G / 実測 STI / 校正ワークフロー拡充が未実装 (旧フェーズ4 計画分)。~~レポート出力~~ は**解消済み** | 舞台支援・声の届きの定量値が不足 | **レポート出力は完了**: `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
-| 12 | リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー) | fs の異なる素材は外部ツールで変換が必要 | 高品質リサンプラーの追加は需要が出た時点で検討 (仮定 §21) |
+| 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。他の fs 不一致箇所 (AudioEditEngine 等) への展開は別課題 |
 | 13 | 実音響ソルバーが存在しない (CI はモックのみ) | ExternalFDTD / ExternalGeometric は契約準拠ソルバーを別途用意して初めて機能する | ソルバー本体は別リポジトリで開発 (ADR-0004 / ADR-0007)。GUI 入口は**実装済み**: `AcousticSolverTab` (🔌 音響ソルバ連携) がバックエンド 5 値の選択 (`.ofdx` `opera_analysis.solver.{backend,executable,threads,processes}` に永続化)・探索順どおりの解決結果のライブ表示・`AcousticRunner` の起動/停止/ログ/進捗・`rirReady` → `rirPath` 反映 (RIR 分析への引き渡し) を提供する |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **4900 checks,
-  0 failures** (2026-08-04 更新。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **6918 checks,
+  0 failures** (2026-08-05 更新: リサンプラ (負債 #12) +47 checks で
+  6859 → 6906、受音点ごとの RIR (`receivers[].rir_file` — 一括可聴化)
+  +12 checks で 6906 → 6918。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
   一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
@@ -67,6 +69,19 @@
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
+
+### 複数受音点の一括可聴化 (2026-08-05)
+
+可聴化タブに「複数受音点の一括可聴化」を追加。受音点リスト
+(`AcousticOpts::receivers` — 音響タブと共有) の各行に受音点ごとの RIR WAV
+(`ReceiverRow::rirFile`、`.ofdx` `acoustic.receivers[].rir_file` 追加キー) を
+割り当て、有効かつ RIR 指定済みの行を QThread で順に畳み込んで
+`<ドライ名>_<受音点名>.wav` (空名・重複・使用不可文字はサニタイズ) を
+出力先フォルダ (既定 = プロジェクトのフォルダ) へ書き出す。行間で中断可能。
+fs 不一致の RIR は負債 #12 のリサンプラで自動変換し行の結果に明示、
+RIR 未指定の行はスキップ理由を表示する (受聴位置が違えば RIR は異なるため、
+単一 RIR を全受音点へ使い回す導線は置かない)。完了行には外部プレイヤーでの
+試聴ボタンを付ける。selftest +12 checks (ラウンドトリップ / 旧ファイル既定値)。
 
 ### 未実装マーカー棚卸し (2026-08-04)
 
@@ -356,7 +371,9 @@ Qt 非依存コアへ切り出し、selftest から公表基準値・恒等式�
    `tests/acoustics/test_clipping.cpp`)。
 3. フェーズ2 完了時に baseline 文書のチェック総数を更新し、
    本書のフェーズ表を更新。
-4. 残課題の優先度整理: リアルタイム再生 (負債 #11)、リサンプリング
-   (負債 #12)、実音響ソルバー (負債 #13)、声区分析 (負債 #14 の残り —
-   フォルマント推定は解消済み)、旧フェーズ4 計画分 (負債 #10 の残り —
-   レポート出力は解消済み、ST 系 / G / 実測 STI / 校正ワークフローが継続)。
+4. 残課題の優先度整理: リアルタイム再生 (負債 #11)、実音響ソルバー
+   (負債 #13)、声区分析 (負債 #14 の残り — フォルマント推定は解消済み)、
+   旧フェーズ4 計画分 (負債 #10 の残り — レポート出力は解消済み、
+   ST 系 / G / 実測 STI / 校正ワークフローが継続)。リサンプリング
+   (負債 #12) は解消済み (可聴化経路のみ — AudioEditEngine 等への展開は
+   別課題)。
