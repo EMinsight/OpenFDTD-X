@@ -24,6 +24,9 @@ public:
         QWidget *page = nullptr;
         QVector<Domain> domains;
         bool     core = true;
+        // 音響/水中ドメインでの代替ラベルキー (空 = labelKey をそのまま使う)。
+        // 例: 「④ 波源」は音響/水中では「④ 音源」と表記する。
+        QString  acLabelKey;
     };
 
     explicit TabNavigator(QWidget *parent = nullptr);

@@ -59,7 +59,11 @@ void TabNavigator::rebuild(Domain d, bool expert)
             f.setCapitalization(QFont::AllUppercase);
             cat->setFont(f);
         }
-        auto *it = new QListWidgetItem("  " + I18n::tr(e.labelKey), this);
+        // 音響/水中では代替ラベル (例: 波源 → 音源) を使う
+        const bool acoustic = (d == Domain::Acoustic || d == Domain::Underwater);
+        const QString labelKey = (acoustic && !e.acLabelKey.isEmpty())
+                                     ? e.acLabelKey : e.labelKey;
+        auto *it = new QListWidgetItem("  " + I18n::tr(labelKey), this);
         it->setData(Qt::UserRole, e.key);
     }
     blockSignals(false);

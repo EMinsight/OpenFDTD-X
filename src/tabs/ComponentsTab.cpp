@@ -49,6 +49,13 @@ const bool s_i18n = [] {
     ofd::I18n::reg("cl_drag_tip",
         "3D シーンへドラッグして配置",
         "Drag onto the 3D scene to place it");
+    // ドロップで何が .ofd に追加されるかの対応表 (音源設定の 2 系統の混乱対策:
+    // スピーカーは音源リストではなくソルバ波源 feed になる)
+    ofd::I18n::reg("cl_drop_map_hint",
+        "配置されるもの: スピーカー = 点音源 (feed)、マイクロホン = 観測点、"
+        "パネル/形状 = 物体 — いずれも .ofd に追加されます",
+        "What gets placed: loudspeaker = point source (feed), microphone = "
+        "observation point, panels/shapes = objects — all added to the .ofd");
     ofd::I18n::reg("cl_favorites", "お気に入り",                  "Favorites");
     ofd::I18n::reg("cl_fav_hint",  "カードの ☆ で登録",           "Star a card to add it");
     ofd::I18n::reg("cl_recent",    "最近使用",                    "Recently used");
@@ -319,6 +326,13 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
                             m_gridSection);
     hint->setWordWrap(true);
     m_gridSection->vbox()->addWidget(hint);
+    // ドロップで .ofd に何が追加されるかの対応 (スピーカー = 点音源 feed 等)
+    auto *mapHint = new QLabel(QStringLiteral("▸ ")
+                                   + I18n::tr("cl_drop_map_hint"),
+                               m_gridSection);
+    mapHint->setWordWrap(true);
+    mapHint->setStyleSheet("font-size:11px; color:gray;");
+    m_gridSection->vbox()->addWidget(mapHint);
     m_grid = new QGridLayout();
     m_grid->setSpacing(6);
     m_gridSection->vbox()->addLayout(m_grid);

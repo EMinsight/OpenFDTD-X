@@ -55,11 +55,19 @@
 #include "em/LumpedRlc.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
+// 音源リスト → ソルバ波源 (feed) の反映本体。ofdx_selftest は GUI_SOURCES を
+// リンクしないため、ヘッダ内 inline 定義の static メソッドを直接検証する
+// (クラス自体は instantiate しない — moc 不要)。
+#include "tabs/AcousticSourceTab.h"
+// ナビの音響/水中向けラベル (nav_source_ac) の検証用 — I18n.cpp は
+// CMakeLists が selftest に個別追加している (GUI_SOURCES 側)。
+#include "I18n.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 
 #ifdef OFD_USE_HDF5
@@ -863,6 +871,97 @@ static void testRoomAcoustics()
                       nearlyEq(bs[0].z_m, 0.0) && bs[0].enabled,
                       "source list short pos_m keeps defaults");
         }
+    }
+
+    // ── 音源リスト → ソルバ波源 (feed) の反映 ────────────────────────────────
+    // AcousticSourceTab::syncFeedsFromSources: 有効行の位置のみを Z 向き・
+    // 既定振幅の feed として書き込み、既存 feed を置き換える。
+    // 期待値は実装から独立: 位置は入力行の値そのもの、feed の既定は
+    // 本家 .ofd の feed 既定 (向き Z / 振幅 1 V / 遅延 0° / 内部抵抗 50 Ω)。
+    {
+        Project p;
+        auto &sl = p.acoustic().sources;
+        sl.clear();
+        AcousticSourceRow a;                       // 有効 (enabled 既定 true)
+        a.name = QStringLiteral("A");
+        a.x_m = 1.5; a.y_m = -2.25; a.z_m = 3.0;
+        AcousticSourceRow b;                       // 無効 → 反映されない
+        b.name = QStringLiteral("B");
+        b.enabled = false;
+        b.x_m = 9.0; b.y_m = 8.0; b.z_m = 7.0;
+        AcousticSourceRow c;                       // 有効
+        c.name = QStringLiteral("C");
+        c.x_m = -4.5; c.y_m = 0.5; c.z_m = 1.25;
+        sl.push_back(a); sl.push_back(b); sl.push_back(c);
+
+        // 既存 feed (別位置・別向き・別振幅) は置き換えられること
+        p.feeds().clear();
+        Feed old;
+        old.dir = 'X'; old.x = 99.0; old.volt = 2.0;
+        p.feeds().push_back(old);
+
+        const int n = AcousticSourceTab::syncFeedsFromSources(p);
+        check(n == 2, "src->feed sync: returns enabled count");
+        check(p.feeds().size() == 2, "src->feed sync: old feeds replaced");
+        if (p.feeds().size() == 2) {
+            const Feed &f0 = p.feeds()[0], &f1 = p.feeds()[1];
+            check(nearlyEq(f0.x, 1.5) && nearlyEq(f0.y, -2.25) &&
+                  nearlyEq(f0.z, 3.0), "src->feed sync: row A position");
+            check(nearlyEq(f1.x, -4.5) && nearlyEq(f1.y, 0.5) &&
+                  nearlyEq(f1.z, 1.25), "src->feed sync: row C position");
+            // 無効行 B の位置 (9,8,7) の feed は作られない
+            check(!nearlyEq(f0.x, 9.0) && !nearlyEq(f1.x, 9.0),
+                  "src->feed sync: disabled row not applied");
+            check(f0.dir == QChar('Z') && nearlyEq(f0.volt, 1.0) &&
+                  nearlyEq(f0.delay, 0.0) && nearlyEq(f0.z0, 50.0) &&
+                  f1.dir == QChar('Z') && nearlyEq(f1.volt, 1.0) &&
+                  nearlyEq(f1.delay, 0.0) && nearlyEq(f1.z0, 50.0),
+                  "src->feed sync: feed defaults (Z / 1 V / 0 deg / 50 ohm)");
+        }
+
+        // 反映後の .ofd 保存で feed 行が本家書式のまま:
+        // (1) 行の書式そのもの — "feed = <dir> x y z volt delay z0" (9 トークン)
+        const QString txt = OfdIO::serialize(p);
+        int feedLines = 0;
+        bool formatOk = true;
+        for (const QString &line : txt.split('\n')) {
+            if (!line.startsWith(QStringLiteral("feed"))) continue;
+            ++feedLines;
+            const QStringList t =
+                line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+            if (t.size() != 9 || t[0] != QStringLiteral("feed") ||
+                t[1] != QStringLiteral("=") || t[2] != QStringLiteral("Z"))
+                formatOk = false;
+        }
+        check(feedLines == 2, "src->feed sync: two feed lines saved");
+        check(formatOk, "src->feed sync: feed line keeps upstream format");
+        // (2) 既存のラウンドトリップ機構 — 再パースで位置が一致
+        Project p2;
+        check(OfdIO::parse(txt, p2), "src->feed sync: reparse saved .ofd");
+        check(p2.feeds().size() == 2 &&
+              nearlyEq(p2.feeds()[0].x, 1.5) &&
+              nearlyEq(p2.feeds()[0].y, -2.25) &&
+              nearlyEq(p2.feeds()[0].z, 3.0) &&
+              nearlyEq(p2.feeds()[1].x, -4.5) &&
+              nearlyEq(p2.feeds()[1].y, 0.5) &&
+              nearlyEq(p2.feeds()[1].z, 1.25),
+              "src->feed sync: .ofd round-trip positions");
+
+        // 有効 0 行: 0 を返し、feed は 1 バイトも変更しない
+        Project pz;
+        pz.acoustic().sources.clear();
+        AcousticSourceRow d0;
+        d0.enabled = false;
+        d0.x_m = 5.0;
+        pz.acoustic().sources.push_back(d0);
+        pz.feeds().clear();
+        pz.feeds().push_back(old);
+        check(AcousticSourceTab::syncFeedsFromSources(pz) == 0,
+              "src->feed sync: zero enabled returns 0");
+        check(pz.feeds().size() == 1 && pz.feeds()[0].dir == QChar('X') &&
+              nearlyEq(pz.feeds()[0].x, 99.0) &&
+              nearlyEq(pz.feeds()[0].volt, 2.0),
+              "src->feed sync: zero enabled keeps feeds unchanged");
     }
 
     // 壊れた .ofdx の範囲外 int はクランプされ不正な選択を作らない
@@ -8289,6 +8388,22 @@ static void testRirAutoAssign()
     }
 }
 
+// ── ナビの音響/水中向けラベル (④ 波源 → ④ 音源) ────────────────────────────
+// TabNavigator は音響/水中ドメインで nav_source の代わりに nav_source_ac を
+// 表示する (音源設定 2 系統の混乱対策)。GUI 非リンクのため I18n テーブルを
+// 直接検証する: キーが登録済みで、日本語表記が「音源」であり「波源」でないこと。
+static void testNavSourceAcLabel()
+{
+    g_file = "nav-source-ac";
+    const QString ac = I18n::tr(QStringLiteral("nav_source_ac"));
+    check(ac != QLatin1String("nav_source_ac"),
+          "nav_source_ac is registered (tr does not echo the key)");
+    check(ac.contains(QStringLiteral("音源")),
+          "acoustic nav label reads 音源");
+    check(!ac.contains(QStringLiteral("波源")),
+          "acoustic nav label does not read 波源");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -8388,6 +8503,7 @@ int main(int argc, char *argv[])
     testDisplayMetrics();
     testParaxialTrace();
     testDisplayIlluminationSettings();
+    testNavSourceAcLabel();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);
