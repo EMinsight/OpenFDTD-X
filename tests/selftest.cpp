@@ -8405,6 +8405,34 @@ static void testNavSourceAcLabel()
           "acoustic nav label does not read 波源");
 }
 
+// ── 音響ドメインの計算ボタン確認ダイアログ (ADR-0004 整合) ──────────────────
+// MainWindow::runSimulation は音響ドメインで「ofd (電磁 FDTD) の波動アナロジー
+// 実行であり音響指標の定量値は得られない」ことを初回に確認する。GUI 非リンク
+// のため I18n テーブル (I18n.cpp 登録の run_ キー) を直接検証する。
+static void testAcousticAnalogyDialogKeys()
+{
+    g_file = "acoustic-analogy-dialog";
+    const QString body = I18n::tr(QStringLiteral("run_acoustic_analogy"));
+    check(body != QLatin1String("run_acoustic_analogy"),
+          "run_acoustic_analogy is registered (tr does not echo the key)");
+    // 本文が「ofd の波動アナロジー」と根拠 (ADR-0004) を明示していること
+    check(body.contains(QStringLiteral("波動アナロジー")),
+          "dialog body mentions wave analogy");
+    check(body.contains(QStringLiteral("ADR-0004")),
+          "dialog body cites ADR-0004");
+    // 定量的な代替経路 3 つ (統計推定 / 実測 RIR / 外部音響ソルバー) への誘導
+    check(body.contains(QStringLiteral("統計推定")) &&
+          body.contains(QStringLiteral("RIR")) &&
+          body.contains(QStringLiteral("音響ソルバ")),
+          "dialog body points to the quantitative alternatives");
+    check(I18n::tr(QStringLiteral("run_aa_continue"))
+              != QLatin1String("run_aa_continue"),
+          "run_aa_continue is registered");
+    check(I18n::tr(QStringLiteral("run_aa_dont_show"))
+              != QLatin1String("run_aa_dont_show"),
+          "run_aa_dont_show is registered");
+}
+
 // ── コンポーネントのドメイン許可表 (core/ComponentCatalog.h) ────────────────
 // ComponentsTab の表示フィルタと Viewport3D のドロップ判定が共有する許可表を
 // 監査表 (2026-08 のドメイン対応見直し) の代表ケースで検証する。
@@ -8618,6 +8646,7 @@ int main(int argc, char *argv[])
     testParaxialTrace();
     testDisplayIlluminationSettings();
     testNavSourceAcLabel();
+    testAcousticAnalogyDialogKeys();
     testComponentDomains();
 
     std::printf("%d files loaded, %d checks, %d failures\n",

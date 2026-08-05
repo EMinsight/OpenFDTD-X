@@ -43,6 +43,18 @@ const bool s_i18n = [] {
         "`.ofdx` に opera_analysis.solver.backend (int) で永続化。",
         "▸ Only ExternalFDTD / ExternalGeometric launch an external process. "
         "Persisted to .ofdx as opera_analysis.solver.backend (int).");
+    // ExternalFDTD の正体の明確化 (ADR-0004): ofd (電磁 FDTD) の流用ではなく
+    // 音響専用の外部ソルバー。計算ボタン (ofd) とは別物であることを明示する
+    I18n::reg("acs_fdtd_note",
+        "▸ ExternalFDTD は OpenFDTD (ofd, 電磁 FDTD) ではありません — "
+        "ADR-0004 により音響 FDTD は音響専用の外部ソルバー (別リポジトリで"
+        "開発中・未同梱) が担います。ツールバーの計算ボタン (ofd) は波動"
+        "アナロジー表示用で、定量的な RIR はここからは得られません。",
+        "▸ ExternalFDTD is NOT OpenFDTD (ofd, the electromagnetic FDTD) — "
+        "per ADR-0004, acoustic FDTD is handled by a dedicated external "
+        "acoustic solver (developed in a separate repository, not bundled). "
+        "The toolbar Run button (ofd) is a wave-analogy display and yields "
+        "no quantitative RIR.");
     I18n::reg("acs_launch", "起動形式", "Invocation");
     I18n::reg("acs_binary", "バイナリ", "Binary");
     I18n::reg("acs_binary_ph", "(空 = 自動解決)", "(empty = auto-resolve)");
@@ -57,8 +69,15 @@ const bool s_i18n = [] {
               "Progress parsed from stdout \"progress a/b\" lines");
     I18n::reg("acs_resolved", "解決結果", "Resolved binary");
     I18n::reg("acs_resolved_none",
-        "⚠ ソルバーが見つかりません — 見つからなければ起動せず finished(false)",
-        "⚠ Solver not found — start is refused with finished(false)");
+        "⚠ ソルバーが見つかりません — 契約 (ADR-0007: metadata.json + rir.wav "
+        "→ metrics.json) を満たすソルバーを用意し、ツール → カーネルパス設定 "
+        "か $OFDX_ACOUSTIC_SOLVER で指定してください。それまで RIR は実測 WAV "
+        "の指定 (MeasuredRir) で分析・可聴化できます。",
+        "⚠ Solver not found — provide a solver satisfying the contract "
+        "(ADR-0007: metadata.json + rir.wav → metrics.json) and point to it "
+        "via Tools → Kernel paths or $OFDX_ACOUSTIC_SOLVER. Until then, a "
+        "measured WAV (MeasuredRir) still enables RIR analysis and "
+        "auralization.");
     I18n::reg("acs_sec_resolve",
         "バイナリ探索順 / Solver resolution (ADR-0007 Decision 3)",
         "Solver resolution order (ADR-0007 Decision 3)");
@@ -171,6 +190,10 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     auto *bnote = new QLabel(I18n::tr("acs_backend_note"), s1);
     bnote->setWordWrap(true);
     s1->vbox()->addWidget(bnote);
+    // ExternalFDTD ≠ OpenFDTD (ofd) の明示 (ADR-0004 — 監査 2026-08-05)
+    auto *fdtdNote = new QLabel(I18n::tr("acs_fdtd_note"), s1);
+    fdtdNote->setWordWrap(true);
+    s1->vbox()->addWidget(fdtdNote);
 
     // 外部プロセス設定 (ExternalFDTD / ExternalGeometric のみ表示)
     m_extGroup = new QWidget(s1);
