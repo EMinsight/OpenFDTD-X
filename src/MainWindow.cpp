@@ -593,13 +593,17 @@ void MainWindow::buildLeftNav(QWidget *parent)
         QWidget *page;
         QVector<D> domains;
         bool core;
+        // 音響/水中ドメインでの代替ラベルキー (nullptr = 共通ラベルのまま)
+        const char *acLabel = nullptr;
     };
     const QVector<Def> defs = {
         // セットアップ (Lumerical canonical order ①〜⑤ + 詳細)
         { "geometry",     "cat_setup", "nav_geometry",     m_tabGeometry,     ALL, true  },
         { "material",     "cat_setup", "nav_material",     m_tabMaterial,     ALL, true  },
         { "solverregion", "cat_setup", "nav_solverregion", m_tabSolverRegion, ALL, true  },
-        { "source",       "cat_setup", "nav_source",       m_tabSource,       ALL, true  },
+        // 音響/水中では「波源」ではなく「音源」(SourceTab 内の文言と揃える)
+        { "source",       "cat_setup", "nav_source",       m_tabSource,       ALL, true,
+          "nav_source_ac" },
         { "monitors",     "cat_setup", "nav_monitors",     m_tabMonitors,     ALL, true  },
         { "general",      "cat_setup", "nav_general",      m_tabGeneral,      ALL, false },
         { "mesh",         "cat_setup", "nav_mesh",         m_tabMesh,         ALL, false },
@@ -700,7 +704,9 @@ void MainWindow::buildLeftNav(QWidget *parent)
 
     for (const Def &d : defs) {
         m_pages->addWidget(d.page);
-        m_nav->addEntry({ d.key, d.cat, d.label, d.page, d.domains, d.core });
+        m_nav->addEntry({ d.key, d.cat, d.label, d.page, d.domains, d.core,
+                          d.acLabel ? QString::fromLatin1(d.acLabel)
+                                    : QString() });
     }
 
     connect(m_nav, &TabNavigator::pageSelected,

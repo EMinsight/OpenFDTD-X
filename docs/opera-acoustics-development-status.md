@@ -54,12 +54,15 @@
 
 ## 4. 品質基準の現在値
 
-- 既存 baseline: `ofdx_selftest` = 24 files loaded, **6982 checks,
+- 既存 baseline: `ofdx_selftest` = 24 files loaded, **6994 checks,
   0 failures** (2026-08-05 更新: リサンプラ (負債 #12) +47 checks で
   6859 → 6906、受音点ごとの RIR (`receivers[].rir_file` — 一括可聴化)
   +12 checks で 6906 → 6918、音声加工処理の拡充 (RBJ biquad 補完 /
   resampleTo / 範囲編集) +35 checks で 6918 → 6953、RIR 自動割当
-  (`core/RirAutoAssign` の対応規則) +29 checks で 6953 → 6982。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
+  (`core/RirAutoAssign` の対応規則) +29 checks で 6953 → 6982、
+  音源リスト → ソルバ波源 (feed) の反映 +12 checks で 6982 → 6994、
+  ナビの音響/水中向けラベル (④ 波源 → ④ 音源) +3 checks で
+  6994 → 6997。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
   一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
@@ -71,6 +74,35 @@
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
   Windows job に `-C Release` + `TMPDIR` 設定を追加済み (作業ツリー)。
+
+### 音源リスト → ソルバ波源 (feed) の反映 (2026-08-05)
+
+音源リスト (AcousticSourceTab、`.ofdx` `acoustic.sources`) に「⚡ 有効な
+音源をソルバ波源へ反映」ボタンを追加 (室内音響のみ — 水中は BELLHOP が
+feed を使わないため非表示)。有効行の**位置のみ**を Z 向き・既定振幅/位相/
+内部抵抗の feed として書き込み、既存 feed を置き換える (確認ダイアログ付き。
+レベル [dB] は校正が無いため振幅へ換算しない — 絶対規則 6)。表に「ソルバ」
+列を追加し、位置一致 (許容 1e-9 m) する feed を「ソルバ波源 #n」と表示。
+反映本体は `AcousticSourceTab::syncFeedsFromSources` (ヘッダ内 inline static)
+で、selftest +12 checks (有効/無効行の選別・置換・feed 既定値・.ofd の
+本家 feed 行書式とラウンドトリップ・有効 0 行は無変更) を追加。指向性・
+WAV・レベルのソルバ入力化 (校正込み) は引き続き将来課題。
+
+### 音源設定 2 系統の UI 明確化 (2026-08-05)
+
+音源リスト (ライブラリ) とソルバ波源 (④) の取り違え対策として、上記の
+反映ボタンに加えて以下を実装:
+
+- ナビのタブ名を音響/水中ドメインでは「④ 音源」と表示
+  (`TabNavigator::Entry::acLabelKey` — 電磁/光は従来どおり「④ 波源」。
+  SourceTab 内の文言切替と表記を揃えた)。
+- コンポーネントタブに配置対応のヒント 1 行を追加
+  (スピーカー = 点音源 feed / マイクロホン = 観測点 /
+  パネル・形状 = 物体として .ofd に追加される旨)。
+- 音響ドメインで吸音系コンポーネント (Absorber panel / Diffuser (QRD) /
+  Audience block) をビューポートへドロップしたとき、通知に「形状は剛体と
+  して配置 — 吸音率は室内音響タブの面別吸音率で設定」の注記を追加
+  (吸音率が設定されたと誤解させない — 絶対規則 5)。
 
 ### 音声加工処理の拡充 (2026-08-05)
 

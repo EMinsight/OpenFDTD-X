@@ -79,6 +79,14 @@ const bool s_i18n = [] {
         "(形状タブ / レイアウトタブから取り込んでください)",
         "%1 requires importing a file, so it cannot be placed by drag & drop "
         "(import it from the Geometry / Layout tab)");
+    // 吸音系コンポーネント (Absorber panel / Diffuser / Audience block) の注記:
+    // 形状は剛体としてしか置かれず、吸音率はここでは設定されない
+    // (絶対規則 5: 出来ていないことを出来たように見せない)
+    ofd::I18n::reg("vp_drop_rigid",
+        "※ 形状は剛体として配置されます — 吸音率は室内音響タブの"
+        "面別吸音率で設定してください",
+        "Note: the shape is placed as a rigid body — set its absorption via "
+        "the per-surface absorption coefficients in the Room Acoustics tab");
     ofd::I18n::reg("vp_drop_r_area",
         "%1 は点ではなく面/領域の指定が必要なため、ドロップでは配置できません "
         "(該当タブで設定してください)",
@@ -1169,9 +1177,19 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
 
     // モデルが変わった → ビューポート / ツリー / ステータスバーが自動更新
     m_project->touch();
-    if (msg)
+    if (msg) {
         *msg = I18n::tr("vp_drop_added").arg(name, what,
                                              posText(pos) + "   " + where);
+        // 音響ドメインの吸音系コンポーネントは剛体形状としてしか置かれない
+        // — 吸音率が設定されたと誤解しないよう注記する
+        const bool absorberLike =
+            (name == QLatin1String("Absorber panel")
+             || name == QLatin1String("Diffuser (QRD)")
+             || name == QLatin1String("Audience block"));
+        if (m_domain == Domain::Acoustic && sp.kind == DropKind::Shape
+            && absorberLike)
+            *msg += QStringLiteral("\n") + I18n::tr("vp_drop_rigid");
+    }
     return true;
 }
 

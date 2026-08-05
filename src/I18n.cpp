@@ -951,6 +951,9 @@ void I18n::loadTables() {
     add("nav_material",     "② 物性値",      "② Materials");
     add("nav_solverregion", "③ ソルバ領域",  "③ Solver region");
     add("nav_source",       "④ 波源",        "④ Sources");
+    // 音響/水中ドメインでのナビ表記 (TabNavigator::Entry::acLabelKey)。
+    // SourceTab 内の文言 (点音源など) と揃え、「波源」とは呼ばない。
+    add("nav_source_ac",    "④ 音源",        "④ Sources");
     add("nav_monitors",     "⑤ モニター",    "⑤ Monitors");
     add("nav_general",      "全般",           "General");
     add("nav_mesh",         "メッシュ詳細",   "Mesh detail");

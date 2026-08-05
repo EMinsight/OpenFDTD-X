@@ -78,12 +78,47 @@ const bool s_i18n = [] {
               "▸ 音源一覧はプロジェクト (.ofdx) に保存され、次回読み込み時に"
               "復元されます。現在の音響計算 (統計推定・ソルバー連携) は"
               "「音響」タブの単一音源設定 (位置・基準SPL) を使うため、"
-              "この一覧はまだカーネル入力には渡されません。",
+              "この一覧が自動でカーネル入力へ渡されることはありません "
+              "(位置のみ、下の反映ボタンで明示的に波源へ書き込めます)。",
               "▸ The source list is stored in the project (.ofdx) and restored "
               "on reload. The present acoustic computations (statistical "
               "estimate / solver hand-off) use the single source (position and "
-              "reference SPL) from the Acoustic tab, so this list is not passed "
-              "to the kernel input yet.");
+              "reference SPL) from the Acoustic tab — this list is never "
+              "passed to the kernel input automatically (only the positions "
+              "can be written into the feeds explicitly with the apply button "
+              "below).");
+    // 音源リスト → ソルバ波源 (feed) への反映導線 (室内音響のみ)
+    I18n::reg("asrc_btn_sync", "⚡ 有効な音源をソルバ波源へ反映",
+              "⚡ Apply enabled sources to solver feeds");
+    I18n::reg("asrc_sync_title", "ソルバ波源へ反映", "Apply to solver feeds");
+    I18n::reg("asrc_sync_confirm",
+              "現在の波源 %1 個を、音源リストの有効な音源 %2 個で"
+              "置き換えます。\n\n反映されるのは位置のみです — 指向性・WAV・"
+              "レベルはソルバへは渡りません (可聴化・解析側で使用します)。"
+              "振幅・位相・内部抵抗は既定値になります。よろしいですか？",
+              "Replace the current %1 feed(s) with the %2 enabled source(s) of "
+              "this list?\n\nOnly the positions are applied — directivity, WAV "
+              "and level are not passed to the solver (they are used by "
+              "auralization / analysis). Amplitude, phase and internal "
+              "impedance are set to their defaults.");
+    I18n::reg("asrc_sync_none",
+              "有効な音源がありません — 反映するには行の左端のチェックを"
+              "有効にしてください。波源 (feed) は変更していません。",
+              "No enabled sources — tick the checkbox of the rows to apply. "
+              "The feeds were not changed.");
+    I18n::reg("asrc_sync_note",
+              "▸ ソルバ (計算実行) が使う点音源は「④波源」タブの feed です。"
+              "この一覧の指向性・WAV・レベルは可聴化/解析用でソルバへは"
+              "渡りません — 上の反映ボタンで有効行の位置だけを feed へ"
+              "書き込めます (レベル [dB] は校正が無いため振幅へ換算しません)。",
+              "▸ The point sources the solver (run button) uses are the feeds "
+              "of the ④ Sources tab. Directivity, WAV and level in this list "
+              "are for auralization / analysis and are not passed to the "
+              "solver — the apply button above writes only the positions of "
+              "the enabled rows into the feeds (level [dB] is not converted "
+              "to an amplitude because there is no calibration).");
+    I18n::reg("asrc_col_solver", "ソルバ", "Solver");
+    I18n::reg("asrc_solver_feed", "ソルバ波源 #%1", "Solver feed #%1");
     I18n::reg("asrc_preset_sonar", "ソナー", "Sonar");
     I18n::reg("asrc_preset_speaker", "スピーカー", "Speakers");
     I18n::reg("asrc_common_section", "共通設定", "Common");
@@ -501,6 +536,21 @@ QString posText(const AcousticSourceRow &r)
              QString::number(r.z_m, 'g', 6));
 }
 
+// 行の位置と一致する feed の番号 (1 始まり)。無ければ 0。
+// 許容誤差 1e-9 m の厳密比較 — 反映ボタンの直後に「ソルバ波源 #n」の対応が
+// 見えることが目的なので、これで足りる (近接判定は不要)。
+int matchingFeedIndex(const ofd::Project &p, const AcousticSourceRow &r)
+{
+    const QVector<Feed> &fs = p.feeds();
+    for (int i = 0; i < fs.size(); ++i) {
+        if (std::fabs(fs[i].x - r.x_m) <= 1e-9 &&
+            std::fabs(fs[i].y - r.y_m) <= 1e-9 &&
+            std::fabs(fs[i].z - r.z_m) <= 1e-9)
+            return i + 1;
+    }
+    return 0;
+}
+
 // ── 一次指向性 r(θ) = a + b·cosθ の閉形式 (ポーラ図・帯域表で共用) ─────────
 // 係数は omni / cardioid / super / hyper / fig-8 の順。
 const double kAB[5][2] = {
@@ -682,7 +732,7 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     m_srcHint->setWordWrap(true);
     s->vbox()->addWidget(m_srcHint);
 
-    m_srcTable = new QTableWidget(0, 8, s);
+    m_srcTable = new QTableWidget(0, 9, s);   // 末尾列 = ソルバ波源マーカー
     m_srcTable->horizontalHeader()->setSectionResizeMode(
         QHeaderView::ResizeToContents);
     m_srcTable->horizontalHeader()->setStretchLastSection(true);
@@ -709,6 +759,18 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     row->addWidget(m_presetBtn);
     row->addStretch(1);
     s->vbox()->addLayout(row);
+
+    // 音源リスト → ソルバ波源 (feed) への反映導線 (室内音響のみ —
+    // 水中は BELLHOP が feed を使わないため onDomainChanged() で隠す)
+    auto *syncRow = new QHBoxLayout();
+    m_syncBtn = new QPushButton(I18n::tr("asrc_btn_sync"), s);
+    syncRow->addWidget(m_syncBtn);
+    syncRow->addStretch(1);
+    s->vbox()->addLayout(syncRow);
+    m_syncNote = new QLabel(I18n::tr("asrc_sync_note"), s);
+    m_syncNote->setWordWrap(true);
+    m_syncNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    s->vbox()->addWidget(m_syncNote);
     v->addWidget(s);
 
     // 表の編集 → モデル (セル単位。不正入力はセル表示をモデル値へ戻す)
@@ -757,6 +819,28 @@ QWidget *AcousticSourceTab::buildSourcesPage()
         for (const AcousticSourceRow &r : preset) list.push_back(r);
         refreshSourceTable();
         m_p->touch();
+    });
+    // 反映: 有効行の位置のみを feed へ書き込む (確認ダイアログ付き)。
+    // 有効行 0 のときはボタン無効化ではなくメッセージで理由を示す
+    // (チェック切替の度の再計算を持ち回らずに済み、理由も伝わる)。
+    connect(m_syncBtn, &QPushButton::clicked, this, [this] {
+        int enabled = 0;
+        for (const AcousticSourceRow &r : m_p->acoustic().sources)
+            if (r.enabled) ++enabled;
+        if (enabled == 0) {
+            QMessageBox::information(this, I18n::tr("asrc_sync_title"),
+                                     I18n::tr("asrc_sync_none"));
+            return;
+        }
+        const int nOld = int(m_p->feeds().size());
+        if (QMessageBox::question(this, I18n::tr("asrc_sync_title"),
+                I18n::tr("asrc_sync_confirm").arg(nOld).arg(enabled),
+                QMessageBox::Ok | QMessageBox::Cancel,
+                QMessageBox::Cancel) != QMessageBox::Ok)
+            return;   // キャンセル — feed は変更しない
+        syncFeedsFromSources(*m_p);
+        m_p->touch();
+        refreshSourceTable();   // 「ソルバ波源 #n」マーカーを即時更新
     });
 
     auto *sc = new SectionBox(I18n::tr("asrc_common_section"), page);
@@ -876,6 +960,14 @@ void AcousticSourceTab::refreshSourceTable()
         auto *lv = new QTableWidgetItem(QString::number(r.level_dB, 'g', 6));
         lv->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         m_srcTable->setItem(i, 7, lv);
+        // ソルバ波源マーカー: この行の位置と一致する feed があれば
+        // 「ソルバ波源 #n」— 反映結果 (どの行がソルバに効くか) を可視化する
+        const int fi = matchingFeedIndex(*m_p, r);
+        auto *sv = new QTableWidgetItem(
+            fi > 0 ? I18n::tr("asrc_solver_feed").arg(fi) : kDash);
+        sv->setFlags(Qt::ItemIsEnabled);   // 読取専用 (表示のみ)
+        if (fi > 0) sv->setForeground(QBrush(kAcc));
+        m_srcTable->setItem(i, 8, sv);
     }
     // 追加行 (＋ 音源を追加…) — クリックで 1 行増える
     m_srcTable->setCellWidget(n, 3, nullptr);
@@ -889,7 +981,7 @@ void AcousticSourceTab::refreshSourceTable()
     add->setForeground(palette().mid());
     add->setFlags(Qt::ItemIsEnabled);
     m_srcTable->setItem(n, 1, add);
-    m_srcTable->setSpan(n, 1, 1, 7);
+    m_srcTable->setSpan(n, 1, 1, 8);
     m_updating = prevUpdating;
 }
 
@@ -1724,7 +1816,11 @@ void AcousticSourceTab::onDomainChanged()
         "", "#", I18n::tr("asrc_col_name"), I18n::tr("asrc_col_kind"),
         I18n::tr("asrc_col_pos"), I18n::tr("asrc_col_dir"),
         I18n::tr("asrc_col_sig"),
-        I18n::tr(uw ? "asrc_col_spl_uw" : "asrc_col_spl_room") });
+        I18n::tr(uw ? "asrc_col_spl_uw" : "asrc_col_spl_room"),
+        I18n::tr("asrc_col_solver") });
+    // 反映導線は室内音響のみ (水中は BELLHOP — .ofd の feed を使わない)
+    m_syncBtn->setVisible(!uw);
+    m_syncNote->setVisible(!uw);
     refreshSourceTable();
 
     // ライブラリ表 (最終行のみドメイン依存)。音源ファイルは 1 つも同梱して
