@@ -1,5 +1,6 @@
 // ComponentsTab.cpp
 #include "ComponentsTab.h"
+#include "../core/ComponentCatalog.h" // 部品表とドメイン許可表 (Viewport3D と共有)
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/Viewport3D.h"   // ComponentDrop (3D ビューへの D&D 契約)
@@ -65,83 +66,22 @@ const bool s_i18n = [] {
                    "Components you drop onto the 3D scene appear here, newest "
                    "first");
     ofd::I18n::reg("cl_rec_clear", "履歴を消去", "Clear history");
+    // 水中音響ドメイン: 配置部品が存在しない理由の説明 (グリッドの代わりに表示)
+    ofd::I18n::reg("cl_uw_note",
+        "水中音響 (BELLHOP) は海洋環境タブの SSP・海底・ソナー設定から"
+        "入力を生成します。形状・波源・モニターの配置は計算に使われない"
+        "ため、このドメインに配置部品はありません。",
+        "Underwater acoustics (BELLHOP) builds its input from the SSP / "
+        "seabed / sonar settings in the Ocean Environment tab. Placed "
+        "shapes, sources and monitors are not used in the computation, so "
+        "there are no placeable components in this domain.");
     return true;
 }();
 
-// コンポーネント一覧 — Ansys Lumerical FDTD が同梱するものに基づく (mock 同値)
-struct Component { const char *cat, *icon, *name, *sub; };
-const Component kComponents[] = {
-    // Basic shapes
-    { "basic",    "▭",  "Rectangle",            "直方体" },
-    { "basic",    "⬭",  "Circle/Disk",          "円柱" },
-    { "basic",    "○",  "Sphere",               "球" },
-    { "basic",    "▱",  "Pyramid",              "四角錐" },
-    { "basic",    "⏃",  "Triangle",             "三角形" },
-    { "basic",    "⏆",  "Polygon",              "多角形" },
-    { "basic",    "⌒",  "Spline",               "自由曲線" },
-    // Photonics
-    { "photonic", "▬",  "Waveguide (rib)",      "リブ導波路 Si/SiO₂" },
-    { "photonic", "⌑",  "Ring resonator",       "リング共振器" },
-    { "photonic", "≡",  "Bragg grating (DBR)",  "分布Bragg反射器" },
-    { "photonic", "⫝̸",  "Y-branch splitter",    "光分波器" },
-    { "photonic", "⋊",  "Directional coupler",  "方向性結合器" },
-    { "photonic", "⨯",  "MMI splitter",         "多モード干渉計" },
-    { "photonic", "◇",  "Photonic crystal",     "フォトニック結晶" },
-    { "photonic", "◈",  "Grating coupler",      "格子結合器" },
-    { "photonic", "▷◁", "MZI",                  "Mach-Zehnder干渉計" },
-    { "photonic", "⊙",  "Quantum dot",          "量子ドット波源" },
-    // Metal / plasmonics
-    { "metal",    "◉",  "Nanoparticle (Au/Ag)", "プラズモニックNP" },
-    { "metal",    "⫾",  "Nanorod",              "ナノロッド" },
-    { "metal",    "◫",  "Nanowire grid",        "ワイヤグリッド偏光子" },
-    { "metal",    "⊞",  "Bow-tie antenna",      "光アンテナ" },
-    // Gratings / periodic
-    { "grating",  "▦",  "1D Grating",           "1次元格子" },
-    { "grating",  "⬚",  "2D Grating",           "2次元格子" },
-    { "grating",  "⌗",  "Metasurface unit",     "メタサーフェス単位胞" },
-    { "grating",  "⌖",  "Blazed grating",       "ブレーズド格子" },
-    { "grating",  "⎈",  "Polarization grating", "偏光格子" },
-    // Lens
-    { "lens",     "◐",  "Plano-convex lens",    "平凸レンズ" },
-    { "lens",     "◑",  "Biconvex lens",        "両凸レンズ" },
-    { "lens",     "◖",  "Aspheric lens",        "非球面" },
-    { "lens",     "⏥",  "Metalens",             "メタレンズ" },
-    { "lens",     "⌧",  "GRIN lens",            "屈折率分布レンズ" },
-    { "lens",     "╲",  "Mirror",               "反射鏡" },
-    { "lens",     "⨀",  "Aperture / Stop",      "絞り" },
-    // Antenna
-    { "antenna",  "⊥",  "Dipole",               "ダイポール" },
-    { "antenna",  "▥",  "Patch antenna",        "パッチアンテナ" },
-    { "antenna",  "▽",  "Horn",                 "ホーンアンテナ" },
-    { "antenna",  "⌬",  "Helix",                "ヘリカル" },
-    { "antenna",  "⊟",  "Yagi-Uda",             "八木宇田" },
-    { "antenna",  "▣",  "Array (8×8)",          "アレイアンテナ" },
-    // Acoustic
-    { "acoustic", "♫",  "Loudspeaker",          "スピーカー" },
-    { "acoustic", "⌖",  "Microphone",           "マイクロホン" },
-    { "acoustic", "▙",  "Absorber panel",       "吸音パネル" },
-    { "acoustic", "⫽",  "Diffuser (QRD)",       "拡散体" },
-    { "acoustic", "▓",  "Audience block",       "客席ブロック" },
-    // Sources
-    { "source",   "⚡", "Dipole source",        "電気/磁気/光双極子" },
-    { "source",   "⫴",  "Mode source",          "モード波源" },
-    { "source",   "⤓",  "Plane wave",           "平面波" },
-    { "source",   "☼",  "Gaussian beam",        "ガウシアンビーム" },
-    { "source",   "⌖",  "TFSF (全/散乱場)",     "TFSF波源" },
-    { "source",   "⮃",  "Import source",        "スペクトル取込" },
-    // Monitors
-    { "monitor",  "⊙",  "Point monitor",        "点モニター" },
-    { "monitor",  "━",  "Line monitor",         "線モニター" },
-    { "monitor",  "▭",  "Plane monitor",        "面モニター" },
-    { "monitor",  "▦",  "Volume monitor",       "体積モニター" },
-    { "monitor",  "⊛",  "Mode expansion",       "モード展開モニター" },
-    { "monitor",  "▶",  "Movie monitor",        "動画" },
-    { "monitor",  "≡",  "Flux monitor",         "電力 (Poynting)" },
-    { "monitor",  "⌛", "Time monitor",         "時間応答" },
-    // Imported models — 取込モデル (GeometryTab の STL/OBJ 取込 と LayoutGDS に対応)
-    { "imported", "⧉",  "Imported mesh",        "取込3Dモデル (STL/OBJ)" },
-    { "imported", "▤",  "GDSII layout",         "レイアウト取込 (GDS)" },
-};
+// コンポーネント一覧 — core/ComponentCatalog.h に移動した (部品→ドメイン
+// 許可表を Viewport3D・selftest と共有するため。二重管理の防止)。
+using Component = ofd::ComponentCatalog::Component;
+using ofd::ComponentCatalog::kComponents;
 
 // カテゴリボタン定義 ("all" + 9 カテゴリ)
 struct Cat { const char *v, *labelKey, *icon; };
@@ -159,45 +99,46 @@ const Cat kCats[] = {
     { "imported", "cl_imported", "⧉" },
 };
 
-// ドメインに関係するカテゴリのみ表示 (それ以外は非表示)
-// 取込モデル (imported) は形状取込なのでどのドメインでも意味を持つ。
+// ドメインに関係するカテゴリのみ表示 (それ以外は非表示)。
+// カテゴリ内の個々の部品はさらに ComponentCatalog::allowedInDomain の
+// 許可表でフィルタされる (例: source は EM/光ドメインでも部品毎に絞られる)。
 QStringList allowedCats(const QString &d)
 {
     if (d == "em")
-        return { "basic", "antenna", "metal", "source", "monitor", "imported" };
+        // metal (プラズモニクス) は光専用なので EM には出さない
+        return { "basic", "antenna", "source", "monitor", "imported" };
     if (d == "optical")
         return { "basic", "photonic", "grating", "lens", "metal", "source",
                  "monitor", "imported" };
     if (d == "acoustic")
-        return { "basic", "acoustic", "source", "monitor", "imported" };
+        // 点音源は acoustic カテゴリの Loudspeaker が担う — EM/光専用の
+        // source カテゴリは出さない (monitor は Point/Time 等が残る)
+        return { "basic", "acoustic", "monitor", "imported" };
     if (d == "underwater")
-        // 音響カテゴリの部材 (吸音パネル/客席ブロック等) は室内音響用で、
-        // 水中音響では意味を持たないため表示しない
-        return { "basic", "source", "monitor", "imported" };
-    return { "basic", "source", "monitor", "imported" };
+        // BELLHOP は海洋環境タブの設定だけから入力を生成し、形状・波源・
+        // モニターの配置を一切使わない — 配置部品は存在しない (説明を表示)
+        return {};
+    return { "basic", "monitor", "imported" };
 }
 
 // 許可カテゴリ内での優先順 (グリッドの並び)
 QStringList priorityCats(const QString &d)
 {
     if (d == "em")
-        return { "antenna", "source", "monitor", "basic", "metal" };
+        return { "antenna", "source", "monitor", "basic" };
     if (d == "optical")
         return { "photonic", "grating", "lens", "metal", "source", "monitor", "basic" };
     if (d == "acoustic")
-        return { "acoustic", "source", "monitor", "basic" };
+        return { "acoustic", "monitor", "basic" };
     if (d == "underwater")
-        return { "source", "monitor", "basic" };
+        return {};
     return { "basic" };
 }
 
 // 名前からコンポーネント定義を引く (お気に入りチップはカテゴリを持たない)
-// 名前には非 ASCII を含むもの ("TFSF (全/散乱場)" 等) があるので UTF-8 で比較する
 const Component *findComponent(const QString &name)
 {
-    for (const Component &c : kComponents)
-        if (name == QString::fromUtf8(c.name)) return &c;
-    return nullptr;
+    return ofd::ComponentCatalog::findByName(name);
 }
 
 // ── 3D ビューへのドラッグ元 ────────────────────────────────────────────────
@@ -207,11 +148,12 @@ const Component *findComponent(const QString &name)
 // 戻り値 = ドロップ先が受理した (= 実際に配置された) か。履歴の記録に使う
 // ので、掴んだだけ・取り消した場合は false を返す。
 bool beginComponentDrag(QWidget *src, const QString &cat, const QString &name,
-                        const QPoint &hotSpot)
+                        const QString &domain, const QPoint &hotSpot)
 {
     if (cat.isEmpty() || name.isEmpty()) return false;
-    // ドロップしても配置できないものは掴めないようにする (空振りを作らない)
-    if (!ofd::ComponentDrop::canPlace(cat, name)) return false;
+    // ドロップしても配置できないものは掴めないようにする (空振りを作らない)。
+    // ドメイン許可表込みの判定 (お気に入り経由のドラッグもここを通る)
+    if (!ofd::ComponentDrop::canPlace(cat, name, domain)) return false;
 
     auto *mime = new QMimeData();
     mime->setData(ofd::ComponentDrop::mimeType(),
@@ -232,9 +174,12 @@ template <class Base>
 class DragSource : public Base {
 public:
     using PlacedCb = std::function<void(const QString &name)>;
-    DragSource(const QString &cat, const QString &name, QWidget *parent,
-               PlacedCb onPlaced = PlacedCb())
-        : Base(parent), m_cat(cat), m_name(name), m_placed(std::move(onPlaced)) {}
+    // domain はドラッグ開始時の判定に使う (ドメイン切替で親の行/グリッドが
+    // 再構築されるので、構築時のドメインを保持すればよい)
+    DragSource(const QString &cat, const QString &name, const QString &domain,
+               QWidget *parent, PlacedCb onPlaced = PlacedCb())
+        : Base(parent), m_cat(cat), m_name(name), m_domain(domain),
+          m_placed(std::move(onPlaced)) {}
 
 protected:
     void mousePressEvent(QMouseEvent *e) override
@@ -254,14 +199,14 @@ protected:
             return;
         // ドラッグ中 (ネストしたイベントループ) と配置後のコールバックで
         // this が消え得るので、必要な値は先にコピーしておく
-        const QString cat = m_cat, name = m_name;
+        const QString cat = m_cat, name = m_name, domain = m_domain;
         PlacedCb cb = m_placed;
-        if (beginComponentDrag(this, cat, name, m_press) && cb)
+        if (beginComponentDrag(this, cat, name, domain, m_press) && cb)
             cb(name);
     }
 
 private:
-    QString  m_cat, m_name;
+    QString  m_cat, m_name, m_domain;
     QPoint   m_press;
     PlacedCb m_placed;
 };
@@ -271,14 +216,16 @@ using DragChip = DragSource<QLabel>;
 
 // ドラッグ元ウィジェットの見た目 (カーソル) とツールチップ。
 // 配置できないコンポーネントは掴める見た目にせず、理由をツールチップに出す。
-void applyDragAffordance(QWidget *w, const QString &cat, const QString &name)
+// 判定はドメイン許可表込み (beginComponentDrag と同じ)。
+void applyDragAffordance(QWidget *w, const QString &cat, const QString &name,
+                         const QString &domain)
 {
     QString why;
     if (cat.isEmpty() || name.isEmpty()) {   // 対応表に無い項目 (ドラッグ不可)
         w->setCursor(Qt::ArrowCursor);
         return;
     }
-    if (ofd::ComponentDrop::canPlace(cat, name, &why)) {
+    if (ofd::ComponentDrop::canPlace(cat, name, domain, &why)) {
         w->setCursor(Qt::OpenHandCursor);
         w->setToolTip(ofd::I18n::tr("cl_drag_tip"));
     } else {
@@ -322,17 +269,23 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
 
     // コンポーネントグリッド
     m_gridSection = new SectionBox(I18n::tr("cl_components"), body);
-    auto *hint = new QLabel(QStringLiteral("▸ ") + I18n::tr("cl_drag_hint"),
+    m_dragHint = new QLabel(QStringLiteral("▸ ") + I18n::tr("cl_drag_hint"),
                             m_gridSection);
-    hint->setWordWrap(true);
-    m_gridSection->vbox()->addWidget(hint);
+    m_dragHint->setWordWrap(true);
+    m_gridSection->vbox()->addWidget(m_dragHint);
     // ドロップで .ofd に何が追加されるかの対応 (スピーカー = 点音源 feed 等)
-    auto *mapHint = new QLabel(QStringLiteral("▸ ")
-                                   + I18n::tr("cl_drop_map_hint"),
-                               m_gridSection);
-    mapHint->setWordWrap(true);
-    mapHint->setStyleSheet("font-size:11px; color:gray;");
-    m_gridSection->vbox()->addWidget(mapHint);
+    m_mapHint = new QLabel(QStringLiteral("▸ ")
+                               + I18n::tr("cl_drop_map_hint"),
+                           m_gridSection);
+    m_mapHint->setWordWrap(true);
+    m_mapHint->setStyleSheet("font-size:11px; color:gray;");
+    m_gridSection->vbox()->addWidget(m_mapHint);
+    // 水中音響: 配置部品が無い理由 (グリッドの位置に説明を出す — 「(0)」の
+    // 空グリッドより説明が前面に出るようにする)
+    m_uwNote = new QLabel(I18n::tr("cl_uw_note"), m_gridSection);
+    m_uwNote->setWordWrap(true);
+    m_uwNote->setVisible(false);
+    m_gridSection->vbox()->addWidget(m_uwNote);
     m_grid = new QGridLayout();
     m_grid->setSpacing(6);
     m_gridSection->vbox()->addLayout(m_grid);
@@ -384,30 +337,37 @@ ComponentsTab::ComponentsTab(Project *project, QWidget *parent)
     rebuildCats();
 }
 
-// お気に入りチップ行 (空なら登録方法のヒントを出す)
+// お気に入りチップ行 (空なら登録方法のヒントを出す)。
+// 現ドメインで意味を持たない部品は非表示にする (登録自体は消さないので、
+// ドメインを戻せば再び現れる)。
 void ComponentsTab::rebuildFavorites()
 {
     while (QLayoutItem *it = m_favRow->takeAt(0)) {
         delete it->widget();
         delete it;
     }
-    if (m_favorites.isEmpty()) {
+    const QString domain = domainKey(m_p->activeDomain());
+    int shown = 0;
+    for (const QString &name : m_favorites) {
+        // カードと同じくドラッグ元になる (カテゴリは名前から引く)
+        const Component *c = findComponent(name);
+        if (!c) continue;                                  // 定義が消えた項目
+        if (!ComponentCatalog::allowedInDomain(name, domain))
+            continue;                                      // 別ドメインの登録
+        const QString cat = QString::fromUtf8(c->cat);
+        auto *chip = new DragChip(cat, name, domain, m_favSection,
+                                  [this](const QString &n) { recordRecent(n); });
+        chip->setText(QStringLiteral("★ ") + name);
+        chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
+                            "padding:1px 6px; font-size:11px;");
+        applyDragAffordance(chip, cat, name, domain);
+        m_favRow->addWidget(chip);
+        ++shown;
+    }
+    if (shown == 0) {
         auto *hint = new QLabel(I18n::tr("cl_fav_hint"), m_favSection);
         hint->setStyleSheet("font-size:11px; color:gray;");
         m_favRow->addWidget(hint);
-    } else {
-        for (const QString &name : m_favorites) {
-            // カードと同じくドラッグ元になる (カテゴリは名前から引く)
-            const Component *c = findComponent(name);
-            const QString cat = c ? QString::fromUtf8(c->cat) : QString();
-            auto *chip = new DragChip(cat, name, m_favSection,
-                                      [this](const QString &n) { recordRecent(n); });
-            chip->setText(QStringLiteral("★ ") + name);
-            chip->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
-                                "padding:1px 6px; font-size:11px;");
-            applyDragAffordance(chip, cat, name);
-            m_favRow->addWidget(chip);
-        }
     }
     m_favRow->addStretch(1);
 }
@@ -425,6 +385,8 @@ void ComponentsTab::rebuildCats()
 
     int i = 0;
     for (const Cat &c : kCats) {
+        // 配置部品が無いドメイン (水中音響) はカテゴリボタン自体を出さない
+        if (allowed.isEmpty()) break;
         if (QString(c.v) != "all" && !allowed.contains(c.v)) continue;
         auto *btn = new QPushButton(
             QString::fromUtf8(c.icon) + " " + I18n::tr(c.labelKey), m_gridSection);
@@ -444,6 +406,9 @@ void ComponentsTab::rebuildCats()
         ++i;
     }
     rebuildGrid();
+    // お気に入り・最近使用のチップもドメイン許可表で絞り直す
+    // (ドメイン外のお気に入りは非表示にするだけで、登録は消さない)
+    rebuildFavorites();
     rebuildRecent();
 }
 
@@ -471,19 +436,20 @@ void ComponentsTab::rebuildRecent()
         }
         delete it;
     }
-    const QStringList allowed = allowedCats(domainKey(m_p->activeDomain()));
+    const QString domain = domainKey(m_p->activeDomain());
     int shown = 0;
     for (const QString &name : m_recent) {
         const Component *c = findComponent(name);
         if (!c) continue;                                  // 定義が消えた項目
+        // 別ドメインの履歴は非表示 (部品単位のドメイン許可表で判定)
+        if (!ComponentCatalog::allowedInDomain(name, domain)) continue;
         const QString cat = QString::fromUtf8(c->cat);
-        if (!allowed.contains(cat)) continue;              // 別ドメインの履歴
-        auto *b = new DragChip(cat, name, m_recentSection,
+        auto *b = new DragChip(cat, name, domain, m_recentSection,
                                [this](const QString &n) { recordRecent(n); });
         b->setText(QString::fromUtf8(c->icon) + " " + name);
         b->setStyleSheet("border:1px solid palette(mid); border-radius:3px;"
                          "padding:1px 6px; font-size:11px;");
-        applyDragAffordance(b, cat, name);
+        applyDragAffordance(b, cat, name, domain);
         m_recentRow->addWidget(b);
         ++shown;
     }
@@ -501,6 +467,18 @@ void ComponentsTab::rebuildGrid()
     clearGrid(m_grid);
 
     const QString domain = domainKey(m_p->activeDomain());
+
+    // 水中音響: 配置部品が無い (BELLHOP は海洋環境タブの設定だけを使う) —
+    // 空の「(0)」グリッドではなく理由の説明を前面に出す
+    const bool uw = (domain == QLatin1String("underwater"));
+    m_uwNote->setVisible(uw);
+    m_dragHint->setVisible(!uw);
+    m_mapHint->setVisible(!uw);
+    if (uw) {
+        m_gridSection->setTitle(I18n::tr("cl_components"));
+        return;
+    }
+
     const QStringList allowed = allowedCats(domain);
     const QStringList priority = priorityCats(domain);
     const QString q = m_search->text().trimmed();
@@ -508,6 +486,11 @@ void ComponentsTab::rebuildGrid()
     QVector<const Component *> filtered;
     for (const Component &c : kComponents) {
         if (!allowed.contains(c.cat)) continue;
+        // カテゴリ許可に加えて部品単位のドメイン許可表でも絞る
+        // (例: source カテゴリでも Mode source / Gaussian beam は光のみ)
+        if (!ComponentCatalog::allowedInDomain(QString::fromUtf8(c.name),
+                                               domain))
+            continue;
         if (m_cat != "all" && m_cat != c.cat) continue;
         if (!q.isEmpty()
             && !QString::fromUtf8(c.name).contains(q, Qt::CaseInsensitive)
@@ -534,10 +517,11 @@ void ComponentsTab::rebuildGrid()
         const QString name = QString::fromUtf8(c.name);
         // 3D シーンへのドラッグ元。掴める見た目にするのは配置できるものだけ。
         // 配置に成功したら最近使用へ記録する
-        auto *card = new DragCard(QString::fromUtf8(c.cat), name, m_gridSection,
+        auto *card = new DragCard(QString::fromUtf8(c.cat), name, domain,
+                                  m_gridSection,
                                   [this](const QString &n) { recordRecent(n); });
         card->setFrameShape(QFrame::StyledPanel);
-        applyDragAffordance(card, QString::fromUtf8(c.cat), name);
+        applyDragAffordance(card, QString::fromUtf8(c.cat), name, domain);
         auto *cv = new QVBoxLayout(card);
         cv->setContentsMargins(8, 6, 8, 6);
         cv->setSpacing(2);

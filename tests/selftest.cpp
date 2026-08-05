@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "audio/AudioEditEngine.h"
+#include "core/ComponentCatalog.h"
 #include "core/Project.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
@@ -8404,6 +8405,79 @@ static void testNavSourceAcLabel()
           "acoustic nav label does not read 波源");
 }
 
+// ── コンポーネントのドメイン許可表 (core/ComponentCatalog.h) ────────────────
+// ComponentsTab の表示フィルタと Viewport3D のドロップ判定が共有する許可表を
+// 監査表 (2026-08 のドメイン対応見直し) の代表ケースで検証する。
+// 期待値は監査表から手で書いたもの — 実装関数の呼び返しでは作らない。
+static void testComponentDomains()
+{
+    g_file = "component-domains";
+
+    // ドメイン毎の許可 (em / optical / acoustic)。underwater は全部品不可
+    // なので列を持たない (下でまとめて検証する)。
+    struct Case { const char *name; bool em, opt, ac; };
+    static const Case cases[] = {
+        // basic は形状なので e/o/a (水中は形状を使わない)
+        { "Rectangle",            true,  true,  true  },
+        { "Sphere",               true,  true,  true  },
+        { "Polygon",              true,  true,  true  },
+        // photonic / grating / lens は光専用
+        { "Waveguide (rib)",      false, true,  false },
+        { "Ring resonator",       false, true,  false },
+        { "1D Grating",           false, true,  false },
+        { "Metalens",             false, true,  false },
+        // metal (プラズモニクス) は光専用 — EM から外れたこと
+        { "Nanoparticle (Au/Ag)", false, true,  false },
+        { "Nanorod",              false, true,  false },
+        { "Nanowire grid",        false, true,  false },
+        { "Bow-tie antenna",      false, true,  false },
+        // antenna は EM 専用
+        { "Dipole",               true,  false, false },
+        { "Patch antenna",        true,  false, false },
+        // acoustic 部材は室内音響専用
+        { "Loudspeaker",          false, false, true  },
+        { "Microphone",           false, false, true  },
+        { "Absorber panel",       false, false, true  },
+        // source: 音響では全滅 (点音源は acoustic の Loudspeaker が担う)。
+        // Mode source / Gaussian beam は光導波路・ビーム光学専用
+        { "Dipole source",        true,  true,  false },
+        { "Mode source",          false, true,  false },
+        { "Plane wave",           true,  true,  false },
+        { "Gaussian beam",        false, true,  false },
+        { "TFSF (全/散乱場)",     true,  true,  false },
+        { "Import source",        true,  true,  false },
+        // monitor: 点/時間などは e/o/a、Mode expansion は光専用、
+        // Flux (Poynting) は EM/光のみ (音響では無意味)
+        { "Point monitor",        true,  true,  true  },
+        { "Plane monitor",        true,  true,  true  },
+        { "Time monitor",         true,  true,  true  },
+        { "Mode expansion",       false, true,  false },
+        { "Flux monitor",         true,  true,  false },
+        // imported: STL/OBJ は e/o/a、GDSII は光専用 (LayoutGDS タブは光専用)
+        { "Imported mesh",        true,  true,  true  },
+        { "GDSII layout",         false, true,  false },
+    };
+    for (const Case &c : cases) {
+        const QString name = QString::fromUtf8(c.name);
+        check(ComponentCatalog::allowedInDomain(name, "em") == c.em,
+              (QByteArray("domain table em: ") + c.name).constData());
+        check(ComponentCatalog::allowedInDomain(name, "optical") == c.opt,
+              (QByteArray("domain table optical: ") + c.name).constData());
+        check(ComponentCatalog::allowedInDomain(name, "acoustic") == c.ac,
+              (QByteArray("domain table acoustic: ") + c.name).constData());
+    }
+    // 水中音響 (BELLHOP は配置部品を一切使わない): 全部品が不許可であること
+    for (const ComponentCatalog::Component &c : ComponentCatalog::kComponents)
+        check(!ComponentCatalog::allowedInDomain(QString::fromUtf8(c.name),
+                                                 "underwater"),
+              (QByteArray("underwater rejects: ") + c.name).constData());
+    // 表に無い名前・未知のドメインは不許可 (安全側)
+    check(!ComponentCatalog::allowedInDomain("No such component", "em"),
+          "unknown component name is rejected");
+    check(!ComponentCatalog::allowedInDomain("Rectangle", "plasma"),
+          "unknown domain key is rejected");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -8504,6 +8578,7 @@ int main(int argc, char *argv[])
     testParaxialTrace();
     testDisplayIlluminationSettings();
     testNavSourceAcLabel();
+    testComponentDomains();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

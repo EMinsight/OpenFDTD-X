@@ -1,5 +1,6 @@
 // Viewport3D.cpp
 #include "Viewport3D.h"
+#include "../core/ComponentCatalog.h"   // 部品→ドメイン許可表 (ComponentsTab と共有)
 #include "../core/Project.h"
 #include "../I18n.h"
 #include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
@@ -92,6 +93,17 @@ const bool s_i18n = [] {
         "(該当タブで設定してください)",
         "%1 needs a surface/region rather than a point, so it cannot be "
         "placed by drag & drop (set it in the corresponding tab)");
+    // ── ドメイン許可表による拒否 (core/ComponentCatalog.h) ──────────────
+    ofd::I18n::reg("vp_drop_r_uw",
+        "水中音響 (BELLHOP) は海洋環境タブの SSP・海底・ソナー設定から入力を"
+        "生成するため、配置部品は計算に使われません",
+        "Underwater acoustics (BELLHOP) builds its input from the SSP / "
+        "seabed / sonar settings in the Ocean Environment tab, so placed "
+        "components are not used in the computation");
+    ofd::I18n::reg("vp_drop_r_domain",
+        "%1 はこのドメインの計算では使われないため配置できません",
+        "%1 is not used by this domain's computation, so it cannot be "
+        "placed");
     // 形状コード → 表示名 (本家 sol/ingeometry.c の形状)
     ofd::I18n::reg("vp_drop_s1",  "直方体",   "box");
     ofd::I18n::reg("vp_drop_s2",  "楕円体",   "ellipsoid");
@@ -277,6 +289,24 @@ bool ofd::ComponentDrop::canPlace(const QString &cat, const QString &name,
     if (why)
         *why = I18n::tr(QLatin1String(sp.reasonKey)).arg(name);
     return false;
+}
+
+// ドメイン付き判定 — 許可表 (core/ComponentCatalog.h) を先に確認する。
+// ComponentsTab のドラッグ開始側と Viewport3D のドロップ側の両方がこれを
+// 使う (お気に入りチップ経由のドラッグも同じ判定を通る)。
+bool ofd::ComponentDrop::canPlace(const QString &cat, const QString &name,
+                                  const QString &domain, QString *why)
+{
+    // 水中音響: BELLHOP は配置部品を一切使わないので全部品を理由付きで拒否
+    if (domain == QLatin1String("underwater")) {
+        if (why) *why = I18n::tr("vp_drop_r_uw");
+        return false;
+    }
+    if (!domain.isEmpty() && !ComponentCatalog::allowedInDomain(name, domain)) {
+        if (why) *why = I18n::tr("vp_drop_r_domain").arg(name);
+        return false;
+    }
+    return canPlace(cat, name, why);
 }
 
 Viewport3D::Viewport3D(Project *project, QWidget *parent)
@@ -992,7 +1022,9 @@ bool Viewport3D::updateDragTarget(const QPointF &pos)
     m_dragOk = false;
 
     QString why;
-    if (!ComponentDrop::canPlace(m_dragCat, m_dragName, &why)) {
+    // ドメイン許可表込みの判定 (水中音響は全部品不可、ドメイン外部品も不可)
+    if (!ComponentDrop::canPlace(m_dragCat, m_dragName, domainKey(m_domain),
+                                 &why)) {
         m_dragWhy = why;
         return false;
     }
@@ -1081,8 +1113,11 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
                                 QString *msg)
 {
     const DropSpec sp = dropSpecFor(cat, name);
-    if (sp.kind == DropKind::Unsupported) {
-        if (msg) *msg = I18n::tr(QLatin1String(sp.reasonKey)).arg(name);
+    // ドメイン許可表 (水中音響は全部品不可) + ドロップ対応の両方を確認する。
+    // 通常は updateDragTarget が先に弾くが、モデルへ書く直前にも判定する
+    QString why;
+    if (!ComponentDrop::canPlace(cat, name, domainKey(m_domain), &why)) {
+        if (msg) *msg = why;
         return false;
     }
     if (!meshDefined()) {
