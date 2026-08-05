@@ -7,6 +7,7 @@
 #include "Theme.h"
 #include "I18n.h"
 
+#include "core/NavCatalog.h"
 #include "core/Project.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
@@ -587,10 +588,44 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabPost1        = new Post1Tab(P);
     m_tabPost2        = new Post2Tab(P);
 
+    // 音響ソルバ連携が契約検証済み RIR を設定したら、実測RIR分析タブの
+    // WAV 欄へ反映する。RirAnalysisTab は Project::loaded にしか繋いで
+    // いない (他タブの touch() で編集中の入力欄を上書きしないため) ので、
+    // 「実行完了」という単発イベントだけをここで橋渡しする — タブ同士が
+    // 直接依存しないよう、両方を持つ MainWindow が中継役になる。
+    if (auto *acSolver = qobject_cast<AcousticSolverTab *>(m_tabAcSolver)) {
+        if (auto *rirTab = qobject_cast<RirAnalysisTab *>(m_tabRirAnalysis)) {
+            connect(acSolver, &AcousticSolverTab::rirAssigned,
+                    rirTab, &RirAnalysisTab::applySolverRir);
+        }
+    }
+    // 音響解析タブの「進め方」パネルの行クリック → 左ナビの該当タブへ移動。
+    // AcousticTab はナビのキーを投げるだけで、切替はナビを持つ MainWindow が
+    // 行う (タブ同士が直接依存しない)。標準表示で隠れているタブは selectKey が
+    // 見つけられないので、その場合は何もしない (行の「対応タブ」列に名前が
+    // 出ているので利用者は自分で辿れる)。
+    if (auto *acTab = qobject_cast<AcousticTab *>(m_tabAcoustic)) {
+        connect(acTab, &AcousticTab::navigateRequested, this,
+                [this](const QString &key) { m_nav->selectKey(key); });
+    }
+    // ホール解析の「▶ 音響ソルバ連携で計算する」→ 音響ソルバ連携タブへ移動。
+    // 実行まで自動で走らせないのは、外部ソルバーのバイナリ解決が未確定だと
+    // 実行できないため (あちらで解決結果を確認してから ▶ 実行 を押す)。
+    if (auto *roomTab = qobject_cast<RoomAcousticsTab *>(m_tabRoomAc)) {
+        connect(roomTab, &RoomAcousticsTab::runSolverRequested, this, [this] {
+            if (m_nav->selectKey(QStringLiteral("acsolver")))
+                statusBar()->showMessage(I18n::tr("mw_goto_acsolver"), 8000);
+        });
+    }
+
     using D = Domain;
     const QVector<D> ALL;                       // 空 = 全ドメイン
+    // カテゴリ (見出し) は core/NavCatalog.h の対応表から引く — ここに直書き
+    // すると検証 (selftest) と実装の二重管理になるため。並び順はこの defs が
+    // 決めるので、NavCatalog.h の表と同じ順に並べること
+    // (同じカテゴリの項目が離れると見出しが 2 回出る)。
     struct Def {
-        const char *key, *cat, *label;
+        const char *key, *label;
         QWidget *page;
         QVector<D> domains;
         bool core;
@@ -599,113 +634,126 @@ void MainWindow::buildLeftNav(QWidget *parent)
     };
     const QVector<Def> defs = {
         // セットアップ (Lumerical canonical order ①〜⑤ + 詳細)
-        { "geometry",     "cat_setup", "nav_geometry",     m_tabGeometry,     ALL, true  },
-        { "material",     "cat_setup", "nav_material",     m_tabMaterial,     ALL, true  },
-        { "solverregion", "cat_setup", "nav_solverregion", m_tabSolverRegion, ALL, true  },
+        { "geometry",     "nav_geometry",     m_tabGeometry,     ALL, true  },
+        { "material",     "nav_material",     m_tabMaterial,     ALL, true  },
+        { "solverregion", "nav_solverregion", m_tabSolverRegion, ALL, true  },
         // 音響/水中では「波源」ではなく「音源」(SourceTab 内の文言と揃える)
-        { "source",       "cat_setup", "nav_source",       m_tabSource,       ALL, true,
+        { "source",       "nav_source",       m_tabSource,       ALL, true,
           "nav_source_ac" },
-        { "monitors",     "cat_setup", "nav_monitors",     m_tabMonitors,     ALL, true  },
-        { "general",      "cat_setup", "nav_general",      m_tabGeneral,      ALL, false },
-        { "mesh",         "cat_setup", "nav_mesh",         m_tabMesh,         ALL, false },
+        { "monitors",     "nav_monitors",     m_tabMonitors,     ALL, true  },
+        { "general",      "nav_general",      m_tabGeneral,      ALL, false },
+        { "mesh",         "nav_mesh",         m_tabMesh,         ALL, false },
         // 面別 BC (PML/PEC/PMC/ブロッホ/接地面) は EM/光 FDTD 専用の概念 —
         // 音響の境界は吸音率 (RoomAcousticsTab)、水中は海面/海底 (OceanEnvTab) が担う
-        { "perface",      "cat_setup", "nav_perface",      m_tabPerFace,
+        { "perface",      "nav_perface",      m_tabPerFace,
           { D::EM, D::Optical }, false },
-        // ライブラリ
-        { "components",   "cat_library", "nav_components",   m_tabComponents,  ALL, true },
-        { "matexplorer",  "cat_library", "nav_matexplorer",  m_tabMatExplorer,
+        // ライブラリ — 「そこから選んで使う」部品・素材のカタログだけを置く
+        { "components",   "nav_components",   m_tabComponents,  ALL, true },
+        { "matexplorer",  "nav_matexplorer",  m_tabMatExplorer,
           { D::EM, D::Optical }, true },
-        { "glasscatalog", "cat_library", "nav_glasscatalog", m_tabGlass,
+        { "glasscatalog", "nav_glasscatalog", m_tabGlass,
           { D::Optical }, false },
-        { "lens",         "cat_library", "nav_lens",         m_tabLens,
+        { "lens",         "nav_lens",         m_tabLens,
           { D::Optical }, false },
-        { "layoutgds",    "cat_library", "nav_layoutgds",    m_tabGds,
+        { "layoutgds",    "nav_layoutgds",    m_tabGds,
           { D::Optical }, false },
-        { "schematic",    "cat_library", "nav_schematic",    m_tabSchematic,
+        { "schematic",    "nav_schematic",    m_tabSchematic,
           { D::Optical }, false },
-        { "photonics",    "cat_library", "nav_photonics",    m_tabPhotonics,
+        // 応用 — ドメイン固有の応用解析タブ。カタログ (ライブラリ) と用途別の
+        // ワークフローが混ざっていると探しにくいので分けてある。
+        // TabNavigator::rebuild は「カテゴリキーが変わったところ」で見出しを
+        // 出すので、同じカテゴリの項目は必ず連続させること。
+        { "photonics",    "nav_photonics",    m_tabPhotonics,
           { D::Optical }, true },
         // モードソルバ FDE (pic-tools.jsx — mock の並びどおり photonics の直後)
-        { "modesolver",   "cat_library", "nav_modesolver",   m_tabModeSolver,
+        { "modesolver",   "nav_modesolver",   m_tabModeSolver,
           { D::Optical }, true },
-        { "thinfilm",     "cat_library", "nav_thinfilm",     m_tabThinFilm,
+        { "thinfilm",     "nav_thinfilm",     m_tabThinFilm,
           { D::Optical }, true },
-        { "illum",        "cat_library", "nav_illum",        m_tabIllum,
+        { "illum",        "nav_illum",        m_tabIllum,
           { D::Optical }, true },
-        { "displayopt",   "cat_library", "nav_displayopt",   m_tabDisplayOpt,
+        { "displayopt",   "nav_displayopt",   m_tabDisplayOpt,
           { D::Optical }, true },
-        { "acsource",     "cat_library", "nav_acsource",     m_tabAcSource,
+        { "acsource",     "nav_acsource",     m_tabAcSource,
           { D::Acoustic, D::Underwater }, true },
         // 音響編集・解析 (audio-editor.jsx — mock の並びどおり acsource の直後)
-        { "audioedit",    "cat_library", "nav_audioedit",    m_tabAudioEdit,
+        { "audioedit",    "nav_audioedit",    m_tabAudioEdit,
           { D::Acoustic, D::Underwater }, true },
-        { "oceanenv",     "cat_library", "nav_oceanenv",     m_tabOceanEnv,
+        { "oceanenv",     "nav_oceanenv",     m_tabOceanEnv,
           { D::Underwater }, true },
-        { "roomac",       "cat_library", "nav_roomac",       m_tabRoomAc,
+        { "roomac",       "nav_roomac",       m_tabRoomAc,
           { D::Acoustic }, true },
         // 音響ソルバ連携 (opera-analysis.jsx AcousticSolverTab)
-        { "acsolver",     "cat_library", "nav_acsolver",     m_tabAcSolver,
+        { "acsolver",     "nav_acsolver",     m_tabAcSolver,
           { D::Acoustic }, true },
-        { "soundproof",   "cat_library", "nav_soundproof",   m_tabSoundproof,
+        { "soundproof",   "nav_soundproof",   m_tabSoundproof,
           { D::Acoustic }, true },
-        { "outdoor",      "cat_library", "nav_outdoor",      m_tabOutdoor,
+        { "outdoor",      "nav_outdoor",      m_tabOutdoor,
           { D::Acoustic }, true },
-        { "cabin",        "cat_library", "nav_cabin",        m_tabCabin,
+        { "cabin",        "nav_cabin",        m_tabCabin,
           { D::Acoustic }, true },
-        { "ultrasound",   "cat_library", "nav_ultrasound",   m_tabUltrasound,
+        { "ultrasound",   "nav_ultrasound",   m_tabUltrasound,
           { D::Acoustic }, true },
         // 解析
-        { "family",       "cat_solve", "nav_family",       m_tabFamily,       ALL, true  },
-        { "solver",       "cat_solve", "nav_solver",       m_tabSolverSel,    ALL, false },
-        { "verification", "cat_solve", "nav_verification", m_tabVerification, ALL, false },
-        { "optimize",     "cat_solve", "nav_optimize",     m_tabOptimize,     ALL, false },
-        { "tolerance",    "cat_solve", "nav_tolerance",    m_tabTolerance,    ALL, false },
-        { "scripts",      "cat_solve", "nav_scripts",      m_tabScripts,      ALL, false },
-        { "multiphysics", "cat_solve", "nav_multiphysics", m_tabMultiphysics, ALL, false },
-        { "tidy3d",       "cat_solve", "nav_tidy3d",       m_tabTidy3d,
+        { "family",       "nav_family",       m_tabFamily,       ALL, true  },
+        { "solver",       "nav_solver",       m_tabSolverSel,    ALL, false },
+        { "verification", "nav_verification", m_tabVerification, ALL, false },
+        { "optimize",     "nav_optimize",     m_tabOptimize,     ALL, false },
+        { "tolerance",    "nav_tolerance",    m_tabTolerance,    ALL, false },
+        { "scripts",      "nav_scripts",      m_tabScripts,      ALL, false },
+        { "multiphysics", "nav_multiphysics", m_tabMultiphysics, ALL, false },
+        { "tidy3d",       "nav_tidy3d",       m_tabTidy3d,
           { D::Optical }, false },
         // ポスト
-        { "analysisgroups", "cat_post", "nav_analysisgroups", m_tabAnalysisGroups,
+        { "analysisgroups", "nav_analysisgroups", m_tabAnalysisGroups,
           ALL, false },
-        { "datasets",     "cat_post", "nav_datasets",     m_tabDatasets,     ALL, true  },
-        { "h5viewer",     "cat_post", "nav_h5viewer",     m_tabH5Viewer,     ALL, true  },
-        { "interop",      "cat_post", "nav_interop",      m_tabInterop,      ALL, true  },
-        { "antennachar",  "cat_post", "nav_antennachar",  m_tabAntennaChar,
+        { "datasets",     "nav_datasets",     m_tabDatasets,     ALL, true  },
+        { "h5viewer",     "nav_h5viewer",     m_tabH5Viewer,     ALL, true  },
+        { "interop",      "nav_interop",      m_tabInterop,      ALL, true  },
+        { "antennachar",  "nav_antennachar",  m_tabAntennaChar,
           { D::EM }, false },
-        { "txline",       "cat_post", "nav_txline",       m_tabTxLine,
+        { "txline",       "nav_txline",       m_tabTxLine,
           { D::EM }, false },
-        { "scattering",   "cat_post", "nav_scattering",   m_tabScattering,
+        { "scattering",   "nav_scattering",   m_tabScattering,
           { D::EM }, false },
-        { "circuit",      "cat_post", "nav_circuit",      m_tabCircuit,
+        { "circuit",      "nav_circuit",      m_tabCircuit,
           { D::EM }, true },
-        { "emc",          "cat_post", "nav_emc",          m_tabEmc,
+        { "emc",          "nav_emc",          m_tabEmc,
           { D::EM }, true },
-        { "sar",          "cat_post", "nav_sar",          m_tabSar,
+        { "sar",          "nav_sar",          m_tabSar,
           { D::EM }, true },
-        { "channel",      "cat_post", "nav_channel",      m_tabChannel,
+        { "channel",      "nav_channel",      m_tabChannel,
           { D::EM }, true },
-        { "post1",        "cat_post", "nav_post1",        m_tabPost1,        ALL, true  },
-        { "post2",        "cat_post", "nav_post2",        m_tabPost2,        ALL, false },
+        { "post1",        "nav_post1",        m_tabPost1,        ALL, true  },
+        { "post2",        "nav_post2",        m_tabPost2,        ALL, false },
         // ドメイン別カテゴリ
-        { "optical",      "cat_dom_optical",    "nav_optical",    m_tabOptical,
+        { "optical",      "nav_optical",    m_tabOptical,
           { D::Optical }, true },
-        { "acoustic",     "cat_dom_acoustic",   "nav_acoustic",   m_tabAcoustic,
+        { "acoustic",     "nav_acoustic",   m_tabAcoustic,
           { D::Acoustic }, true },
         // オペラ音響解析 (PR #1) — 実測RIR / 歌声 / 可聴化
-        { "riranalysis",  "cat_dom_acoustic", "t_riranalysis",  m_tabRirAnalysis,
+        { "riranalysis",  "t_riranalysis",  m_tabRirAnalysis,
           { D::Acoustic }, true },
-        { "vocalanalysis","cat_dom_acoustic", "t_vocalanalysis", m_tabVocal,
+        { "vocalanalysis","t_vocalanalysis", m_tabVocal,
           { D::Acoustic }, true },
-        { "auralization", "cat_dom_acoustic", "t_auralization", m_tabAuralization,
+        { "auralization", "t_auralization", m_tabAuralization,
           { D::Acoustic }, true },
-        { "underwater",   "cat_dom_underwater", "nav_underwater", m_tabUnderwater,
+        { "underwater",   "nav_underwater", m_tabUnderwater,
           { D::Underwater }, true },
     };
 
+    QString lastCat;
     for (const Def &d : defs) {
+        // 登録漏れは「タブが消える」より「見出しがずれる」方が害が小さいので、
+        // 直前のカテゴリに寄せたうえで警告を出す (開発時に気付ける)。
+        const char *cat = navcat::categoryFor(d.key);
+        if (!cat) {
+            qWarning("nav: '%s' is missing from core/NavCatalog.h", d.key);
+        } else {
+            lastCat = QString::fromLatin1(cat);
+        }
         m_pages->addWidget(d.page);
-        m_nav->addEntry({ d.key, d.cat, d.label, d.page, d.domains, d.core,
+        m_nav->addEntry({ d.key, lastCat, d.label, d.page, d.domains, d.core,
                           d.acLabel ? QString::fromLatin1(d.acLabel)
                                     : QString() });
     }

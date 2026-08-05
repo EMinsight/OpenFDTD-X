@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -52,6 +53,14 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     fileRow->addWidget(m_rirPath, 1);
     fileRow->addWidget(browse);
     sIn->form()->addRow(I18n::tr("rir_file"), fileRow);
+    // 音響ソルバ連携の実行結果を設定したときだけ出すヒント (既定は非表示)。
+    // 「次に ▶ 分析 を押せばよい」ことが分かる文言にする。
+    m_solverHint = new QLabel(sIn);
+    m_solverHint->setObjectName(QStringLiteral("rirSolverHint"));
+    m_solverHint->setWordWrap(true);
+    m_solverHint->setVisible(false);
+    m_solverHint->setStyleSheet(QStringLiteral("color:#2E8B57;"));
+    sIn->form()->addRow(QString(), m_solverHint);
 
     m_channel = new QComboBox(sIn);
     m_channel->addItems({ I18n::tr("rir_ch_left"), I18n::tr("rir_ch_right"),
@@ -241,6 +250,20 @@ void RirAnalysisTab::updateCalibOffsetEnabled()
     m_calibOffsetLabel->setEnabled(absolute);
 }
 
+// 音響ソルバ連携タブが rir.wav を設定した — WAV 欄を最新化してヒントを出す。
+// (このタブは Project::changed に繋いでいない: 編集中の入力欄を他タブの
+//  touch() で上書きしないため。実行完了という単発イベントだけを受け取る)
+void RirAnalysisTab::applySolverRir(const QString &path)
+{
+    refresh();   // rirPath はモデル側で更新済み
+    if (m_solverHint) {
+        m_solverHint->setText(
+            I18n::tr("rir_solver_assigned").arg(QFileInfo(path).fileName()));
+        m_solverHint->setToolTip(path);
+        m_solverHint->setVisible(true);
+    }
+}
+
 void RirAnalysisTab::browseRir()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -248,6 +271,8 @@ void RirAnalysisTab::browseRir()
         I18n::tr("rir_wav_filter"));
     if (path.isEmpty()) return;
     m_rirPath->setText(path);
+    // 利用者が別のファイルを選んだ — ソルバ結果のヒントは合わなくなる
+    if (m_solverHint) m_solverHint->setVisible(false);
     m_p->operaAcoustic().enabled = true;   // 実測RIR分析を使う意思表示
     apply();
 }

@@ -68,6 +68,59 @@ const bool s_i18n = [] {
     I18n::reg("asrc_btn_addfile", "＋ ファイルから追加", "+ Add from file");
     I18n::reg("asrc_btn_delrow", "− 選択行を削除", "− Remove selected");
     I18n::reg("asrc_btn_clflib", "CLF/GLL ライブラリ", "CLF/GLL library");
+    // ボタンが「押せない理由」を文言とツールチップの両方で示す
+    // (無効化されているだけでは理由が分からない — CLAUDE.md 絶対規則 5)
+    I18n::reg("asrc_btn_clflib_ni", "CLF/GLL (未実装)",
+              "CLF/GLL (not impl.)");
+    I18n::reg("asrc_clflib_note",
+              "▸ CLF/GLL パーサは未実装です。指向性は「種別」列の"
+              "解析モデル (無指向 / カーディオイド / 指向性) を"
+              "使ってください。",
+              "▸ The CLF/GLL parser is not implemented. Use the analytic "
+              "directivity models in the \"Kind\" column "
+              "(omni / cardioid / directional) instead.");
+    I18n::reg("asrc_clflib_tip",
+              "CLF/GLL パーサは未実装です — 指向性は解析モデル "
+              "(無指向 / カーディオイド等) を使ってください。"
+              "下の「CLF/GLL ファイル」欄はファイル名を記録するだけで、"
+              "指向性データは読み込みません。",
+              "The CLF/GLL parser is not implemented — use an analytic "
+              "directivity model (omni / cardioid / …) instead. The "
+              "\"CLF/GLL file\" field below only records a file name; no "
+              "directivity data is read from it.");
+    // 信号 (WAV) の選択導線 — 「信号」列は自由記述だがファイル選択の導線が
+    // 無かったため、選択行に対してファイルを割り当てられるようにする
+    I18n::reg("asrc_btn_sigpick", "🎵 信号 (WAV) を選択…",
+              "🎵 Choose signal (WAV)…");
+    I18n::reg("asrc_btn_sigclear", "信号を解除", "Clear signal");
+    I18n::reg("asrc_sig_title", "音源の入力信号 (WAV)",
+              "Source input signal (WAV)");
+    I18n::reg("asrc_sig_filter",
+              "音声ファイル (*.wav *.flac *.aiff *.ogg);;すべてのファイル (*)",
+              "Audio files (*.wav *.flac *.aiff *.ogg);;All files (*)");
+    I18n::reg("asrc_sig_norow",
+              "音源の行が選択されていません — 信号を設定したい行をクリックして"
+              "選んでから、もう一度押してください (最終行の「＋ 音源を追加…」は"
+              "対象外です)。",
+              "No source row is selected — click the row you want to set the "
+              "signal for, then press again (the trailing “+ Add source…” row "
+              "does not count).");
+    I18n::reg("asrc_sig_noclear",
+              "この音源には信号が設定されていません (解除するものがありません)。",
+              "This source has no signal set (nothing to clear).");
+    I18n::reg("asrc_sig_missing", "ファイルが見つかりません: %1",
+              "File not found: %1");
+    I18n::reg("asrc_sig_btn_tip",
+              "選択した行の「信号」列に音声ファイル (WAV 等) を設定します。"
+              "設定した信号は「🔊 可聴化」タブの「🎵 音源リストから」で"
+              "ドライ音源として取り込めます (信号自体はソルバへは渡りません)。",
+              "Sets an audio file (WAV etc.) as the “Signal” of the selected "
+              "row. A signal set here can be picked up as the dry source with "
+              "“🎵 From source list” in the Auralization tab (the signal "
+              "itself is not passed to the solver).");
+    I18n::reg("asrc_sig_clear_tip",
+              "選択した行の「信号」列を空にします。",
+              "Clears the “Signal” cell of the selected row.");
     I18n::reg("asrc_btn_preset", "プリセット", "Presets");
     I18n::reg("asrc_col_spl_room", "SPL@1m [dB]", "SPL@1m [dB]");
     I18n::reg("asrc_col_spl_uw", "SL [dB re μPa·m]", "SL [dB re μPa·m]");
@@ -536,6 +589,43 @@ QString posText(const AcousticSourceRow &r)
              QString::number(r.z_m, 'g', 6));
 }
 
+// 信号欄がファイルらしいか (自由記述 "chirp 3-5kHz" と区別する)。
+// パス区切りを含むか、音声ファイルの拡張子で終わるものをファイルとみなす。
+bool looksLikeAudioPath(const QString &s)
+{
+    const QString t = s.trimmed();
+    if (t.isEmpty()) return false;
+    if (t.contains(QLatin1Char('/')) || t.contains(QLatin1Char('\\')))
+        return true;
+    static const char *kExt[] = { ".wav", ".flac", ".aiff", ".aif", ".ogg" };
+    for (const char *e : kExt)
+        if (t.endsWith(QLatin1String(e), Qt::CaseInsensitive)) return true;
+    return false;
+}
+
+// 信号セルの表示を整える。ファイルは列が狭いのでファイル名だけを表示し、
+// ツールチップにフルパスを出す。実在しないパスはグレー + 「見つかりません」
+// (存在しないファイルを設定済みのように見せない)。自由記述はそのまま。
+void decorateSignalCell(QTableWidgetItem *it, const QString &signal,
+                        const QBrush &missingBrush, const QBrush &normalBrush)
+{
+    if (!looksLikeAudioPath(signal)) {
+        it->setText(signal);
+        it->setToolTip(QString());
+        it->setForeground(normalBrush);
+        return;
+    }
+    const QFileInfo fi(signal.trimmed());
+    it->setText(fi.fileName());
+    if (fi.exists() && fi.isFile()) {
+        it->setToolTip(fi.absoluteFilePath());
+        it->setForeground(normalBrush);
+    } else {
+        it->setToolTip(ofd::I18n::tr("asrc_sig_missing").arg(signal.trimmed()));
+        it->setForeground(missingBrush);
+    }
+}
+
 // 行の位置と一致する feed の番号 (1 始まり)。無ければ 0。
 // 許容誤差 1e-9 m の厳密比較 — 反映ボタンの直後に「ソルバ波源 #n」の対応が
 // 見えることが目的なので、これで足りる (近接判定は不要)。
@@ -733,6 +823,7 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     s->vbox()->addWidget(m_srcHint);
 
     m_srcTable = new QTableWidget(0, 9, s);   // 末尾列 = ソルバ波源マーカー
+    m_srcTable->setObjectName(QStringLiteral("asrcSourceTable"));
     m_srcTable->horizontalHeader()->setSectionResizeMode(
         QHeaderView::ResizeToContents);
     m_srcTable->horizontalHeader()->setStretchLastSection(true);
@@ -751,14 +842,42 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     auto *delBtn = new QPushButton(I18n::tr("asrc_btn_delrow"), s);
     auto *libBtn = new QPushButton(I18n::tr("asrc_btn_clflib"), s);
     m_presetBtn = new QPushButton(s);
-    // CLF/GLL ライブラリはパーサ未実装のまま (ファイル名の記録のみ)
+    // CLF/GLL ライブラリはパーサ未実装のまま (ファイル名の記録のみ)。
+    // 無効化だけでは「なぜ押せないのか」が分からないので、ボタン文言と
+    // ツールチップの両方に理由と代替手段 (解析モデル) を書く。
     tabhelp::markNotImplemented(libBtn);
+    libBtn->setText(I18n::tr("asrc_btn_clflib_ni"));
+    libBtn->setToolTip(I18n::tr("asrc_clflib_tip"));
     row->addWidget(addBtn);
     row->addWidget(delBtn);
-    row->addWidget(libBtn);
-    row->addWidget(m_presetBtn);
     row->addStretch(1);
     s->vbox()->addLayout(row);
+    // ボタンを 1 行に並べると左ペインの幅で文言が切れて読めないため、
+    // ライブラリ/プリセットは 2 行目へ分ける。
+    auto *row2 = new QHBoxLayout();
+    row2->addWidget(libBtn);
+    row2->addWidget(m_presetBtn);
+    row2->addStretch(1);
+    s->vbox()->addLayout(row2);
+    // 無効ボタンの理由と代替手段 (ツールチップは隠れて気付かれにくい)
+    auto *clfNote = new QLabel(I18n::tr("asrc_clflib_note"), s);
+    clfNote->setWordWrap(true);
+    clfNote->setStyleSheet("font-size:11px; color:#B8860B;");
+    s->vbox()->addWidget(clfNote);
+
+    // 信号 (WAV) の割り当て — 「信号」列は直接編集もできるが、ファイル選択の
+    // 導線が無いと実質設定できないため選択行に対するボタンを置く
+    auto *sigRow = new QHBoxLayout();
+    m_sigPickBtn = new QPushButton(I18n::tr("asrc_btn_sigpick"), s);
+    m_sigPickBtn->setObjectName(QStringLiteral("asrcSigPickBtn"));
+    m_sigPickBtn->setToolTip(I18n::tr("asrc_sig_btn_tip"));
+    m_sigClearBtn = new QPushButton(I18n::tr("asrc_btn_sigclear"), s);
+    m_sigClearBtn->setObjectName(QStringLiteral("asrcSigClearBtn"));
+    m_sigClearBtn->setToolTip(I18n::tr("asrc_sig_clear_tip"));
+    sigRow->addWidget(m_sigPickBtn);
+    sigRow->addWidget(m_sigClearBtn);
+    sigRow->addStretch(1);
+    s->vbox()->addLayout(sigRow);
 
     // 音源リスト → ソルバ波源 (feed) への反映導線 (室内音響のみ —
     // 水中は BELLHOP が feed を使わないため onDomainChanged() で隠す)
@@ -801,6 +920,42 @@ QWidget *AcousticSourceTab::buildSourcesPage()
         n.level_dB = isUnderwater() ? m_p->underwater().sonarSL_dB
                                     : m_p->acoustic().srcSPL_dB;
         addSourceRow(n);
+    });
+    // 🎵 信号 (WAV) を選択 — 選択行の signal にフルパスを保存する。
+    // 行が選ばれていない場合はボタンを無効化せず理由を表示する
+    // (行選択の度に有効/無効を持ち回らずに済み、理由も伝わる)。
+    connect(m_sigPickBtn, &QPushButton::clicked, this, [this] {
+        QVector<AcousticSourceRow> &list = sourceList();
+        const int r = m_srcTable->currentRow();
+        if (r < 0 || r >= list.size()) {
+            QMessageBox::information(this, I18n::tr("asrc_sig_title"),
+                                     I18n::tr("asrc_sig_norow"));
+            return;
+        }
+        const QString path = QFileDialog::getOpenFileName(
+            this, I18n::tr("asrc_sig_title"), list[r].signal,
+            I18n::tr("asrc_sig_filter"));
+        if (path.isEmpty()) return;   // キャンセル — モデルは変えない
+        list[r].signal = path;
+        refreshSourceTable();
+        m_p->touch();
+    });
+    connect(m_sigClearBtn, &QPushButton::clicked, this, [this] {
+        QVector<AcousticSourceRow> &list = sourceList();
+        const int r = m_srcTable->currentRow();
+        if (r < 0 || r >= list.size()) {
+            QMessageBox::information(this, I18n::tr("asrc_sig_title"),
+                                     I18n::tr("asrc_sig_norow"));
+            return;
+        }
+        if (list[r].signal.isEmpty()) {
+            QMessageBox::information(this, I18n::tr("asrc_sig_title"),
+                                     I18n::tr("asrc_sig_noclear"));
+            return;
+        }
+        list[r].signal.clear();
+        refreshSourceTable();
+        m_p->touch();
     });
     connect(delBtn, &QPushButton::clicked, this, [this] {
         const int r = m_srcTable->currentRow();
@@ -900,7 +1055,20 @@ void AcousticSourceTab::applySourceCell(int row, int col)
         break;
     }
     case 5: r.aim = it->text(); break;
-    case 6: r.signal = it->text(); break;
+    case 6: {
+        // 表示はファイル名だけなので、表示と同じ文字列のまま確定した
+        // (実際には編集していない) ときはフルパスを保持する。
+        const QString t = it->text();
+        const bool unchangedDisplay =
+            looksLikeAudioPath(r.signal) && t == QFileInfo(r.signal).fileName();
+        if (!unchangedDisplay) r.signal = t;
+        // 実在チェックとツールチップを新しい値に合わせる (グレー表示のまま
+        // 別のファイルに書き換えられた、等の食い違いを残さない)。
+        m_updating = true;   // 再入 (cellChanged) を止める
+        decorateSignalCell(it, r.signal, palette().mid(), palette().text());
+        m_updating = false;
+        break;
+    }
     case 7: {
         bool ok = false;
         const double v = it->text().toDouble(&ok);
@@ -956,7 +1124,11 @@ void AcousticSourceTab::refreshSourceTable()
         m_srcTable->setCellWidget(i, 3, kind);
         m_srcTable->setItem(i, 4, new QTableWidgetItem(posText(r)));
         m_srcTable->setItem(i, 5, new QTableWidgetItem(r.aim));
-        m_srcTable->setItem(i, 6, new QTableWidgetItem(r.signal));
+        // 信号: ファイルならファイル名のみ表示 + ツールチップにフルパス
+        // (実在しないパスはグレー + 「見つかりません」)
+        auto *sig = new QTableWidgetItem;
+        decorateSignalCell(sig, r.signal, palette().mid(), palette().text());
+        m_srcTable->setItem(i, 6, sig);
         auto *lv = new QTableWidgetItem(QString::number(r.level_dB, 'g', 6));
         lv->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         m_srcTable->setItem(i, 7, lv);

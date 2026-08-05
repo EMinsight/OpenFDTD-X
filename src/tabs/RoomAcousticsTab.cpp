@@ -37,6 +37,20 @@ using namespace ofd::roomac;
 namespace {
 const bool s_i18n = [] {
     using ofd::I18n;
+    // このタブの役割 (どこで何が決まるか — 操作が分かりにくいという報告への対応)
+    I18n::reg("rah_role_note",
+              "▸ このタブで室の吸音を決めます — 「残響計算 (Sabine)」サブタブの"
+              "吸音バジェット (面ごとの α と面積) が残響時間と"
+              "「音響解析」タブの材質設定に直結します。\n"
+              "▸ 吸音バジェットは .ofdx に保存され、「🔌 音響ソルバ連携」の"
+              "実行時に入力としてソルバーへ渡されます (利用は外部ソルバー次第)。",
+              "▸ This tab defines the room's absorption — the absorption "
+              "budget (per-surface α and area) on the \"Reverb (Sabine)\" "
+              "sub-tab drives the reverberation time and the surface "
+              "materials on the \"Acoustic\" tab.\n"
+              "▸ The budget is stored in the .ofdx sidecar and handed to the "
+              "solver as input when you run \"🔌 Acoustic Solver\" (whether "
+              "it is used is up to that solver).");
     // ホールプリセット
     I18n::reg("rah_hall_section", "ホールモデル / Hall preset (実測データ)",
               "Hall preset (measured data)");
@@ -65,10 +79,17 @@ const bool s_i18n = [] {
               "Singer ↔ pit mutual hearing");
     I18n::reg("rah_scn_pit_lid", "ピット蓋開閉の影響",
               "Pit-lid open/close effect");
-    I18n::reg("rah_run_hall", "▶ このホールでFDTD/Ray解析を実行",
-              "▶ Run FDTD/Ray analysis for this hall");
-    I18n::reg("rah_run_hint", "実測値 vs シミュレーション値の比較検証",
-              "Validate simulation against measured data");
+    // 実行経路は音響ソルバ連携タブ (外部音響ソルバーの QProcess 起動) のみ。
+    // 幾何音響 (Ray) の内製経路は無いので、ボタン名で名乗らない。
+    I18n::reg("rah_run_hall", "▶ 音響ソルバ連携で計算する",
+              "▶ Compute via the acoustic solver tab");
+    I18n::reg("rah_run_hint",
+              "音響ソルバ連携タブへ移動します。バイナリを確認して "
+              "▶ 実行 を押すと外部音響ソルバーが動き、算出RIRの指標を"
+              "実測値と比較できます。",
+              "Switches to the acoustic solver tab. Check the binary, then press "
+              "▶ Run to launch the external acoustic solver and compare the "
+              "computed RIR metrics against measurements.");
     I18n::reg("rah_cov_ref",
               "▸ 実測 (公表値): RT=%1s · C80=%2dB · G=+%3dB · ITDG=%4ms"
               " — シミュレーションとの検証目標は誤差 ±0.1s / ±0.5dB 以内",
@@ -909,6 +930,12 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     hint->setWordWrap(true);
     v->addWidget(hint);
 
+    // このタブの役割 (吸音率をどこで決め、どこへ効くか) を先頭に明示する
+    auto *role = new QLabel(I18n::tr("rah_role_note"), body);
+    role->setWordWrap(true);
+    role->setStyleSheet("font-size:11px; color:palette(mid);");
+    v->addWidget(role);
+
     // ホールモデル / Hall preset (サブタブ全体の前提 → タブの外に置く)
     v->addWidget(buildHallPresetSection());
 
@@ -1082,7 +1109,11 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     auto *run = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("rah_run_hall"), s);
     runBtn->setStyleSheet("font-weight:600;");
-    tabhelp::markNotImplemented(runBtn);   // FDTD/Ray 実行は未配線
+    // 実行そのものは音響ソルバ連携タブが持つ (バイナリ解決・出力契約の確認が
+    // 要るため、ここでは起動せず移動だけ依頼する)。タブ間の直接依存を作らない
+    // よう、AcousticTab と同じく MainWindow がナビ切替を中継する。
+    connect(runBtn, &QPushButton::clicked, this,
+            [this] { emit runSolverRequested(); });
     run->addWidget(runBtn);
     run->addWidget(makeHint(I18n::tr("rah_run_hint"), s), 1);
     s->vbox()->addLayout(run);

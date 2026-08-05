@@ -32,6 +32,14 @@ public:
     void apply();     // widgets → model (+ touch)
     void refresh();   // model → widgets (m_updating ガード付き)
 
+signals:
+    // 契約検証済みの rir.wav を operaAcoustic().rirPath へ書き込んだ直後に
+    // 発行する。実測RIR分析タブは Project::loaded にしか繋がっておらず、
+    // 実行後にタブを開いても WAV 欄が空のままになるため、MainWindow が
+    // この単発イベントを RirAnalysisTab へ橋渡しする (タブ間の直接依存を
+    // 作らない)。引数は設定した WAV のパス。
+    void rirAssigned(const QString &path);
+
 private:
     void updateResolution();   // 探索順どおりの解決結果をライブ表示
     // 実行前の入力準備: 現在のプロジェクトを作業ディレクトリへ .ofd + .ofdx

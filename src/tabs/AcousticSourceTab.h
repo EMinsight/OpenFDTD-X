@@ -6,6 +6,8 @@
 //   アレイ・ライン音源  — ラインアレイ / ビームステアリング / サブアレイ
 //   可聴化 Auralization — IRF 畳み込み (HRTF/Ambisonics) + A/B 試聴
 // 音響/水中ドメインで表示され、水中選択時はソナー音源リストに切替わる。
+// 音源リストの「信号」列には音声ファイル (WAV 等) をボタンから割り当てられ
+// (.ofdx acoustic.sources[].signal)、可聴化タブがドライ音源として取り込む。
 #pragma once
 #include <QScrollArea>
 #include <QVector>
@@ -104,6 +106,8 @@ private:
     QLabel       *m_srcHint;
     QTableWidget *m_srcTable;
     QPushButton  *m_presetBtn;
+    QPushButton  *m_sigPickBtn  = nullptr;   // 選択行の信号 (WAV) を選ぶ
+    QPushButton  *m_sigClearBtn = nullptr;   // 選択行の信号を解除
     QPushButton  *m_syncBtn  = nullptr;      // 有効行の位置 → feed へ反映
     QLabel       *m_syncNote = nullptr;      // 反映は位置のみ、の説明
     QLabel       *m_srcModelNote = nullptr;  // 「計算へは渡されない」注記

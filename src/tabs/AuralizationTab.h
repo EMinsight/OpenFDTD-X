@@ -4,7 +4,9 @@
 // (ConvolutionEngine) で畳み込み、ウェット WAV (float32) を書き出す。
 //   ① 入力   — ドライ WAV / RIR WAV (実測RIR分析タブの rirPath を共用) /
 //               出力先 / ゲインモード (そのまま / 推奨ゲイン適用)。
-//               自動正規化は行わない
+//               自動正規化は行わない。ドライ WAV は「🎵 音源リストから」で
+//               音源リスト (.ofdx acoustic.sources[].signal) の信号を
+//               取り込める (1 音源 = 1 ドライ音源。ミックスは未実装)
 //   ② 実行   — QtAcousticAdapter::convolveFiles で畳み込み + WAV 書き出し
 //               (QThread::create + busy ガードで非同期 — gui.md)
 //   ③ 結果   — outputPeak / suggestedGainDb / クリップ数。fs 不一致は
@@ -30,6 +32,7 @@
 #include <QScrollArea>
 #include <QStringList>
 #include <QVector>
+#include "../core/Project.h"   // AcousticSourceRow (音源リストの行)
 
 class QCheckBox;
 class QComboBox;
@@ -61,10 +64,46 @@ public:
     // 割り当てた行数。ダイアログを開かないのでヘッドレス検証からも呼べる。
     int autoAssignFromDir(const QString &dirPath);
 
+    // ① ドライ音源を音源リスト (.ofdx acoustic.sources) から取り込む導線の
+    //    純ロジック。ofdx_selftest は GUI_SOURCES をリンクしないため、
+    //    ヘッダ内 inline 定義の static メソッドにしてある
+    //    (AcousticSourceTab::syncFeedsFromSources と同じ流儀)。
+
+    // ドライ音源として選べる行 = 有効 (enabled) かつ信号が非空の行の添字。
+    // ファイルの実在は見ない (存在しないパスは UI 側が印を付けて示す)。
+    static QVector<int> drySourceCandidates(
+        const QVector<AcousticSourceRow> &sources)
+    {
+        QVector<int> idx;
+        for (int i = 0; i < sources.size(); ++i) {
+            if (!sources[i].enabled) continue;
+            if (sources[i].signal.trimmed().isEmpty()) continue;
+            idx.push_back(i);
+        }
+        return idx;
+    }
+
+    // 音源 1 行の信号を可聴化のドライ音源 (auralizationDryFile) に設定する。
+    // **1 音源 = 1 ドライ音源** で、複数音源のミックスは行わない (未実装)。
+    // 添字が範囲外 / 無効行 / 信号が空なら何も書かずに false を返す。
+    // Project::touch() は呼び出し側で行う。
+    static bool setDryFromSource(Project &p, int index)
+    {
+        const QVector<AcousticSourceRow> &src = p.acoustic().sources;
+        if (index < 0 || index >= src.size()) return false;
+        if (!src[index].enabled) return false;
+        const QString sig = src[index].signal.trimmed();
+        if (sig.isEmpty()) return false;
+        p.operaAcoustic().auralizationDryFile = sig;
+        p.operaAcoustic().enabled = true;   // 可聴化を使う意思表示 (browseDry と同じ)
+        return true;
+    }
+
 private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
     void browseDry();
+    void chooseDryFromSource();   // ① 🎵 音源リストからドライ音源を取り込む
     void browseRir();
     void browseOutput();
     void runConvolution();
@@ -91,7 +130,8 @@ private:
     bool     m_runBusy = false;    // 畳み込み実行中 (再入防止 busy ガード)
 
     // ① 入力
-    QLineEdit *m_dryPath = nullptr;
+    QLineEdit   *m_dryPath = nullptr;
+    QPushButton *m_dryFromSrcBtn = nullptr;  // 🎵 音源リストから (信号を取り込む)
     QLineEdit *m_rirPath = nullptr;      // OperaAcousticSettings::rirPath 共用
     QLineEdit *m_outPath = nullptr;
     QComboBox *m_gainMode = nullptr;     // 0=そのまま 1=推奨ゲイン適用

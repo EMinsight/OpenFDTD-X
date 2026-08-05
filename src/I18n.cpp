@@ -754,6 +754,12 @@ void I18n::loadTables() {
     add("rir_browse", "参照…", "Browse…");
     add("rir_wav_filter", "WAV ファイル (*.wav);;すべてのファイル (*)",
         "WAV files (*.wav);;All files (*)");
+    // 音響ソルバ連携の実行結果 (契約検証済み rir.wav) を設定したときのヒント
+    add("rir_solver_assigned",
+        "✔ 音響ソルバ連携の実行結果 (%1) を実測RIRに設定しました — "
+        "下の「▶ RIR を分析」で分析できます。",
+        "✔ The result of the acoustic solver run (%1) has been set as the "
+        "measured RIR — press “▶ Analyze RIR” below to analyze it.");
     add("rir_channel", "チャンネル", "Channel");
     add("rir_ch_left", "L", "L");
     add("rir_ch_right", "R", "R");
@@ -961,6 +967,9 @@ void I18n::loadTables() {
     // ── カテゴリ付き左ナビ (app.jsx LeftDock 相当) ──────────────────────────
     add("cat_setup",   "セットアップ / Setup",  "Setup");
     add("cat_library", "ライブラリ / Library",  "Library");
+    // 応用: ドメイン固有の応用解析タブ (ライブラリ = 部品・素材のカタログ、
+    // 応用 = それを使って解く用途別のワークフロー、という切り分け)。
+    add("cat_apps",    "応用 / Applications",   "Applications");
     add("cat_solve",   "解析 / Solve",          "Solve");
     add("cat_post",    "ポスト / Post",         "Post");
     add("cat_dom_em",         "電磁ドメイン", "EM domain");
@@ -1096,6 +1105,13 @@ void I18n::loadTables() {
     add("me_undo_na", "このビルドでは元に戻す操作に未対応です。",
         "Undo is not supported in this build.");
     add("me_select_tab", "タブ一覧へフォーカス", "Focus tab list");
+
+    // ホール解析 → 音響ソルバ連携タブへの移動案内 (実行はあちらの ▶ 実行)
+    add("mw_goto_acsolver",
+        "音響ソルバ連携タブへ移動しました。バイナリの解決結果を確認して "
+        "▶ 実行 を押してください。",
+        "Switched to the acoustic solver tab. Check the resolved binary, "
+        "then press ▶ Run.");
 
     // テーマ / 密度 / UIスタイル (モック TweaksPanel)
     add("m_theme",   "テーマ",       "Theme");
