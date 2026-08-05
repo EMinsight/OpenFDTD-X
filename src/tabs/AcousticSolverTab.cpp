@@ -1,12 +1,15 @@
 // AcousticSolverTab.cpp
 #include "AcousticSolverTab.h"
 #include "../core/Project.h"
+#include "../io/OfdIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -15,6 +18,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -129,6 +133,17 @@ const bool s_i18n = [] {
     I18n::reg("acs_status_done_ok", "✓ 正常終了 — RIR を受領し RIR分析タブに設定しました",
               "✓ Finished — RIR received and set on the RIR analysis tab");
     I18n::reg("acs_status_done_ng", "✗ 失敗 (ログを確認)", "✗ Failed (see log)");
+    // 実行前の入力準備 (現在のプロジェクトを .ofd + .ofdx で書き出す)。
+    // これを渡さないとソルバーは「入力が無い」で失敗する
+    I18n::reg("acs_prep_wrote",
+        "入力を書き出しました: %1 (作業ディレクトリ %2)",
+        "Wrote solver input: %1 (working dir %2)");
+    I18n::reg("acs_prep_fail",
+        "入力の書き出しに失敗しました: %1",
+        "Failed to write the solver input: %1");
+    I18n::reg("acs_prep_mkdir",
+        "作業ディレクトリを作成できません: %1",
+        "Cannot create the working directory: %1");
     I18n::reg("acs_log", "実行ログ", "Run log");
     return true;
 }();
@@ -417,14 +432,71 @@ void AcousticSolverTab::updateResolution()
 }
 
 // ── 実行 ────────────────────────────────────────────────────────────────────
+// ソルバーは `solver <working_dir> [<input_file>]` で起動する契約なので、
+// 現在のプロジェクトを .ofd (+ .ofdx サイドカー) として書き出して渡す。
+// 保存済みプロジェクトは <プロジェクトフォルダ>/acoustic_run/ を作業
+// ディレクトリにする (元の .ofd を上書きしない / 出力 RIR が
+// プロジェクトの近くに残り、一括可聴化の自動割当から辿れる)。
+// 未保存なら一時ディレクトリを使う (保存を強制しない)。
+QString AcousticSolverTab::prepareRunInput(QString *workingDir, QString *err)
+{
+    const QString projPath = m_p->filePath();
+    const QString base = projPath.isEmpty()
+        ? QStringLiteral("untitled")
+        : QFileInfo(projPath).completeBaseName();
+    const QString dir = projPath.isEmpty()
+        ? QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+              .absoluteFilePath(QStringLiteral("openfdtd-x-acoustics"))
+        : QDir(QFileInfo(projPath).path())
+              .absoluteFilePath(QStringLiteral("acoustic_run"));
+
+    if (!QDir().mkpath(dir)) {
+        if (err) *err = I18n::tr("acs_prep_mkdir").arg(dir);
+        return QString();
+    }
+    // 前回実行の契約ファイルを消す (失敗した実行で古い RIR を拾わないため)
+    QDir d(dir);
+    const QStringList stale = d.entryList(
+        QStringList{ "rir*.wav", "metadata.json", "metrics.json",
+                     "solver.log" }, QDir::Files);
+    for (const QString &f : stale) d.remove(f);
+
+    const QString ofd = d.absoluteFilePath(base + ".ofd");
+    QString e;
+    if (!OfdIO::save(ofd, *m_p, &e)) {
+        if (err) *err = I18n::tr("acs_prep_fail").arg(e);
+        return QString();
+    }
+    // 吸音率などの音響設定は .ofdx サイドカー側にある (ソルバーが読む)
+    if (!OfdxIO::save(d.absoluteFilePath(base + ".ofdx"), *m_p, &e)) {
+        if (err) *err = I18n::tr("acs_prep_fail").arg(e);
+        return QString();
+    }
+    if (workingDir) *workingDir = dir;
+    return ofd;
+}
+
 void AcousticSolverTab::startSolver()
 {
     if (m_runner->isRunning()) return;
     m_log->clear();
+
+    QString dir, err;
+    const QString input = prepareRunInput(&dir, &err);
+    if (input.isEmpty()) {
+        m_log->appendPlainText(err);
+        m_status->setText(I18n::tr("acs_status_done_ng"));
+        return;
+    }
+    m_log->appendPlainText(I18n::tr("acs_prep_wrote").arg(input, dir));
+
     m_status->setText(I18n::tr("acs_status_running"));
     m_btnRun->setEnabled(false);
     m_btnStop->setEnabled(true);
-    m_runner->start(configFrom(m_p->operaAcoustic()));
+    AcousticRunConfig cfg = configFrom(m_p->operaAcoustic());
+    cfg.workingDir = dir;
+    cfg.inputFile = input;
+    m_runner->start(cfg);
 }
 
 void AcousticSolverTab::stopSolver()
