@@ -19,6 +19,7 @@ class QLabel;
 class QButtonGroup;
 class QRadioButton;
 class QFormLayout;
+class QPushButton;
 
 namespace ofd {
 
@@ -29,6 +30,16 @@ class SourceTab : public QScrollArea {
     Q_OBJECT
 public:
     explicit SourceTab(Project *project, QWidget *parent = nullptr);
+
+    // 「🎤 音源/WAV/指向性 タブへ」の飛び先 (左ナビのキー)。ボタンが黙って
+    // 効かなくならないよう、キーが NavCatalog に存在することを selftest が
+    // 検証できるようにここへ出してある (AcousticTab::workflowNavKey と同じ流儀)。
+    static const char *acSourceNavKey() { return "acsource"; }
+
+signals:
+    // 「🎤 音源/WAV/指向性 タブへ」が押された → 左ナビをこのキーへ切り替えて
+    // ほしい (タブ間の直接依存を作らないよう MainWindow が中継する)。
+    void navigateRequested(const QString &navKey);
 
 private slots:
     void refresh();
@@ -56,6 +67,8 @@ private:
     QLabel       *m_warning;
     // 音響ドメインのみ表示: 励振波形と音源リスト WAV の役割分担の注記
     QLabel       *m_acWaveNote = nullptr;
+    // 音響/水中で表示: 音源リストタブ (acsource) へ移動するボタン
+    QPushButton  *m_acGotoSrc = nullptr;
 
     // ── 波源の種類 (mock: 波源の種類 / Source type) ──────────────────────────
     // 表示フィルタのみのローカル状態。モデルの平面波 ON/OFF は従来どおり

@@ -79,6 +79,15 @@ const bool s_i18n = [] {
               "Source-list audio files (WAV) never enter the solver; the "
               "Auralization tab convolves them with the RIR to render "
               "the listening result.");
+    // 注記から音源リスト側 (🎤 音源/WAV/指向性) への導線。逆向き
+    // (音源リスト → ソルバ波源) は AcousticSourceTab の反映ボタンが担う。
+    I18n::reg("sox_ac_goto_src", "🎤 音源/WAV/指向性 タブへ",
+              "🎤 Go to Source/WAV/Directivity");
+    I18n::reg("sox_ac_goto_src_tip",
+              "音源ごとの音声ファイル (WAV)・指向性・レベルはこのタブでは"
+              "なく「🎤 音源/WAV/指向性」タブで設定します。",
+              "Per-source audio files (WAV), directivity and levels are set "
+              "in the “🎤 Source/WAV/Directivity” tab, not here.");
     return true;
 }();
 
@@ -228,6 +237,19 @@ SourceTab::SourceTab(Project *project, QWidget *parent)
     m_acWaveNote->setStyleSheet("color:#888888; font-size:11px;");
     m_acWaveNote->setVisible(false);
     sw->vbox()->addWidget(m_acWaveNote);
+
+    // 音源リスト側への導線 (音響/水中のみ表示)。ナビのキーを投げるだけで
+    // 切替は MainWindow が行う (タブ同士を直接依存させない)。
+    m_acGotoSrc = new QPushButton(I18n::tr("sox_ac_goto_src"), sw);
+    m_acGotoSrc->setToolTip(I18n::tr("sox_ac_goto_src_tip"));
+    m_acGotoSrc->setVisible(false);
+    connect(m_acGotoSrc, &QPushButton::clicked, this, [this] {
+        emit navigateRequested(QString::fromLatin1(acSourceNavKey()));
+    });
+    auto *gotoRow = new QHBoxLayout();
+    gotoRow->addWidget(m_acGotoSrc);
+    gotoRow->addStretch(1);
+    sw->vbox()->addLayout(gotoRow);
     v->addWidget(sw);
 
     // observation points
@@ -384,6 +406,10 @@ void SourceTab::updateDomainVisibility()
     // 室内音響のみ: 励振波形 (解析用) と音源リスト WAV (可聴化用) の注記
     if (m_acWaveNote)
         m_acWaveNote->setVisible(d == Domain::Acoustic);
+    // 音源リストへの導線は音源リストタブ (acsource) がある音響/水中で出す
+    // (注記より条件が広い — 水中も音源リストで WAV/指向性を設定するため)
+    if (m_acGotoSrc)
+        m_acGotoSrc->setVisible(ac);
 
     updateSourceType();
 }

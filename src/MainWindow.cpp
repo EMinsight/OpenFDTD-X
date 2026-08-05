@@ -608,6 +608,13 @@ void MainWindow::buildLeftNav(QWidget *parent)
         connect(acTab, &AcousticTab::navigateRequested, this,
                 [this](const QString &key) { m_nav->selectKey(key); });
     }
+    // 「④ 音源 (励振)」タブの「🎤 音源/WAV/指向性 タブへ」→ 音源リストへ移動。
+    // 音源設定が 2 系統 (ソルバ励振 = feed / 音源リスト = .ofdx) ある混乱への
+    // 対応で、逆向き (音源リスト → feed 反映) は AcousticSourceTab が持つ。
+    if (auto *srcTab = qobject_cast<SourceTab *>(m_tabSource)) {
+        connect(srcTab, &SourceTab::navigateRequested, this,
+                [this](const QString &key) { m_nav->selectKey(key); });
+    }
     // ホール解析の「▶ 音響ソルバ連携で計算する」→ 音響ソルバ連携タブへ移動。
     // 実行まで自動で走らせないのは、外部ソルバーのバイナリ解決が未確定だと
     // 実行できないため (あちらで解決結果を確認してから ▶ 実行 を押す)。
