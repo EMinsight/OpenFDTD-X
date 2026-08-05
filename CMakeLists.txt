@@ -39,6 +39,9 @@ set(CORE_SOURCES
     src/core/Project.cpp
     src/core/Project.h
     src/core/Domain.h
+    # コンポーネントライブラリの部品表とドメイン許可表 (ヘッダのみ)。
+    # ComponentsTab / Viewport3D / selftest が共有する (二重管理の防止)
+    src/core/ComponentCatalog.h
     src/core/Material.h
     src/core/Geometry.h
     src/core/Source.h

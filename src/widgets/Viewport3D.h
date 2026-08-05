@@ -41,6 +41,14 @@ bool decode(const QByteArray &data, QString *cat, QString *name);
 // false のとき why に理由 (I18n 済み。取込モデルなど位置だけでは作れないもの)。
 bool canPlace(const QString &cat, const QString &name, QString *why = nullptr);
 
+// ドメインを考慮した判定 (domain は core/Domain.h の domainKey() の文字列)。
+// 上の canPlace に加えて core/ComponentCatalog.h のドメイン許可表を確認する:
+//   - 水中音響 (underwater) は BELLHOP が配置部品を一切使わないため全部品拒否
+//   - 許可表でそのドメインに無い部品 (例: EM でのプラズモニクス) も拒否
+// domain が空のときはドメイン判定を行わない (従来動作)。
+bool canPlace(const QString &cat, const QString &name, const QString &domain,
+              QString *why = nullptr);
+
 } // namespace ComponentDrop
 
 // モックの TweaksPanel「3D ビュー / Viewport」に対応する描画スタイル。

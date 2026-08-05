@@ -16,6 +16,7 @@
 
 class QGridLayout;
 class QHBoxLayout;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 
@@ -43,6 +44,9 @@ private:
     QGridLayout *m_catGrid;
     SectionBox  *m_gridSection;
     QGridLayout *m_grid;
+    QLabel      *m_dragHint = nullptr;  // ドラッグ操作のヒント (水中では非表示)
+    QLabel      *m_mapHint  = nullptr;  // ドロップ→.ofd の対応ヒント (同上)
+    QLabel      *m_uwNote   = nullptr;  // 水中音響: 配置部品が無い理由の説明
     SectionBox  *m_favSection = nullptr;   // お気に入り
     QHBoxLayout *m_favRow     = nullptr;
     SectionBox  *m_recentSection = nullptr; // 最近使用 (配置履歴)

@@ -36,6 +36,15 @@ const bool s_i18n = [] {
                    "Feed-point response (run result <kernel>.log)");
     ofd::I18n::reg("pp_farpattern", "遠方界パターン (実行結果 far1d.log)",
                    "Far-field pattern (run result far1d.log)");
+    // 室内音響: ソルバ励振はガウシアンパルス (インパルス応答の計測)。
+    // 音源リストの WAV はソルバへは入らず、可聴化で RIR と畳み込まれる —
+    // 「スピーカーなら音声ファイルの波形になるのでは」という誤解への注記
+    ofd::I18n::reg("ppb_wave_ac_note",
+        "※ ソルバ励振はガウシアンパルス (インパルス応答の計測)。音源リストの"
+        "音声ファイルは可聴化タブで RIR と畳み込まれます",
+        "* The solver is excited with a Gaussian pulse (impulse-response "
+        "measurement). Source-list audio files are convolved with the RIR "
+        "in the Auralization tab");
     return true;
 }();
 } // namespace
@@ -438,6 +447,23 @@ void PlotPanel::paintEvent(QPaintEvent *)
                        .arg(QString::number(4 * tw, 'g', 3),
                             QString::number(dt, 'g', 3),
                             QString::number(tw, 'g', 3)));
+
+        // 室内音響では「スピーカー = 音声ファイルの波形」ではないことを明示
+        if (m_domain == Domain::Acoustic) {
+            QFont f = p.font();
+            const QFont keep = f;
+            // QSS 適用時はポイントではなくピクセル指定のことがある
+            if (f.pointSizeF() > 0)
+                f.setPointSizeF(f.pointSizeF() * 0.85);
+            else if (f.pixelSize() > 0)
+                f.setPixelSize(qMax(1, int(f.pixelSize() * 0.85)));
+            p.setFont(f);
+            QRectF noteRect(plot.left() + 8, plot.top() + 6,
+                            plot.width() - 16, 60);
+            p.drawText(noteRect, Qt::TextWordWrap,
+                       I18n::tr("ppb_wave_ac_note"));
+            p.setFont(keep);
+        }
     } else {
         p.drawText(QPointF(plot.left(), titleY), I18n::tr("pp_convergence"));
         if (m_steps.isEmpty()) {
