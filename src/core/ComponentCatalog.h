@@ -11,6 +11,8 @@
 #pragma once
 #include <QString>
 
+#include "Project.h"
+
 namespace ofd {
 namespace ComponentCatalog {
 
@@ -134,6 +136,41 @@ inline bool allowedInDomain(const QString &name, const QString &domain)
     for (const char *p = c->domains; *p; ++p)
         if (*p == f) return true;
     return false;
+}
+
+// ── ドロップと音響リストの同期 ──────────────────────────────────────────────
+// 室内音響でスピーカー/マイクをドロップしたとき、.ofd (feed / point) に
+// 加えて .ofdx の音源リスト (acoustic.sources) / 受音点リスト
+// (acoustic.receivers) にも同じ位置の行を追加する。片方だけだと
+// 「コンポーネントで追加したのに音源/WAV/指向性タブに反映されない」
+// 状態になる (feed とは位置が厳密一致するので、音源リストの
+// 「ソルバ波源 #n」マーカーも自動で立つ)。
+// 戻り値は追加した行の名前。Project::touch() は呼び出し側で行うこと。
+
+inline QString addLoudspeakerSourceRow(Project &p,
+                                       double x, double y, double z)
+{
+    AcousticSourceRow r;
+    r.enabled = true;
+    r.kind = AcousticSourceRow::Omni;
+    r.x_m = x; r.y_m = y; r.z_m = z;
+    r.name = QStringLiteral("スピーカー %1")
+                 .arg(p.acoustic().sources.size() + 1);
+    p.acoustic().sources.push_back(r);
+    return r.name;
+}
+
+inline QString addMicrophoneReceiverRow(Project &p,
+                                        double x, double y, double z)
+{
+    ReceiverRow r;
+    r.enabled = true;
+    r.x = x; r.y = y; r.z = z;
+    r.type = 0;   // Omni
+    r.name = QStringLiteral("マイク %1")
+                 .arg(p.acoustic().receivers.size() + 1);
+    p.acoustic().receivers.push_back(r);
+    return r.name;
 }
 
 } // namespace ComponentCatalog

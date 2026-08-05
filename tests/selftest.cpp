@@ -8476,6 +8476,46 @@ static void testComponentDomains()
           "unknown component name is rejected");
     check(!ComponentCatalog::allowedInDomain("Rectangle", "plasma"),
           "unknown domain key is rejected");
+
+    // ── スピーカー/マイクのドロップと音響リストの同期ヘルパー ──
+    // (コンポーネントで追加しても音源/WAV/指向性タブに反映されない問題の対策)
+    {
+        Project p;
+        const int s0 = p.acoustic().sources.size();
+        const int r0 = p.acoustic().receivers.size();
+
+        const QString sn =
+            ComponentCatalog::addLoudspeakerSourceRow(p, 1.5, -2.0, 0.75);
+        check(p.acoustic().sources.size() == s0 + 1,
+              "loudspeaker drop appends one source row");
+        const AcousticSourceRow &s = p.acoustic().sources.last();
+        check(s.enabled, "appended source row is enabled");
+        check(s.kind == AcousticSourceRow::Omni,
+              "appended source row is omni");
+        check(s.x_m == 1.5 && s.y_m == -2.0 && s.z_m == 0.75,
+              "appended source row keeps the drop position");
+        check(s.name == sn && !sn.isEmpty(),
+              "appended source row name is returned");
+
+        const QString rn =
+            ComponentCatalog::addMicrophoneReceiverRow(p, -0.5, 3.0, 1.2);
+        check(p.acoustic().receivers.size() == r0 + 1,
+              "microphone drop appends one receiver row");
+        const ReceiverRow &r = p.acoustic().receivers.last();
+        check(r.enabled, "appended receiver row is enabled");
+        check(r.type == 0, "appended receiver row is omni");
+        check(r.x == -0.5 && r.y == 3.0 && r.z == 1.2,
+              "appended receiver row keeps the drop position");
+        check(r.name == rn && !rn.isEmpty(),
+              "appended receiver row name is returned");
+        check(r.rirFile.isEmpty(),
+              "appended receiver row has no RIR yet (assigned later)");
+
+        // 連番: 2 個目は既存件数 +1 の番号になる
+        const QString sn2 =
+            ComponentCatalog::addLoudspeakerSourceRow(p, 0, 0, 0);
+        check(sn2 != sn, "second loudspeaker gets a distinct name");
+    }
 }
 
 int main(int argc, char *argv[])

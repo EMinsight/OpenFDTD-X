@@ -60,6 +60,14 @@ const bool s_i18n = [] {
         "給電点 #%1 (Z 方向)", "feed #%1 (Z direction)");
     ofd::I18n::reg("vp_drop_probe",
         "観測点 #%1 (Z 方向)", "observation point #%1 (Z direction)");
+    // 室内音響: スピーカー/マイクは .ofd の feed/point に加えて .ofdx の
+    // 音源リスト/受音点リストにも行を追加する (片方だけだと
+    // 音源/WAV/指向性タブに反映されず混乱する)
+    ofd::I18n::reg("vp_drop_synced_src",
+        " + 音源リストへ「%1」を追加", " + added \"%1\" to the source list");
+    ofd::I18n::reg("vp_drop_synced_rcv",
+        " + 受音点リストへ「%1」を追加",
+        " + added \"%1\" to the receiver list");
     ofd::I18n::reg("vp_drop_nomesh",
         "メッシュ領域が未定義のため配置できません (メッシュタブで領域を設定"
         "してください)",
@@ -1137,6 +1145,15 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         f.x = pos[0]; f.y = pos[1]; f.z = pos[2];
         m_project->feeds().push_back(f);
         what = I18n::tr("vp_drop_feed").arg(m_project->feeds().size());
+        // スピーカーは音源リスト (音源/WAV/指向性タブ) にも同じ位置の行を
+        // 追加する。位置が feed と厳密一致するので「ソルバ波源 #n」の
+        // マーカーも自動で立つ
+        if (m_domain == Domain::Acoustic
+            && name == QLatin1String("Loudspeaker")) {
+            const QString nm = ComponentCatalog::addLoudspeakerSourceRow(
+                *m_project, pos[0], pos[1], pos[2]);
+            what += I18n::tr("vp_drop_synced_src").arg(nm);
+        }
         break;
     }
     case DropKind::Probe: {
@@ -1147,6 +1164,14 @@ bool Viewport3D::placeComponent(const QString &cat, const QString &name,
         if (m_project->probes().isEmpty()) pr.propagation = "+X";
         m_project->probes().push_back(pr);
         what = I18n::tr("vp_drop_probe").arg(m_project->probes().size());
+        // マイクロホンは受音点リスト (可聴化の一括レンダリング対象) にも
+        // 同じ位置の行を追加する
+        if (m_domain == Domain::Acoustic
+            && name == QLatin1String("Microphone")) {
+            const QString nm = ComponentCatalog::addMicrophoneReceiverRow(
+                *m_project, pos[0], pos[1], pos[2]);
+            what += I18n::tr("vp_drop_synced_rcv").arg(nm);
+        }
         break;
     }
     default: {
