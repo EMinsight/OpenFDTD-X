@@ -1,8 +1,11 @@
 // TabNavigator.h — カテゴリ付き縦タブナビ (app.jsx LeftDock の qt-tabbar 相当)。
 //
 // モックの Workbench 風カテゴリ構成を再現する:
-//   セットアップ / Setup → ライブラリ / Library → 解析 / Solve → ポスト / Post
-//   → ドメイン別カテゴリ (電磁/光/音響/水中)
+//   セットアップ / Setup → ライブラリ / Library → 応用 / Applications
+//   → 解析 / Solve → ポスト / Post → ドメイン別カテゴリ (電磁/光/音響/水中)
+// カテゴリ見出しは「直前の項目とカテゴリキーが変わったところ」で挿入するので、
+// MainWindow の Def テーブルでは同じカテゴリの項目を連続させること。
+// 逆に、そのドメインで表示項目が 0 のカテゴリは見出しごと出ない (EM の応用など)。
 // 各エントリは (ドメイン集合, 標準/エキスパート) でフィルタされ、
 // rebuild() が現在のドメインと UI レベルに合う項目だけを並べる。
 // 選択すると pageSelected(QWidget*) を発火 — MainWindow が QStackedWidget を切替。

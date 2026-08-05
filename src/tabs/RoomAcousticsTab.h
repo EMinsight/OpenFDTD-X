@@ -103,6 +103,12 @@ class RoomAcousticsTab : public QScrollArea {
 public:
     explicit RoomAcousticsTab(Project *project, QWidget *parent = nullptr);
 
+signals:
+    // 「▶ 音響ソルバ連携で計算する」が押された → 音響ソルバ連携タブ
+    // (ナビキー "acsolver") へ切り替えてほしい。実行そのものはあちらが持つ
+    // (バイナリ解決が要るため自動起動はしない)。切替は MainWindow が中継する。
+    void runSolverRequested();
+
 private slots:
     void refresh();          // model → widgets
     void recomputeAll();     // 派生値 (RT/エコーグラム/NC/障害) を再計算

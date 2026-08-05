@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QSet>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -16,6 +17,7 @@
 
 #include "audio/AudioEditEngine.h"
 #include "core/ComponentCatalog.h"
+#include "core/NavCatalog.h"
 #include "core/Project.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
@@ -8615,6 +8617,128 @@ static void testNavSourceAcLabel()
           "acoustic nav label does not read 波源");
 }
 
+// ── 左ナビのカテゴリ割り当て (core/NavCatalog.h) ────────────────────────────
+// 2026-08 のカテゴリ再編: 「ライブラリ」に応用解析タブが同居していたのを、
+// ライブラリ (部品・素材のカタログ) と 応用 (ドメイン固有の応用解析) に分けた。
+// 期待値は再編の方針から手で書いたもの (実装表の引き写しではない)。
+static void testNavCategories()
+{
+    g_file = "nav-categories";
+    using namespace ofd::navcat;
+
+    struct Case { const char *key, *cat; };
+    static const Case cases[] = {
+        // ライブラリに残す = そこから選んで使う部品・素材のカタログ
+        { "components",   "cat_library" },
+        { "matexplorer",  "cat_library" },
+        { "glasscatalog", "cat_library" },
+        { "lens",         "cat_library" },
+        { "layoutgds",    "cat_library" },
+        { "schematic",    "cat_library" },
+        // 応用 (光)
+        { "photonics",    "cat_apps" },
+        { "modesolver",   "cat_apps" },
+        { "thinfilm",     "cat_apps" },
+        { "illum",        "cat_apps" },
+        { "displayopt",   "cat_apps" },
+        // 応用 (音響)
+        { "acsource",     "cat_apps" },
+        { "audioedit",    "cat_apps" },
+        { "roomac",       "cat_apps" },
+        { "acsolver",     "cat_apps" },
+        { "soundproof",   "cat_apps" },
+        { "outdoor",      "cat_apps" },
+        { "cabin",        "cat_apps" },
+        { "ultrasound",   "cat_apps" },
+        // 応用 (水中)
+        { "oceanenv",     "cat_apps" },
+        // 再編で動かしていないカテゴリ
+        { "geometry",     "cat_setup" },
+        { "source",       "cat_setup" },
+        { "perface",      "cat_setup" },
+        { "family",       "cat_solve" },
+        { "tidy3d",       "cat_solve" },
+        { "datasets",     "cat_post" },
+        { "sar",          "cat_post" },
+        { "acoustic",     "cat_dom_acoustic" },
+        { "riranalysis",  "cat_dom_acoustic" },
+        { "underwater",   "cat_dom_underwater" },
+        { "optical",      "cat_dom_optical" },
+    };
+    for (const Case &c : cases) {
+        const char *got = categoryFor(c.key);
+        check(got != nullptr,
+              qPrintable(QStringLiteral("nav '%1' is registered")
+                             .arg(QLatin1String(c.key))));
+        check(got && QLatin1String(got) == QLatin1String(c.cat),
+              qPrintable(QStringLiteral("nav '%1' belongs to %2")
+                             .arg(QLatin1String(c.key),
+                                  QLatin1String(c.cat))));
+    }
+
+    int n = 0;
+    const Assign *t = table(&n);
+    check(n >= 50, "nav catalog covers the whole navigator");
+
+    // キー重複が無いこと (categoryFor は先頭一致なので、重複は静かに片方を殺す)
+    QSet<QString> seenKeys;
+    bool dupKey = false;
+    for (int i = 0; i < n; ++i) {
+        const QString k = QLatin1String(t[i].navKey);
+        if (seenKeys.contains(k)) dupKey = true;
+        seenKeys.insert(k);
+    }
+    check(!dupKey, "nav catalog has no duplicate keys");
+
+    // 同じカテゴリの項目が連続していること — TabNavigator::rebuild は
+    // 「カテゴリキーが変わったところ」で見出しを出すので、離れると
+    // 同じ見出しが 2 回出る。
+    QSet<QString> closed;
+    QString last;
+    bool contiguous = true;
+    for (int i = 0; i < n; ++i) {
+        const QString c = QLatin1String(t[i].categoryKey);
+        if (c == last) continue;
+        if (closed.contains(c)) contiguous = false;   // 一度離れた後に再登場
+        if (!last.isEmpty()) closed.insert(last);
+        last = c;
+    }
+    check(contiguous, "nav catalog groups each category contiguously");
+
+    // 応用カテゴリの見出しが日英とも登録済みであること
+    const QString ja = I18n::tr(QStringLiteral("cat_apps"));
+    check(ja != QLatin1String("cat_apps"),
+          "cat_apps is registered (tr does not echo the key)");
+    check(ja.contains(QStringLiteral("応用")), "cat_apps reads 応用");
+    // ライブラリ見出しは従来どおり (再編で消していないこと)
+    check(I18n::tr(QStringLiteral("cat_library"))
+              != QLatin1String("cat_library"),
+          "cat_library is still registered");
+}
+
+// ── ホール解析の「▶ …」ボタン (音響ソルバ連携への導線) ─────────────────────
+// FDTD/Ray 実行は内製していない (幾何音響の経路は無い)。ボタンは音響ソルバ
+// 連携タブへの移動を名乗り、実装していない手法を名乗らないこと (規則 5)。
+// GUI 非リンクのため I18n テーブルを直接検証する。
+static void testRoomAcRunButtonLabels()
+{
+    g_file = "roomac-run-button";
+    // ラベルは RoomAcousticsTab.cpp の file-local reg — 参照するには
+    // そのタブが読み込まれている必要があるので、ここでは MainWindow 側の
+    // 案内文言 (I18n.cpp 登録) を検証する。
+    const QString guide = I18n::tr(QStringLiteral("mw_goto_acsolver"));
+    check(guide != QLatin1String("mw_goto_acsolver"),
+          "mw_goto_acsolver is registered (tr does not echo the key)");
+    check(guide.contains(QStringLiteral("音響ソルバ連携")),
+          "guidance names the acoustic solver tab");
+    check(guide.contains(QStringLiteral("実行")),
+          "guidance tells the user to press Run");
+    // 未実装の手法名 (Ray / 幾何音響) を名乗っていないこと
+    check(!guide.contains(QStringLiteral("Ray")) &&
+          !guide.contains(QStringLiteral("幾何音響")),
+          "guidance does not claim a ray-tracing path");
+}
+
 // ── 音響ドメインの計算ボタン確認ダイアログ (ADR-0004 整合) ──────────────────
 // MainWindow::runSimulation は音響ドメインで「ofd (電磁 FDTD) の波動アナロジー
 // 実行であり音響指標の定量値は得られない」ことを初回に確認する。GUI 非リンク
@@ -8856,6 +8980,8 @@ int main(int argc, char *argv[])
     testParaxialTrace();
     testDisplayIlluminationSettings();
     testNavSourceAcLabel();
+    testNavCategories();
+    testRoomAcRunButtonLabels();
     testAcousticAnalogyDialogKeys();
     testComponentDomains();
 

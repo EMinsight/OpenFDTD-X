@@ -967,6 +967,9 @@ void I18n::loadTables() {
     // ── カテゴリ付き左ナビ (app.jsx LeftDock 相当) ──────────────────────────
     add("cat_setup",   "セットアップ / Setup",  "Setup");
     add("cat_library", "ライブラリ / Library",  "Library");
+    // 応用: ドメイン固有の応用解析タブ (ライブラリ = 部品・素材のカタログ、
+    // 応用 = それを使って解く用途別のワークフロー、という切り分け)。
+    add("cat_apps",    "応用 / Applications",   "Applications");
     add("cat_solve",   "解析 / Solve",          "Solve");
     add("cat_post",    "ポスト / Post",         "Post");
     add("cat_dom_em",         "電磁ドメイン", "EM domain");
@@ -1102,6 +1105,13 @@ void I18n::loadTables() {
     add("me_undo_na", "このビルドでは元に戻す操作に未対応です。",
         "Undo is not supported in this build.");
     add("me_select_tab", "タブ一覧へフォーカス", "Focus tab list");
+
+    // ホール解析 → 音響ソルバ連携タブへの移動案内 (実行はあちらの ▶ 実行)
+    add("mw_goto_acsolver",
+        "音響ソルバ連携タブへ移動しました。バイナリの解決結果を確認して "
+        "▶ 実行 を押してください。",
+        "Switched to the acoustic solver tab. Check the resolved binary, "
+        "then press ▶ Run.");
 
     // テーマ / 密度 / UIスタイル (モック TweaksPanel)
     add("m_theme",   "テーマ",       "Theme");
