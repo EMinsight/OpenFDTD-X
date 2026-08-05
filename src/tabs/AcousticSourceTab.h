@@ -45,6 +45,31 @@ class AcousticSourceTab : public QScrollArea {
 public:
     explicit AcousticSourceTab(Project *project, QWidget *parent = nullptr);
 
+    // 音源リスト (室内音響 .ofdx acoustic.sources) → ソルバ波源 (.ofd feed) の
+    // 反映本体 (確認ダイアログ無し)。有効 (enabled) な行それぞれについて、
+    // その位置に Z 向き・既定の振幅/位相/内部抵抗の feed を作り、既存 feed
+    // リストを置き換える。反映件数 (= 新しい feed 数) を返す。有効行が 0 の
+    // ときは feed を一切変更せず 0 を返す。
+    // レベル [dB] は校正が無いため振幅へ換算しない (絶対規則 6) —
+    // ソルバへ渡るのは位置のみ。Project::touch() は呼び出し側で行う。
+    // ofdx_selftest は GUI_SOURCES をリンクしないため、selftest から
+    // 直接検証できるようヘッダ内 inline 定義の static メソッドにしてある。
+    static int syncFeedsFromSources(Project &p)
+    {
+        QVector<Feed> next;
+        for (const AcousticSourceRow &r : p.acoustic().sources) {
+            if (!r.enabled) continue;
+            Feed f;                          // 向き Z・振幅/位相/Z0 は既定値
+            f.x = r.x_m;
+            f.y = r.y_m;
+            f.z = r.z_m;
+            next.push_back(f);
+        }
+        if (next.isEmpty()) return 0;        // feed は変更しない
+        p.feeds() = next;
+        return int(next.size());
+    }
+
 private slots:
     void refresh();              // model → widgets
     void onDomainChanged();      // 音響 ⇔ 水中 で音源リスト等を切替
@@ -79,6 +104,8 @@ private:
     QLabel       *m_srcHint;
     QTableWidget *m_srcTable;
     QPushButton  *m_presetBtn;
+    QPushButton  *m_syncBtn  = nullptr;      // 有効行の位置 → feed へ反映
+    QLabel       *m_syncNote = nullptr;      // 反映は位置のみ、の説明
     QLabel       *m_srcModelNote = nullptr;  // 「計算へは渡されない」注記
     QLineEdit    *m_baseSpl;
     QLabel       *m_baseSplUnit;
