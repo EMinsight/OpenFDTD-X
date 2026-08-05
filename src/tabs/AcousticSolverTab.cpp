@@ -34,7 +34,7 @@ const bool s_i18n = [] {
     I18n::reg("acs_backend", "RIRの取得元", "RIR source");
     I18n::reg("acs_b_none", "None — RIR取得なし (統計推定のみ)",
               "None — no RIR (statistical estimate only)");
-    I18n::reg("acs_b_measured", "MeasuredRir — 実測RIR (RIR分析タブの従来経路)",
+    I18n::reg("acs_b_measured", "MeasuredRir — 実測RIR (実測RIR分析タブの従来経路)",
               "MeasuredRir — measured RIR (RIR analysis tab)");
     I18n::reg("acs_b_stat", "Statistical — 統計モデルからの合成RIR",
               "Statistical — synthetic RIR from statistical model");
@@ -119,7 +119,7 @@ const bool s_i18n = [] {
     I18n::reg("acs_req_yes", "必須", "Required");
     I18n::reg("acs_req_no", "任意", "Optional");
     I18n::reg("acs_contract_note",
-        "▸ 契約検証後に rirReady(path) → RIR分析タブの実測RIRに設定される。"
+        "▸ 契約検証後に rirReady(path) → 実測RIR分析タブの実測RIRに設定される。"
         "FDTD推定は AcousticFdtdEstimator (格子/時間/メモリ見積) を使用。",
         "▸ After contract validation, rirReady(path) sets the measured RIR of "
         "the RIR analysis tab. FDTD sizing uses AcousticFdtdEstimator.");
@@ -130,8 +130,14 @@ const bool s_i18n = [] {
         "validates the output contract with a mock solver.");
     I18n::reg("acs_status_idle", "待機中", "Idle");
     I18n::reg("acs_status_running", "実行中…", "Running…");
-    I18n::reg("acs_status_done_ok", "✓ 正常終了 — RIR を受領し RIR分析タブに設定しました",
-              "✓ Finished — RIR received and set on the RIR analysis tab");
+    // 受領した RIR の行き先はナビの「音響ドメイン → 🎤 実測RIR分析」
+    // (I18n の t_riranalysis)。旧文言の「RIR分析タブ」はナビに無い名前で
+    // 「どこ？」となるため、実際のナビ表記で案内する
+    I18n::reg("acs_status_done_ok",
+              "✓ 正常終了 — RIR を受領しました "
+              "(ナビの 音響ドメイン → 🎤 実測RIR分析 で開けます)",
+              "✓ Finished — RIR received "
+              "(open it from Acoustic domain → 🎤 Measured RIR in the nav)");
     I18n::reg("acs_status_done_ng", "✗ 失敗 (ログを確認)", "✗ Failed (see log)");
     // 実行前の入力準備 (現在のプロジェクトを .ofd + .ofdx で書き出す)。
     // これを渡さないとソルバーは「入力が無い」で失敗する
