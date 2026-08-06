@@ -7,6 +7,11 @@
 //   音源深度 / 受波器深度 / 受波器距離 / RunType / ビーム角 / STEP-ZBOX-RBOX
 // 実行は Runner (Kernel::Bellhop) が `bellhopcxx <basename>` で行い、
 // 結果は <basename>.prt (ログ) と <basename>.shd (TL 音場) に出る。
+//
+// 海底地形 (.bty): UnderwaterOpts::bathymetry が非空のとき、底面オプションを
+// 'A~' にして BTYFIL を併せて書き出す。'~' (または '*') が
+// bellhopcuda src/module/boundary.hpp の IsFile() 判定で、これが無いと
+// .bty が置いてあっても **黙って読まれず平坦海底になる**。
 #pragma once
 #include <QString>
 
@@ -20,7 +25,11 @@ public:
     // 埋める (SSP が 2 点未満なら等速 1500 m/s の 2 点プロファイル)。
     static QString envText(const Project &p);
 
-    // 実行ケース名 (FILEROOT)。.env / .prt / .shd の共通ベース名。
+    // .bty (BTYFIL) テキスト。地形断面が空なら空文字列を返す
+    // (呼び出し側はその場合ファイルを書かない)。
+    static QString btyText(const Project &p);
+
+    // 実行ケース名 (FILEROOT)。.env / .bty / .prt / .shd の共通ベース名。
     static QString caseName(const Project &p);
 };
 

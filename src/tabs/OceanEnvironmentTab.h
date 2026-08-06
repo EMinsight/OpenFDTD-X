@@ -10,10 +10,13 @@
 #include <QScrollArea>
 #include <QVector>
 
+#include "../core/Project.h"   // BathyPoint
+
 class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QProgressBar;
 class QPushButton;
 class QTableWidget;
 
@@ -50,16 +53,20 @@ private:
     int    m_cMinIdx = 0;
 };
 
-// 地形断面図 — 海域水深から合成した海底断面 (J-EGG500 / ETOPO 断面のモック)
+// 地形断面図 — 伝搬経路に沿った海底断面。実データ (GEBCO/ETOPO/J-EGG500 を
+// 配置済みの場合) と、データが無いときの合成断面の両方を描く。
+// どちらを描いているかは必ず図中に出す (合成を実地形と見せない)。
 class OeBathyView : public QWidget {
     Q_OBJECT
 public:
     explicit OeBathyView(QWidget *parent = nullptr);
-    void setDepth(double depth) { m_depth = depth; update(); }
+    // 断面 (距離[km], 水深[m]) と出所。source が空なら合成断面として描く。
+    void setSection(const QVector<BathyPoint> &pts, const QString &source);
 protected:
     void paintEvent(QPaintEvent *) override;
 private:
-    double m_depth = 4200;
+    QVector<BathyPoint> m_pts;
+    QString m_source;      // 空 = 合成
 };
 
 // データセット取得マネージャ (モーダル) — オフラインファースト設計。
@@ -70,10 +77,23 @@ class OeDownloadManager : public QDialog {
     Q_OBJECT
 public:
     explicit OeDownloadManager(QWidget *parent = nullptr);
+    ~OeDownloadManager() override;
 private:
     void importFiles();      // ファイル選択 → データセットフォルダへコピー
+    void startDownload();    // URL → データセットフォルダへ直接ダウンロード
+    void abortDownload();
 
     QLabel *m_importResult = nullptr;
+
+    // ③ 直接ダウンロード (Qt6::Network がある構成のみ)。
+    // 進捗は実際の受信バイト数だけを出す (擬似進捗は出さない)。
+    QLineEdit    *m_url = nullptr;
+    QPushButton  *m_dlBtn = nullptr, *m_abortBtn = nullptr;
+    QProgressBar *m_dlProgress = nullptr;
+    QLabel       *m_dlResult = nullptr;
+    class Impl;
+    Impl *m_impl = nullptr;    // QNetworkAccessManager 一式 (非ネットワーク
+                               // ビルドでは nullptr)
 };
 
 class OceanEnvironmentTab : public QScrollArea {
@@ -90,6 +110,10 @@ private slots:
 private:
     static const OeRegion &findRegion(double lat, double lon);
     void computeSsp();       // oeTempProfile + Mackenzie 式 (mock の数式を移植)
+    // 測点・方位・距離から地形断面を作る。ローカルデータセットに水深
+    // グリッドがあればそれを大圏サンプリングし、無ければ合成断面にする。
+    void computeSection();
+    void loadSiteFromProject();   // .ofdx の測点・方位・距離 → 入力欄
 
     Project *m_p;
     const OeRegion      *m_region = nullptr;
@@ -116,6 +140,9 @@ private:
     QLabel      *m_sspNote;
     OeBathyView *m_bathy;
     QLineEdit   *m_bearing, *m_dist;
+    QLabel      *m_btyNote = nullptr;      // 出所 (実データ or 合成) の表示
+    QVector<BathyPoint> m_section;         // 直近に作った断面
+    QString      m_sectionSource;          // 出所 ("" = 合成)
 
     // apply
     QCheckBox *m_chkSsp, *m_chkBty, *m_chkBottom;

@@ -12,6 +12,7 @@
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
+#include "io/ShdReader.h"
 #include "io/H5Writer.h"
 #include "io/KernelResultReader.h"
 #include "io/Tidy3dExporter.h"
@@ -1477,7 +1478,20 @@ void MainWindow::onRunnerFinished(bool ok)
             ? I18n::tr("uw_shd_ok").arg(shd.fileName())
                                    .arg(QLocale().formattedDataSize(shd.size()))
             : I18n::tr("uw_shd_missing"));
-        if (shd.exists())
-            m_rightDock->appendLog(I18n::tr("uw_shd_viewer_note"));
+        // TL 音場を読んで水中音響タブの「TL 断面」へ反映する
+        // (この実行が生成した .shd だけを対象にする)
+        auto *uwTab = qobject_cast<UnderwaterTab *>(m_tabUnderwater);
+        if (shd.exists() && uwTab) {
+            uwTab->showTlResult(m_runner->workingDir(), base);
+            ShdField f;
+            QString shdErr;
+            if (ShdReader::read(shd.absoluteFilePath(), f, &shdErr))
+                m_rightDock->appendLog(
+                    QStringLiteral("TL: %1 x %2, %3..%4 dB")
+                        .arg(f.nrz).arg(f.nrr)
+                        .arg(f.minTL, 0, 'f', 1).arg(f.maxTL, 0, 'f', 1));
+            else
+                m_rightDock->appendLog(QStringLiteral("shd: ") + shdErr);
+        }
     }
 }

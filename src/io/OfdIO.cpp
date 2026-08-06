@@ -781,7 +781,7 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         QJsonArray uwSrc;
         for (const AcousticSourceRow &r : u.sources)
             uwSrc.append(sourceRowToJson(r));
-        root["underwater"] = QJsonObject{
+        QJsonObject uwObj{
             {"temp_C", u.waterTemp_C}, {"salinity_psu", u.salinity_psu},
             {"ssp", ssp}, {"sofar", u.sofar},
             {"bottom_type", u.bottomType},
@@ -794,6 +794,41 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"sonar_sl_db", u.sonarSL_dB},
             {"range_max_km", u.rangeMax_km},
             {"sources", uwSrc} };
+        // ── 以下は追加キー。既定値のままなら **キー自体を書かない** ので、
+        //    測点・地形・Bellhop 設定を触らない限り .ofdx は従来とバイト一致。
+        {
+            const UnderwaterOpts d;   // 既定値
+            if (u.siteLat_deg != d.siteLat_deg || u.siteLon_deg != d.siteLon_deg
+                || u.trackBearing_deg != d.trackBearing_deg) {
+                uwObj["site"] = QJsonObject{
+                    {"lat_deg", u.siteLat_deg}, {"lon_deg", u.siteLon_deg},
+                    {"bearing_deg", u.trackBearing_deg} };
+            }
+            if (!u.bathymetry.isEmpty()) {
+                QJsonArray bty;
+                for (const BathyPoint &b : u.bathymetry)
+                    bty.append(QJsonObject{ {"range_km", b.range_km},
+                                            {"depth_m", b.depth_m} });
+                uwObj["bathymetry"] =
+                    QJsonObject{ {"source", u.bathySource}, {"points", bty} };
+            }
+            if (u.runMode != d.runMode || u.beamType != d.beamType
+                || u.numRays != d.numRays || u.angleMin_deg != d.angleMin_deg
+                || u.angleMax_deg != d.angleMax_deg
+                || u.srcDepth_m != d.srcDepth_m
+                || u.numRcvDepth != d.numRcvDepth
+                || u.numRcvRange != d.numRcvRange) {
+                uwObj["bellhop"] = QJsonObject{
+                    {"run_mode", u.runMode}, {"beam_type", u.beamType},
+                    {"num_rays", u.numRays},
+                    {"angle_min_deg", u.angleMin_deg},
+                    {"angle_max_deg", u.angleMax_deg},
+                    {"src_depth_m", u.srcDepth_m},
+                    {"num_rcv_depth", u.numRcvDepth},
+                    {"num_rcv_range", u.numRcvRange} };
+            }
+        }
+        root["underwater"] = uwObj;
     }
     {
         // API key is NOT persisted here — it lives in QSettings
@@ -1287,6 +1322,35 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             u.sources.clear();
             for (const QJsonValue &v : uw["sources"].toArray())
                 u.sources.push_back(sourceRowFromJson(v.toObject()));
+        }
+        // 測点・地形・Bellhop 設定 — いずれも追加キー。欠落時は既定値のまま。
+        if (uw.contains("site")) {
+            const QJsonObject st = uw["site"].toObject();
+            u.siteLat_deg = st.value("lat_deg").toDouble(u.siteLat_deg);
+            u.siteLon_deg = st.value("lon_deg").toDouble(u.siteLon_deg);
+            u.trackBearing_deg =
+                st.value("bearing_deg").toDouble(u.trackBearing_deg);
+        }
+        if (uw.contains("bathymetry")) {
+            const QJsonObject bt = uw["bathymetry"].toObject();
+            u.bathySource = bt.value("source").toString(u.bathySource);
+            u.bathymetry.clear();
+            for (const QJsonValue &v : bt["points"].toArray()) {
+                const QJsonObject o = v.toObject();
+                u.bathymetry.push_back({ o.value("range_km").toDouble(),
+                                         o.value("depth_m").toDouble() });
+            }
+        }
+        if (uw.contains("bellhop")) {
+            const QJsonObject bh = uw["bellhop"].toObject();
+            u.runMode = bh.value("run_mode").toString(u.runMode);
+            u.beamType = bh.value("beam_type").toString(u.beamType);
+            u.numRays = bh.value("num_rays").toInt(u.numRays);
+            u.angleMin_deg = bh.value("angle_min_deg").toDouble(u.angleMin_deg);
+            u.angleMax_deg = bh.value("angle_max_deg").toDouble(u.angleMax_deg);
+            u.srcDepth_m = bh.value("src_depth_m").toDouble(u.srcDepth_m);
+            u.numRcvDepth = bh.value("num_rcv_depth").toInt(u.numRcvDepth);
+            u.numRcvRange = bh.value("num_rcv_range").toInt(u.numRcvRange);
         }
     }
     if (root.contains("tidy3d")) {

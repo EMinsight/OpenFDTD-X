@@ -139,6 +139,84 @@ bool H5Reader::read2D(const QString &path, const QString &dset,
     return true;
 }
 
+bool H5Reader::read2DWindow(const QString &path, const QString &dset,
+                            qlonglong row0, qlonglong col0,
+                            int &rows, int &cols, QVector<double> &out,
+                            QString *err)
+{
+    Ids id;
+    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
+                      H5P_DEFAULT);
+    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
+    if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
+    id.space = H5Dget_space(id.dset);
+    if (H5Sget_simple_extent_ndims(id.space) != 2) {
+        setErr(err, QStringLiteral("%1 is not 2-D").arg(dset));
+        return false;
+    }
+    hsize_t dims[2];
+    H5Sget_simple_extent_dims(id.space, dims, nullptr);
+    // 要求窓をデータセット内へクランプ (端の海域でも落ちないように)
+    row0 = qBound(qlonglong(0), row0, qlonglong(dims[0]) - 1);
+    col0 = qBound(qlonglong(0), col0, qlonglong(dims[1]) - 1);
+    rows = int(qMin(qlonglong(rows), qlonglong(dims[0]) - row0));
+    cols = int(qMin(qlonglong(cols), qlonglong(dims[1]) - col0));
+    if (rows <= 0 || cols <= 0) {
+        setErr(err, QStringLiteral("empty window in %1").arg(dset));
+        return false;
+    }
+    out.resize(qsizetype(rows) * cols);
+
+    const hsize_t start[2] = { hsize_t(row0), hsize_t(col0) };
+    const hsize_t count[2] = { hsize_t(rows), hsize_t(cols) };
+    H5Sselect_hyperslab(id.space, H5S_SELECT_SET, start, nullptr, count,
+                        nullptr);
+    id.mem = H5Screate_simple(2, count, nullptr);
+    if (H5Dread(id.dset, H5T_NATIVE_DOUBLE, id.mem, id.space, H5P_DEFAULT,
+                out.data()) < 0) {
+        setErr(err, QStringLiteral("read failed: %1").arg(dset));
+        return false;
+    }
+    return true;
+}
+
+bool H5Reader::read1DWindow(const QString &path, const QString &dset,
+                            qlonglong i0, int &count, QVector<double> &out,
+                            QString *err)
+{
+    Ids id;
+    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
+                      H5P_DEFAULT);
+    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
+    if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
+    id.space = H5Dget_space(id.dset);
+    if (H5Sget_simple_extent_ndims(id.space) != 1) {
+        setErr(err, QStringLiteral("%1 is not 1-D").arg(dset));
+        return false;
+    }
+    hsize_t dims[1];
+    H5Sget_simple_extent_dims(id.space, dims, nullptr);
+    i0 = qBound(qlonglong(0), i0, qlonglong(dims[0]) - 1);
+    count = int(qMin(qlonglong(count), qlonglong(dims[0]) - i0));
+    if (count <= 0) {
+        setErr(err, QStringLiteral("empty window in %1").arg(dset));
+        return false;
+    }
+    out.resize(count);
+    const hsize_t start[1] = { hsize_t(i0) };
+    const hsize_t cnt[1] = { hsize_t(count) };
+    H5Sselect_hyperslab(id.space, H5S_SELECT_SET, start, nullptr, cnt, nullptr);
+    id.mem = H5Screate_simple(1, cnt, nullptr);
+    if (H5Dread(id.dset, H5T_NATIVE_DOUBLE, id.mem, id.space, H5P_DEFAULT,
+                out.data()) < 0) {
+        setErr(err, QStringLiteral("read failed: %1").arg(dset));
+        return false;
+    }
+    return true;
+}
+
 bool H5Reader::readFrame(const QString &path, const QString &dset, int frame,
                          QVector<double> &out, int &rows, int &cols,
                          QString *err)
@@ -653,6 +731,21 @@ bool H5Reader::listDatasets(const QString &, QVector<H5DatasetInfo> &out,
 
 bool H5Reader::read2D(const QString &, const QString &, QVector<double> &,
                       int &, int &, QString *err)
+{
+    if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
+    return false;
+}
+
+bool H5Reader::read2DWindow(const QString &, const QString &, qlonglong,
+                            qlonglong, int &, int &, QVector<double> &,
+                            QString *err)
+{
+    if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
+    return false;
+}
+
+bool H5Reader::read1DWindow(const QString &, const QString &, qlonglong,
+                            int &, QVector<double> &, QString *err)
 {
     if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
     return false;

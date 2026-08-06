@@ -14,6 +14,29 @@ class QTableWidget;
 
 namespace ofd {
 
+struct ShdField;
+
+// 伝搬損失 (TL) 断面のヒートマップ。bellhopcxx の <ケース名>.shd を
+// ShdReader で読んだ結果を、距離 (横) × 深度 (縦) で描く。
+// 空のまま (計算前) は「未計算」とだけ表示する — 前回実行の残りを
+// 別の実行の結果として見せないため、Runner の完了時にだけ設定する。
+class UwTlView : public QWidget {
+    Q_OBJECT
+public:
+    explicit UwTlView(QWidget *parent = nullptr);
+    void setField(const ShdField &f, double rangeMax_km, double depthMax_m,
+                  const QString &caption);
+    void clear();
+protected:
+    void paintEvent(QPaintEvent *) override;
+private:
+    QVector<float> m_tl;
+    int    m_nz = 0, m_nr = 0;
+    double m_lo = 0, m_hi = 0;
+    double m_rangeMax = 0, m_depthMax = 0;
+    QString m_caption;
+};
+
 class Project;
 
 // SSP プロファイル図 (x = 音速 c, y = 深度 — 下向き)。
@@ -39,6 +62,12 @@ public:
 
 private slots:
     void refresh();
+
+private:
+public:
+    // 実行完了時に MainWindow から呼ぶ (作業ディレクトリとケース名)。
+    // .shd が読めなければ理由を表示する。
+    void showTlResult(const QString &workingDir, const QString &caseName);
 
 private:
     void apply();
@@ -69,6 +98,9 @@ private:
     QCheckBox      *m_visRay, *m_visTL, *m_visEcho;
     QComboBox      *m_peAlgo;
     QDoubleSpinBox *m_peAngular;
+
+    UwTlView       *m_tlView = nullptr;   // TL 断面 (.shd の可視化)
+    QLabel         *m_tlNote = nullptr;
 
     QLabel         *m_c0;                 // 基準音速 c₀ (計算値)
     QLabel         *m_sofarHint;          // → SOFARチャネル深度 ~1200m

@@ -45,6 +45,20 @@ public:
                        QVector<double> &out, int &rows, int &cols,
                        QString *err = nullptr);
 
+    // 2 次元データセットの一部だけを読む (ハイパースラブ)。
+    // 全球水深グリッド (GEBCO/ETOPO は 43200×86400 = 数 GB) を丸ごと展開
+    // しないために要る。範囲はデータセット内へクランプされ、実際に読めた
+    // 大きさが rows/cols に返る。
+    static bool read2DWindow(const QString &path, const QString &dset,
+                             qlonglong row0, qlonglong col0,
+                             int &rows, int &cols, QVector<double> &out,
+                             QString *err = nullptr);
+
+    // 1 次元データセットの一部だけを読む (座標軸 lat/lon 用)。
+    static bool read1DWindow(const QString &path, const QString &dset,
+                             qlonglong i0, int &count, QVector<double> &out,
+                             QString *err = nullptr);
+
     // 3 次元データセット (frames×rows×cols) の 1 フレームを読む
     static bool readFrame(const QString &path, const QString &dset, int frame,
                           QVector<double> &out, int &rows, int &cols,

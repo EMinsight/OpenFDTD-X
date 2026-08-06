@@ -2,6 +2,7 @@
 #include "UnderwaterTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/ShdReader.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -52,6 +53,7 @@ const bool s_i18nUnderwater = [] {
               "Staged analysis: near-field FDTD + far-field Bellhop");
     // Bellhop パラメータ
     I18n::reg("uwx_num_rays", "レイ数", "# rays");
+    I18n::reg("uwx_rays_auto", "自動", "auto");
     I18n::reg("uwx_beam_type", "ビーム種別", "Beam type");
     I18n::reg("uwx_beam_geom", "幾何", "Geometric");
     I18n::reg("uwx_beam_gauss", "ガウシアン", "Gaussian");
@@ -106,6 +108,17 @@ const bool s_i18nUnderwater = [] {
     I18n::reg("uwx_tl_scatter", "散乱損失", "Scattering loss");
     I18n::reg("uwx_tl_surface", "海面ロス", "Sea-surface loss");
     I18n::reg("uwx_tl_range", "距離 [km]", "Range [km]");
+    // TL 断面 (.shd の可視化)
+    I18n::reg("uwx_tl_view", "TL 断面 (計算結果)", "TL section (run result)");
+    I18n::reg("uwx_tl_none", "未計算 — 「計算」を実行すると表示されます",
+              "Not computed yet — run the solver to see it here");
+    I18n::reg("uwx_tl_ok",
+              "%1 × %2 点、TL %3〜%4 dB (TL = -20 log10|p|、小さいほど"
+              "よく届く)。出所: %5",
+              "%1 x %2 points, TL %3-%4 dB (TL = -20 log10|p|; smaller means "
+              "better reach). Source: %5");
+    I18n::reg("uwx_tl_err", "TL 断面を読めませんでした: %1",
+              "Could not read the TL section: %1");
     return true;
 }();
 
@@ -160,6 +173,84 @@ double refSoundSpeed(double T, double S)
 }
 
 } // namespace
+
+// ── UwTlView — TL 断面 (.shd) のヒートマップ ────────────────────────────────
+UwTlView::UwTlView(QWidget *parent)
+    : QWidget(parent)
+{
+    setMinimumSize(320, 190);
+}
+
+void UwTlView::clear()
+{
+    m_tl.clear();
+    m_nz = m_nr = 0;
+    m_caption.clear();
+    update();
+}
+
+void UwTlView::setField(const ShdField &f, double rangeMax_km,
+                        double depthMax_m, const QString &caption)
+{
+    m_tl = f.tl_dB;
+    m_nz = f.nrz;
+    m_nr = f.nrr;
+    m_lo = f.minTL;
+    m_hi = f.maxTL;
+    m_rangeMax = rangeMax_km;
+    m_depthMax = depthMax_m;
+    m_caption = caption;
+    update();
+}
+
+void UwTlView::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+    if (m_nz < 2 || m_nr < 2) {
+        p.setPen(palette().mid().color());
+        p.drawText(rect(), Qt::AlignCenter, I18n::tr("uwx_tl_none"));
+        return;
+    }
+    const QRectF plot(40, 8, width() - 52, height() - 34);
+    // 表示レンジは有効値の下端から 60 dB (慣用の TL カラースケール幅)
+    const double lo = m_lo, hi = qMin(m_hi, m_lo + 60.0);
+    for (int y = 0; y < int(plot.height()); ++y) {
+        const int iz = qBound(0, int(double(y) / plot.height() * m_nz), m_nz - 1);
+        for (int x = 0; x < int(plot.width()); ++x) {
+            const int ir = qBound(0, int(double(x) / plot.width() * m_nr), m_nr - 1);
+            const float tl = m_tl[qsizetype(iz) * m_nr + ir];
+            QColor c;
+            if (tl >= ShdField::kNoField) {
+                c = palette().base().color();      // 到達なし
+            } else {
+                // TL が小さい (よく届く) ほど暖色。jet 風の 4 区間
+                const double t = qBound(0.0, (hi - tl) / qMax(1.0, hi - lo), 1.0);
+                c = QColor::fromHsvF((1.0 - t) * 0.66, 0.85, 0.35 + 0.6 * t);
+            }
+            p.setPen(c);
+            p.drawPoint(int(plot.left()) + x, int(plot.top()) + y);
+        }
+    }
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(plot);
+    p.setPen(palette().text().color());
+    p.drawText(QPointF(4, plot.top() + 8), QStringLiteral("0 m"));
+    p.drawText(QPointF(4, plot.bottom()),
+               QStringLiteral("%1 m").arg(m_depthMax, 0, 'f', 0));
+    p.drawText(QPointF(plot.left(), height() - 4), QStringLiteral("0 km"));
+    p.drawText(QRectF(plot.left(), height() - 14, plot.width(), 12),
+               Qt::AlignRight | Qt::AlignVCenter,
+               QStringLiteral("%1 km").arg(m_rangeMax, 0, 'f', 1));
+    p.setPen(palette().mid().color());
+    p.drawText(QRectF(plot.left(), 0, plot.width(), 10),
+               Qt::AlignRight | Qt::AlignVCenter, m_caption);
+}
 
 // ── UwSspPlot ───────────────────────────────────────────────────────────────
 UwSspPlot::UwSspPlot(QWidget *parent)
@@ -264,16 +355,18 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     bhForm->setHorizontalSpacing(8);
     bhForm->setVerticalSpacing(4);
     m_numRays = new QSpinBox(m_bellhopPanel);
-    m_numRays->setRange(1, 10000000);
-    m_numRays->setValue(5000);
+    // 0 = NBEAMS 自動 (カーネルが決める) — 従来の .env と同じ既定
+    m_numRays->setRange(0, 10000000);
+    m_numRays->setSpecialValueText(I18n::tr("uwx_rays_auto"));
+    m_numRays->setValue(0);
     m_numRays->setMaximumWidth(120);
     bhForm->addRow(I18n::tr("uwx_num_rays"), m_numRays);
     m_beamType = makeSeg(m_bellhopPanel, { I18n::tr("uwx_beam_geom"),
                                            I18n::tr("uwx_beam_gauss"),
-                                           I18n::tr("uwx_beam_hat") }, 1);
+                                           I18n::tr("uwx_beam_hat") }, 0);
     bhForm->addRow(I18n::tr("uwx_beam_type"), m_beamType);
-    m_angMin = makeSpin(m_bellhopPanel, -90, 90, -30, 0);
-    m_angMax = makeSpin(m_bellhopPanel, -90, 90, 30, 0);
+    m_angMin = makeSpin(m_bellhopPanel, -90, 90, -45, 0);
+    m_angMax = makeSpin(m_bellhopPanel, -90, 90, 45, 0);
     auto *angRow = new QHBoxLayout();
     angRow->addWidget(m_angMin);
     angRow->addWidget(new QLabel(QStringLiteral("~"), m_bellhopPanel));
@@ -283,7 +376,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_calcMode = makeSeg(m_bellhopPanel, { I18n::tr("uwx_mode_eigen"),
                                            I18n::tr("uwx_mode_coher"),
                                            I18n::tr("uwx_mode_incoh"),
-                                           I18n::tr("uwx_mode_arr") }, 0);
+                                           I18n::tr("uwx_mode_arr") }, 1);
     bhForm->addRow(I18n::tr("uwx_calc_mode"), m_calcMode);
     m_visRay  = makeCheck(I18n::tr("uwx_vis_ray"), true, m_bellhopPanel);
     m_visTL   = makeCheck(I18n::tr("uwx_vis_tl"), true, m_bellhopPanel);
@@ -295,6 +388,14 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     visRow->addStretch(1);
     bhForm->addRow(I18n::tr("uwx_visualize"), visRow);
     sv->vbox()->addWidget(m_bellhopPanel);
+
+    // TL 断面 (計算結果) — .shd を読めたときだけ中身が入る
+    auto *tlBox = new SectionBox(I18n::tr("uwx_tl_view"), sv);
+    m_tlView = new UwTlView(tlBox);
+    tlBox->vbox()->addWidget(m_tlView);
+    m_tlNote = mutedLabel(I18n::tr("uwx_tl_none"), tlBox);
+    tlBox->vbox()->addWidget(m_tlNote);
+    sv->vbox()->addWidget(tlBox);
 
     m_pePanel = new QWidget(sv);
     auto *peForm = new QFormLayout(m_pePanel);
@@ -461,6 +562,14 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     connect(m_sofar, &QCheckBox::toggled, this, applyCb);
     connect(m_bottomType, &QComboBox::currentIndexChanged, this, applyCb);
 
+    // Bellhop 実行設定は .ofdx へ永続化し .env へ渡る (旧: UI だけで
+    // どこにも繋がっておらず、変更しても計算内容が変わらなかった)
+    for (auto *c : { m_beamType, m_calcMode })
+        connect(c, &QComboBox::currentIndexChanged, this, applyCb);
+    connect(m_numRays, &QSpinBox::valueChanged, this, applyCb);
+    for (auto *s : { m_angMin, m_angMax })
+        connect(s, &QDoubleSpinBox::valueChanged, this, applyCb);
+
     // ソルバー選択はローカル状態 (Project 非永続) → apply() は呼ばない
     connect(m_solver, &QComboBox::currentIndexChanged,
             this, &UnderwaterTab::updateSolverView);
@@ -512,6 +621,17 @@ void UnderwaterTab::apply()
     u.sonarFreq_kHz = m_sonarFreq->value();
     u.sonarSL_dB = m_sonarSL->value();
     u.rangeMax_km = m_rangeMax->value();
+    // Bellhop 実行設定 (.env の RunType / NBEAMS / ALPHA へ渡る)。
+    // 既定値は従来 BellhopIO がハードコードしていた挙動と同じ:
+    // RunType 'CG' (コヒーレント TL + 幾何 hat ビーム)、NBEAMS 0、±45°。
+    static const char *kModes[4] = { "eigenray", "coherent", "incoherent",
+                                     "arrivals" };
+    static const char *kBeams[3] = { "geometric", "gaussian", "hat" };
+    u.runMode = QString::fromLatin1(kModes[qBound(0, m_calcMode->currentIndex(), 3)]);
+    u.beamType = QString::fromLatin1(kBeams[qBound(0, m_beamType->currentIndex(), 2)]);
+    u.numRays = m_numRays->value();
+    u.angleMin_deg = m_angMin->value();
+    u.angleMax_deg = m_angMax->value();
     if (m_tlRangeMax->value() != u.rangeMax_km) {
         QSignalBlocker block(m_tlRangeMax);
         m_tlRangeMax->setValue(u.rangeMax_km);
@@ -565,6 +685,34 @@ void UnderwaterTab::updateDerived()
     }
 }
 
+// 実行完了時 (MainWindow から) — <ケース名>.shd を読んで TL 断面を出す
+void UnderwaterTab::showTlResult(const QString &workingDir,
+                                 const QString &caseName)
+{
+    if (!m_tlView || !m_tlNote) return;
+    const QString path = workingDir + QLatin1Char('/') + caseName + ".shd";
+    ShdField field;
+    QString err;
+    if (!ShdReader::read(path, field, &err)) {
+        m_tlView->clear();
+        m_tlNote->setText(I18n::tr("uwx_tl_err").arg(err));
+        return;
+    }
+    const UnderwaterOpts &u = m_p->underwater();
+    double depthMax = 0.0;
+    for (const SSPPoint &s : u.ssp) depthMax = qMax(depthMax, s.depth_m);
+    for (const BathyPoint &b : u.bathymetry) depthMax = qMax(depthMax, b.depth_m);
+    const QString src = u.bathymetry.isEmpty()
+                            ? QStringLiteral("flat bottom")
+                            : u.bathySource;
+    m_tlView->setField(field, u.rangeMax_km, depthMax, field.plotType);
+    m_tlNote->setText(I18n::tr("uwx_tl_ok")
+                          .arg(field.nrz).arg(field.nrr)
+                          .arg(field.minTL, 0, 'f', 1)
+                          .arg(field.maxTL, 0, 'f', 1)
+                          .arg(src));
+}
+
 void UnderwaterTab::refresh()
 {
     m_updating = true;
@@ -586,6 +734,18 @@ void UnderwaterTab::refresh()
     m_sonarSL->setValue(u.sonarSL_dB);
     m_rangeMax->setValue(u.rangeMax_km);
     m_tlRangeMax->setValue(u.rangeMax_km);
+    {
+        static const char *kModes[4] = { "eigenray", "coherent", "incoherent",
+                                         "arrivals" };
+        static const char *kBeams[3] = { "geometric", "gaussian", "hat" };
+        for (int i = 0; i < 4; ++i)
+            if (u.runMode == QLatin1String(kModes[i])) m_calcMode->setCurrentIndex(i);
+        for (int i = 0; i < 3; ++i)
+            if (u.beamType == QLatin1String(kBeams[i])) m_beamType->setCurrentIndex(i);
+        m_numRays->setValue(u.numRays);
+        m_angMin->setValue(u.angleMin_deg);
+        m_angMax->setValue(u.angleMax_deg);
+    }
 
     m_ssp->setRowCount(u.ssp.size());
     for (int r = 0; r < u.ssp.size(); ++r) {
