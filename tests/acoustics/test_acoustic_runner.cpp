@@ -257,6 +257,23 @@ int main(int argc, char **argv) {
         CHECK(QFileInfo(AcousticRunner::resolveSolverForHybrid(
                             AcousticBackend::ExternalFDTD))
                   .fileName() == fdtdName);
+        // 上書きが FDTD を指していて $OPENFDTD_ACOUSTICS_HOME が無くても、
+        // **上書きの隣**にある幾何音響を見つける (カーネルパス設定は 1 個
+        // しか持てないので「2 本を同じ場所に置いて片方を指定」が自然)
+        qunsetenv("OPENFDTD_ACOUSTICS_HOME");
+        CHECK(QFileInfo(AcousticRunner::resolveSolverForHybrid(
+                            AcousticBackend::ExternalGeometric))
+                  .fileName() == gaName);
+        // 逆向き (幾何音響を指定 → FDTD をその隣から見つける) も同じ
+        qputenv("OFDX_ACOUSTIC_SOLVER",
+                QDir(home.path()).absoluteFilePath(gaName).toLocal8Bit());
+        CHECK(QFileInfo(AcousticRunner::resolveSolverForHybrid(
+                            AcousticBackend::ExternalFDTD))
+                  .fileName() == fdtdName);
+        qputenv("OPENFDTD_ACOUSTICS_HOME", home.path().toLocal8Bit());
+        qputenv("OFDX_ACOUSTIC_SOLVER",
+                QDir(home.path()).absoluteFilePath(fdtdName).toLocal8Bit());
+
         // 単発実行の従来経路は上書きを無条件に採用する (挙動を変えない)
         AcousticRunConfig geo;
         geo.backend = AcousticBackend::ExternalGeometric;

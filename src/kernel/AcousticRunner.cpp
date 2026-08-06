@@ -116,6 +116,22 @@ QString AcousticRunner::resolveSolverForHybrid(AcousticBackend backend)
                                   qEnvironmentVariable("OFDX_ACOUSTIC_SOLVER") };
     for (const QString &o : overrides)
         if (matches(o)) return o;
+    // 名前が一致しない上書き (= もう一方のソルバーを指している) でも、
+    // **その隣**は探す。カーネルパス設定も $OFDX_ACOUSTIC_SOLVER も 1 個
+    // しか持てないので、「2 本を同じ場所に置いて片方を指定した」が最も
+    // 自然な設定になるため (どちらを指定してももう一方が見つかる)。
+    for (const QString &o : overrides) {
+        if (o.isEmpty() || !QFileInfo::exists(o)) continue;
+        const QDir dir(QFileInfo(o).absolutePath());
+        for (const QString &b : bases) {
+            QString base = b;
+#ifdef Q_OS_WIN
+            base += ".exe";
+#endif
+            const QString full = dir.absoluteFilePath(base);
+            if (QFileInfo::exists(full)) return full;
+        }
+    }
     return resolveSolverByName(backend);
 }
 
