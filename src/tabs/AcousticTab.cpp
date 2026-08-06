@@ -1034,10 +1034,11 @@ void AcousticTab::runConvolve()
                             QString::number(info.outputPeakDbfs, 'f', 1),
                             QString::number(info.suggestedGainDb, 'f', 1),
                             I18n::tr("t_auralization"));
-    // RIR をリサンプリングした場合は必ず明示する (黙って変換しない)
-    if (note.resampled)
-        done += QStringLiteral("\n\n") + I18n::tr("aur_resampled_note")
-                    .arg(QString::number(qRound64(note.fromHz)),
-                         QString::number(qRound64(note.toHz)));
+    // RIR の fs の注記 (変換した事実 + 帯域が足りない場合の警告)。
+    // 可聴化タブと同じ文言を tabhelp から取る。
+    const QStringList fsNotes =
+        tabhelp::rirSampleRateNotes(note.fromHz, note.toHz);
+    if (!fsNotes.isEmpty())
+        done += QStringLiteral("\n\n") + fsNotes.join(QStringLiteral("\n\n"));
     QMessageBox::information(this, I18n::tr("ac2_convolve"), done);
 }

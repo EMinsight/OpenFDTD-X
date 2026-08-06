@@ -28,6 +28,27 @@ const bool s_i18n = [] {
 namespace ofd {
 namespace tabhelp {
 
+// RIR のナイキストがこの値未満なら「高域が無い」と警告する。
+// 16 kHz は可聴帯域上端 (20 kHz) より下だが、これを下回ると音色が
+// はっきり曇るので実用上の境目として採る。
+double rirBandWarnThresholdHz() { return 16000.0; }
+
+QStringList rirSampleRateNotes(double rirFsHz, double outFsHz)
+{
+    QStringList notes;
+    if (!(rirFsHz > 0.0) || !(outFsHz > 0.0)) return notes;
+    if (rirFsHz != outFsHz)
+        notes << I18n::tr("aur_resampled_note")
+                     .arg(QString::number(qRound64(rirFsHz)),
+                          QString::number(qRound64(outFsHz)));
+    const double band = 0.5 * rirFsHz;
+    if (band < rirBandWarnThresholdHz())
+        notes << I18n::tr("aur_rir_band_note")
+                     .arg(QString::number(qRound64(band)),
+                          QString::number(qRound64(rirFsHz)));
+    return notes;
+}
+
 void markNotImplemented(QAbstractButton *b)
 {
     b->setEnabled(false);

@@ -7,6 +7,7 @@
 #include <QColor>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <vector>
 
@@ -42,6 +43,19 @@ void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
 void saveTextFile(QWidget *parent, const QString &caption,
                   const QString &suggested, const QString &filter,
                   const QString &content);
+
+// ── 可聴化の RIR サンプルレート注記 ────────────────────────────────────────
+// 畳み込み結果に必ず添える注記を作る (可聴化タブの単発/一括、音響解析タブの
+// 3 箇所が同じ文言を出すため共有する)。返る各行に行頭記号は付かない。
+//   1) RIR を変換した場合: 変換前後の fs を明示する (黙って変換しない)
+//   2) RIR の帯域 (fs/2) が可聴帯域に届かない場合: ウェット音にそれ以上の
+//      高域が無いことを警告する (出力 fs が高いと「高域まである音」に
+//      見えてしまうため — CLAUDE.md 絶対規則 5)
+// rirFsHz は RIR ファイル本来の fs、outFsHz は出力 (= ドライ) の fs。
+QStringList rirSampleRateNotes(double rirFsHz, double outFsHz);
+
+// 上の 2) の判定しきい値 [Hz]。RIR のナイキストがこれ未満なら警告する。
+double rirBandWarnThresholdHz();
 
 // ── 仮対応 (モック) の明示 (CLAUDE.md 絶対規則 5) ───────────────────────────
 // 未実装機能のボタン/チェックを「押せるのに何も起きない」状態にしない。

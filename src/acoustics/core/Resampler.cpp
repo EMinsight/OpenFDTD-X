@@ -42,10 +42,28 @@ const double kStopbandDb = 90.0;   // 設計阻止域減衰 A [dB]
 const double kPassbandEdge = 0.90; // 通過帯域端 (目標ナイキスト比)
 const double kStopbandEdge = 1.00; // 阻止域端 (目標ナイキスト比)
 
-// 約分後の L, M の上限。標準系サンプルレート (8k/11.025k/16k/22.05k/24k/
+// 1 段あたりの L, M の上限。標準系サンプルレート (8k/11.025k/16k/22.05k/24k/
 // 32k/44.1k/48k/88.2k/96k/176.4k/192k) の相互変換で必要な最大値は 640
-// (11025 ↔ 48000)。上限はフィルタのメモリ暴走を防ぐ安全弁。
+// (11025 ↔ 48000)。上限はフィルタのメモリ暴走を防ぐ安全弁
+// (プロトタイプ長 N ≈ 114.3·max(L,M) なので 4096 で約 47 万タップ = 3.7 MB)。
+//
+// 約分後の比がこれを超える場合 (FDTD ソルバーが吐く格子刻み由来の
+// 端数 fs — 例 1201 Hz → 48000 Hz は L/M = 48000/1201) は、L と M を
+// それぞれ上限以下の因子へ分割した**多段カスケード**で実現する
+// (planStages)。1 段で済む場合の経路・出力は従来と完全に同一。
 const long long kMaxFactor = 4096;
+
+// 分割できない比 (素数の fs など) 用の絶対上限。1 段で押し切るときの
+// タップ数は 114.3·max(L,M) ≈ 750 万 (60 MB, double) が上限になる。
+// これを超える比は素直にエラーにする (外部ツールで揃えてもらう)。
+const long long kHardFactor = 65536;
+
+// カスケードの 1 段 (概念上は L 倍アップ → 低域通過 → M 分の 1 ダウン)
+struct Stage {
+    long long L, M;
+    Stage() : L(1), M(1) {}
+    Stage(long long l, long long m) : L(l), M(m) {}
+};
 
 long long gcdll(long long a, long long b)
 {
@@ -147,6 +165,110 @@ std::vector<double> applyPolyphase(const FirDesign &d, long long L,
     return y;
 }
 
+// v を素因数へ分解し、積が lim 以下になるよう大きい順に束ねる。
+// 例: 48000 (= 2^7·3·5^3), lim = 4096 → { 3000, 16 }。
+// lim を超える素因数があると分割不能なので false (その素因数を badPrime へ)。
+bool chunkFactors(long long v, long long lim, std::vector<long long> *chunks,
+                  long long *badPrime)
+{
+    chunks->clear();
+    *badPrime = 0;
+    if (v <= 1) return true;
+
+    // 素因数を小さい順に集める (v ≤ 1e9 なので試し割りで十分)
+    std::vector<long long> primes;
+    long long r = v;
+    for (long long p = 2; p * p <= r; p += (p == 2) ? 1 : 2) {
+        while (r % p == 0) {
+            primes.push_back(p);
+            r /= p;
+        }
+    }
+    if (r > 1) primes.push_back(r);
+
+    // 大きい順に詰めると各束が lim に近くなり、段数が最小になる
+    for (std::size_t i = primes.size(); i > 0; --i) {
+        const long long p = primes[i - 1];
+        if (p > lim) {
+            *badPrime = p;
+            chunks->clear();
+            return false;
+        }
+        if (!chunks->empty() && chunks->back() <= lim / p)
+            chunks->back() *= p;
+        else
+            chunks->push_back(p);
+    }
+    return true;
+}
+
+// 分割案の中間レートが min(fs_in, fs_out) 〜 max(fs_in, fs_out) に
+// 収まるか。収まっていれば
+//   - 中間で min ナイキストより下へ落ちない = 余分な帯域損失が無い
+//   - 中間で max を超えない                = 配列長が暴れない
+// の両方が成り立つ (この 2 つがカスケードの正しさの条件)。
+bool ratesStayInRange(const std::vector<Stage> &stages, double srcRateHz,
+                      double dstRateHz)
+{
+    const double lo = (srcRateHz < dstRateHz) ? srcRateHz : dstRateHz;
+    const double hi = (srcRateHz < dstRateHz) ? dstRateHz : srcRateHz;
+    double rate = srcRateHz;
+    for (std::size_t i = 0; i + 1 < stages.size(); ++i) {
+        rate = rate * double(stages[i].L) / double(stages[i].M);
+        if (rate < lo * (1.0 - 1e-12) || rate > hi * (1.0 + 1e-12))
+            return false;
+    }
+    return true;
+}
+
+// L/M を「各因子が kMaxFactor 以下」の段に分割する。
+// 1 段で足りる場合は 1 段だけ返す (従来経路と完全に同一)。
+//
+// 段の順序は「大きい束どうしを先に組む」。こうすると中間レートが
+// fs_in と fs_out の間に収まる (ratesStayInRange で検証)。
+// 分割できない・分割すると中間レートが範囲外になる比 (fs が大きな素数の
+// 場合など) は、max(L, M) が kHardFactor 以下なら 1 段で押し切る
+// (タップ数は増えるが結果は正しい)。それも超える比だけをエラーにする。
+bool planStages(long long L, long long M, double srcRateHz, double dstRateHz,
+                std::vector<Stage> *stages, AcousticErrorCode *code,
+                std::string *msg)
+{
+    stages->clear();
+    if (L <= kMaxFactor && M <= kMaxFactor) {
+        stages->push_back(Stage(L, M));
+        return true;
+    }
+
+    std::vector<long long> lc, mc;
+    long long bad = 0;
+    if (chunkFactors(L, kMaxFactor, &lc, &bad) &&
+        chunkFactors(M, kMaxFactor, &mc, &bad)) {
+        const std::size_t n = (lc.size() > mc.size()) ? lc.size() : mc.size();
+        for (std::size_t i = 0; i < n; ++i)
+            stages->push_back(Stage(i < lc.size() ? lc[i] : 1,
+                                    i < mc.size() ? mc[i] : 1));
+        if (ratesStayInRange(*stages, srcRateHz, dstRateHz)) return true;
+        stages->clear();
+    }
+
+    // 分割不能 — 1 段で押し切れる大きさか
+    const long long big = (L > M) ? L : M;
+    if (big <= kHardFactor) {
+        stages->push_back(Stage(L, M));
+        return true;
+    }
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "%.0f Hz -> %.0f Hz needs the ratio %lld/%lld, which cannot "
+                  "be split into stages and exceeds the single-stage limit "
+                  "(%lld)",
+                  srcRateHz, dstRateHz, L, M, kHardFactor);
+    *code = AcousticErrorCode::UnsupportedSampleRate;
+    *msg = buf;
+    return false;
+}
+
 // fs の妥当性検査と L/M の決定。成功時は true を返し L, M を埋める。
 bool resolveRatio(double srcRateHz, double dstRateHz, long long *L,
                   long long *M, AcousticErrorCode *code, std::string *msg)
@@ -169,17 +291,6 @@ bool resolveRatio(double srcRateHz, double dstRateHz, long long *L,
     const long long g = gcdll(dst, src);
     *L = dst / g;
     *M = src / g;
-    if (*L > kMaxFactor || *M > kMaxFactor) {
-        char buf[128];
-        std::snprintf(buf, sizeof(buf),
-                      "conversion ratio %lld/%lld exceeds the supported "
-                      "factor limit (%lld)",
-                      static_cast<long long>(*L), static_cast<long long>(*M),
-                      kMaxFactor);
-        *code = AcousticErrorCode::UnsupportedSampleRate;
-        *msg = buf;
-        return false;
-    }
     return true;
 }
 
@@ -190,13 +301,38 @@ std::size_t outputLength(std::size_t nIn, long long L, long long M)
     return static_cast<std::size_t>(num / M);
 }
 
-ResampleInfo makeInfo(long long L, long long M, const FirDesign &d,
-                      double srcRateHz, double dstRateHz)
+// カスケードの実行。最終段の出力長は呼び出し側が指定する
+// (round(nIn·L/M) の契約を段の丸め誤差で崩さないため)。
+std::vector<double> runStages(const std::vector<Stage> &stages,
+                              const std::vector<FirDesign> &designs,
+                              ArrayView<const double> x, std::size_t nOutFinal)
+{
+    std::vector<double> cur;
+    ArrayView<const double> in = x;
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+        const std::size_t nOut =
+            (i + 1 == stages.size())
+                ? nOutFinal
+                : outputLength(in.size(), stages[i].L, stages[i].M);
+        std::vector<double> next =
+            applyPolyphase(designs[i], stages[i].L, stages[i].M, in, nOut);
+        cur.swap(next);
+        in = ArrayView<const double>(cur.data(), cur.size());
+    }
+    return cur;
+}
+
+ResampleInfo makeInfo(long long L, long long M,
+                      const std::vector<FirDesign> &designs, double srcRateHz,
+                      double dstRateHz)
 {
     ResampleInfo info;
     info.upFactor = L;
     info.downFactor = M;
-    info.filterLength = d.h.size();
+    info.stageCount = designs.size();
+    info.filterLength = 0;
+    for (std::size_t i = 0; i < designs.size(); ++i)
+        info.filterLength += designs[i].h.size();
     // カットオフ (−6 dB 点) = 0.95 × min(fs_in, fs_out)/2 [Hz]
     const double fmin = (srcRateHz < dstRateHz) ? srcRateHz : dstRateHz;
     info.cutoffHz = 0.5 * (kPassbandEdge + kStopbandEdge) * 0.5 * fmin;
@@ -232,9 +368,17 @@ resampleSignal(ArrayView<const double> x, double srcRateHz, double dstRateHz,
     if (!resolveRatio(srcRateHz, dstRateHz, &L, &M, &code, &msg))
         return Result::error(code, msg);
 
-    const FirDesign d = designKaiserLowpass(L, M);
-    if (outInfo) *outInfo = makeInfo(L, M, d, srcRateHz, dstRateHz);
-    return Result::ok(applyPolyphase(d, L, M, x, outputLength(x.size(), L, M)));
+    std::vector<Stage> stages;
+    if (!planStages(L, M, srcRateHz, dstRateHz, &stages, &code, &msg))
+        return Result::error(code, msg);
+
+    std::vector<FirDesign> designs;
+    designs.reserve(stages.size());
+    for (std::size_t i = 0; i < stages.size(); ++i)
+        designs.push_back(designKaiserLowpass(stages[i].L, stages[i].M));
+    if (outInfo) *outInfo = makeInfo(L, M, designs, srcRateHz, dstRateHz);
+    return Result::ok(
+        runStages(stages, designs, x, outputLength(x.size(), L, M)));
 }
 
 AcousticResult<AudioBuffer>
@@ -270,18 +414,25 @@ resampleBuffer(const AudioBuffer &in, double dstRateHz, ResampleInfo *outInfo)
     if (!resolveRatio(in.sampleRateHz, dstRateHz, &L, &M, &code, &msg))
         return Result::error(code, msg);
 
+    std::vector<Stage> stages;
+    if (!planStages(L, M, in.sampleRateHz, dstRateHz, &stages, &code, &msg))
+        return Result::error(code, msg);
+
     // フィルタは 1 回だけ設計し全チャンネルに適用する
-    const FirDesign d = designKaiserLowpass(L, M);
+    std::vector<FirDesign> designs;
+    designs.reserve(stages.size());
+    for (std::size_t i = 0; i < stages.size(); ++i)
+        designs.push_back(designKaiserLowpass(stages[i].L, stages[i].M));
     const std::size_t nOut = outputLength(in.sampleCount(), L, M);
     out.channels.reserve(in.channelCount());
     for (std::size_t c = 0; c < in.channelCount(); ++c) {
-        out.channels.push_back(applyPolyphase(
-            d, L, M,
+        out.channels.push_back(runStages(
+            stages, designs,
             ArrayView<const double>(in.channels[c].data(),
                                     in.channels[c].size()),
             nOut));
     }
-    if (outInfo) *outInfo = makeInfo(L, M, d, in.sampleRateHz, dstRateHz);
+    if (outInfo) *outInfo = makeInfo(L, M, designs, in.sampleRateHz, dstRateHz);
     return Result::ok(std::move(out));
 }
 

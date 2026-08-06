@@ -921,11 +921,21 @@ void I18n::loadTables() {
     add("aur_status_error", "畳み込み失敗: %1 — %2",
         "Convolution failed: %1 — %2");
     add("aur_no_resample_note",
-        "サンプルレートを自動変換できませんでした (fs が不正または非対応)。"
-        "外部ツールで fs を揃えてから再実行してください。",
-        "The sample rate could not be converted automatically (invalid or "
-        "unsupported fs). Convert the files to a common rate externally and "
-        "retry.");
+        "サンプルレートを自動変換できませんでした (上のメッセージに変換元→"
+        "変換先の fs が出ています)。「🎚 音響編集・解析」タブでどちらかの "
+        "fs を揃えるか、外部ツールで変換してから再実行してください。",
+        "The sample rate could not be converted automatically (the message "
+        "above shows the source and target fs). Match the rates in the "
+        "“🎚 Audio Editor” tab or convert externally, then retry.");
+    // RIR の帯域が可聴帯域に届かない場合の警告。出力 fs だけ高くても
+    // 高域は復元されない (FDTD の RIR は格子刻みで帯域が決まる)。
+    add("aur_rir_band_note",
+        "RIR の帯域は %1 Hz までです (RIR の fs = %2 Hz)。ウェット音に"
+        "これより高い周波数成分は含まれません — 帯域を伸ばすには室の"
+        "メッシュを細かくしてソルバーを再実行してください。",
+        "The RIR only carries content up to %1 Hz (RIR fs = %2 Hz). The wet "
+        "output has no energy above that — refine the room mesh and re-run "
+        "the solver to extend the band.");
     add("aur_resampled_note",
         "RIR を %1 Hz → %2 Hz へリサンプリングしました "
         "(ドライ音源に合わせるため。Kaiser 窓 sinc、阻止域 ~90 dB)。",

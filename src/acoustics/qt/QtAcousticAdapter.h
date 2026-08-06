@@ -71,8 +71,10 @@ public:
     // 黙って変換しない — 呼び出し側は resampled のとき必ずユーザーに明示する)
     struct RirResampleNote {
         bool   resampled;   // RIR をリサンプリングしたか
-        double fromHz;      // 変換前の RIR fs
-        double toHz;        // 変換後の fs (= ドライの fs)
+        // 下の 2 つは変換の有無に関わらず埋まる (RIR の帯域は変換しても
+        // 広がらないため、呼び出し側が帯域制限の注記を出せるように)。
+        double fromHz;      // RIR ファイル本来の fs
+        double toHz;        // 出力の fs (= ドライの fs)
         RirResampleNote() : resampled(false), fromHz(0.0), toHz(0.0) {}
     };
 
