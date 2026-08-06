@@ -53,6 +53,10 @@ private:
     // ハイブリッド実行: FDTD → 幾何音響 → 合成 → 可聴化へ設定 まで通す。
     // 2 つのソルバーを順に起動する (m_hybridPhase が段を持つ)。
     void startHybridRun();
+    // ハイブリッドの 1 段だけ実行する。phase: 1 = 低域 (一括の第 1 段) /
+    // 2 = 高域 (一括の第 2 段) / 3 = 低域のみ / 4 = 高域のみ。
+    // 3・4 は結果を欄に入れて終わる (合成はユーザーの「▶ 合成する」)。
+    void startHybridStage(int phase);
     // ハイブリッド実行の段を進める (ソルバー 1 本の終了ごとに呼ぶ)
     void advanceHybridRun(bool ok);
     void stopSolver();
@@ -87,7 +91,10 @@ private:
     QLabel *m_hyResult = nullptr;
     QString m_hyLastOut;             // 直近の合成結果 (可聴化へ渡す用)
     QPushButton *m_hyRunAll = nullptr;  // 2 ソルバー実行 → 合成まで一括
-    // ハイブリッド実行の段: 0 = 実行していない / 1 = FDTD / 2 = 幾何音響。
+    QPushButton *m_hyRunLow = nullptr;  // 低域 (FDTD) だけ実行
+    QPushButton *m_hyRunHigh = nullptr; // 高域 (幾何音響) だけ実行
+    // ハイブリッド実行の段: 0 = 実行していない / 1 = FDTD (一括) /
+    // 2 = 幾何音響 (一括) / 3 = 低域のみ / 4 = 高域のみ。
     // 段が進行中は rirReady を可聴化へ流さない (中間 RIR を最終結果として
     // 扱わないため — 最後の合成結果だけを設定する)。
     int m_hybridPhase = 0;
