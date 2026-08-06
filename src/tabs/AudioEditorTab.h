@@ -33,6 +33,10 @@ class AudioEditorTab : public QScrollArea {
 public:
     explicit AudioEditorTab(Project *project, QWidget *parent = nullptr);
 
+    // ダイアログを出さずに WAV を開く (他タブからの受け渡し用 —
+    // 水中音響で合成した受信インパルス応答をそのまま渡す等)
+    void openWavFile(const QString &path);
+
     // タブ規約 (widgets→model / model→widgets)。このタブはモデル非結合の
     // 作業ツールのため、どちらも何もしない
     void apply() {}

@@ -1376,6 +1376,14 @@ void AudioEditorTab::loadWav()
     const QString path = QFileDialog::getOpenFileName(this,
         I18n::tr("ae_load"), QString(), QStringLiteral("WAV (*.wav)"));
     if (path.isEmpty()) return;
+    openWavFile(path);
+}
+
+// パス指定で開く (他タブからの受け渡し用 — 水中の受信 IR 等)。
+// ダイアログを出さないだけで、以降の扱いは loadWav() と同じ。
+void AudioEditorTab::openWavFile(const QString &path)
+{
+    if (path.isEmpty()) return;
     const acoustics::AcousticResult<acoustics::AudioBuffer> res =
         acoustics::readWavFile(path.toStdString());
     if (!res.success()) {

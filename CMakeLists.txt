@@ -130,6 +130,10 @@ set(CORE_SOURCES
     src/io/ActivationCurve.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
+    # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。
+    # 水中の可聴化の入口 — selftest から合成結果を直接検証する
+    src/io/ArrReader.cpp
+    src/io/ArrReader.h
     src/io/BathymetryIO.cpp
     src/io/BathymetryIO.h
     # 配布ページ (HTML) からデータファイルへのリンクを抜き出す (Qt Core のみ)。
