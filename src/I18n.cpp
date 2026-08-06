@@ -488,6 +488,10 @@ void I18n::loadTables() {
     add("uw_shd_missing",
         "警告: .shd が生成されませんでした (.prt のログを確認してください)",
         "Warning: no .shd was generated (check the .prt log)");
+    add("uw_arr_ok",
+        "%1 を生成しました (%2) — 到達 (受信波形の合成に使えます)",
+        "Generated %1 (%2) \u2014 arrivals (can be turned into a received "
+        "waveform)");
     add("uw_shd_slice_ok",
         "TL 音場を「2D 断面」へ反映しました",
         "The TL field was loaded into the 2D slice view");

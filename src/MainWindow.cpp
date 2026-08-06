@@ -600,6 +600,17 @@ void MainWindow::buildLeftNav(QWidget *parent)
                     rirTab, &RirAnalysisTab::applySolverRir);
         }
     }
+    // 水中音響で合成した受信インパルス応答 (WAV) を「音響編集・解析」へ渡す。
+    // 合成 → そのまま畳み込み (リバーブ) へ、が 1 手で繋がるようにする。
+    if (auto *uwTab = qobject_cast<UnderwaterTab *>(m_tabUnderwater)) {
+        if (auto *aeTab = qobject_cast<AudioEditorTab *>(m_tabAudioEdit)) {
+            connect(uwTab, &UnderwaterTab::receivedIrExported, this,
+                    [this, aeTab](const QString &wav) {
+                        aeTab->openWavFile(wav);
+                        m_nav->selectKey(QStringLiteral("audioeditor"));
+                    });
+        }
+    }
     // 音響解析タブの「進め方」パネルの行クリック → 左ナビの該当タブへ移動。
     // AcousticTab はナビのキーを投げるだけで、切替はナビを持つ MainWindow が
     // 行う (タブ同士が直接依存しない)。標準表示で隠れているタブは selectKey が
@@ -1481,6 +1492,16 @@ void MainWindow::onRunnerFinished(bool ok)
         // TL 音場を読んで水中音響タブの「TL 断面」へ反映する
         // (この実行が生成した .shd だけを対象にする)
         auto *uwTab = qobject_cast<UnderwaterTab *>(m_tabUnderwater);
+        // 到達ファイル (.arr) — 「計算モード = 到達時間」のときに出る。
+        // 受信インパルス応答の作成欄をこの実行の結果で更新する。
+        if (uwTab) uwTab->showArrivalResult(m_runner->workingDir(), base);
+        {
+            const QFileInfo arr(wd.filePath(base + ".arr"));
+            if (arr.exists())
+                m_rightDock->appendLog(
+                    I18n::tr("uw_arr_ok").arg(arr.fileName())
+                        .arg(QLocale().formattedDataSize(arr.size())));
+        }
         if (shd.exists()) {
             if (uwTab) uwTab->showTlResult(m_runner->workingDir(), base);
             ShdField f;

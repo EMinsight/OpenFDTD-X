@@ -24,6 +24,7 @@
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
+#include "io/ArrReader.h"
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
@@ -4617,6 +4618,138 @@ static void testOceanPageScan()
         scanPageLinks(page, "<html><body><script>go()</script></body></html>",
                        400, &trunc3);
     check(none.isEmpty(), "scan: a JS-only page yields nothing (reported as such)");
+}
+
+
+// BELLHOP の到達 (.arr) の読み取りと受信インパルス応答の合成
+static void testArrivalIr()
+{
+    g_file = "arrival-ir";
+
+    // 2D の .arr を手で組み立てる (bellhopcuda src/mode/arr.cpp の並び):
+    //   '2D' / freq / NSz Sz / NRz Rz / NRr Rr / maxn /
+    //   受波器ごと (深度 iz → 距離 ir): narr, 到達 8 列
+    const QString path = btyTmpPath("case.arr");
+    {
+        QFile f(path);
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write("'2D'\n 200.0\n"
+                " 1  50.0\n"                       // 音源深度 1 点
+                " 2  10.0  90.0\n"                 // 受波器深度 2 点
+                " 3  0.0  1000.0  2000.0\n"        // 受波器距離 3 点 [m]
+                " 4\n");                           // maxn
+        // (iz=0, ir=0): 到達なし
+        f.write(" 0\n");
+        // (iz=0, ir=1): 2 本 — 直接波と逆位相の海面反射
+        f.write(" 1\n"
+                " 1.0  0.0  0.500  0.0  10.0 -10.0  0  0\n");
+        f.write(" 2\n"
+                " 0.8  0.0  1.000  0.0  5.0  -5.0  0  0\n"
+                " 0.4  180.0  1.010  0.0 -5.0   5.0  1  0\n");
+        // (iz=1, ir=0..2)
+        f.write(" 1\n 0.25  0.0  0.100  0.0  0.0  0.0  0  0\n");
+        f.write(" 0\n");
+        f.write(" 3\n"
+                " 0.5  0.0   2.000  0.0  1.0 -1.0  0  0\n"
+                " 0.3  180.0 2.020  0.0  2.0 -2.0  1  0\n"
+                " 0.2  0.0   2.050  0.0  3.0 -3.0  1  1\n");
+        f.close();
+    }
+
+    ArrHeader h;
+    QString err;
+    check(ArrReader::readHeader(path, h, &err), "arr: header");
+    check(qFuzzyCompare(h.freqHz, 200.0), "arr: frequency");
+    check(h.sz.size() == 1 && h.rz.size() == 2 && h.rr.size() == 3,
+          "arr: receiver grid sizes");
+    check(qFuzzyCompare(h.rz[1], 90.0) && qFuzzyCompare(h.rr[2], 2000.0),
+          "arr: receiver coordinates");
+
+    // 目的の受波器だけを取り出す (手前の到達は読み飛ばす)
+    QVector<ArrArrival> a;
+    check(ArrReader::readArrivals(path, 0, 2, h, a, &err) && a.size() == 2,
+          "arr: arrivals of receiver (0, 2)");
+    check(qFuzzyCompare(a[0].amp, 0.8) && qFuzzyCompare(a[0].delayS, 1.0)
+              && qFuzzyCompare(a[1].phaseDeg, 180.0) && a[1].nTop == 1,
+          "arr: arrival fields (amplitude / delay / phase / bounce counts)");
+    check(ArrReader::readArrivals(path, 1, 2, h, a, &err) && a.size() == 3,
+          "arr: the last receiver is reached after skipping the earlier ones");
+    check(ArrReader::readArrivals(path, 0, 0, h, a, &err) && a.isEmpty(),
+          "arr: a receiver with no arrivals reads back empty");
+    check(!ArrReader::readArrivals(path, 5, 0, h, a, &err),
+          "arr: an out-of-grid receiver is refused");
+
+    // ── IR 合成 ────────────────────────────────────────────────────────────
+    // 単一到達: t=0 に振幅そのまま (直接波が原点)
+    {
+        QVector<ArrArrival> one(1);
+        one[0].amp = 0.5;
+        one[0].delayS = 3.25;      // 絶対時刻は関係ない (原点は最初の到達)
+        IrSynthInfo nfo;
+        const QVector<double> ir = synthesizeIr(one, 1000.0, 0.0, &nfo);
+        check(nfo.arrivals == 1 && std::fabs(nfo.peak - 0.5) < 1e-9,
+              "ir: a single arrival keeps its amplitude");
+        check(std::fabs(nfo.firstDelayS - 3.25) < 1e-12,
+              "ir: the absolute arrival time is reported");
+        // ピークは先頭 (kHalf のオフセット位置)
+        int arg = 0;
+        for (int i = 0; i < ir.size(); ++i)
+            if (std::fabs(ir[i]) > std::fabs(ir[arg])) arg = i;
+        check(arg <= 8, "ir: t=0 is the first arrival");
+    }
+    // 位相 180° は符号反転として入る (海面反射)
+    {
+        QVector<ArrArrival> two(2);
+        two[0].amp = 1.0; two[0].phaseDeg = 0.0;   two[0].delayS = 0.0;
+        two[1].amp = 1.0; two[1].phaseDeg = 180.0; two[1].delayS = 0.010;
+        IrSynthInfo nfo;
+        const QVector<double> ir = synthesizeIr(two, 1000.0, 0.0, &nfo);
+        double lo = 0.0, hi = 0.0;
+        for (const double v : ir) { lo = std::min(lo, v); hi = std::max(hi, v); }
+        check(hi > 0.9 && lo < -0.9,
+              "ir: a 180-degree arrival goes in with the opposite sign");
+        // 遅延 10 ms = 10 サンプル @1 kHz 離れている
+        int iP = 0, iN = 0;
+        for (int i = 0; i < ir.size(); ++i) {
+            if (ir[i] > ir[iP]) iP = i;
+            if (ir[i] < ir[iN]) iN = i;
+        }
+        check(iN - iP == 10, "ir: the delay difference lands on the right sample");
+    }
+    // 分数遅延: 半サンプルずれた 2 本の重心が 0.25 サンプルに来る
+    {
+        QVector<ArrArrival> two(2);
+        two[0].amp = 1.0; two[0].delayS = 0.0;
+        two[1].amp = 1.0; two[1].delayS = 0.5 / 1000.0;
+        const QVector<double> ir = synthesizeIr(two, 1000.0, 0.0, nullptr);
+        double num = 0.0, den = 0.0;
+        for (int i = 0; i < ir.size(); ++i) { num += i * ir[i]; den += ir[i]; }
+        check(std::fabs(num / den - 8.0 - 0.25) < 0.02,
+              "ir: a half-sample arrival is interpolated, not snapped");
+    }
+    // 空入力・不正 fs
+    {
+        IrSynthInfo nfo;
+        check(synthesizeIr({}, 48000.0, 0.05, &nfo).isEmpty() && nfo.length == 0,
+              "ir: no arrivals -> empty");
+        QVector<ArrArrival> one(1);
+        one[0].amp = 1.0;
+        check(synthesizeIr(one, 0.0, 0.0, nullptr).isEmpty(),
+              "ir: a non-positive sample rate is refused");
+    }
+    // 3D の .arr は未対応 (黙って誤読しない)
+    {
+        const QString p3 = btyTmpPath("case3d.arr");
+        QFile f(p3);
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write("'3D'\n 200.0\n");
+        f.close();
+        ArrHeader h3;
+        QString e3;
+        check(!ArrReader::readHeader(p3, h3, &e3)
+                  && e3.contains(QLatin1String("2-D")),
+              "arr: a 3-D arrival file is refused with a reason");
+    }
 }
 
 static void testUnderwaterBathymetry()
@@ -9914,6 +10047,7 @@ int main(int argc, char *argv[])
     testBellhop();
     testUnderwaterBathymetry();
     testOceanPageScan();
+    testArrivalIr();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

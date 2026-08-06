@@ -3,6 +3,9 @@
 #include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../io/ShdReader.h"
+#include "../io/ArrReader.h"
+#include "../acoustics/core/AudioBuffer.h"
+#include "../acoustics/io/WavWriter.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -11,6 +14,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -119,6 +123,52 @@ const bool s_i18nUnderwater = [] {
               "better reach). Source: %5");
     I18n::reg("uwx_tl_err", "TL 断面を読めませんでした: %1",
               "Could not read the TL section: %1");
+    // 受信インパルス応答 (.arr → IR → WAV)
+    I18n::reg("uwx_ir_sec", "受信波形 (インパルス応答)",
+              "Received waveform (impulse response)");
+    I18n::reg("uwx_ir_depth", "受波器 深度", "Receiver depth");
+    I18n::reg("uwx_ir_range", "受波器 距離", "Receiver range");
+    I18n::reg("uwx_ir_fs", "書き出す fs", "Export sample rate");
+    I18n::reg("uwx_ir_export", "💾 受信波形を WAV で書き出す",
+              "\U0001f4be Export the received waveform as WAV");
+    I18n::reg("uwx_ir_hint",
+              "「計算モード = 到達時間」で実行すると、到達ごとの振幅・位相・"
+              "遅延から受信インパルス応答を合成できます。書き出した WAV は"
+              "「音響編集・解析」の畳み込み (リバーブ) にそのまま使えます。",
+              "Running with \u201cRun mode = Arrivals\u201d lets the received impulse "
+              "response be synthesised from each arrival's amplitude, phase "
+              "and delay. The exported WAV can be used directly by the "
+              "convolution (reverb) in Audio editing / analysis.");
+    I18n::reg("uwx_ir_narrow",
+              "▸ 到達の振幅は %1 Hz 1 波数で計算された値です。合成した波形が"
+              "正しいのは **その周波数の近傍だけ** で、広帯域の音を作るには"
+              "周波数ごとに実行して合成する必要があります (未実装)。",
+              "\u25b8 Arrival amplitudes are computed at the single frequency "
+              "%1 Hz, so the synthesised waveform is only valid **near that "
+              "frequency**. Broadband audio needs a run per frequency and a "
+              "combination step (not implemented).");
+    I18n::reg("uwx_ir_none",
+              "到達ファイル (.arr) がありません — 「計算モード」を"
+              "「到達時間」にして計算すると作れます。",
+              "There is no arrival file (.arr) \u2014 set Run mode to Arrivals and "
+              "run to produce one.");
+    I18n::reg("uwx_ir_ready", "%1 (%2 Hz、受波器 %3×%4 点)",
+              "%1 (%2 Hz, %3 x %4 receivers)");
+    I18n::reg("uwx_ir_ok",
+              "書き出しました: %1 — 到達 %2 本、%3 サンプル (%4 s @ %5 Hz)、"
+              "直接波 %6 s、最後の到達 %7 s、ピーク %8",
+              "Exported %1 \u2014 %2 arrivals, %3 samples (%4 s @ %5 Hz), direct "
+              "arrival %6 s, last arrival %7 s, peak %8");
+    I18n::reg("uwx_ir_empty",
+              "この受波器には到達がありません (音が届いていない)。"
+              "別の深度・距離を選んでください。",
+              "No arrivals reach this receiver. Pick another depth or range.");
+    I18n::reg("uwx_ir_err", "受信波形を作れませんでした: %1",
+              "Could not build the received waveform: %1");
+    I18n::reg("uwx_ir_norm",
+              " ※ WAV はピークで正規化しています (絶対音圧ではありません)",
+              " Note: the WAV is peak-normalised (it is not an absolute "
+              "pressure level)");
     return true;
 }();
 
@@ -396,6 +446,36 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_tlNote = mutedLabel(I18n::tr("uwx_tl_none"), tlBox);
     tlBox->vbox()->addWidget(m_tlNote);
     sv->vbox()->addWidget(tlBox);
+
+    // 受信波形 (到達 → インパルス応答 → WAV)。到達ファイルが無い間は
+    // 「未計算」ではなく **作り方** を出す (何をすれば出るかが分かるように)
+    {
+        auto *irBox = new SectionBox(I18n::tr("uwx_ir_sec"), sv);
+        m_irBox = irBox;
+        auto *hint = mutedLabel(I18n::tr("uwx_ir_hint"), irBox);
+        irBox->vbox()->addWidget(hint);
+        auto *f = new QFormLayout();
+        f->setContentsMargins(0, 0, 0, 0);
+        f->setHorizontalSpacing(8);
+        f->setVerticalSpacing(4);
+        m_irDepth = new QComboBox(irBox);
+        m_irRange = new QComboBox(irBox);
+        m_irFs = new QComboBox(irBox);
+        for (const int fs : { 48000, 44100, 96000, 24000, 8000 })
+            m_irFs->addItem(QStringLiteral("%1 Hz").arg(fs), fs);
+        f->addRow(I18n::tr("uwx_ir_depth"), m_irDepth);
+        f->addRow(I18n::tr("uwx_ir_range"), m_irRange);
+        f->addRow(I18n::tr("uwx_ir_fs"), m_irFs);
+        irBox->vbox()->addLayout(f);
+        m_irExport = new QPushButton(I18n::tr("uwx_ir_export"), irBox);
+        m_irExport->setEnabled(false);
+        irBox->vbox()->addWidget(m_irExport);
+        m_irNote = mutedLabel(I18n::tr("uwx_ir_none"), irBox);
+        irBox->vbox()->addWidget(m_irNote);
+        connect(m_irExport, &QPushButton::clicked,
+                this, &UnderwaterTab::exportReceivedIr);
+        sv->vbox()->addWidget(irBox);
+    }
 
     m_pePanel = new QWidget(sv);
     auto *peForm = new QFormLayout(m_pePanel);
@@ -711,6 +791,106 @@ void UnderwaterTab::showTlResult(const QString &workingDir,
                           .arg(field.minTL, 0, 'f', 1)
                           .arg(field.maxTL, 0, 'f', 1)
                           .arg(src));
+}
+
+// 実行完了時 — <ケース名>.arr があれば受波器の一覧を作る
+void UnderwaterTab::showArrivalResult(const QString &workingDir,
+                                      const QString &caseName)
+{
+    if (!m_irNote || !m_irDepth || !m_irRange || !m_irExport) return;
+    const QString path = workingDir + QLatin1Char('/') + caseName + ".arr";
+    m_arrPath.clear();
+    m_irDepth->clear();
+    m_irRange->clear();
+    m_irExport->setEnabled(false);
+    if (!QFileInfo::exists(path)) {
+        m_irNote->setText(I18n::tr("uwx_ir_none"));
+        return;
+    }
+    ArrHeader h;
+    QString err;
+    if (!ArrReader::readHeader(path, h, &err)) {
+        m_irNote->setText(I18n::tr("uwx_ir_err").arg(err));
+        return;
+    }
+    m_arrPath = path;
+    for (int i = 0; i < h.rz.size(); ++i)
+        m_irDepth->addItem(QStringLiteral("%1 m").arg(h.rz[i], 0, 'f', 1), i);
+    for (int i = 0; i < h.rr.size(); ++i)
+        m_irRange->addItem(QStringLiteral("%1 km").arg(h.rr[i] / 1000.0, 0, 'f', 3), i);
+    // 既定は最遠・音源に近い深度 (いちばん「聴きたい」点)
+    if (m_irRange->count() > 0) m_irRange->setCurrentIndex(m_irRange->count() - 1);
+    if (!h.sz.isEmpty() && !h.rz.isEmpty()) {
+        int best = 0;
+        for (int i = 1; i < h.rz.size(); ++i)
+            if (std::fabs(h.rz[i] - h.sz[0]) < std::fabs(h.rz[best] - h.sz[0])) best = i;
+        m_irDepth->setCurrentIndex(best);
+    }
+    m_irExport->setEnabled(true);
+    m_irNote->setText(I18n::tr("uwx_ir_ready")
+                          .arg(QFileInfo(path).fileName())
+                          .arg(h.freqHz, 0, 'f', 1)
+                          .arg(h.rz.size()).arg(h.rr.size())
+                      + QStringLiteral("\n")
+                      + I18n::tr("uwx_ir_narrow").arg(h.freqHz, 0, 'f', 1));
+}
+
+// 選んだ受波器の到達列 → インパルス応答 → WAV
+void UnderwaterTab::exportReceivedIr()
+{
+    if (m_arrPath.isEmpty()) return;
+    const int iz = m_irDepth->currentData().toInt();
+    const int ir = m_irRange->currentData().toInt();
+    const double fs = m_irFs->currentData().toDouble();
+
+    ArrHeader h;
+    QVector<ArrArrival> arrivals;
+    QString err;
+    if (!ArrReader::readArrivals(m_arrPath, iz, ir, h, arrivals, &err)) {
+        m_irNote->setText(I18n::tr("uwx_ir_err").arg(err));
+        return;
+    }
+    if (arrivals.isEmpty()) {
+        m_irNote->setText(I18n::tr("uwx_ir_empty"));
+        return;
+    }
+    IrSynthInfo info;
+    const QVector<double> ir1 = synthesizeIr(arrivals, fs, 0.05, &info);
+    if (ir1.isEmpty()) {
+        m_irNote->setText(I18n::tr("uwx_ir_empty"));
+        return;
+    }
+    // WAV はピーク正規化する (絶対音圧ではない — 注記を必ず出す)
+    acoustics::AudioBuffer buf;
+    buf.sampleRateHz = fs;
+    buf.channels.resize(1);
+    buf.channels[0].assign(ir1.begin(), ir1.end());
+    if (info.peak > 0.0)
+        for (double &v : buf.channels[0]) v /= info.peak;
+
+    const QFileInfo fi(m_arrPath);
+    const QString out = fi.path() + QLatin1Char('/') + fi.completeBaseName()
+                        + QStringLiteral("_rx_z%1_r%2.wav").arg(iz).arg(ir);
+    const auto res = acoustics::writeWavFile(out.toStdString(), buf,
+                                             acoustics::WavSampleFormat::Float32);
+    if (!res.success()) {
+        m_irNote->setText(I18n::tr("uwx_ir_err")
+                              .arg(QString::fromStdString(res.message())));
+        return;
+    }
+    m_irNote->setText(I18n::tr("uwx_ir_ok")
+                          .arg(QFileInfo(out).fileName())
+                          .arg(info.arrivals)
+                          .arg(info.length)
+                          .arg(info.length / fs, 0, 'f', 3)
+                          .arg(fs, 0, 'f', 0)
+                          .arg(info.firstDelayS, 0, 'f', 4)
+                          .arg(info.lastDelayS, 0, 'f', 4)
+                          .arg(info.peak, 0, 'g', 4)
+                      + I18n::tr("uwx_ir_norm")
+                      + QStringLiteral("\n")
+                      + I18n::tr("uwx_ir_narrow").arg(h.freqHz, 0, 'f', 1));
+    emit receivedIrExported(out);
 }
 
 void UnderwaterTab::refresh()

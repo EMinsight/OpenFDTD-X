@@ -9,6 +9,7 @@ class QDoubleSpinBox;
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QSpinBox;
 class QTableWidget;
 
@@ -68,6 +69,16 @@ public:
     // 実行完了時に MainWindow から呼ぶ (作業ディレクトリとケース名)。
     // .shd が読めなければ理由を表示する。
     void showTlResult(const QString &workingDir, const QString &caseName);
+    // 同上 — 「計算モード = 到達時間」で出る <ケース名>.arr を受け取り、
+    // 受信インパルス応答を作れる状態にする。無ければ欄を伏せる。
+    void showArrivalResult(const QString &workingDir, const QString &caseName);
+
+signals:
+    // 受信 IR を WAV へ書き出した直後に発行する。MainWindow が可聴化タブへ
+    // 橋渡しして「ウェット音を作る」まで繋げる (タブ間の直接依存を作らない)。
+    void receivedIrExported(const QString &wavPath);
+
+public:
 
 private:
     void apply();
@@ -101,6 +112,16 @@ private:
 
     UwTlView       *m_tlView = nullptr;   // TL 断面 (.shd の可視化)
     QLabel         *m_tlNote = nullptr;
+
+    // ── 受信インパルス応答 (.arr → IR → WAV) ─────────────────────────────
+    QWidget        *m_irBox = nullptr;       // 到達が無いときは隠す
+    QComboBox      *m_irDepth = nullptr;     // 受波器 深度
+    QComboBox      *m_irRange = nullptr;     // 受波器 距離
+    QComboBox      *m_irFs = nullptr;        // 書き出す fs
+    QPushButton    *m_irExport = nullptr;
+    QLabel         *m_irNote = nullptr;
+    QString         m_arrPath;               // 直近の実行の .arr
+    void exportReceivedIr();
 
     QLabel         *m_c0;                 // 基準音速 c₀ (計算値)
     QLabel         *m_sofarHint;          // → SOFARチャネル深度 ~1200m
