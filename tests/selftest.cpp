@@ -2868,6 +2868,36 @@ static void testSolverMetadata()
     check(std::fabs(m.gridDxM - 0.5) < 1e-12, "metadata grid.dx_m");
     check(std::fabs(m.tSabineS - 2.1) < 1e-12, "metadata t_sabine_s");
     check(m.solver == QLatin1String("ofdx_acoustic_fdtd"), "metadata solver");
+    check(m.validBandLoHz == 0.0 && m.validBandHiHz == 0.0,
+          "FDTD metadata has no valid_band_hz");
+
+    // 幾何音響ソルバー (ofdx_acoustic_ga) は valid_band_hz と method を出す。
+    // 下限 (Schroeder 周波数) がクロスオーバーの自動決定に使われる。
+    {
+        const QString gaPath = tmp.filePath("ga_metadata.json");
+        QFile f(gaPath);
+        check(f.open(QIODevice::WriteOnly), "write ga metadata.json");
+        f.write(QStringLiteral(
+            "{ \"solver\": \"ofdx_acoustic_ga\",\n"
+            "  \"method\": \"geometric (image source + ray tracing)\",\n"
+            "  \"gridless\": true, \"sample_rate\": 48000,\n"
+            "  \"valid_band_hz\": [124.5, 11313.7],\n"
+            "  \"source\": { \"fmax_hz\": 11313.7, \"sigma_s\": 0, "
+            "\"t0_s\": 0 } }").toUtf8());
+        f.close();
+        const QtAcousticAdapter::SolverMetadata g =
+            QtAcousticAdapter::readSolverMetadata(gaPath);
+        check(g.valid, "ga metadata parsed");
+        check(std::fabs(g.validBandLoHz - 124.5) < 1e-9,
+              "ga metadata valid_band_hz lower bound (Schroeder frequency)");
+        check(std::fabs(g.validBandHiHz - 11313.7) < 1e-9,
+              "ga metadata valid_band_hz upper bound");
+        check(g.method.contains(QStringLiteral("geometric")),
+              "ga metadata method");
+        // 幾何音響は理想インパルス音源なので逆フィルタは行わない
+        check(g.sourceSigmaS == 0.0 && g.sourceT0S == 0.0,
+              "ga metadata has no source pulse (sigma = t0 = 0)");
+    }
 
     // rir.wav の隣を自動で探す
     {
@@ -3107,7 +3137,56 @@ static void testHybridRir()
         }
     }
 
-    // 7) 異常系: クロスオーバー不明 / ナイキスト以上は黙って進めない
+    // 7) 両ソルバーの申告帯域からクロスオーバーを決める。
+    //    FDTD の fmax (上限) と幾何音響の Schroeder 周波数 (下限) の
+    //    重なりの幾何平均 = 対数周波数で両方の限界から最も遠い点。
+    {
+        std::vector<double> x(16384, 0.0);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(2.0 * PI * 90.0 * double(i) / fs);
+        HybridRirConfig cfg;
+        cfg.fdtdFmaxHz = 137.2;      // dx = 0.25 m の FDTD
+        cfg.gaValidLoHz = 124.0;     // 幾何音響の Schroeder 周波数
+        cfg.sourceSigmaS = 0.0;
+        cfg.matchLevels = false;
+        HybridRirInfo info;
+        const AcousticResult<AudioBuffer> r =
+            buildHybridRir(mono(x, fs), mono(x, fs), cfg, &info);
+        check(r.success(), "hybrid: both bands declared ok");
+        check(r.success() &&
+                  std::fabs(info.crossoverHz -
+                            std::sqrt(137.2 * 124.0)) < 1e-9,
+              "hybrid: crossover is the geometric mean of the overlap");
+        const auto hasGapWarning = [](const HybridRirInfo &i) {
+            for (std::size_t k = 0; k < i.warnings.size(); ++k)
+                if (i.warnings[k].find("neither") != std::string::npos)
+                    return true;
+            return false;
+        };
+        check(r.success() && !hasGapWarning(info),
+              "hybrid: no gap warning when the bands overlap");
+
+        // 重なりが無い (FDTD の上限 < 幾何音響の下限) ときは警告を出す
+        HybridRirConfig gap = cfg;
+        gap.fdtdFmaxHz = 69.0;       // dx = 0.5 m
+        gap.gaValidLoHz = 124.0;
+        HybridRirInfo gi;
+        const AcousticResult<AudioBuffer> g =
+            buildHybridRir(mono(x, fs), mono(x, fs), gap, &gi);
+        check(g.success(), "hybrid: gap case still builds");
+        check(g.success() && hasGapWarning(gi),
+              "hybrid: a band gap is reported as a warning");
+        // 幾何音響の下限が不明 (0) なら従来どおり FDTD の fmax を使う
+        HybridRirConfig only = cfg;
+        only.gaValidLoHz = 0.0;
+        HybridRirInfo oi;
+        const AcousticResult<AudioBuffer> o =
+            buildHybridRir(mono(x, fs), mono(x, fs), only, &oi);
+        check(o.success() && nearlyEq(oi.crossoverHz, 137.2),
+              "hybrid: unknown geometric band falls back to the FDTD fmax");
+    }
+
+    // 8) 異常系: クロスオーバー不明 / ナイキスト以上は黙って進めない
     {
         std::vector<double> x(1024, 0.1);
         HybridRirConfig cfg;   // crossoverHz も fdtdFmaxHz も 0

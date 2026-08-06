@@ -20,10 +20,15 @@ bool AcousticRunner::isRunning() const {
 // HOME / kernel/ / PATH 探索で使う既定バイナリ名。実ソルバーの正式名は
 // 未確定 (ADR-0007 未決事項) のため暫定 — CI・開発では
 // $OFDX_ACOUSTIC_SOLVER または cfg.executable の直接指定が優先される。
-static QString solverBaseName(AcousticBackend backend) {
+// バックエンド → 実行ファイル名の候補 (先頭が本命)。
+// 幾何音響は OpenAcoustics の実装名が `ofdx_acoustic_ga`。旧称
+// `ofdx_acoustic_geom` は該当バイナリが存在した実績が無いが、既にその名前で
+// 配置している環境を壊さないよう候補として後ろに残す。
+static QStringList solverBaseNames(AcousticBackend backend) {
     return (backend == AcousticBackend::ExternalGeometric)
-               ? QStringLiteral("ofdx_acoustic_geom")
-               : QStringLiteral("ofdx_acoustic_fdtd");
+               ? QStringList{ QStringLiteral("ofdx_acoustic_ga"),
+                              QStringLiteral("ofdx_acoustic_geom") }
+               : QStringList{ QStringLiteral("ofdx_acoustic_fdtd") };
 }
 
 // 外部音響ソルバーの既定パス (グローバル設定)。他カーネルの
@@ -63,23 +68,55 @@ QString AcousticRunner::resolveSolver(const AcousticRunConfig &cfg)
     if (!envSolver.isEmpty())
         return QFileInfo::exists(envSolver) ? envSolver : QString();
 
-    QString base = solverBaseName(cfg.backend);
-#ifdef Q_OS_WIN
-    base += ".exe";
-#endif
+    return resolveSolverByName(cfg.backend);
+}
+
+QString AcousticRunner::resolveSolverByName(AcousticBackend backend)
+{
     // ② $OPENFDTD_ACOUSTICS_HOME 配下 → ③ アプリ実行ディレクトリ kernel/
     const QString dirs[] = {
         qEnvironmentVariable("OPENFDTD_ACOUSTICS_HOME"),
         QCoreApplication::applicationDirPath() + "/kernel",
         QCoreApplication::applicationDirPath(),
     };
-    for (const QString &d : dirs) {
-        if (d.isEmpty()) continue;
-        const QString full = QDir(d).absoluteFilePath(base);
-        if (QFileInfo::exists(full)) return full;
+    const QStringList bases = solverBaseNames(backend);
+    for (const QString &b : bases) {
+        QString base = b;
+#ifdef Q_OS_WIN
+        base += ".exe";
+#endif
+        for (const QString &d : dirs) {
+            if (d.isEmpty()) continue;
+            const QString full = QDir(d).absoluteFilePath(base);
+            if (QFileInfo::exists(full)) return full;
+        }
+        // ④ PATH (実在確認込み)
+        const QString onPath = QStandardPaths::findExecutable(base);
+        if (!onPath.isEmpty()) return onPath;
     }
-    // ④ PATH (実在確認込み — 見つからなければ空を返す)
-    return QStandardPaths::findExecutable(base);
+    return QString();
+}
+
+QString AcousticRunner::resolveSolverForHybrid(AcousticBackend backend)
+{
+    // ハイブリッド実行は 2 つのソルバーを続けて起動するので、バックエンドを
+    // 区別しない上書き ($OFDX_ACOUSTIC_SOLVER / カーネルパス設定 /
+    // solver.executable) をそのまま使うと**両方に同じバイナリ**を渡して
+    // しまう。ファイル名がそのバックエンドの候補と一致するときだけ上書きを
+    // 採用し、それ以外は名前による探索へ落とす。
+    const QStringList bases = solverBaseNames(backend);
+    const auto matches = [&bases](const QString &path) {
+        if (path.isEmpty() || !QFileInfo::exists(path)) return false;
+        const QString stem = QFileInfo(path).completeBaseName();
+        for (const QString &b : bases)
+            if (stem.compare(b, Qt::CaseInsensitive) == 0) return true;
+        return false;
+    };
+    const QString overrides[] = { solverPathSetting(),
+                                  qEnvironmentVariable("OFDX_ACOUSTIC_SOLVER") };
+    for (const QString &o : overrides)
+        if (matches(o)) return o;
+    return resolveSolverByName(backend);
 }
 
 void AcousticRunner::fail(const QString &reason)

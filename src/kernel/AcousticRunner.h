@@ -56,6 +56,13 @@ public:
 
     // 探索順どおりに実在するバイナリの絶対パスを返す。見つからなければ空。
     static QString resolveSolver(const AcousticRunConfig &cfg);
+    // 名前だけで探す (② $OPENFDTD_ACOUSTICS_HOME → ③ kernel/ → ④ PATH)。
+    // 幾何音響は ofdx_acoustic_ga → ofdx_acoustic_geom (旧称) の順に見る。
+    static QString resolveSolverByName(AcousticBackend backend);
+    // ハイブリッド実行用。バックエンドを区別しない上書き設定は、ファイル名が
+    // そのバックエンドの候補と一致するときだけ採用する (FDTD 用の指定で
+    // 幾何音響を起動してしまう事故を防ぐ)。
+    static QString resolveSolverForHybrid(AcousticBackend backend);
 
     // 外部音響ソルバーの既定パス (GUI の「カーネルパスの設定」で保存する
     // グローバル設定)。プロジェクト側 (.ofdx solver.executable) が空のときに

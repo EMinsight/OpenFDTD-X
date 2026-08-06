@@ -211,7 +211,24 @@ buildHybridRir(const AudioBuffer &fdtdRir, const AudioBuffer &gaRir,
     info.outputRateHz = fsOut;
 
     // ── クロスオーバーの決定 ────────────────────────────────────────────────
-    double fx = (cfg.crossoverHz > 0.0) ? cfg.crossoverHz : cfg.fdtdFmaxHz;
+    // 明示指定 > 両ソルバーの有効帯域の重なりの幾何平均 > FDTD の fmax。
+    // 幾何平均を採るのは、対数周波数で両方の限界から最も遠い点だから。
+    double fx = cfg.crossoverHz;
+    if (!(fx > 0.0) && cfg.fdtdFmaxHz > 0.0 && cfg.gaValidLoHz > 0.0) {
+        fx = std::sqrt(cfg.fdtdFmaxHz * cfg.gaValidLoHz);
+        if (cfg.gaValidLoHz > cfg.fdtdFmaxHz) {
+            char buf[224];
+            std::snprintf(buf, sizeof(buf),
+                          "no overlap between the FDTD band (up to %.1f Hz) "
+                          "and the geometric band (from %.1f Hz): %.1f-%.1f Hz "
+                          "is covered by neither method and the result there "
+                          "is an extrapolation",
+                          cfg.fdtdFmaxHz, cfg.gaValidLoHz, cfg.fdtdFmaxHz,
+                          cfg.gaValidLoHz);
+            info.warnings.push_back(buf);
+        }
+    }
+    if (!(fx > 0.0)) fx = cfg.fdtdFmaxHz;
     if (!(fx > 0.0))
         return Result::error(AcousticErrorCode::InvalidArgument,
                              "crossover frequency is unknown (set crossoverHz "

@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -206,6 +207,63 @@ int main(int argc, char **argv) {
         CHECK(obs.finishedSeen);
         CHECK(obs.finishedOk);
         CHECK(!obs.rirPath.isEmpty());
+    }
+
+    // ── ハイブリッド実行の解決 (resolveSolverForHybrid) ──
+    // バックエンドを区別しない上書き ($OFDX_ACOUSTIC_SOLVER / カーネルパス
+    // 設定) をそのまま使うと、FDTD と幾何音響の**両方に同じバイナリ**を
+    // 渡してしまう。名前が一致するときだけ採用することを確認する。
+    {
+        QTemporaryDir home;
+        CHECK(home.isValid());
+        // 名前だけ用意した実行可能ファイル 2 本 (起動はしない)
+        const QString fdtdName =
+#ifdef Q_OS_WIN
+            QStringLiteral("ofdx_acoustic_fdtd.exe");
+#else
+            QStringLiteral("ofdx_acoustic_fdtd");
+#endif
+        const QString gaName =
+#ifdef Q_OS_WIN
+            QStringLiteral("ofdx_acoustic_ga.exe");
+#else
+            QStringLiteral("ofdx_acoustic_ga");
+#endif
+        for (const QString &n : { fdtdName, gaName }) {
+            QFile f(QDir(home.path()).absoluteFilePath(n));
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\n");
+            f.close();
+            f.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner);
+        }
+        qputenv("OPENFDTD_ACOUSTICS_HOME", home.path().toLocal8Bit());
+
+        // 名前による解決: 幾何音響は ofdx_acoustic_ga を見つける
+        const QString ga =
+            AcousticRunner::resolveSolverByName(AcousticBackend::ExternalGeometric);
+        const QString fd =
+            AcousticRunner::resolveSolverByName(AcousticBackend::ExternalFDTD);
+        CHECK(QFileInfo(ga).fileName() == gaName);
+        CHECK(QFileInfo(fd).fileName() == fdtdName);
+
+        // 上書きが FDTD を指していても、幾何音響の解決は名前で行う
+        qputenv("OFDX_ACOUSTIC_SOLVER",
+                QDir(home.path()).absoluteFilePath(fdtdName).toLocal8Bit());
+        CHECK(QFileInfo(AcousticRunner::resolveSolverForHybrid(
+                            AcousticBackend::ExternalGeometric))
+                  .fileName() == gaName);
+        // FDTD 側は名前が一致するので上書きがそのまま採用される
+        CHECK(QFileInfo(AcousticRunner::resolveSolverForHybrid(
+                            AcousticBackend::ExternalFDTD))
+                  .fileName() == fdtdName);
+        // 単発実行の従来経路は上書きを無条件に採用する (挙動を変えない)
+        AcousticRunConfig geo;
+        geo.backend = AcousticBackend::ExternalGeometric;
+        CHECK(QFileInfo(AcousticRunner::resolveSolver(geo)).fileName() ==
+              fdtdName);
+        qunsetenv("OFDX_ACOUSTIC_SOLVER");
+        qunsetenv("OPENFDTD_ACOUSTICS_HOME");
     }
 
     return testutil::summary("test_acoustic_runner");

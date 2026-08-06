@@ -49,7 +49,7 @@
 | 10 | ST 系 / G / 実測 STI / 校正ワークフロー拡充が未実装 (旧フェーズ4 計画分)。~~レポート出力~~ は**解消済み** | 舞台支援・声の届きの定量値が不足 | **レポート出力は完了**: `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
 | 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。他の fs 不一致箇所 (AudioEditEngine 等) への展開は別課題 |
-| 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD は解消済み** (2026-08-05) | ExternalGeometric (幾何音響) は引き続き契約準拠ソルバー待ち | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
+| 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD / ExternalGeometric とも解消済み** (FDTD 2026-08-05 / 幾何音響 2026-08-06) | — | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
 
 ## 4. 品質基準の現在値
@@ -69,7 +69,9 @@
   7270 → 7276、端数 fs の多段リサンプリング + RIR 帯域の注記
   +30 checks で 7276 → 7306、ハイブリッド RIR 合成 (低域 FDTD + 高域
   幾何音響) と metadata.json 読み取り +47 checks で
-  7306 → **7353 (現在値)**。減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
+  7306 → 7353、ハイブリッド実行 (2 ソルバー連続起動) と両ソルバーの申告
+  帯域からのクロスオーバー決定 +13 checks で 7353 → **7366 (現在値)**。
+  減らないこと。`OFDX_BELLHOP_BIN` 設定時は bellhop 統合
   +5 checks、`OFDX_OFD_BIN` 設定時は ofd 統合 +5 checks。実行種別ゲート /
   TPA 入力検証 / 解析解の検証 / 校正オフセットの往復・ゲート検証 /
   一括レポート (負債 #10) / 音響編集エンジン (`src/audio/AudioEditEngine` —
@@ -201,6 +203,40 @@
   経路は無い — 絶対規則 5)。
 - selftest +72 checks (カテゴリ対応表 31 件の期待値 / キー重複なし / カテゴリの
   連続性 (見出しが 2 回出ないこと) / 見出しと案内文言の I18n) で 7198 → 7270。
+
+### ハイブリッド実行 (FDTD → 幾何音響 → 合成) の一括化 (2026-08-06)
+
+幾何音響ソルバー `ofdx_acoustic_ga` が
+[OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) に実装されたので、
+GUI 側を「2 本のソルバーを順に起動して合成まで通す」ところまで進めた。
+
+- **バイナリ名の修正**: 幾何音響の探索名が `ofdx_acoustic_geom` のままで、
+  実装名 `ofdx_acoustic_ga` を見つけられなかった。候補リスト化して
+  `ofdx_acoustic_ga` → `ofdx_acoustic_geom` (旧称) の順に探す。
+- **`AcousticRunner::resolveSolverForHybrid`**: バックエンドを区別しない
+  上書き (`$OFDX_ACOUSTIC_SOLVER` / カーネルパス設定 / solver.executable) を
+  そのまま使うと **2 本とも同じバイナリ**を起動してしまうため、ファイル名が
+  そのバックエンドの候補と一致するときだけ採用する。単発実行の従来経路は
+  無条件採用のまま (挙動を変えない)。
+- **「▶▶ ハイブリッド実行」**: FDTD → 幾何音響 → 合成 → 可聴化の RIR へ設定、
+  までを 1 ボタンで行う。段ごとに作業ディレクトリを分け
+  (`hybrid_fdtd/` / `hybrid_ga/`)、契約ファイル (rir.wav / metadata.json) の
+  衝突を避ける。**中間 RIR は可聴化へ流さない** (最終的に設定するのは
+  合成結果だけ)。片方のバイナリが見つからないときは走り出さずボタンを
+  無効化し、理由をツールチップに出す。
+- **クロスオーバーの自動決定を両ソルバーの申告帯域から**行うようにした。
+  FDTD の `source.fmax_hz` (上限) と幾何音響の `valid_band_hz[0]`
+  (= Schroeder 周波数、下限) の**重なりの幾何平均** — 対数周波数で両方の
+  限界から最も遠い点。重なりが無い場合も合成はするが、
+  「どちらの手法も担保しない帯域がある」ことを warning に出す。
+- 検証: selftest +13 checks (幾何平均の決定 / 帯域ギャップの警告 /
+  幾何音響 metadata の `valid_band_hz`・`method` の読み取り)、
+  ctest の runner テスト +8 checks (名前候補の解決 / 上書きの名前一致判定 /
+  単発実行の従来挙動)。**実バイナリでの e2e**: 8×6×4 m・dx = 0.25 m の室で
+  FDTD (fs 2401 Hz, fmax 137 Hz) → 幾何音響 (fs 48 kHz, 有効帯域下限
+  124 Hz) → 合成 (クロスオーバー 130.4 Hz) が 1.3 秒で通り、合成 RIR の
+  直接音が r/c = 11.66 ms に立つことを確認 (製品と同じ `DirectSoundDetector`
+  で測定)。7353 → 7366。
 
 ### ハイブリッド RIR 合成 (低域 FDTD + 高域 幾何音響) — 合成側 (2026-08-06)
 

@@ -238,7 +238,9 @@ flowchart LR
   `acoustics::buildHybridRir` が合成する (ADR-0008)。音源パルスの逆フィルタ
   (t0 除去を兼ねる) → fs 合わせ → 相補な線形位相クロスオーバー →
   クロスオーバー帯のレベル整合。入口は AcousticSolverTab の合成パネル。
-  幾何音響ソルバー自体は未同梱 (高域 RIR は外部で用意する)。
+  高域は OpenAcoustics の `ofdx_acoustic_ga` (GUI には同梱しない)。
+  「▶▶ ハイブリッド実行」は `ofdx_acoustic_fdtd` → `ofdx_acoustic_ga` を
+  段ごとに別作業ディレクトリで順に起動し、合成して可聴化の RIR に設定する。
 - ドライと RIR の **fs 不一致は RIR をドライ側 fs へ自動変換**して続行する
   (`acoustics::resampleBuffer`。ドライ音源は変換しない — 仮定 §21)。
   変換の事実と、RIR の帯域 (fs/2) が可聴帯域に届かない場合の警告は
