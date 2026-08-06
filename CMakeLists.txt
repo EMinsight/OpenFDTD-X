@@ -42,6 +42,10 @@ set(CORE_SOURCES
     # コンポーネントライブラリの部品表とドメイン許可表 (ヘッダのみ)。
     # ComponentsTab / Viewport3D / selftest が共有する (二重管理の防止)
     src/core/ComponentCatalog.h
+    # 外部音響ソルバー起動前の入力点検 (室外の音源・受音点など) —
+    # AcousticSolverTab と selftest が共有する
+    src/core/AcousticPreflight.cpp
+    src/core/AcousticPreflight.h
     # 左ナビのタブキー → カテゴリ対応表 (ヘッダのみ)。
     # MainWindow::buildLeftNav / selftest が共有する (二重管理の防止)
     src/core/NavCatalog.h
