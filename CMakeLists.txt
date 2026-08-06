@@ -510,6 +510,10 @@ if(BUILD_TESTS)
         src/acoustics/qt/AcousticResultModel.h
         src/acoustics/qt/AcousticReportBuilder.cpp
         src/acoustics/qt/AcousticReportBuilder.h
+        # 可聴化の RIR サンプルレート注記 (rirSampleRateNotes) は 3 タブが
+        # 共有する文言生成なので、GUI を起こさず selftest から検証する
+        src/tabs/TabHelpers.cpp
+        src/tabs/TabHelpers.h
         tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
     target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)

@@ -68,6 +68,9 @@
 // 「音響解析の進め方」パネルの状態判定 (workflowStatus / workflowNavKey)。
 // 同じくヘッダ内 inline の static メソッドだけを検証する。
 #include "tabs/AcousticTab.h"
+// 可聴化の RIR サンプルレート注記 (tabhelp::rirSampleRateNotes)。
+// TabHelpers.cpp は CMakeLists が selftest に個別追加している。
+#include "tabs/TabHelpers.h"
 // 「④ 音源 (励振)」→ 音源リストへの導線の飛び先キー (acSourceNavKey)。
 // 同じくヘッダ内 inline の static メソッドだけを使う。
 #include "tabs/SourceTab.h"
@@ -2622,7 +2625,185 @@ static void testResampler()
                                                  &note2);
             check(res2.success(), "convolveFiles matched fs ok");
             check(!note2.resampled, "matched fs is not resampled");
+            check(nearlyEq(note2.fromHz, 48000.0) &&
+                      nearlyEq(note2.toHz, 48000.0),
+                  "note carries the fs even when not resampled");
         }
+    }
+
+    // 9) 端数 fs (FDTD ソルバーの格子刻み由来) の多段カスケード。
+    //    1201 Hz → 48000 Hz は約分後 48000/1201 で 1 段の上限 (4096) を
+    //    超えるため、L・M を分割した 2 段で実現する。
+    {
+        const double fsIn = 1201.0, fsOut = 48000.0, f0 = 200.0;
+        const std::size_t n = 4804;              // 4 秒
+        std::vector<double> x(n);
+        for (std::size_t i = 0; i < n; ++i)
+            x[i] = 0.5 * std::sin(2.0 * PI * f0 * double(i) / fsIn);
+
+        ResampleInfo info;
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), fsIn, fsOut, &info);
+        check(r.success(), "resample 1201->48000 ok (staged)");
+        if (r.success()) {
+            const std::vector<double> &y = r.value();
+            check(info.upFactor == 48000 && info.downFactor == 1201,
+                  "staged: overall ratio reported as 48000/1201");
+            check(info.stageCount == 2, "staged: split into 2 stages");
+            // 1 段で通そうとすると 114.3·48000 ≈ 549 万タップ。分割により
+            // 実際のタップ数はその 1/10 以下に収まる (分割の目的そのもの)
+            check(info.filterLength < 1000000,
+                  "staged: filter stays far below the single-stage size");
+            check(y.size() == std::size_t(std::llround(double(n) * fsOut / fsIn)),
+                  "staged: output length round(N*L/M)");
+
+            // 定常部の振幅 (端の過渡を除く中央 1/2)
+            double peak = 0.0;
+            for (std::size_t i = y.size() / 4; i < y.size() * 3 / 4; ++i)
+                if (std::fabs(y[i]) > peak) peak = std::fabs(y[i]);
+            check(std::fabs(20.0 * std::log10(peak / 0.5)) < 0.1,
+                  "staged: passband amplitude +-0.1 dB");
+
+            // イメージ (折り返し像) が阻止域仕様まで落ちていること。
+            // 1 本ずつ DFT を評価して f0 の応答と比べる。
+            const std::size_t a = y.size() / 4, b = y.size() * 3 / 4;
+            auto magAt = [&](double f) {
+                double re = 0.0, im = 0.0;
+                for (std::size_t i = a; i < b; ++i) {
+                    const double t = double(i) / fsOut;
+                    re += y[i] * std::cos(2.0 * PI * f * t);
+                    im -= y[i] * std::sin(2.0 * PI * f * t);
+                }
+                return 2.0 * std::sqrt(re * re + im * im) / double(b - a);
+            };
+            const double m0 = magAt(f0);
+            double worst = 0.0;
+            for (double f = 1000.0; f < 20000.0; f += 500.0) {
+                const double m = magAt(f);
+                if (m > worst) worst = m;
+            }
+            check(m0 > 0.0 && 20.0 * std::log10(worst / m0) < -85.0,
+                  "staged: images suppressed to the ~90 dB stopband spec");
+        }
+
+        // 群遅延補正はカスケードでも保たれる (直接音の到達時刻が動かない)
+        std::vector<double> imp(2000, 0.0);
+        imp[500] = 1.0;
+        const AcousticResult<std::vector<double>> ri =
+            resampleSignal(ArrayView<const double>(imp), fsIn, fsOut);
+        check(ri.success(), "staged impulse ok");
+        if (ri.success()) {
+            std::size_t am = 0;
+            for (std::size_t i = 1; i < ri.value().size(); ++i)
+                if (std::fabs(ri.value()[i]) > std::fabs(ri.value()[am]))
+                    am = i;
+            check(std::llabs((long long)am -
+                             std::llround(500.0 * fsOut / fsIn)) <= 1,
+                  "staged: impulse peak stays at round(n0*L/M)");
+        }
+
+        // 決定性 (カスケードでも同一入力 → ビット一致)
+        const AcousticResult<std::vector<double>> r2 =
+            resampleSignal(ArrayView<const double>(x), fsIn, fsOut);
+        check(r2.success() && r.success() &&
+                  r2.value().size() == r.value().size() &&
+                  std::memcmp(r2.value().data(), r.value().data(),
+                              r.value().size() * sizeof(double)) == 0,
+              "staged: deterministic (bit-identical)");
+    }
+
+    // 10) 分割できない比 (fs が大きな素数) は 1 段で押し切る。
+    //     押し切れない大きさだけをエラーにする (黙って劣化させない)。
+    {
+        std::vector<double> x(2000, 0.25);
+        ResampleInfo info;
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), 12007.0, 48000.0,
+                           &info);
+        check(r.success(), "prime fs 12007->48000 falls back to one stage");
+        check(info.stageCount == 1, "prime fs: single stage");
+        check(r.success() && r.value().size() ==
+                  std::size_t(std::llround(2000.0 * 48000.0 / 12007.0)),
+              "prime fs: output length round(N*L/M)");
+
+        const AcousticResult<std::vector<double>> bad =
+            resampleSignal(ArrayView<const double>(x), 100003.0, 48000.0);
+        check(!bad.success(), "ratio beyond the hard limit is rejected");
+        check(!bad.success() &&
+                  bad.errorCode() == AcousticErrorCode::UnsupportedSampleRate,
+              "hard-limit rejection uses UnsupportedSampleRate");
+        // 失敗メッセージには実際の fs が入る (UI がそのまま出して意味が通る)
+        check(!bad.success() &&
+                  bad.message().find("100003") != std::string::npos &&
+                  bad.message().find("48000") != std::string::npos,
+              "rejection message names both sample rates");
+    }
+
+    // 11) 標準 fs は従来どおり 1 段 (経路が変わっていないことの確認)
+    {
+        std::vector<double> x(1000, 0.1);
+        ResampleInfo info;
+        const AcousticResult<std::vector<double>> r =
+            resampleSignal(ArrayView<const double>(x), 44100.0, 48000.0,
+                           &info);
+        check(r.success() && info.stageCount == 1,
+              "standard rates still use a single stage");
+        check(info.upFactor == 160 && info.downFactor == 147,
+              "standard rates keep the 160/147 ratio");
+    }
+}
+
+// ── 可聴化の RIR サンプルレート注記 (tabhelp::rirSampleRateNotes) ───────────
+// 3 タブが同じ文言を出すため共有ヘルパーに集約した。GUI を起こさずに
+// 文言生成の規則だけを検証する。
+static void testRirSampleRateNotes()
+{
+    g_file = "rir-fs-notes";
+    using namespace ofd::tabhelp;
+
+    // 変換あり + 帯域不足 (今回の実例: FDTD の 1201 Hz RIR × 48 kHz ドライ)
+    {
+        const QStringList n = rirSampleRateNotes(1201.0, 48000.0);
+        check(n.size() == 2, "1201->48000 emits conversion + band notes");
+        if (n.size() == 2) {
+            check(n[0].contains(QStringLiteral("1201")) &&
+                      n[0].contains(QStringLiteral("48000")),
+                  "conversion note names both rates");
+            check(n[1].contains(QStringLiteral("1201")),
+                  "band note names the RIR fs");
+        }
+    }
+    // 帯域の表示値はナイキスト (fs/2)。割り切れる fs で文言を確認する
+    {
+        const QStringList n = rirSampleRateNotes(1200.0, 48000.0);
+        check(n.size() == 2 && n[1].contains(QStringLiteral("600")),
+              "band note names the RIR band edge (fs/2)");
+    }
+    // 変換なし + 帯域不足 (ドライも 1201 Hz — 変換しなくても高域は無い)
+    {
+        const QStringList n = rirSampleRateNotes(1201.0, 1201.0);
+        check(n.size() == 1, "matched low fs emits the band note only");
+    }
+    // 変換あり + 帯域十分 (44.1k → 48k。余計な警告を出さない)
+    {
+        const QStringList n = rirSampleRateNotes(44100.0, 48000.0);
+        check(n.size() == 1, "44100->48000 emits the conversion note only");
+    }
+    // 変換なし + 帯域十分 → 注記なし
+    {
+        check(rirSampleRateNotes(48000.0, 48000.0).isEmpty(),
+              "matched full-band fs emits no note");
+        check(rirSampleRateNotes(0.0, 48000.0).isEmpty(),
+              "unknown fs emits no note");
+    }
+    // しきい値の境界 (32 kHz = ナイキスト 16 kHz ちょうどは警告しない)
+    {
+        check(rirSampleRateNotes(32000.0, 32000.0).isEmpty(),
+              "fs at exactly 2x the threshold is not flagged");
+        check(rirSampleRateNotes(31998.0, 31998.0).size() == 1,
+              "just below the threshold is flagged");
+        check(rirBandWarnThresholdHz() == 16000.0,
+              "band warning threshold is 16 kHz");
     }
 }
 
@@ -8972,6 +9153,7 @@ int main(int argc, char *argv[])
     testAudioEditEngine();
     testCalibrationOffsetGate();
     testResampler();
+    testRirSampleRateNotes();
     testOnnActivation();
     testRcwaCore();
     testOpticsMaterials();

@@ -209,6 +209,12 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     // 呼び出し側 UI が必ず表示する (黙って変換しない)。fs 自体が不正
     // (非正・非整数など) で変換できない場合はここでエラーになる。
     AudioBuffer rirUsed = rir.value();
+    // fromHz / toHz は変換の有無に関わらず埋める (RIR の帯域は変換しても
+    // 広がらないので、呼び出し側が帯域の注記を出せるようにするため)。
+    if (outResample) {
+        outResample->fromHz = rirUsed.sampleRateHz;
+        outResample->toHz = dry.value().sampleRateHz;
+    }
     if (dry.value().sampleRateHz > 0.0 && rirUsed.sampleRateHz > 0.0 &&
         rirUsed.sampleRateHz != dry.value().sampleRateHz) {
         const double fromHz = rirUsed.sampleRateHz;

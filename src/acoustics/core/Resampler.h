@@ -12,6 +12,13 @@
 //     時間原点は入力とずれない (RIR の直接音到達時刻 → ITDG 等の解析を守る)。
 //   - 決定的: 乱数・時刻に依存しない。同じ入力は常にビット一致の出力。
 //     内部精度は double。同一 fs は入力をそのままコピー (ビット一致)。
+//   - L または M が 1 段の上限 (4096) を超える比 (FDTD ソルバーが格子刻みから
+//     決める端数 fs — 例 1201 Hz → 48000 Hz は 48000/1201) は、L・M を上限
+//     以下の因子へ分けた**多段カスケード**で実現する。中間レートは必ず
+//     min(fs_in, fs_out) 〜 max(fs_in, fs_out) に収まるので、通過帯域端
+//     (0.90 × min ナイキスト) と阻止域 (~90 dB/段) は 1 段の場合と同じ。
+//     分割できない比 (上限超えの素因数を持つ) は従来どおりエラーにする
+//     (黙って劣化させない)。1 段で足りる比の出力は従来とビット一致。
 #pragma once
 #include <cstddef>
 #include <vector>
@@ -27,14 +34,17 @@ namespace acoustics {
 struct ResampleInfo {
     long long upFactor;        // 補間比 L (約分後)
     long long downFactor;      // 間引き比 M (約分後)
-    std::size_t filterLength;  // プロトタイプ FIR 長 (奇数)。恒等変換では 0
+    std::size_t filterLength;  // プロトタイプ FIR 長の合計 (奇数長の和)。
+                               // 恒等変換では 0
     double cutoffHz;           // 設計カットオフ (−6 dB 点) [Hz]
-    double stopbandDb;         // 設計阻止域減衰 [dB] (~90 dB)
+    double stopbandDb;         // 設計阻止域減衰 [dB] (~90 dB。多段でも 1 段
+                               // ごとにこの値なのでカスケードは更に急峻)
     bool identity;             // fs 一致 (フィルタ不使用、入力のコピー)
+    std::size_t stageCount;    // カスケード段数 (通常 1。恒等変換では 0)
 
     ResampleInfo()
         : upFactor(1), downFactor(1), filterLength(0), cutoffHz(0.0),
-          stopbandDb(0.0), identity(false) {}
+          stopbandDb(0.0), identity(false), stageCount(0) {}
 };
 
 // 1 チャンネルのリサンプリング。
