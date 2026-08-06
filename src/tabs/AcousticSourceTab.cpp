@@ -154,6 +154,15 @@ const bool s_i18n = [] {
               "and level are not passed to the solver (they are used by "
               "auralization / analysis). Amplitude, phase and internal "
               "impedance are set to their defaults.");
+    I18n::reg("asrc_sync_outside",
+              "⚠ そのうち %1 個はソルバ領域の外です "
+              "(室は X [%2, %3] · Y [%4, %5] · Z [%6, %7] m)。"
+              "このまま反映するとソルバーが「音源が室外」で停止します — "
+              "音源の座標を室内へ直すか、③ ソルバ領域を広げてください。",
+              "⚠ %1 of them are outside the solver region "
+              "(the room is X [%2, %3] · Y [%4, %5] · Z [%6, %7] m). "
+              "Applying them as-is makes the solver stop with “source outside "
+              "the room” — move the sources inside or enlarge the region.");
     I18n::reg("asrc_sync_none",
               "有効な音源がありません — 反映するには行の左端のチェックを"
               "有効にしてください。波源 (feed) は変更していません。",
@@ -988,8 +997,37 @@ QWidget *AcousticSourceTab::buildSourcesPage()
             return;
         }
         const int nOld = int(m_p->feeds().size());
-        if (QMessageBox::question(this, I18n::tr("asrc_sync_title"),
-                I18n::tr("asrc_sync_confirm").arg(nOld).arg(enabled),
+        QString msg = I18n::tr("asrc_sync_confirm").arg(nOld).arg(enabled);
+        // 室外の音源をそのまま feed にするとソルバーが弾く (既定の音源リストは
+        // 大ホール向けの座標なので、小さい室では実際にこれで落ちる)。
+        // 反映する前にここで気づけるよう、件数と室の範囲を確認文に足す。
+        int outside = 0;
+        bool meshOk = true;
+        for (int a = 0; a < 3; ++a)
+            if (!m_p->mesh(a).isValid()) meshOk = false;
+        if (meshOk) {
+            const double lo[3] = { m_p->mesh(0).min(), m_p->mesh(1).min(),
+                                   m_p->mesh(2).min() };
+            const double hi[3] = { m_p->mesh(0).max(), m_p->mesh(1).max(),
+                                   m_p->mesh(2).max() };
+            for (const AcousticSourceRow &r : m_p->acoustic().sources) {
+                if (!r.enabled) continue;
+                const double v[3] = { r.x_m, r.y_m, r.z_m };
+                for (int a = 0; a < 3; ++a)
+                    if (v[a] < lo[a] || v[a] > hi[a]) { ++outside; break; }
+            }
+            if (outside > 0) {
+                const auto n = [](double v) {
+                    return QString::number(v, 'g', 6);
+                };
+                msg += QStringLiteral("\n\n") +
+                       I18n::tr("asrc_sync_outside")
+                           .arg(QString::number(outside))
+                           .arg(n(lo[0]), n(hi[0]), n(lo[1]), n(hi[1]),
+                                n(lo[2]), n(hi[2]));
+            }
+        }
+        if (QMessageBox::question(this, I18n::tr("asrc_sync_title"), msg,
                 QMessageBox::Ok | QMessageBox::Cancel,
                 QMessageBox::Cancel) != QMessageBox::Ok)
             return;   // キャンセル — feed は変更しない

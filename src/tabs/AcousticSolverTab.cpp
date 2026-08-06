@@ -1,6 +1,7 @@
 // AcousticSolverTab.cpp
 #include "AcousticSolverTab.h"
 #include "../core/Project.h"
+#include "../core/AcousticPreflight.h"
 #include "../acoustics/core/HybridRir.h"
 #include "../acoustics/io/WavWriter.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
@@ -271,6 +272,11 @@ const bool s_i18n = [] {
         "put both in one directory and point $OPENFDTD_ACOUSTICS_HOME (or the "
         "kernel-path setting) at either one; the other is found next to it. "
         "CI keeps validating the output contract with a mock solver.");
+    I18n::reg("acs_preflight_head",
+        "⚠ 入力に問題があるため実行しませんでした "
+        "(ソルバーが弾く条件を起動前に確認しています):",
+        "⚠ Not launched — the input has problems (checked before starting, "
+        "these are the conditions the solver rejects):");
     I18n::reg("acs_status_idle", "待機中", "Idle");
     I18n::reg("acs_status_running", "実行中…", "Running…");
     // 受領した RIR の行き先はナビの「音響ドメイン → 🎤 実測RIR分析」
@@ -588,10 +594,14 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             &AcousticSolverTab::buildHybrid);
     connect(m_hyRunAll, &QPushButton::clicked, this,
             &AcousticSolverTab::startHybridRun);
-    connect(m_hyRunLow, &QPushButton::clicked, this,
-            [this] { m_log->clear(); startHybridStage(3); });
-    connect(m_hyRunHigh, &QPushButton::clicked, this,
-            [this] { m_log->clear(); startHybridStage(4); });
+    connect(m_hyRunLow, &QPushButton::clicked, this, [this] {
+        m_log->clear();
+        if (preflightOk()) startHybridStage(3);
+    });
+    connect(m_hyRunHigh, &QPushButton::clicked, this, [this] {
+        m_log->clear();
+        if (preflightOk()) startHybridStage(4);
+    });
     connect(m_hyAssign, &QPushButton::clicked, this, [this] {
         if (m_hyLastOut.isEmpty()) return;
         m_p->operaAcoustic().rirPath = m_hyLastOut;
@@ -739,10 +749,30 @@ QString AcousticSolverTab::prepareRunInput(QString *workingDir, QString *err,
     return ofd;
 }
 
+bool AcousticSolverTab::preflightOk()
+{
+    const QStringList bad = preflight::acousticRunProblems(*m_p);
+    if (bad.isEmpty()) return true;
+
+    // ソルバーは同じ条件を非零終了で弾くが、理由がログにしか出ない。
+    // 起動する前に画面で直せる形にして止める。
+    QStringList lines;
+    lines << I18n::tr("acs_preflight_head");
+    for (const QString &b : bad) lines << QStringLiteral("• ") + b;
+    m_log->appendPlainText(lines.join(QStringLiteral("\n")));
+    m_hyResult->setText(lines.join(QStringLiteral("\n")));
+    m_hyResult->setVisible(true);
+    m_status->setText(I18n::tr("acs_status_done_ng"));
+    // タブは切り替えない — 押した場所にメッセージを残す (切り替えると
+    // 理由が見えなくなる)。直し先はメッセージ本文が名指ししている。
+    return false;
+}
+
 void AcousticSolverTab::startSolver()
 {
     if (m_runner->isRunning()) return;
     m_log->clear();
+    if (!preflightOk()) return;
 
     QString dir, err;
     const QString input = prepareRunInput(&dir, &err);
@@ -786,6 +816,7 @@ void AcousticSolverTab::startHybridRun()
         return;
     }
     m_log->clear();
+    if (!preflightOk()) return;
     startHybridStage(1);
 }
 

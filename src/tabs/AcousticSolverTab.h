@@ -50,6 +50,9 @@ private:
     QString prepareRunInput(QString *workingDir, QString *err,
                             const QString &subDir = QString());
     void startSolver();
+    // 起動前の入力点検 (core/AcousticPreflight)。問題があればログ+結果欄に
+    // 出して false を返す (ソルバーを起動しない)。
+    bool preflightOk();
     // ハイブリッド実行: FDTD → 幾何音響 → 合成 → 可聴化へ設定 まで通す。
     // 2 つのソルバーを順に起動する (m_hybridPhase が段を持つ)。
     void startHybridRun();

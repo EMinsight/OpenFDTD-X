@@ -18,6 +18,8 @@
 #include "audio/AudioEditEngine.h"
 #include "core/ComponentCatalog.h"
 #include "core/NavCatalog.h"
+// 外部音響ソルバー起動前の入力点検 (室外の音源など)
+#include "core/AcousticPreflight.h"
 #include "core/Project.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
@@ -2826,6 +2828,113 @@ static void testRirSampleRateNotes()
         // 申告値が広くても fs が低ければ変換の注記だけは出る
         check(rirSampleRateNotes(44100.0, 48000.0, 20000.0).size() == 1,
               "solver band: conversion note still appears");
+    }
+}
+
+// ── 外部音響ソルバー起動前の入力点検 (core/AcousticPreflight) ──────────────
+// ソルバーは不正入力を非零終了で弾くが、理由がログにしか出ない。GUI が
+// 起動前に同じ条件を見て画面で直せるようにしたので、その判定規則を検証する。
+static void testAcousticPreflight()
+{
+    g_file = "ac-preflight";
+    using namespace ofd::preflight;
+    // 返り値は利用者向けの文のリスト (どのタブで直すかは文中に書いてある)
+
+    // 5x4x3 m の室に音源 1・受音点 1 (正常な構成)
+    // Project は QObject 派生でコピー不可なので、参照を埋める形にする
+    const auto makeRoom = [](Project &p) {
+        const double ext[3] = { 5.0, 4.0, 3.0 };
+        const int ndiv[3] = { 20, 16, 12 };
+        for (int a = 0; a < 3; ++a) {
+            MeshAxis &m = p.mesh(a);
+            m.nodes.clear(); m.divs.clear();
+            m.nodes << 0.0 << ext[a];
+            m.divs << ndiv[a];
+        }
+        Feed f;  f.x = 1.0; f.y = 2.0; f.z = 1.5;
+        p.feeds().push_back(f);
+        Probe r; r.x = 4.0; r.y = 2.0; r.z = 1.5;
+        p.probes().push_back(r);
+    };
+    {
+        Project p; makeRoom(p);
+        check(acousticRunProblems(p).isEmpty(),
+              "preflight: a valid room reports no problem");
+    }
+
+    // 実際に踏んだケース: 音源リストの既定位置 (L_main = (-3, 4.5, 5)) を
+    // ソルバ波源へ反映すると 5x4x3 m の室では外に出る
+    {
+        Project p; makeRoom(p);
+        p.feeds().clear();
+        p.acoustic().sources = defaultAcousticSources();
+        const int n = AcousticSourceTab::syncFeedsFromSources(p);
+        check(n == 3, "preflight: default sources produce 3 feeds");
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 3,
+              "preflight: all three default sources are outside a 5x4x3 room");
+        if (!bad.isEmpty()) {
+            check(bad.first().contains(QStringLiteral("-3")) &&
+                      bad.first().contains(QStringLiteral("4.5")),
+                  "preflight: the message names the offending position");
+            check(bad.first().contains(QStringLiteral("[0, 5]")) ||
+                      bad.first().contains(QStringLiteral("[0,5]")),
+                  "preflight: the message names the room extent");
+            check(bad.first().contains(QStringLiteral("音源")),
+                  "preflight: the message names the tab to fix it in");
+        }
+    }
+
+    // 音源 / 受音点が無い
+    {
+        Project p; makeRoom(p);
+        p.feeds().clear();
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 1 && bad.first().contains(QStringLiteral("音源")),
+              "preflight: missing feed is reported once");
+        Project q; makeRoom(q);
+        q.probes().clear();
+        check(acousticRunProblems(q).size() == 1,
+              "preflight: missing observation point is reported");
+    }
+
+    // 受音点が室外
+    {
+        Project p; makeRoom(p);
+        p.probes()[0].z = 9.0;
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 1 && bad.first().contains(QStringLiteral("9")),
+              "preflight: a receiver outside the room is reported");
+    }
+
+    // 境界ちょうどは室内 (弾かない)
+    {
+        Project p; makeRoom(p);
+        p.feeds()[0].x = 0.0;
+        p.feeds()[0].z = 3.0;
+        check(acousticRunProblems(p).isEmpty(),
+              "preflight: a source exactly on the boundary is accepted");
+    }
+
+    // セル総数の上限 (OpenAcoustics と同じ 3,000 万)
+    {
+        Project p; makeRoom(p);
+        for (int a = 0; a < 3; ++a) p.mesh(a).divs[0] = 400;  // 6,400 万
+        const QStringList bad = acousticRunProblems(p);
+        check(!bad.isEmpty() &&
+                  bad.last().contains(QStringLiteral("ソルバ領域")),
+              "preflight: too many cells points at the solver region tab");
+        check(maxCells() == 30000000LL, "preflight: cell limit is 30M");
+    }
+
+    // メッシュが不正なら、それだけを報告して以降は見ない
+    {
+        Project p; makeRoom(p);
+        p.mesh(1).divs[0] = 0;      // 分割数 0 = 不正
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 1 &&
+                  bad.first().contains(QStringLiteral("ソルバ領域")),
+              "preflight: an invalid mesh short-circuits the other checks");
     }
 }
 
@@ -9548,6 +9657,7 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testResampler();
     testRirSampleRateNotes();
+    testAcousticPreflight();
     testSolverMetadata();
     testHybridRir();
     testOnnActivation();
