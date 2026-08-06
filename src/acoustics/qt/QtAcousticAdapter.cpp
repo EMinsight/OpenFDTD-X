@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -206,6 +207,12 @@ QtAcousticAdapter::readSolverMetadata(const QString &metadataPath)
     m.sourceT0S    = src.value(QStringLiteral("t0_s")).toDouble(0.0);
     const QJsonObject grid = o.value(QStringLiteral("grid")).toObject();
     m.gridDxM = grid.value(QStringLiteral("dx_m")).toDouble(0.0);
+    m.method = o.value(QStringLiteral("method")).toString();
+    const QJsonArray band = o.value(QStringLiteral("valid_band_hz")).toArray();
+    if (band.size() == 2) {
+        m.validBandLoHz = band.at(0).toDouble(0.0);
+        m.validBandHiHz = band.at(1).toDouble(0.0);
+    }
     return m;
 }
 

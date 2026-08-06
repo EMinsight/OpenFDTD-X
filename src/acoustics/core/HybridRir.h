@@ -43,6 +43,16 @@ struct HybridRirConfig {
     // FDTD の有効帯域上限 [Hz] (metadata.json の source.fmax_hz)。
     // crossoverHz が 0 のときの自動決定に使う
     double fdtdFmaxHz;
+    // 幾何音響の有効帯域下限 [Hz] (metadata.json の valid_band_hz[0] =
+    // Schroeder 周波数)。これより下では幾何音響の前提 (波長 ≪ 部屋、
+    // 干渉を無視した強度加算) が成り立たない。0 = 不明。
+    //
+    // 両方が分かるとき、自動クロスオーバーは重なり区間
+    // [gaValidLoHz, fdtdFmaxHz] の**幾何平均**にする — 対数周波数で
+    // 両方の限界から最も遠い点。重なりが無い (gaValidLoHz > fdtdFmaxHz)
+    // ときも幾何平均を採るが、どちらの手法も担保しない帯域があることを
+    // warning に出す (黙って埋めない)。
+    double gaValidLoHz;
     // FDTD 音源 (ガウシアン微分パルス) の σ [s] と遅延 t0 [s]
     // (metadata.json の source.sigma_s / t0_s)。σ = 0 なら逆フィルタしない
     double sourceSigmaS;
@@ -57,9 +67,9 @@ struct HybridRirConfig {
     bool matchLevels;
 
     HybridRirConfig()
-        : crossoverHz(0.0), fdtdFmaxHz(0.0), sourceSigmaS(0.0),
-          sourceT0S(0.0), deconvEpsilon(1e-6), transitionWidth(0.5),
-          matchLevels(true) {}
+        : crossoverHz(0.0), fdtdFmaxHz(0.0), gaValidLoHz(0.0),
+          sourceSigmaS(0.0), sourceT0S(0.0), deconvEpsilon(1e-6),
+          transitionWidth(0.5), matchLevels(true) {}
 };
 
 struct HybridRirInfo {

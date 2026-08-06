@@ -91,11 +91,18 @@ public:
         double  sourceT0S;      // "source.t0_s"    — 音源の遅延
         double  gridDxM;        // "grid.dx_m"
         double  tSabineS;       // "t_sabine_s" (-1 = 無限大)
+        // "valid_band_hz": [lo, hi] — 幾何音響ソルバー (ofdx_acoustic_ga) が
+        // 申告する有効帯域。lo は Schroeder 周波数で、これより下は幾何音響の
+        // 前提が崩れる。FDTD 側は出さないので 0 のまま
+        double  validBandLoHz;
+        double  validBandHiHz;
+        QString method;         // "method" (幾何音響のみ。FDTD は空)
         QString solver;         // "solver"
         SolverMetadata()
             : valid(false), sampleRateHz(0.0), sourceFmaxHz(0.0),
               sourceSigmaS(0.0), sourceT0S(0.0), gridDxM(0.0),
-              tSabineS(0.0), solver() {}
+              tSabineS(0.0), validBandLoHz(0.0), validBandHiHz(0.0),
+              method(), solver() {}
     };
 
     // metadata.json を直接読む
