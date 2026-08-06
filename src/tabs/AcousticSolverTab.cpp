@@ -46,7 +46,9 @@ const bool s_i18n = [] {
         "ください)。合成では FDTD 側の音源パルス (ガウシアン微分) の逆フィルタ"
         "と遅延 t0 の除去、fs 合わせ、クロスオーバー帯でのレベル整合を"
         "自動で行います。クロスオーバーは両ソルバーの申告帯域 "
-        "(FDTD の fmax と幾何音響の Schroeder 周波数) の重なりから決めます。",
+        "(FDTD の fmax と幾何音響の Schroeder 周波数) の重なりから決めます。"
+        "片側だけ作り直したいときは「① 低域だけ実行」「② 高域だけ実行」を"
+        "使ってください (その欄だけ更新し、合成は行いません)。",
         "An acoustic FDTD's usable band is set by the grid "
         "(fmax = c/(10·dx) — only 69 Hz at dx = 0.5 m). Reaching the 4 kHz a "
         "singing-voice auralization needs is not feasible with FDTD alone, so "
@@ -60,7 +62,9 @@ const bool s_i18n = [] {
         "Combining deconvolves the FDTD source pulse (Gaussian derivative), "
         "removes its t0 delay, matches the sample rates and levels, and picks "
         "the crossover from the bands both solvers declare (the FDTD fmax and "
-        "the geometric Schroeder frequency).");
+        "the geometric Schroeder frequency). To redo just one side, use "
+        "\"(1) Run the low band only\" / \"(2) Run the high band only\" — they "
+        "fill that field and stop, without combining.");
     I18n::reg("acs_hy_low", "低域 RIR (FDTD)", "Low-band RIR (FDTD)");
     I18n::reg("acs_hy_low_ph",
               "ソルバー実行結果の rir.wav (metadata.json が隣にあると精度が上がる)",
@@ -78,6 +82,22 @@ const bool s_i18n = [] {
     I18n::reg("acs_hy_cross_note",
         "空欄なら metadata.json の source.fmax_hz (FDTD の有効帯域上限) を使う",
         "empty = use source.fmax_hz from metadata.json (the FDTD valid band)");
+    I18n::reg("acs_hy_runlow", "① 低域だけ実行 (FDTD)",
+              "(1) Run the low band only (FDTD)");
+    I18n::reg("acs_hy_runhigh", "② 高域だけ実行 (幾何音響)",
+              "(2) Run the high band only (geometric)");
+    I18n::reg("acs_hy_runlow_tip",
+        "音響 FDTD だけを実行して「低域 RIR」欄に入れます "
+        "(合成は行いません)。\n%1",
+        "Runs only the acoustic FDTD and fills the low-band field "
+        "(does not combine).\n%1");
+    I18n::reg("acs_hy_runhigh_tip",
+        "幾何音響ソルバーだけを実行して「高域 RIR」欄に入れます "
+        "(合成は行いません)。\n%1",
+        "Runs only the geometric solver and fills the high-band field "
+        "(does not combine).\n%1");
+    I18n::reg("acs_hy_stage_done", "%1 の実行が完了しました — %2",
+              "%1 finished — %2");
     I18n::reg("acs_hy_runall",
               "▶▶ ハイブリッド実行 (FDTD → 幾何音響 → 合成)",
               "▶▶ Run hybrid (FDTD → geometric → combine)");
@@ -114,10 +134,12 @@ const bool s_i18n = [] {
     I18n::reg("acs_hy_need_low", "低域 RIR (FDTD) のファイルを指定してください",
               "Choose the low-band (FDTD) RIR file");
     I18n::reg("acs_hy_need_high",
-        "高域 RIR (幾何音響) のファイルを指定してください "
-        "(ofdx_acoustic_ga の出力。「▶▶ ハイブリッド実行」なら自動で埋まります)",
-        "Choose the high-band (geometrical) RIR file (the output of "
-        "ofdx_acoustic_ga — \"Run hybrid\" fills it in for you)");
+        "高域 RIR (幾何音響) がありません。「② 高域だけ実行 (幾何音響)」を"
+        "押すか、📁 参照… で ofdx_acoustic_ga の出力を選んでください "
+        "(「▶▶ ハイブリッド実行」なら両方まとめて作ります)",
+        "No high-band (geometrical) RIR. Press \"(2) Run the high band only\", "
+        "or browse to an ofdx_acoustic_ga output (\"Run hybrid\" makes both "
+        "at once)");
     I18n::reg("acs_hy_no_cross",
         "クロスオーバーが決まりません: 数値を入力するか、低域 RIR の隣に "
         "metadata.json (source.fmax_hz を含む) を置いてください。",
@@ -510,6 +532,15 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     cr->addWidget(new QLabel(I18n::tr("acs_hy_cross_note"), s4), 1);
     s4->vbox()->addLayout(cr);
 
+    // 片側だけ作り直したいとき用 (高域 RIR を GUI だけで用意できるように)
+    auto *sr = new QHBoxLayout();
+    m_hyRunLow = new QPushButton(I18n::tr("acs_hy_runlow"), s4);
+    m_hyRunHigh = new QPushButton(I18n::tr("acs_hy_runhigh"), s4);
+    sr->addWidget(m_hyRunLow);
+    sr->addWidget(m_hyRunHigh);
+    sr->addStretch(1);
+    s4->vbox()->addLayout(sr);
+
     auto *hr = new QHBoxLayout();
     m_hyRunAll = new QPushButton(I18n::tr("acs_hy_runall"), s4);
     m_hyRun = new QPushButton(I18n::tr("acs_hy_run"), s4);
@@ -557,6 +588,10 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             &AcousticSolverTab::buildHybrid);
     connect(m_hyRunAll, &QPushButton::clicked, this,
             &AcousticSolverTab::startHybridRun);
+    connect(m_hyRunLow, &QPushButton::clicked, this,
+            [this] { m_log->clear(); startHybridStage(3); });
+    connect(m_hyRunHigh, &QPushButton::clicked, this,
+            [this] { m_log->clear(); startHybridStage(4); });
     connect(m_hyAssign, &QPushButton::clicked, this, [this] {
         if (m_hyLastOut.isEmpty()) return;
         m_p->operaAcoustic().rirPath = m_hyLastOut;
@@ -576,8 +611,14 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     connect(m_runner, &AcousticRunner::rirReady, this, [this](const QString &p) {
         // ハイブリッド実行中の中間結果は可聴化へ流さない (最終的に設定するのは
         // 合成結果だけ)。段に応じて低域/高域の欄へ入れる。
-        if (m_hybridPhase == 1) { m_hyLow->setText(p);  return; }
-        if (m_hybridPhase == 2) { m_hyHigh->setText(p); return; }
+        if (m_hybridPhase == 1 || m_hybridPhase == 3) {
+            m_hyLow->setText(p);
+            return;
+        }
+        if (m_hybridPhase == 2 || m_hybridPhase == 4) {
+            m_hyHigh->setText(p);
+            return;
+        }
         // 契約検証済み RIR を実測 RIR 分析の入力へ (単一ソース原則)
         m_p->operaAcoustic().rirPath = p;
         m_p->touch();
@@ -729,8 +770,8 @@ void AcousticSolverTab::stopSolver()
 // ── ハイブリッド実行 (FDTD → 幾何音響 → 合成) ──────────────────────────────
 void AcousticSolverTab::startHybridRun()
 {
+    // 一括 (①→②→合成)。片方だけ走らせる場合は startHybridStage を直接呼ぶ。
     if (m_runner->isRunning() || m_hybridPhase != 0) return;
-
     // 先に両方のバイナリを解決して、片方しか無い状態で走り出さないようにする
     const QString fdtdBin =
         AcousticRunner::resolveSolverForHybrid(AcousticBackend::ExternalFDTD);
@@ -744,33 +785,56 @@ void AcousticSolverTab::startHybridRun()
         m_hyResult->setVisible(true);
         return;
     }
+    m_log->clear();
+    startHybridStage(1);
+}
+
+// phase: 1 = 低域 (一括の第 1 段) / 2 = 高域 (一括の第 2 段)
+//        3 = 低域のみ / 4 = 高域のみ (それぞれ欄を埋めて終わる)
+void AcousticSolverTab::startHybridStage(int phase)
+{
+    if (m_runner->isRunning() || (m_hybridPhase != 0 && phase != 2)) return;
+    const bool low = (phase == 1 || phase == 3);
+    const AcousticBackend backend = low ? AcousticBackend::ExternalFDTD
+                                        : AcousticBackend::ExternalGeometric;
+    const QString bin = AcousticRunner::resolveSolverForHybrid(backend);
+    if (bin.isEmpty()) {
+        m_hyResult->setText(I18n::tr("acs_hy_missing_solver")
+                                .arg(I18n::tr(low ? "acs_hy_solver_fdtd"
+                                                  : "acs_hy_solver_ga")));
+        m_hyResult->setVisible(true);
+        return;
+    }
 
     QString dir, err;
-    const QString input =
-        prepareRunInput(&dir, &err, QStringLiteral("hybrid_fdtd"));
+    const QString input = prepareRunInput(
+        &dir, &err,
+        low ? QStringLiteral("hybrid_fdtd") : QStringLiteral("hybrid_ga"));
     if (input.isEmpty()) {
         m_hyResult->setText(I18n::tr("acs_hy_failed").arg(err));
         m_hyResult->setVisible(true);
         return;
     }
-    m_log->clear();
-    m_log->appendPlainText(I18n::tr("acs_hy_phase_fdtd").arg(fdtdBin));
+    m_log->appendPlainText(
+        I18n::tr(low ? "acs_hy_phase_fdtd" : "acs_hy_phase_ga").arg(bin));
     m_log->appendPlainText(I18n::tr("acs_prep_wrote").arg(input, dir));
 
-    m_hybridPhase = 1;
-    m_hyLow->clear();
-    m_hyHigh->clear();
-    m_hyRunAll->setEnabled(false);
-    m_hyRun->setEnabled(false);
+    m_hybridPhase = phase;
+    // 一括の第 1 段では両方の欄を作り直す。片側のみの実行はもう片方を残す。
+    if (phase == 1) { m_hyLow->clear(); m_hyHigh->clear(); }
+    else if (phase == 3) m_hyLow->clear();
+    else if (phase == 4) m_hyHigh->clear();
     m_btnRun->setEnabled(false);
     m_btnStop->setEnabled(true);
     m_status->setText(I18n::tr("acs_status_running"));
+    updateHybridUi();          // 実行中はハイブリッド系のボタンを全て無効化
 
     AcousticRunConfig cfg;
-    cfg.backend = AcousticBackend::ExternalFDTD;
-    cfg.executable = fdtdBin;
+    cfg.backend = backend;
+    cfg.executable = bin;
     cfg.threads = m_p->operaAcoustic().solverThreads;
-    cfg.processes = m_p->operaAcoustic().solverProcesses;
+    // 幾何音響は MPI を使わない
+    cfg.processes = low ? m_p->operaAcoustic().solverProcesses : 1;
     cfg.workingDir = dir;
     cfg.inputFile = input;
     m_runner->start(cfg);
@@ -792,25 +856,22 @@ void AcousticSolverTab::advanceHybridRun(bool ok)
         return abort(I18n::tr(phase == 1 ? "acs_hy_phase_fdtd_ng"
                                          : "acs_hy_phase_ga_ng"));
 
+    // 片側のみの実行はここで終わり (欄は rirReady が埋めている)
+    if (phase == 3 || phase == 4) {
+        m_hybridPhase = 0;
+        m_hyResult->setText(I18n::tr("acs_hy_stage_done")
+                                .arg(I18n::tr(phase == 3 ? "acs_hy_solver_fdtd"
+                                                         : "acs_hy_solver_ga"),
+                                     (phase == 3 ? m_hyLow : m_hyHigh)->text()));
+        m_hyResult->setVisible(true);
+        updateHybridUi();
+        updateResolution();
+        return;
+    }
+
     if (phase == 1) {
-        // FDTD 完了 → 幾何音響へ
-        const QString gaBin = AcousticRunner::resolveSolverForHybrid(
-            AcousticBackend::ExternalGeometric);
-        QString dir, err;
-        const QString input =
-            prepareRunInput(&dir, &err, QStringLiteral("hybrid_ga"));
-        if (input.isEmpty()) return abort(err);
-        m_log->appendPlainText(I18n::tr("acs_hy_phase_ga").arg(gaBin));
-        m_hybridPhase = 2;
-        AcousticRunConfig cfg;
-        cfg.backend = AcousticBackend::ExternalGeometric;
-        cfg.executable = gaBin;
-        cfg.threads = m_p->operaAcoustic().solverThreads;
-        cfg.processes = 1;      // 幾何音響は MPI を使わない
-        cfg.workingDir = dir;
-        cfg.inputFile = input;
-        m_btnStop->setEnabled(true);
-        m_runner->start(cfg);
+        m_hybridPhase = 0;      // startHybridStage の再入ガードを通すため
+        startHybridStage(2);    // FDTD 完了 → 幾何音響へ
         return;
     }
 
@@ -873,6 +934,25 @@ void AcousticSolverTab::updateHybridUi()
                                    ? I18n::tr("acs_hy_runall_tip")
                                          .arg(fdtdBin, gaBin)
                                    : whyAll);
+        // 片側実行はそのソルバーだけ解決できればよい
+        const struct { QPushButton *b; const QString &bin; const char *nameKey;
+                       const char *tipKey; }
+        kStage[] = {
+            { m_hyRunLow,  fdtdBin, "acs_hy_solver_fdtd", "acs_hy_runlow_tip" },
+            { m_hyRunHigh, gaBin,   "acs_hy_solver_ga",   "acs_hy_runhigh_tip" },
+        };
+        for (const auto &st : kStage) {
+            if (!st.b) continue;
+            QString whyOne;
+            if (busy) whyOne = I18n::tr("acs_status_running");
+            else if (st.bin.isEmpty())
+                whyOne = I18n::tr("acs_hy_missing_solver")
+                             .arg(I18n::tr(st.nameKey));
+            st.b->setEnabled(whyOne.isEmpty());
+            st.b->setToolTip(whyOne.isEmpty()
+                                 ? I18n::tr(st.tipKey).arg(st.bin)
+                                 : whyOne);
+        }
     }
 
     // 出力先の既定は低域 RIR と同じ場所の hybrid_rir.wav
