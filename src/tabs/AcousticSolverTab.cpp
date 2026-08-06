@@ -237,10 +237,18 @@ const bool s_i18n = [] {
         "▸ After contract validation, rirReady(path) sets the measured RIR of "
         "the RIR analysis tab. FDTD sizing uses AcousticFdtdEstimator.");
     I18n::reg("acs_dev_note",
-        "実音響ソルバーは別リポジトリで開発中 — CI はモックソルバーで出力契約を"
-        "検証している (docs/opera-acoustics-development-status.md §3)。",
-        "The real acoustic solver is developed in a separate repository — CI "
-        "validates the output contract with a mock solver.");
+        "実音響ソルバーは別リポジトリ (OpenAcoustics) にある — "
+        "ExternalFDTD = ofdx_acoustic_fdtd、ExternalGeometric = "
+        "ofdx_acoustic_ga。GUI には同梱していないので、2 本を同じ場所に置いて "
+        "$OPENFDTD_ACOUSTICS_HOME かカーネルパスの設定でどちらか片方を"
+        "指定すれば両方解決する。CI は契約の番人としてモックソルバーで"
+        "出力契約を検証している (docs/opera-acoustics-development-status.md §3)。",
+        "The real acoustic solvers live in a separate repository "
+        "(OpenAcoustics): ExternalFDTD = ofdx_acoustic_fdtd, "
+        "ExternalGeometric = ofdx_acoustic_ga. Neither ships with the GUI — "
+        "put both in one directory and point $OPENFDTD_ACOUSTICS_HOME (or the "
+        "kernel-path setting) at either one; the other is found next to it. "
+        "CI keeps validating the output contract with a mock solver.");
     I18n::reg("acs_status_idle", "待機中", "Idle");
     I18n::reg("acs_status_running", "実行中…", "Running…");
     // 受領した RIR の行き先はナビの「音響ドメイン → 🎤 実測RIR分析」
