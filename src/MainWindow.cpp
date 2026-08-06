@@ -1481,17 +1481,22 @@ void MainWindow::onRunnerFinished(bool ok)
         // TL 音場を読んで水中音響タブの「TL 断面」へ反映する
         // (この実行が生成した .shd だけを対象にする)
         auto *uwTab = qobject_cast<UnderwaterTab *>(m_tabUnderwater);
-        if (shd.exists() && uwTab) {
-            uwTab->showTlResult(m_runner->workingDir(), base);
+        if (shd.exists()) {
+            if (uwTab) uwTab->showTlResult(m_runner->workingDir(), base);
             ShdField f;
             QString shdErr;
-            if (ShdReader::read(shd.absoluteFilePath(), f, &shdErr))
+            if (ShdReader::read(shd.absoluteFilePath(), f, &shdErr)) {
                 m_rightDock->appendLog(
                     QStringLiteral("TL: %1 x %2, %3..%4 dB")
                         .arg(f.nrz).arg(f.nrr)
                         .arg(f.minTL, 0, 'f', 1).arg(f.maxTL, 0, 'f', 1));
-            else
+                // 結果ペインの 2D 断面にも同じ TL 場を流す (他ドメインの
+                // 結果表示と同じ場所に出す — タブ内の小窓だけにしない)
+                if (m_center && m_center->loadTlField(shd.absoluteFilePath()))
+                    m_rightDock->appendLog(I18n::tr("uw_shd_slice_ok"));
+            } else {
                 m_rightDock->appendLog(QStringLiteral("shd: ") + shdErr);
+            }
         }
     }
 }

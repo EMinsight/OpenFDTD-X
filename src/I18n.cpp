@@ -488,11 +488,17 @@ void I18n::loadTables() {
     add("uw_shd_missing",
         "警告: .shd が生成されませんでした (.prt のログを確認してください)",
         "Warning: no .shd was generated (check the .prt log)");
+    add("uw_shd_slice_ok",
+        "TL 音場を「2D 断面」へ反映しました",
+        "The TL field was loaded into the 2D slice view");
     add("uw_shd_viewer_note",
-        "※ .shd の可視化 (TL 図) はアプリ内では未実装です。"
-        "bellhopcuda 同梱の MATLAB/Python ツール等で表示してください。",
-        "Note: in-app visualization of .shd (TL plots) is not implemented. "
-        "Use the MATLAB/Python tools bundled with bellhopcuda.");
+        "※ TL 図は「水中音響」タブと「2D 断面」に表示しています。"
+        "等値線・多周波・3D の描画は未実装なので、必要なら bellhopcuda 同梱の "
+        "MATLAB/Python ツールを使ってください。",
+        "Note: the TL map is shown on the Underwater tab and in the 2D slice "
+        "view. Contour lines, multi-frequency and 3D plots are not "
+        "implemented \u2014 use the MATLAB/Python tools bundled with bellhopcuda "
+        "for those.");
     add("run_post_cloud_na",
         "エンジンに「tidy3d Cloud」を選択中はポスト処理を実行できません。\n"
         "ローカルのポスト処理を行うには、エンジンで CPU / MPI / GPU の"

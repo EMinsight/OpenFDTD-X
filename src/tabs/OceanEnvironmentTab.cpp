@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../io/BellhopIO.h"
 #include "../io/BathymetryIO.h"
+#include "../io/PageLinkScanner.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -26,6 +27,8 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QSet>
+#include <QRegularExpression>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -240,6 +243,41 @@ const bool s_i18n = [] {
               "This build was configured without Qt6::Network, so in-app "
               "downloading is unavailable (\u2460 import and \u2461 pages still work).");
     I18n::reg("oe_dl_go", "⬇ ダウンロード", "\u2b07 Download");
+    I18n::reg("oe_dl_scan_short", "🔍", "\U0001f50d");
+    I18n::reg("oe_dl_scan", "🔍 ページ内のデータを探す",
+              "\U0001f50d Find data on the page");
+    I18n::reg("oe_dl_scan_hint",
+              "配布ページの URL を入れて「探す」を押すと、そのページから"
+              "データファイル (.nc / .asc / .csv / .zip 等) へのリンクを"
+              "抜き出します。フォルダ/ページの行をダブルクリックすると"
+              "その先を辿れます (NOAA や JODC のようにディレクトリを"
+              "降りていく配布形態向け)。ファイルの行をダブルクリックすると"
+              "ダウンロードします。",
+              "Enter a distribution page URL and press Find: links to data "
+              "files (.nc / .asc / .csv / .zip \u2026) on that page are extracted. "
+              "Double-click a folder/page row to descend into it (for the "
+              "directory-style layouts NOAA and JODC use); double-click a file "
+              "row to download it.");
+    I18n::reg("oe_dl_scanning", "取得中: %1", "Fetching: %1");
+    I18n::reg("oe_dl_scan_ok",
+              "%1 : データファイル %2 件 / フォルダ・ページ %3 件",
+              "%1 : %2 data file(s), %3 folder(s)/page(s)");
+    I18n::reg("oe_dl_scan_none",
+              "%1 : データファイルへのリンクが見つかりませんでした。"
+              "JavaScript で組み立てるページや検索フォーム経由の配布は"
+              "ここからは辿れません — 「②」でブラウザを開いて直リンクを"
+              "取得してください。",
+              "%1 : no links to data files were found. Pages that build their "
+              "links with JavaScript, or distribute through a search form, "
+              "cannot be followed from here \u2014 open the page in a browser "
+              "(section \u2461) and grab the direct link.");
+    I18n::reg("oe_dl_scan_failed", "ページを取得できませんでした: %1",
+              "Could not fetch the page: %1");
+    I18n::reg("oe_dl_scan_trunc", " (先頭 %1 件のみ表示)",
+              " (showing the first %1)");
+    I18n::reg("oe_col_kind", "種別", "Kind");
+    I18n::reg("oe_kind_file", "📄 データ", "\U0001f4c4 data");
+    I18n::reg("oe_kind_dir", "📁 フォルダ/ページ", "\U0001f4c1 folder/page");
     I18n::reg("oe_dl_abort", "中断", "Abort");
     I18n::reg("oe_dl_badurl", "URL が不正です (http/https のみ)",
               "Invalid URL (http/https only)");
@@ -647,6 +685,80 @@ public:
 class OeDownloadManager::Impl : public QObject {};
 #endif
 
+
+namespace { const int kScanLimit = 400; }
+
+
+
+void OeDownloadManager::scanPage(const QString &pageUrl)
+{
+#ifdef OFD_USE_NETWORK
+    if (!m_impl) return;
+    const QString target = pageUrl.isEmpty() ? m_url->text().trimmed() : pageUrl;
+    const QUrl url(target);
+    const QString scheme = url.scheme().toLower();
+    if (!url.isValid() || (scheme != QLatin1String("http")
+                           && scheme != QLatin1String("https"))) {
+        m_scanNote->setText(I18n::tr("oe_dl_badurl"));
+        return;
+    }
+    m_url->setText(target);
+    m_scanBtn->setEnabled(false);
+    m_scanNote->setText(I18n::tr("oe_dl_scanning").arg(target));
+
+    QNetworkRequest req(url);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply *r = m_impl->nam.get(req);
+    connect(r, &QNetworkReply::finished, this, [this, r, target] {
+        m_scanBtn->setEnabled(true);
+        if (r->error() != QNetworkReply::NoError) {
+            m_scanNote->setText(I18n::tr("oe_dl_scan_failed").arg(r->errorString()));
+            r->deleteLater();
+            return;
+        }
+        // 巨大なファイルを誤って掴んだときのために上限を設ける (2 MB)
+        const QByteArray body = r->read(2 * 1024 * 1024);
+        const QUrl finalUrl = r->url();   // リダイレクト後を相対解決の基準にする
+        r->deleteLater();
+        showScanResult(finalUrl.isEmpty() ? target : finalUrl.toString(), body);
+    });
+#else
+    Q_UNUSED(pageUrl);
+#endif
+}
+
+void OeDownloadManager::showScanResult(const QString &pageUrl,
+                                       const QByteArray &html)
+{
+    if (!m_scanTable) return;
+    bool truncated = false;
+    const QVector<PageLink> links =
+        scanPageLinks(pageUrl, html, kScanLimit, &truncated);
+
+    m_scanTable->setRowCount(0);
+    int nFile = 0, nDir = 0;
+    for (const PageLink &l : links) {
+        const int r = m_scanTable->rowCount();
+        m_scanTable->insertRow(r);
+        auto *kind = new QTableWidgetItem(
+            I18n::tr(l.isDir ? "oe_kind_dir" : "oe_kind_file"));
+        kind->setData(Qt::UserRole, l.url);
+        kind->setData(Qt::UserRole + 1, l.isDir);
+        m_scanTable->setItem(r, 0, kind);
+        m_scanTable->setItem(r, 1, new QTableWidgetItem(l.name));
+        m_scanTable->setItem(r, 2, new QTableWidgetItem(l.url));
+        (l.isDir ? nDir : nFile)++;
+    }
+    QString note;
+    if (nFile == 0 && nDir == 0)
+        note = I18n::tr("oe_dl_scan_none").arg(pageUrl);
+    else
+        note = I18n::tr("oe_dl_scan_ok").arg(pageUrl).arg(nFile).arg(nDir);
+    if (truncated) note += I18n::tr("oe_dl_scan_trunc").arg(kScanLimit);
+    m_scanNote->setText(note);
+}
+
 OeDownloadManager::~OeDownloadManager()
 {
     abortDownload();
@@ -802,7 +914,7 @@ OeDownloadManager::OeDownloadManager(QWidget *parent)
     s1->vbox()->addLayout(impRow);
     v->addWidget(s1);
 
-    // ── ③ URL から直接ダウンロード ────────────────────────────────────────
+    // ── ③ URL から直接ダウンロード / 配布ページの走査 ─────────────────────
     {
         auto *s3 = new SectionBox(I18n::tr("oe_dl_s3"), body);
 #ifdef OFD_USE_NETWORK
@@ -831,6 +943,37 @@ OeDownloadManager::OeDownloadManager(QWidget *parent)
                 this, &OeDownloadManager::startDownload);
         connect(m_abortBtn, &QPushButton::clicked,
                 this, &OeDownloadManager::abortDownload);
+
+        // 配布ページからデータ URL を探す
+        auto *scanHint = new QLabel(I18n::tr("oe_dl_scan_hint"), s3);
+        scanHint->setWordWrap(true);
+        scanHint->setStyleSheet("font-size:11px; color:palette(mid);");
+        s3->vbox()->addWidget(scanHint);
+        m_scanBtn = new QPushButton(I18n::tr("oe_dl_scan"), s3);
+        urlRow->addWidget(m_scanBtn);
+        m_scanTable = new QTableWidget(0, 3, s3);
+        oeSetupTable(m_scanTable, { I18n::tr("oe_col_kind"),
+                                    I18n::tr("oe_col_dataset"),
+                                    QStringLiteral("URL") }, 160);
+        m_scanTable->setMinimumHeight(180);
+        s3->vbox()->addWidget(m_scanTable);
+        m_scanNote = new QLabel(s3);
+        m_scanNote->setWordWrap(true);
+        s3->vbox()->addWidget(m_scanNote);
+        connect(m_scanBtn, &QPushButton::clicked, this, [this] { scanPage(); });
+        // フォルダ/ページ行 = 辿る、データ行 = URL 欄へ入れてダウンロード
+        connect(m_scanTable, &QTableWidget::cellDoubleClicked, this,
+                [this](int row, int) {
+                    auto *it = m_scanTable->item(row, 0);
+                    if (!it) return;
+                    const QString url = it->data(Qt::UserRole).toString();
+                    if (it->data(Qt::UserRole + 1).toBool()) {
+                        scanPage(url);
+                    } else {
+                        m_url->setText(url);
+                        startDownload();
+                    }
+                });
 #else
         auto *off = new QLabel(I18n::tr("oe_dl_s3_off"), s3);
         off->setWordWrap(true);
@@ -861,11 +1004,25 @@ OeDownloadManager::OeDownloadManager(QWidget *parent)
                                                 .host()));
         pages->setItem(r, 2, new QTableWidgetItem(
             QString::fromLatin1(def.nominal ? def.nominal : "-")));
-        auto *open = new QPushButton(I18n::tr("oe_dl_open_page"), pages);
+        // ブラウザで開く / アプリ内でデータリンクを探す の 2 択
+        auto *cell = new QWidget(pages);
+        auto *ch = new QHBoxLayout(cell);
+        ch->setContentsMargins(0, 0, 0, 0);
+        ch->setSpacing(4);
+        auto *open = new QPushButton(I18n::tr("oe_dl_open_page"), cell);
         connect(open, &QPushButton::clicked, this, [def] {
             QDesktopServices::openUrl(QUrl(QString::fromLatin1(def.url)));
         });
-        pages->setCellWidget(r, 3, open);
+        ch->addWidget(open);
+#ifdef OFD_USE_NETWORK
+        auto *scan = new QPushButton(I18n::tr("oe_dl_scan_short"), cell);
+        scan->setToolTip(I18n::tr("oe_dl_scan"));
+        connect(scan, &QPushButton::clicked, this, [this, def] {
+            scanPage(QString::fromLatin1(def.url));
+        });
+        ch->addWidget(scan);
+#endif
+        pages->setCellWidget(r, 3, cell);
         ++r;
     }
     s2->vbox()->addWidget(pages);

@@ -82,6 +82,11 @@ private:
     void importFiles();      // ファイル選択 → データセットフォルダへコピー
     void startDownload();    // URL → データセットフォルダへ直接ダウンロード
     void abortDownload();
+    // 配布ページ (HTML) を取得してデータファイルへのリンクを列挙する。
+    // 見つかったフォルダ/ページのリンクをクリックすると、そこを再走査する
+    // (NOAA / JODC のようにディレクトリを辿る配布形態に合わせる)。
+    void scanPage(const QString &pageUrl = QString());
+    void showScanResult(const QString &pageUrl, const QByteArray &html);
 
     QLabel *m_importResult = nullptr;
 
@@ -91,6 +96,9 @@ private:
     QPushButton  *m_dlBtn = nullptr, *m_abortBtn = nullptr;
     QProgressBar *m_dlProgress = nullptr;
     QLabel       *m_dlResult = nullptr;
+    QTableWidget *m_scanTable = nullptr;   // 候補リンク (種別/名前/URL)
+    QPushButton  *m_scanBtn = nullptr;
+    QLabel       *m_scanNote = nullptr;
     class Impl;
     Impl *m_impl = nullptr;    // QNetworkAccessManager 一式 (非ネットワーク
                                // ビルドでは nullptr)

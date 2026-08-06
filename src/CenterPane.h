@@ -53,6 +53,12 @@ public:
     // 取れる ofd/orcwa 系のみ。結果は result3DSliceStatus で通知する)。
     bool loadResultField(const QString &h5Path);
 
+    // 水中音響 (bellhopcxx) の TL 音場を 2D 断面へ反映する。
+    // <ケース名>.shd を ShdReader で読み、TL [dB] を「小さいほど暖色」で
+    // 正規化して流し込む (音場強度と同じ向きの見え方になる)。
+    // 読めなければ false を返し、断面は触らない (前の結果を残さない)。
+    bool loadTlField(const QString &shdPath);
+
     // 3D シーンにだけ結果断面を流し込む (プロジェクトを開いたときに
     // 見つかった既存 HDF5 用)。2D 断面は「その実行が生成したもの」に
     // 限るゲートを維持したいので触らない。
