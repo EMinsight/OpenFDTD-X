@@ -24,6 +24,7 @@
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
+#include "io/BathymetryIO.h"
 #include "io/H5Reader.h"
 #include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
@@ -4537,6 +4538,184 @@ static void testRunGating()
 // 水中音響 (bellhopcxx) — .env 生成と Runner のカーネル解決。
 // 環境変数 OFDX_BELLHOP_BIN が指す実カーネルがあれば、生成した .env を
 // 実際に実行して .shd (TL 音場) が生成されることまで検証する。
+
+
+// このテスト群のための一時ファイル (QTemporaryDir で寿命を揃える)
+static QString btyTmpPath(const QString &name)
+{
+    static QTemporaryDir dir;
+    return dir.filePath(name);
+}
+static QByteArray btyReadAll(const QString &path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+// 水中音響: 海底地形 (.bty) と Bellhop 実行設定の .ofdx 往復・.env 反映
+static void testUnderwaterBathymetry()
+{
+    g_file = "bathymetry";
+
+    // (a) 既定のままなら .ofdx も .env も従来とバイト一致 (後方互換)
+    {
+        Project q0, q1;
+        q0.setActiveDomain(Domain::Underwater);
+        q1.setActiveDomain(Domain::Underwater);
+        q1.underwater().siteLat_deg = 35.0;      // 既定値を明示代入
+        q1.underwater().runMode = QStringLiteral("coherent");
+        const QString j0 = btyTmpPath("uw_def0.ofdx"), j1 = btyTmpPath("uw_def1.ofdx");
+        OfdxIO::save(j0, q0); OfdxIO::save(j1, q1);
+        check(btyReadAll(j0) == btyReadAll(j1),
+              "bathy: default site/bellhop keys are not written at all");
+        check(!btyReadAll(j0).contains("bathymetry"),
+              "bathy: no bathymetry key when there is no section");
+        check(BellhopIO::envText(q0) == BellhopIO::envText(q1),
+              "bathy: defaults keep the .env byte-identical");
+    }
+
+    // (b) 断面と実行設定のラウンドトリップ
+    {
+        Project p;
+        p.setActiveDomain(Domain::Underwater);
+        UnderwaterOpts &u = p.underwater();
+        u.siteLat_deg = 34.5; u.siteLon_deg = 139.25; u.trackBearing_deg = 120.0;
+        u.ssp = { { 0.0, 1500.0 }, { 400.0, 1495.0 } };   // 地形より浅い SSP
+        u.bathymetry = { { 0.0, 150.0 }, { 5.0, 800.0 }, { 10.0, 1200.0 } };
+        u.bathySource = QStringLiteral("GEBCO_2024_sub.asc");
+        u.runMode = QStringLiteral("incoherent");
+        u.beamType = QStringLiteral("gaussian");
+        u.numRays = 3000;
+        u.angleMin_deg = -20.0; u.angleMax_deg = 20.0;
+        u.srcDepth_m = 50.0;
+        const QString j = btyTmpPath("uw_rt.ofdx");
+        OfdxIO::save(j, p);
+        Project q;
+        q.setActiveDomain(Domain::Underwater);
+        QString err;
+        check(OfdxIO::load(j, q, &err), "bathy: sidecar reload");
+        const UnderwaterOpts &r = q.underwater();
+        check(qFuzzyCompare(r.siteLat_deg, 34.5)
+                  && qFuzzyCompare(r.siteLon_deg, 139.25)
+                  && qFuzzyCompare(r.trackBearing_deg, 120.0),
+              "bathy: site round-trip");
+        check(r.bathymetry.size() == 3
+                  && qFuzzyCompare(r.bathymetry[1].range_km, 5.0)
+                  && qFuzzyCompare(r.bathymetry[1].depth_m, 800.0)
+                  && r.bathySource == QLatin1String("GEBCO_2024_sub.asc"),
+              "bathy: section round-trip (with its provenance)");
+        check(r.runMode == QLatin1String("incoherent")
+                  && r.beamType == QLatin1String("gaussian")
+                  && r.numRays == 3000 && qFuzzyCompare(r.angleMax_deg, 20.0)
+                  && qFuzzyCompare(r.srcDepth_m, 50.0),
+              "bathy: bellhop run settings round-trip");
+
+        // (c) .env / .bty への反映
+        const QString env = BellhopIO::envText(p);
+        check(env.contains("'A~' 0.0"),
+              "bathy: bottom option becomes 'A~' so BELLHOP reads the .bty");
+        check(env.contains("\n'IB'"), "bathy: RunType from the run settings");
+        check(env.contains("\n3000\t"), "bathy: NBEAMS from the run settings");
+        check(env.contains("-20 20 /"), "bathy: beam angles from the settings");
+        check(env.contains("\n50 /"), "bathy: explicit source depth");
+        // SSP は断面の最深点 (1200 m) まで延長される — BELLHOP が
+        // 「地形が SSP より深い」をエラーにするため
+        check(env.contains("\n0 0.0 1200\t"),
+              "bathy: bottom depth is extended to the deepest bathymetry point");
+        const QStringList bty = BellhopIO::btyText(p).split('\n');
+        check(bty.value(0) == QLatin1String("'L'") && bty.value(1) == QLatin1String("3")
+                  && bty.value(2) == QLatin1String("0 150"),
+              "bathy: .bty text (interpolation, count, first point)");
+    }
+
+    // (d) 断面の整形: 距離の逆転・重複・陸域 (深さ<=0) を落として単調にする
+    {
+        Project p;
+        p.setActiveDomain(Domain::Underwater);
+        p.underwater().bathymetry = { { 5.0, 300.0 }, { 1.0, 100.0 },
+                                      { 5.0, 350.0 }, { 3.0, -20.0 },
+                                      { 9.0, 900.0 } };
+        const QStringList b = BellhopIO::btyText(p).split('\n');
+        check(b.value(1) == QLatin1String("3"), "bathy: land / duplicates dropped");
+        check(b.value(2) == QLatin1String("1 100") && b.value(3) == QLatin1String("5 350")
+                  && b.value(4) == QLatin1String("9 900"),
+              "bathy: ranges come out sorted and strictly increasing");
+    }
+
+    // (e) 大圏の行き先 (解析値との照合)
+    {
+        const GeoPoint tokyo{ 35.0, 139.0 };
+        const GeoPoint east = geoDestination(tokyo, 90.0, 111.195);
+        // 真東へ発つ大圏はその点で最高緯度なので、進むと緯度は下がる
+        // (等緯度線ではない — 方位一定の航程線と混同しない)
+        check(east.lon_deg > 139.0 && east.lat_deg < 35.0
+                  && east.lat_deg > 34.99,
+              "geo: due-east on a great circle bends slightly equatorward");
+        check(std::fabs(geoDistanceKm(tokyo, east) - 111.195) < 0.05,
+              "geo: distance round-trip within 50 m");
+        const GeoPoint north = geoDestination(tokyo, 0.0, 111.195);
+        // 1 度 = pi*R/180 = 111.195 km
+        check(std::fabs(north.lat_deg - 36.0) < 1e-6
+                  && std::fabs(north.lon_deg - 139.0) < 1e-9,
+              "geo: due-north advances exactly one degree of latitude");
+    }
+
+    // (f) Esri ASCII グリッドの読み込みと大圏サンプリング
+    {
+        // 3x3 セル (0.5 度刻み)、標高 (海面下が負)。中央行が深い谷。
+        const QString path = btyTmpPath("grid.asc");
+        QFile f(path);
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write("ncols 3\nnrows 3\nxllcorner 138.75\nyllcorner 34.25\n"
+                "cellsize 0.5\nNODATA_value -32768\n"
+                "-100 -200 -300\n"     // 北端 (lat 35.5)
+                "-1000 -2000 -3000\n"  // 中央 (lat 35.0)
+                "-10 -20 -32768\n");   // 南端 (lat 34.5) — 右端は欠測
+        f.close();
+        BathyGrid g;
+        QString err;
+        check(BathymetryIO::readGrid(path, 34.0, 36.0, 138.0, 141.0, g, &err),
+              "grid: Esri ASCII header + body");
+        check(g.ncols == 3 && g.nrows == 3, "grid: window covers the whole grid");
+        // セル中心: lon 139.0/139.5/140.0, lat 34.5/35.0/35.5
+        check(std::fabs(g.sampleDepth(35.0, 139.5) - 2000.0) < 1e-3,
+              "grid: elevation -2000 m becomes depth +2000 m");
+        check(std::fabs(g.sampleDepth(35.25, 139.5) - 1100.0) < 1e-3,
+              "grid: bilinear interpolation between rows");
+        check(!std::isfinite(g.sampleDepth(34.5, 140.0)),
+              "grid: NODATA stays NaN (the coastline is not filled in)");
+        check(!std::isfinite(g.sampleDepth(40.0, 139.5)),
+              "grid: outside the window is NaN");
+        // 西→東の断面: 3 点とも海なので全部拾える
+        // 欠測セル (南東角) を巻き込まない緯度帯 35.25 を東へ辿る。
+        // 行 lat=35.0 (1000,2000,3000) と行 lat=35.5 (100,200,300) の中点
+        // なので、期待値は西から (550, 1100, 1650) の線形補間になる。
+        const QVector<BathyPoint> track =
+            BathymetryIO::sampleTrack(g, GeoPoint{ 35.25, 139.0 }, 90.0, 40.0, 9);
+        check(track.size() == 9 && qFuzzyCompare(track.first().range_km, 0.0),
+              "grid: track sampling along the great circle");
+        check(std::fabs(track.first().depth_m - 550.0) < 1.0,
+              "grid: the track starts at the interpolated western depth");
+        check(track.last().depth_m > track.first().depth_m + 300.0,
+              "grid: the track deepens eastwards as the grid says");
+    }
+
+    // (g) .bty ファイルの取込 (BELLHOP 形式そのもの)
+    {
+        const QString path = btyTmpPath("in.bty");
+        QFile f(path);
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write("'L'\n3\n 0 3000\n 10 500\n 100 3000\n");
+        f.close();
+        QVector<BathyPoint> pts;
+        QString err;
+        check(BathymetryIO::readBty(path, pts, &err), "bty: import");
+        check(pts.size() == 3 && qFuzzyCompare(pts[1].range_km, 10.0)
+                  && qFuzzyCompare(pts[1].depth_m, 500.0),
+              "bty: the seamount point survives the import");
+    }
+}
+
 static void testBellhop()
 {
     g_file = "bellhop";
@@ -4567,7 +4746,8 @@ static void testBellhop()
     check(env.contains("\n3000 1506.5 /\n"), "bellhop: last SSP point");
     check(env.contains("\n'A' 0.0\n3000 1550 0.0 1.5 0.5 /\n"),
           "bellhop: acousto-elastic halfspace (rho kg/m3 -> g/cm3)");
-    check(env.contains("\n'C'"), "bellhop: coherent TL run type");
+    check(env.contains("\n'CG'"), "bellhop: coherent TL + geometric beams "
+                                  "(same behaviour as the old 1-char 'C')");
     check(env.contains("0.0 3100 11"), "bellhop: STEP/ZBOX/RBOX line");
 
     // (c) SSP 2 点未満でも実行可能な既定プロファイルで埋める
@@ -9666,6 +9846,7 @@ int main(int argc, char *argv[])
     testThinFilmStack();
     testOpticalModeSettings();
     testBellhop();
+    testUnderwaterBathymetry();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

@@ -12,6 +12,11 @@ set(CMAKE_AUTORCC ON)
 
 # Qt6 Widgets is the only hard requirement (classic C++ Qt, NOT QML/Quick).
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# Qt6::Network は「あれば使う」— 海洋データセットの直接ダウンロードだけに
+# 使う。qt6-base-dev / Homebrew qt / Windows の Qt 6.8 いずれにも同梱
+# されているが、見つからない構成でもビルドは通り、その場合ダイアログは
+# 従来どおり「配布ページを開く + 手動取込」だけになる。
+find_package(Qt6 COMPONENTS Network QUIET)
 
 option(USE_HDF5   "Enable HDF5 time-series export"            OFF)
 option(USE_LIBIGL "Use libigl for STL import + voxelization"  OFF)
@@ -125,6 +130,10 @@ set(CORE_SOURCES
     src/io/ActivationCurve.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
+    src/io/BathymetryIO.cpp
+    src/io/BathymetryIO.h
+    src/io/ShdReader.cpp
+    src/io/ShdReader.h
     src/io/Touchstone.cpp
     src/io/Touchstone.h
     src/io/Tidy3dExporter.cpp
@@ -382,6 +391,10 @@ set(GUI_SOURCES
 qt_add_library(ofdx_gui STATIC ${CORE_SOURCES} ${GUI_SOURCES})
 target_include_directories(ofdx_gui PUBLIC src)
 target_link_libraries(ofdx_gui PUBLIC Qt6::Widgets)
+if(Qt6Network_FOUND)
+    target_link_libraries(ofdx_gui PUBLIC Qt6::Network)
+    target_compile_definitions(ofdx_gui PUBLIC OFD_USE_NETWORK)
+endif()
 
 if(USE_HDF5)
     target_link_libraries(ofdx_gui PUBLIC ${HDF5_C_LIBRARIES})

@@ -2,6 +2,7 @@
 #include "OceanEnvironmentTab.h"
 #include "../core/Project.h"
 #include "../io/BellhopIO.h"
+#include "../io/BathymetryIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -25,6 +26,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
@@ -162,19 +164,44 @@ const bool s_i18n = [] {
     I18n::reg("oe_export_btn", "📄 .env 書出し", "📄 Export .env");
     I18n::reg("oe_apply_note",
               "▸ 適用: SSP・底質・伝搬距離を水中音響タブへ反映。Bellhop "
-              "環境ファイル (.env) は計算実行時にも自動生成される。"
-              "地形 (.bty) / SSP ファイル (.ssp) の書出しは未実装。",
+              "環境ファイル (.env) と地形 (.bty) は計算実行時にも自動生成"
+              "される。SSP ファイル (.ssp) の書出しは未実装。",
               "▸ Apply transfers the SSP, sediment and range to the "
               "underwater acoustics tab. The Bellhop environment file (.env) "
-              "is also generated automatically when a run starts. Writing "
-              "bathymetry (.bty) / SSP (.ssp) files is not implemented.");
+              "and the bathymetry (.bty) are generated automatically when a "
+              "run starts. Writing an SSP (.ssp) file is not implemented.");
     I18n::reg("oe_bty_note",
-              "▸ 海域水深から合成した参考断面です (実地形データ未使用 — "
-              "実データ照会の実装後に置き換え予定)。伝搬方位は現在未使用です。",
+              "▸ 海域水深から合成した参考断面です (実地形データ未使用)。",
               "▸ Synthetic reference section derived from the area depth "
               "(no real bathymetry data — to be replaced once real-data "
               "queries are implemented). The bearing is currently unused.");
     I18n::reg("oe_notimpl", "未実装", "Not implemented");
+    I18n::reg("oe_bty_surface", "海面", "Sea surface");
+    I18n::reg("oe_bty_synth_tag", "合成断面 (実データではない)",
+              "synthetic (not real data)");
+    I18n::reg("oe_bty_real",
+              "▸ %1 から伝搬経路 (方位 %2°, %3 km) に沿って %4 点を"
+              "サンプリングしました。「地形断面をBellhop .btyへ」を入れて"
+              "適用すると計算に反映されます。",
+              "▸ Sampled %4 points along the track (bearing %2°, %3 km) from "
+              "%1. Tick \u201cwrite the bathymetry to a Bellhop .bty\u201d and apply "
+              "to use it in the run.");
+    I18n::reg("oe_bty_synth",
+              "▸ 水深データセットが見つからないため、海域代表水深からの"
+              "**合成断面**を表示しています (実地形ではない)。"
+              "「データセット取得」で GEBCO / ETOPO / J-EGG500 を配置すると"
+              "実地形に置き換わります。",
+              "▸ No bathymetry dataset was found, so this is a **synthetic** "
+              "section derived from the area depth (not real terrain). Stage "
+              "GEBCO / ETOPO / J-EGG500 via the fetch dialog to replace it.");
+    I18n::reg("oe_bty_err", "▸ %1 (合成断面で代用しています)",
+              "\u25b8 %1 (falling back to a synthetic section)");
+    I18n::reg("oe_chk_bty_tip",
+              "適用時に断面を .ofdx へ保存し、計算実行時に <ケース名>.bty を"
+              "書き出して BELLHOP に読ませます (底面オプション 'A~')。",
+              "Stores the section in the .ofdx on apply and writes "
+              "<case>.bty at run time so BELLHOP reads it (bottom option "
+              "'A~').");
     // download manager
     I18n::reg("oe_dl_title", "📦 データセット取得マネージャ",
               "📦 Dataset fetch manager");
@@ -195,6 +222,36 @@ const bool s_i18n = [] {
               "📁 Choose files and import…");
     I18n::reg("oe_dl_imported", "%1 件をコピーしました (失敗 %2 件)",
               "Copied %1 file(s) (%2 failed)");
+    I18n::reg("oe_dl_s3", "③ URL から直接ダウンロード",
+              "\u2462 Download directly from a URL");
+    I18n::reg("oe_dl_s3_hint",
+              "配布ページで得た直リンクを貼り付けるとデータセットフォルダへ"
+              "保存します。ファイル名は URL から決まります (既存ファイルは"
+              "上書きしません)。全球グリッドは数 GB あるので回線と空き容量に"
+              "注意してください。",
+              "Paste a direct link obtained from a distribution page and the "
+              "file is saved into the dataset folder. The name comes from the "
+              "URL (an existing file is never overwritten). Global grids are "
+              "several GB \u2014 mind your link and free space.");
+    I18n::reg("oe_dl_s3_off",
+              "このビルドは Qt6::Network 無しで構成されているため、"
+              "アプリ内ダウンロードは使えません (① の取込と ② の配布ページは"
+              "使えます)。",
+              "This build was configured without Qt6::Network, so in-app "
+              "downloading is unavailable (\u2460 import and \u2461 pages still work).");
+    I18n::reg("oe_dl_go", "⬇ ダウンロード", "\u2b07 Download");
+    I18n::reg("oe_dl_abort", "中断", "Abort");
+    I18n::reg("oe_dl_badurl", "URL が不正です (http/https のみ)",
+              "Invalid URL (http/https only)");
+    I18n::reg("oe_dl_exists", "同名のファイルが既にあります: %1",
+              "A file with that name already exists: %1");
+    I18n::reg("oe_dl_running", "受信中 %1 / %2", "Receiving %1 / %2");
+    I18n::reg("oe_dl_running_unknown", "受信中 %1 (総量不明)",
+              "Receiving %1 (total unknown)");
+    I18n::reg("oe_dl_done", "保存しました: %1 (%2)", "Saved: %1 (%2)");
+    I18n::reg("oe_dl_failed", "ダウンロードに失敗しました: %1",
+              "Download failed: %1");
+    I18n::reg("oe_dl_aborted", "中断しました", "Aborted");
     I18n::reg("oe_dl_s2", "② 公式配布ページ (ブラウザで開く)",
               "② Official distribution pages (opens in a browser)");
     I18n::reg("oe_dl_s2_hint",
@@ -491,6 +548,14 @@ OeBathyView::OeBathyView(QWidget *parent)
     setMaximumWidth(380);
 }
 
+void OeBathyView::setSection(const QVector<BathyPoint> &pts,
+                             const QString &source)
+{
+    m_pts = pts;
+    m_source = source;
+    update();
+}
+
 void OeBathyView::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -498,7 +563,7 @@ void OeBathyView::paintEvent(QPaintEvent *)
     p.fillRect(rect(), palette().base());
     p.setPen(QPen(palette().mid().color(), 1));
     p.drawRect(rect().adjusted(0, 0, -1, -1));
-    if (m_depth <= 0) return;
+    if (m_pts.size() < 2) return;
 
     // viewBox "0 0 340 120" → ウィジェット座標
     const double sx = width() / 340.0;
@@ -506,21 +571,23 @@ void OeBathyView::paintEvent(QPaintEvent *)
     auto vx = [sx](double x) { return x * sx; };
     auto vy = [sy](double y) { return y * sy; };
 
-    // d = depth·(0.75 + 0.25·sin(5.1x)·sin(2.3x+1) + 0.12x)   (mock と同式)
-    QPolygonF line;
-    for (int i = 0; i < 50; ++i) {
-        const double x = i / 49.0;
-        const double d = m_depth * (0.75
-                       + 0.25 * std::sin(x * 5.1) * std::sin(x * 2.3 + 1.0)
-                       + 0.12 * x);
-        line << QPointF(vx(10 + x * 320),
-                        vy(18 + std::min(d / m_depth, 1.15) * 80));
+    double rMax = 0.0, dMax = 0.0;
+    for (const BathyPoint &q : m_pts) {
+        rMax = std::max(rMax, q.range_km);
+        dMax = std::max(dMax, q.depth_m);
     }
+    if (rMax <= 0 || dMax <= 0) return;
+
+    QPolygonF line;
+    for (const BathyPoint &q : m_pts)
+        line << QPointF(vx(10 + q.range_km / rMax * 320),
+                        vy(18 + q.depth_m / dMax * 80));
 
     QPolygonF fillPoly;
-    fillPoly << QPointF(vx(10), vy(18));
+    fillPoly << QPointF(line.first().x(), vy(18));
     fillPoly << line;
-    fillPoly << QPointF(vx(330), vy(110)) << QPointF(vx(10), vy(110));
+    fillPoly << QPointF(line.last().x(), vy(110))
+             << QPointF(line.first().x(), vy(110));
     QColor sed("#5D4037");
     sed.setAlphaF(0.55);
     p.setPen(Qt::NoPen);
@@ -541,12 +608,149 @@ void OeBathyView::paintEvent(QPaintEvent *)
     f.setPointSizeF(7.5);
     p.setFont(f);
     p.setPen(QColor(kAcc));
-    p.drawText(QPointF(vx(12), vy(14)), QStringLiteral("海面"));
+    p.drawText(QPointF(vx(12), vy(14)), I18n::tr("oe_bty_surface"));
     p.setPen(palette().mid().color());
-    // 実地形データ (J-EGG500/ETOPO) ではなく海域水深からの合成断面
-    p.drawText(QRectF(vx(150), vy(108), vx(185), vy(12)),
+    // 距離・最大水深の目盛り
+    p.drawText(QPointF(vx(12), vy(118)), QStringLiteral("0 km"));
+    p.drawText(QRectF(vx(150), vy(112), vx(180), vy(10)),
                Qt::AlignRight | Qt::AlignVCenter,
-               QStringLiteral("合成断面 (参考)"));
+               QStringLiteral("%1 km  /  max %2 m")
+                   .arg(rMax, 0, 'f', rMax < 10 ? 1 : 0)
+                   .arg(dMax, 0, 'f', 0));
+    // 出所 — 実データか合成かを図の中で必ず区別する
+    const bool synthetic = m_source.isEmpty();
+    p.setPen(synthetic ? QColor("#B8860B") : QColor(kAcc));
+    p.drawText(QRectF(vx(150), vy(2), vx(180), vy(12)),
+               Qt::AlignRight | Qt::AlignVCenter,
+               synthetic ? I18n::tr("oe_bty_synth_tag") : m_source);
+}
+
+
+// ── ③ 直接ダウンロード (Qt6::Network がある構成のみ) ────────────────────────
+// 進捗は QNetworkReply の実受信バイト数だけを出す (擬似進捗は出さない)。
+// 保存はテンポラリ (.part) へ書き、完了時にリネームする — 途中で切れた
+// ファイルを「配置済み」として拾わないため。
+#ifdef OFD_USE_NETWORK
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
+
+class OeDownloadManager::Impl : public QObject {
+public:
+    QNetworkAccessManager nam;
+    QNetworkReply *reply = nullptr;
+    QFile file;
+    QString finalPath;
+};
+#else
+class OeDownloadManager::Impl : public QObject {};
+#endif
+
+OeDownloadManager::~OeDownloadManager()
+{
+    abortDownload();
+    delete m_impl;
+}
+
+void OeDownloadManager::abortDownload()
+{
+#ifdef OFD_USE_NETWORK
+    if (m_impl && m_impl->reply) {
+        m_impl->reply->abort();   // finished ハンドラが後始末する
+    }
+#endif
+}
+
+void OeDownloadManager::startDownload()
+{
+#ifdef OFD_USE_NETWORK
+    if (!m_impl || m_impl->reply) return;
+    const QUrl url(m_url->text().trimmed());
+    const QString scheme = url.scheme().toLower();
+    if (!url.isValid() || (scheme != QLatin1String("http")
+                           && scheme != QLatin1String("https"))) {
+        m_dlResult->setText(I18n::tr("oe_dl_badurl"));
+        return;
+    }
+    QString name = QFileInfo(url.path()).fileName();
+    if (name.isEmpty()) name = QStringLiteral("download.bin");
+    const QString dir = oeDataDir();
+    QDir().mkpath(dir);
+    const QString target = QDir(dir).filePath(name);
+    if (QFile::exists(target)) {
+        m_dlResult->setText(I18n::tr("oe_dl_exists")
+                                .arg(QDir::toNativeSeparators(target)));
+        return;
+    }
+    m_impl->finalPath = target;
+    m_impl->file.setFileName(target + QStringLiteral(".part"));
+    if (!m_impl->file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_dlResult->setText(I18n::tr("oe_dl_failed")
+                                .arg(m_impl->file.errorString()));
+        return;
+    }
+    QNetworkRequest req(url);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    m_impl->reply = m_impl->nam.get(req);
+    m_dlBtn->setEnabled(false);
+    m_abortBtn->setEnabled(true);
+    m_dlProgress->setRange(0, 0);
+    m_dlProgress->setValue(0);
+    m_dlResult->setText(QString());
+
+    connect(m_impl->reply, &QNetworkReply::readyRead, this, [this] {
+        m_impl->file.write(m_impl->reply->readAll());
+    });
+    connect(m_impl->reply, &QNetworkReply::downloadProgress, this,
+            [this](qint64 got, qint64 total) {
+                if (total > 0) {
+                    m_dlProgress->setRange(0, 100);
+                    m_dlProgress->setValue(int(got * 100 / total));
+                    m_dlResult->setText(
+                        I18n::tr("oe_dl_running")
+                            .arg(QLocale().formattedDataSize(got))
+                            .arg(QLocale().formattedDataSize(total)));
+                } else {
+                    m_dlResult->setText(
+                        I18n::tr("oe_dl_running_unknown")
+                            .arg(QLocale().formattedDataSize(got)));
+                }
+            });
+    connect(m_impl->reply, &QNetworkReply::finished, this, [this] {
+        QNetworkReply *r = m_impl->reply;
+        m_impl->reply = nullptr;
+        m_impl->file.write(r->readAll());
+        m_impl->file.close();
+        const bool aborted = (r->error() == QNetworkReply::OperationCanceledError);
+        const bool ok = (r->error() == QNetworkReply::NoError);
+        const QString errStr = r->errorString();
+        r->deleteLater();
+        m_dlBtn->setEnabled(true);
+        m_abortBtn->setEnabled(false);
+        m_dlProgress->setRange(0, 100);
+        if (!ok) {
+            m_dlProgress->setValue(0);
+            QFile::remove(m_impl->file.fileName());   // 途中のファイルは残さない
+            m_dlResult->setText(aborted ? I18n::tr("oe_dl_aborted")
+                                        : I18n::tr("oe_dl_failed").arg(errStr));
+            return;
+        }
+        QFile::remove(m_impl->finalPath);
+        if (!QFile::rename(m_impl->file.fileName(), m_impl->finalPath)) {
+            m_dlResult->setText(I18n::tr("oe_dl_failed")
+                                    .arg(m_impl->finalPath));
+            return;
+        }
+        m_dlProgress->setValue(100);
+        m_dlResult->setText(
+            I18n::tr("oe_dl_done")
+                .arg(QFileInfo(m_impl->finalPath).fileName())
+                .arg(QLocale().formattedDataSize(
+                    QFileInfo(m_impl->finalPath).size())));
+    });
+#endif
 }
 
 // ── OeDownloadManager — データセット取得マネージャ (オフラインファースト) ───
@@ -597,6 +801,43 @@ OeDownloadManager::OeDownloadManager(QWidget *parent)
     impRow->addStretch(1);
     s1->vbox()->addLayout(impRow);
     v->addWidget(s1);
+
+    // ── ③ URL から直接ダウンロード ────────────────────────────────────────
+    {
+        auto *s3 = new SectionBox(I18n::tr("oe_dl_s3"), body);
+#ifdef OFD_USE_NETWORK
+        m_impl = new Impl();
+        auto *h3 = new QLabel(I18n::tr("oe_dl_s3_hint"), s3);
+        h3->setWordWrap(true);
+        s3->vbox()->addWidget(h3);
+        auto *urlRow = new QHBoxLayout();
+        m_url = new QLineEdit(s3);
+        m_url->setPlaceholderText(QStringLiteral("https://…/GEBCO_2024.nc"));
+        m_dlBtn = new QPushButton(I18n::tr("oe_dl_go"), s3);
+        m_abortBtn = new QPushButton(I18n::tr("oe_dl_abort"), s3);
+        m_abortBtn->setEnabled(false);
+        urlRow->addWidget(m_url, 1);
+        urlRow->addWidget(m_dlBtn);
+        urlRow->addWidget(m_abortBtn);
+        s3->vbox()->addLayout(urlRow);
+        m_dlProgress = new QProgressBar(s3);
+        m_dlProgress->setRange(0, 100);
+        m_dlProgress->setValue(0);
+        s3->vbox()->addWidget(m_dlProgress);
+        m_dlResult = new QLabel(s3);
+        m_dlResult->setWordWrap(true);
+        s3->vbox()->addWidget(m_dlResult);
+        connect(m_dlBtn, &QPushButton::clicked,
+                this, &OeDownloadManager::startDownload);
+        connect(m_abortBtn, &QPushButton::clicked,
+                this, &OeDownloadManager::abortDownload);
+#else
+        auto *off = new QLabel(I18n::tr("oe_dl_s3_off"), s3);
+        off->setWordWrap(true);
+        s3->vbox()->addWidget(off);
+#endif
+        v->addWidget(s3);
+    }
 
     // ── ② 公式配布ページ (ブラウザで開く) ────────────────────────────────
     auto *s2 = new SectionBox(I18n::tr("oe_dl_s2"), body);
@@ -813,11 +1054,11 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     sb->form()->addRow(I18n::tr("oe_bearing"), brRow);
     m_bathy = new OeBathyView(sb);
     sb->vbox()->addWidget(m_bathy);
-    // 実地形データからの断面ではないことを明示 (海域水深からの合成表示)
-    auto *btyNote = new QLabel(I18n::tr("oe_bty_note"), sb);
-    btyNote->setWordWrap(true);
-    btyNote->setStyleSheet("font-size:11px; color:palette(mid);");
-    sb->vbox()->addWidget(btyNote);
+    // 実データ断面か合成断面かを毎回明示する (computeSection() が書き換える)
+    m_btyNote = new QLabel(I18n::tr("oe_bty_synth"), sb);
+    m_btyNote->setWordWrap(true);
+    m_btyNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sb->vbox()->addWidget(m_btyNote);
     v->addWidget(sb);
 
     // ── ソルバへ反映 / Apply to solver ──────────────────────────────────────
@@ -827,11 +1068,10 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     m_chkBty    = new QCheckBox(I18n::tr("oe_chk_bty"), sa);
     m_chkBottom = new QCheckBox(I18n::tr("oe_chk_bottom"), sa);
     m_chkSsp->setChecked(true);
-    // .bty 書出しは未実装 (BellhopIO に地形出力が無い)。実装されるまで
-    // 選択不能にする — 有効に見えるのに何も起きない状態にしない
-    m_chkBty->setChecked(false);
-    m_chkBty->setEnabled(false);
-    m_chkBty->setToolTip(I18n::tr("oe_notimpl"));
+    // 地形断面の .bty 書出しは実装済み (BellhopIO::btyText → Runner が
+    // <ケース名>.bty を書き、.env 側は底面オプション 'A~' になる)
+    m_chkBty->setChecked(true);
+    m_chkBty->setToolTip(I18n::tr("oe_chk_bty_tip"));
     m_chkBottom->setChecked(true);
     chkRow->addWidget(m_chkSsp);
     chkRow->addWidget(m_chkBty);
@@ -878,8 +1118,18 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
             &OceanEnvironmentTab::openDownloadManager);
     connect(applyBtn, &QPushButton::clicked, this,
             &OceanEnvironmentTab::applyToSolver);
-    connect(project, &Project::loaded, this, &OceanEnvironmentTab::requery);
+    // 伝搬方位・距離を変えたら断面を引き直す (旧: 方位はどこにも効かなかった)
+    connect(m_bearing, &QLineEdit::editingFinished, this,
+            [this] { computeSection(); });
+    connect(m_dist, &QLineEdit::editingFinished, this,
+            [this] { computeSection(); });
+    // データセットを取り込んだ直後にも実データへ切り替わるようにする
+    connect(project, &Project::loaded, this, [this] {
+        loadSiteFromProject();
+        requery();
+    });
 
+    loadSiteFromProject();
     requery();
 }
 
@@ -1004,7 +1254,7 @@ void OceanEnvironmentTab::requery()
     m_layerNote->setText(I18n::tr("oe_layer_note").arg(m_ssp.size()));
 
     m_sspView->setProfile(m_ssp, r.depth, m_cMinIdx);
-    m_bathy->setDepth(r.depth);
+    computeSection();
 
     const QString type = QString::fromUtf8(r.type);
     if (type == QLatin1String("okhotsk"))
@@ -1016,6 +1266,83 @@ void OceanEnvironmentTab::requery()
 }
 
 // SSP / 底質 / 伝搬距離を UnderwaterOpts に転送 (地形は .bty 書出し側の担当)
+// 測点 (緯度経度) と伝搬方位から地形断面を作る。
+// ローカルデータセットに水深グリッドがあれば大圏に沿ってサンプリングし、
+// 無ければ (あるいは読めなければ) 海域代表水深からの合成断面にする。
+// **どちらなのかは必ず画面に出す** — 合成を実地形として扱わせない。
+// .ofdx に保存された測点・方位・距離を入力欄へ戻す (既定値ならそのまま)
+void OceanEnvironmentTab::loadSiteFromProject()
+{
+    const UnderwaterOpts &u = m_p->underwater();
+    m_lat->setText(QString::number(u.siteLat_deg, 'g', 8));
+    m_lon->setText(QString::number(u.siteLon_deg, 'g', 8));
+    m_bearing->setText(QString::number(u.trackBearing_deg, 'g', 6));
+    if (u.rangeMax_km > 0.0)
+        m_dist->setText(QString::number(u.rangeMax_km, 'g', 8));
+}
+
+void OceanEnvironmentTab::computeSection()
+{
+    const double lat = m_lat->text().toDouble();
+    const double lon = m_lon->text().toDouble();
+    const double bearing = m_bearing->text().toDouble();
+    double km = m_dist->text().toDouble();
+    if (!(km > 0.0)) km = m_region ? 50.0 : 0.0;
+    const double areaDepth = m_region ? m_region->depth : 0.0;
+
+    m_section.clear();
+    m_sectionSource.clear();
+    QString firstErr;
+
+    if (km > 0.0) {
+        // 経路が通る緯度経度の外接矩形 (端点まで実際に辿って求める)
+        const GeoPoint site{ lat, lon };
+        double laLo = lat, laHi = lat, loLo = lon, loHi = lon;
+        for (int i = 1; i <= 16; ++i) {
+            const GeoPoint q = geoDestination(site, bearing, km * i / 16.0);
+            laLo = qMin(laLo, q.lat_deg); laHi = qMax(laHi, q.lat_deg);
+            loLo = qMin(loLo, q.lon_deg); loHi = qMax(loHi, q.lon_deg);
+        }
+        const QStringList grids = BathymetryIO::findGrids(oeDataDir());
+        for (const QString &g : grids) {
+            BathyGrid grid;
+            QString err;
+            if (!BathymetryIO::readGrid(g, laLo, laHi, loLo, loHi, grid, &err)) {
+                if (firstErr.isEmpty()) firstErr = err;
+                continue;
+            }
+            const QVector<BathyPoint> pts =
+                BathymetryIO::sampleTrack(grid, site, bearing, km, 101);
+            // 経路の大半が陸・欠測なら断面として使わない (次の候補へ)
+            if (pts.size() < 50) {
+                if (firstErr.isEmpty())
+                    firstErr = QStringLiteral("%1: the track is mostly land or "
+                                              "outside the grid").arg(grid.source);
+                continue;
+            }
+            m_section = pts;
+            m_sectionSource = grid.source;
+            break;
+        }
+    }
+    if (m_section.isEmpty() && areaDepth > 0.0 && km > 0.0)
+        m_section = BathymetryIO::syntheticTrack(areaDepth, km, 51);
+
+    m_bathy->setSection(m_section, m_sectionSource);
+    if (!m_btyNote) return;
+    if (!m_sectionSource.isEmpty()) {
+        m_btyNote->setText(I18n::tr("oe_bty_real")
+                               .arg(m_sectionSource)
+                               .arg(bearing, 0, 'f', 0)
+                               .arg(km, 0, 'f', 0)
+                               .arg(m_section.size()));
+    } else if (!firstErr.isEmpty()) {
+        m_btyNote->setText(I18n::tr("oe_bty_err").arg(firstErr));
+    } else {
+        m_btyNote->setText(I18n::tr("oe_bty_synth"));
+    }
+}
+
 void OceanEnvironmentTab::applyToSolver()
 {
     if (!m_region || m_ssp.isEmpty()) return;
@@ -1040,6 +1367,20 @@ void OceanEnvironmentTab::applyToSolver()
     }
     const double km = m_dist->text().toDouble();
     if (km > 0) u.rangeMax_km = km;
+    // 測点と伝搬方位は常に記録する (断面の再現に要る)
+    u.siteLat_deg = m_lat->text().toDouble();
+    u.siteLon_deg = m_lon->text().toDouble();
+    u.trackBearing_deg = m_bearing->text().toDouble();
+    if (m_chkBty->isChecked()) {
+        // 合成断面でも「合成である」と分かる出所を残す
+        u.bathymetry = m_section;
+        u.bathySource = m_sectionSource.isEmpty()
+                            ? QStringLiteral("synthetic")
+                            : m_sectionSource;
+    } else {
+        u.bathymetry.clear();
+        u.bathySource.clear();
+    }
     m_p->touch();
 }
 

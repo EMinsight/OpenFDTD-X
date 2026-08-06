@@ -195,6 +195,27 @@ void Runner::start(Project *project, const RunConfig &cfg)
         }
         env.write(BellhopIO::envText(*project).toUtf8());
         env.close();
+        // 海底地形 (BTYFIL)。断面が無ければ書かず、前回実行の残骸も消す
+        // (残っていると .env 側が 'A~' でなくても紛らわしいうえ、次回
+        //  地形を外した実行で古い地形を拾う事故になる)。
+        const QString btyPath =
+            QDir(m_cfg.workingDir).filePath(baseName + ".bty");
+        const QString bty = BellhopIO::btyText(*project);
+        if (bty.isEmpty()) {
+            QFile::remove(btyPath);
+        } else {
+            QFile f(btyPath);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                emit logLine("error: cannot write .bty: " + f.errorString());
+                emit finished(false);
+                return;
+            }
+            f.write(bty.toUtf8());
+            f.close();
+            emit logLine(QStringLiteral("bathymetry: %1 (%2 points)")
+                             .arg(QFileInfo(btyPath).fileName())
+                             .arg(bty.split('\n').value(1)));
+        }
         m_totalSteps = 1;
         m_postPending = false;
         launch(true);

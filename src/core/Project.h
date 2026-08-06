@@ -467,6 +467,10 @@ struct OperaAcousticSettings {
 // ── 水中音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
 struct SSPPoint { double depth_m; double c_mps; };
 
+// 伝搬経路に沿った海底地形の 1 点 (BELLHOP の .bty 1 行に対応)。
+// range_km は音源からの水平距離 [km]、depth_m は海面からの水深 [m]。
+struct BathyPoint { double range_km; double depth_m; };
+
 struct UnderwaterOpts {
     double  waterTemp_C = 15.0;
     double  salinity_psu = 34.5;
@@ -486,6 +490,35 @@ struct UnderwaterOpts {
     // ソナー送信源リスト (.ofdx "underwater.sources" — 追加キー。欠落時は
     // 既定 2 行)。AcousticSourceTab の音源一覧 (水中ドメイン表示) の実体。
     QVector<AcousticSourceRow> sources = defaultSonarSources();
+
+    // ── 測点と伝搬経路 (.ofdx "underwater.site" — 追加キー) ─────────────────
+    // OceanEnvironmentTab の緯度・経度・伝搬方位。地形断面のサンプリング経路
+    // (測点から方位へ rangeMax_km だけ伸ばした大圏) を決める。
+    // 既定値のままなら .ofdx へ書かない (旧ファイルとバイト一致)。
+    double  siteLat_deg = 35.0;
+    double  siteLon_deg = 140.0;
+    double  trackBearing_deg = 90.0;   // 真北 0°・時計回り (90° = 東)
+
+    // ── 海底地形断面 (.ofdx "underwater.bathymetry" — 追加キー) ─────────────
+    // 空なら平坦海底 (従来動作) で、.bty も書き出さない。
+    QVector<BathyPoint> bathymetry;
+    // 断面の出所 (表示と再現性のための記録)。"" = なし、"synthetic" = 合成、
+    // それ以外はデータセットのファイル名。
+    QString bathySource;
+
+    // ── Bellhop 実行設定 (.ofdx "underwater.bellhop" — 追加キー) ────────────
+    // 既定値は従来 BellhopIO がハードコードしていた値なので、触らなければ
+    // .env は従来とバイト一致になる。
+    QString runMode  = "coherent";    // coherent/incoherent/semicoherent/
+                                      // eigenray/ray/arrivals
+    QString beamType = "geometric";   // geometric/gaussian/hat/
+                                      // cartesian/raycentered
+    int     numRays = 0;              // NBEAMS (0 = カーネル自動)
+    double  angleMin_deg = -45.0;
+    double  angleMax_deg =  45.0;
+    double  srcDepth_m = 0.0;         // 0 = 自動 (水深の 10%、従来動作)
+    int     numRcvDepth = 201;        // NRD
+    int     numRcvRange = 501;        // NR
 };
 
 // ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────
