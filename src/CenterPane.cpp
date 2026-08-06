@@ -4,6 +4,7 @@
 #include "core/Project.h"
 #include "io/H5Reader.h"
 #include "widgets/FieldHeatmap.h"
+#include "io/ShdReader.h"
 #include "widgets/MeshPreview.h"
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
@@ -38,6 +39,12 @@ namespace {
 const bool s_i18n = [] {
     ofd::I18n::reg("vp_3d",      "🧊 3D シーン",   "🧊 3D scene");
     ofd::I18n::reg("vp_2d",      "📐 2D 断面",     "📐 2D slice");
+    // 水中音響の TL 断面 (色は「小さい TL = 暖色」に反転して表示する)
+    ofd::I18n::reg("vp_slice_tl",
+                   "伝搬損失 TL [dB] — 距離 × 深度 (表示レンジ %1〜%2 dB、"
+                   "暖色ほどよく届く)",
+                   "Transmission loss TL [dB] \u2014 range x depth (display range "
+                   "%1-%2 dB; warmer = better reach)");
     ofd::I18n::reg("vp_plot",    "📊 結果プロット", "📊 Result plot");
     ofd::I18n::reg("vp_mesh",    "📏 メッシュ表示", "📏 Mesh view");
     ofd::I18n::reg("vp_reset",   "🔄 Reset",       "🔄 Reset");
@@ -446,6 +453,32 @@ bool CenterPane::loadResultField(const QString &h5Path)
     QString why;
     const bool ok3d = applyResultSliceTo3D(h5Path, &why);
     emit result3DSliceStatus(ok3d, why);
+    return true;
+}
+
+// 水中音響 (bellhopcxx) の TL 音場 (<ケース名>.shd) を 2D 断面へ反映する。
+bool CenterPane::loadTlField(const QString &shdPath)
+{
+    ShdField f;
+    QString err;
+    if (!ShdReader::read(shdPath, f, &err)) return false;
+
+    // TL は「小さいほどよく届く」ので、表示は 0 = 届かない / 1 = よく届く
+    // に反転する (他ドメインの |E| 断面と見え方の向きを揃えるため)。
+    // 表示レンジは最小 TL から 60 dB (TL 図の慣用幅)。
+    const double lo = f.minTL, hi = std::min(f.maxTL, f.minTL + 60.0);
+    const double span = std::max(1.0, hi - lo);
+    QVector<double> cells(f.tl_dB.size());
+    for (int i = 0; i < f.tl_dB.size(); ++i) {
+        const float tl = f.tl_dB[i];
+        cells[i] = (tl >= ShdField::kNoField)
+                       ? 0.0                                   // 到達なし
+                       : std::clamp((hi - tl) / span, 0.0, 1.0);
+    }
+    m_heatmap->setData(cells, f.nrr, f.nrz);
+    m_heatmap->setTitle(I18n::tr("vp_slice_tl")
+                            .arg(f.minTL, 0, 'f', 1).arg(hi, 0, 'f', 1));
+    m_tabs->setCurrentIndex(1);   // 2D 断面へ切り替える
     return true;
 }
 

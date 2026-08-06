@@ -39,6 +39,11 @@ public:
     void refresh() {}
 
 private:
+    // 「使い方 / 代表的な手順」表をドメインに合わせて作り直す
+    void rebuildHowTo();
+    QTableWidget *m_howTable = nullptr;
+    bool m_howToIsUnderwater = false;
+
     // 現在バッファを置き換え、直前の状態を undo スタックへ積む (最大 12 段)
     void pushBuffer(audioedit::AudioBuffer next, const QString &status);
     void undoLast();

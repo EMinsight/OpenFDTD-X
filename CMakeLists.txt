@@ -132,6 +132,10 @@ set(CORE_SOURCES
     src/io/BellhopIO.h
     src/io/BathymetryIO.cpp
     src/io/BathymetryIO.h
+    # 配布ページ (HTML) からデータファイルへのリンクを抜き出す (Qt Core のみ)。
+    # OeDownloadManager と selftest が共有する
+    src/io/PageLinkScanner.cpp
+    src/io/PageLinkScanner.h
     src/io/ShdReader.cpp
     src/io/ShdReader.h
     src/io/Touchstone.cpp

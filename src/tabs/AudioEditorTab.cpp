@@ -1,5 +1,6 @@
 // AudioEditorTab.cpp
 #include "AudioEditorTab.h"
+#include "../core/Project.h"
 #include "../acoustics/io/WavReader.h"
 #include "../acoustics/io/WavWriter.h"
 #include "../widgets/AudioWaveformView.h"
@@ -105,6 +106,64 @@ const bool s_i18n = [] {
         "① Drag-select the range (or none for the whole clip) → ② pick a "
         "window in Analyze (Flat-top for level metering) → ③ run the analysis "
         "for LUFS / spectrum / octave bands");
+    // ── 水中音響ドメインの手順 (uwh_) ────────────────────────────────────
+    // 室内音響の手順 (残響時間・ホール解析) は水中では意味を持たないので、
+    // ドメインごとに別の表を出す。ここに書くのは **このタブで実際にできる
+    // こと** だけ (Bellhop の到達 (.arr) からの受信波形合成は未実装なので
+    // 「外部で用意した IR」と明記する)。
+    I18n::reg("ae_u1g", "🔊 送信波形をつくる", "🔊 Build a transmit waveform");
+    I18n::reg("ae_u1s",
+        "①「信号生成」で送信信号を選ぶ (探信音は線形/指数スイープ = LFM チャープ、"
+        "帯域測定は MLS、簡易は単位インパルス) → ② 周波数範囲を"
+        "「水中音響」タブのソナー周波数に合わせる → ③「⚡ 生成」→"
+        "「💾 WAV書出」で送信波形として保存",
+        "\u2460 Pick the transmit signal in the generator (a linear/exponential "
+        "sweep is an LFM chirp; MLS for band measurements; a unit impulse for "
+        "quick checks) \u2192 \u2461 match the frequency range to the sonar frequency on "
+        "the Underwater tab \u2192 \u2462 Generate and export it as WAV");
+    I18n::reg("ae_u2g", "🌊 伝搬後の受信波形をつくる",
+              "🌊 Synthesise a received waveform");
+    I18n::reg("ae_u2s",
+        "①「📁 WAV読込」で送信波形 (または任意の音源) を開く → "
+        "②「エフェクト > リバーブ」で **外部で用意した水中インパルス応答 WAV** を"
+        "指定 → ③「畳み込み適用」。※ Bellhop の到達 (.arr) から IR を合成する"
+        "機能は未実装なので、IR は計測値か外部ツールの出力を使うこと",
+        "\u2460 Load the transmit waveform (or any source) \u2192 \u2461 in Effects > Reverb "
+        "point at an **externally prepared underwater impulse response WAV** \u2192 "
+        "\u2462 apply the convolution. Note: synthesising an IR from Bellhop "
+        "arrivals (.arr) is not implemented, so the IR must come from a "
+        "measurement or an external tool");
+    I18n::reg("ae_u3g", "📡 ハイドロフォン録音の帯域解析",
+              "📡 Band analysis of a hydrophone recording");
+    I18n::reg("ae_u3s",
+        "① 録音 WAV を読み込み、解析したい区間をドラッグ選択 → "
+        "②「解析」タブで窓関数を選ぶ (レベル計測は Flat-top) → "
+        "③「📊 選択範囲を解析」でスペクトル/オクターブバンドを確認。"
+        "※ LUFS は放送用ラウドネスなので水中では参考値。絶対音圧 (dB re 1μPa) は"
+        "ハイドロフォン感度が未入力のため表示しない",
+        "\u2460 Load the recording and drag-select the interval \u2192 \u2461 pick a window "
+        "in Analyze (Flat-top for level metering) \u2192 \u2462 run the analysis for the "
+        "spectrum / octave bands. LUFS is a broadcast loudness measure, so it "
+        "is only indicative here; absolute SPL (dB re 1 \u00b5Pa) is not shown "
+        "because the hydrophone sensitivity is not entered anywhere");
+    I18n::reg("ae_u4g", "🔇 船舶・機械ノイズの低減",
+              "🔇 Reduce ship / machinery noise");
+    I18n::reg("ae_u4s",
+        "① 目的音の無い区間 (暗騒音のみ) をドラッグ選択 → "
+        "②「エフェクト > ノイズリダクション > 🎙 学習」→ ③ 選択解除して「適用」。"
+        "定常なスクリュー音・機関音に有効で、過渡音 (クリック等) には効かない",
+        "\u2460 Drag-select a noise-only interval \u2192 \u2461 learn it in Effects > "
+        "Spectral denoise \u2192 \u2462 clear the selection and apply. This works on "
+        "steady propeller / machinery noise, not on transients");
+    I18n::reg("ae_u5g", "✂ 観測データの切り出し",
+              "✂ Cut out an observation segment");
+    I18n::reg("ae_u5s",
+        "① 残す区間をドラッグ選択 → ②「編集 > ✂ 切出し」→ "
+        "③ 必要なら「サンプルレート変換」で他データと fs を揃える → "
+        "④「💾 WAV書出」。失敗したら「↶ 元に戻す」",
+        "\u2460 Drag-select the part to keep \u2192 \u2461 Edit > Trim \u2192 \u2462 match the sample "
+        "rate to your other data if needed \u2192 \u2463 Export WAV (Undo if needed)");
+
     I18n::reg("ae_h5g", "✂ 切り出し・整音", "✂ Trim & clean up");
     I18n::reg("ae_h5s",
         "① 残す範囲をドラッグ選択 → ②「編集 > ✂ 切出し」→ ③「ノーマライズ」→ "
@@ -371,12 +430,20 @@ const bool s_i18n = [] {
 
 // 使い方テーブル (実装済みの手順のみ — 録音は未実装のため外部録音を案内)
 struct HowTo { const char *goalKey; const char *stepsKey; };
-const HowTo kHowTo[] = {
+const HowTo kHowToRoom[] = {
     { "ae_h1g", "ae_h1s" },
     { "ae_h2g", "ae_h2s" },
     { "ae_h3g", "ae_h3s" },
     { "ae_h4g", "ae_h4s" },
     { "ae_h5g", "ae_h5s" },
+};
+// 水中音響では残響時間・ホール解析の手順が成り立たないので別表を出す
+const HowTo kHowToUnderwater[] = {
+    { "ae_u1g", "ae_u1s" },
+    { "ae_u2g", "ae_u2s" },
+    { "ae_u3g", "ae_u3s" },
+    { "ae_u4g", "ae_u4s" },
+    { "ae_u5g", "ae_u5s" },
 };
 
 QTableWidget *makeTable(QWidget *parent, const QStringList &headers)
@@ -411,6 +478,26 @@ QDoubleSpinBox *spin(QWidget *parent, double lo, double hi, double val,
 }
 
 } // namespace
+
+// 手順表をドメインに合わせて作り直す (水中音響では別の表)
+void AudioEditorTab::rebuildHowTo()
+{
+    if (!m_howTable) return;
+    const bool uw = (m_p->activeDomain() == Domain::Underwater);
+    if (m_howToIsUnderwater == uw && m_howTable->rowCount() > 0) return;
+    m_howToIsUnderwater = uw;
+    m_howTable->setRowCount(0);
+    const HowTo *tbl = uw ? kHowToUnderwater : kHowToRoom;
+    const int n = uw ? int(sizeof(kHowToUnderwater) / sizeof(HowTo))
+                     : int(sizeof(kHowToRoom) / sizeof(HowTo));
+    for (int i = 0; i < n; ++i) {
+        const int r = m_howTable->rowCount();
+        m_howTable->insertRow(r);
+        m_howTable->setItem(r, 0, roItem(I18n::tr(tbl[i].goalKey)));
+        m_howTable->setItem(r, 1, roItem(I18n::tr(tbl[i].stepsKey)));
+    }
+    fitTable(m_howTable);
+}
 
 // ── construction ────────────────────────────────────────────────────────────
 AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
@@ -469,18 +556,16 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
 
     // ── 使い方 ──────────────────────────────────────────────────────────────
     auto *sHow = new SectionBox(I18n::tr("ae_howto"), body);
-    auto *howTable = makeTable(sHow,
+    m_howTable = makeTable(sHow,
         { I18n::tr("ae_howto_goal"), I18n::tr("ae_howto_steps") });
-    for (const HowTo &h : kHowTo) {
-        const int r = howTable->rowCount();
-        howTable->insertRow(r);
-        howTable->setItem(r, 0, roItem(I18n::tr(h.goalKey)));
-        howTable->setItem(r, 1, roItem(I18n::tr(h.stepsKey)));
-    }
-    howTable->setWordWrap(true);
-    fitTable(howTable);
-    sHow->vbox()->addWidget(howTable);
+    m_howTable->setWordWrap(true);
+    sHow->vbox()->addWidget(m_howTable);
     v->addWidget(sHow);
+    rebuildHowTo();
+    // ドメインを切り替えたら手順表も入れ替える (室内音響の残響時間の手順を
+    // 水中音響で見せない)
+    connect(project, &Project::changed, this, &AudioEditorTab::rebuildHowTo);
+    connect(project, &Project::loaded, this, &AudioEditorTab::rebuildHowTo);
 
     // ── サブタブ ────────────────────────────────────────────────────────────
     auto *tabs = new QTabWidget(body);

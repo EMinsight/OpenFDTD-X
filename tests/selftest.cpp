@@ -25,6 +25,7 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/BathymetryIO.h"
+#include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
 #include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
@@ -4553,6 +4554,71 @@ static QByteArray btyReadAll(const QString &path)
 }
 
 // 水中音響: 海底地形 (.bty) と Bellhop 実行設定の .ofdx 往復・.env 反映
+
+// 配布ページのリンク抽出 (scanPageLinks) — 相対解決・種別判定・重複排除
+static void testOceanPageScan()
+{
+    g_file = "pagescan";
+    const QString page = "https://www.jodc.go.jp/vpage/scalar_j.html";
+    const QByteArray html =
+        "<html><body>"
+        "<a href=\"depth500/JEGG500.zip\">J-EGG500</a>"          // 相対 (データ)
+        "<a href=\"/data/woa23_t00.nc\">WOA23</a>"               // ルート相対
+        "<a href=\"https://other.example.org/x/etopo.asc\">ETOPO</a>"  // 絶対
+        "<a href=\"depth500/\">深さ別フォルダ</a>"                 // フォルダ
+        "<a href=\"index_j.html\">戻る</a>"                       // ページ
+        "<a href=\"depth500/JEGG500.zip\">同じリンク</a>"          // 重複
+        "<a href=\"#top\">先頭へ</a>"                             // 除外
+        "<a href=\"javascript:go()\">JS</a>"                      // 除外
+        "<a href=\"mailto:a@b.jp\">mail</a>"                      // 除外
+        "<img src=\"logo.png\">"                                  // 除外 (画像)
+        "<a href=\"ftp://old.example.org/a.nc\">ftp</a>"          // 除外 (scheme)
+        "</body></html>";
+    bool trunc = false;
+    const QVector<PageLink> links = scanPageLinks(page, html, 400, &trunc);
+
+    check(!trunc, "scan: not truncated at the 400 link cap");
+    int nFile = 0, nDir = 0;
+    for (const PageLink &l : links) (l.isDir ? nDir : nFile)++;
+    check(nFile == 3, "scan: three data files (zip / nc / asc)");
+    check(nDir == 2, "scan: two followable folder/page links");
+
+    // データファイルが先、同種は名前順 (大文字小文字を無視するので
+    // etopo.asc < JEGG500.zip < woa23_t00.nc)
+    check(!links.first().isDir && links.first().name == QLatin1String("etopo.asc")
+              && links[1].name == QLatin1String("JEGG500.zip")
+              && links[2].name == QLatin1String("woa23_t00.nc"),
+          "scan: data files come first, sorted case-insensitively by name");
+    // 相対 URL がページ URL に対して解決されている
+    bool jegg = false, woa = false, other = false;
+    for (const PageLink &l : links) {
+        if (l.url == QLatin1String("https://www.jodc.go.jp/vpage/depth500/JEGG500.zip"))
+            jegg = true;
+        if (l.url == QLatin1String("https://www.jodc.go.jp/data/woa23_t00.nc"))
+            woa = true;
+        if (l.url == QLatin1String("https://other.example.org/x/etopo.asc"))
+            other = true;
+    }
+    check(jegg, "scan: document-relative URL resolves against the page path");
+    check(woa, "scan: root-relative URL resolves against the host");
+    check(other, "scan: absolute URLs on another host are kept");
+
+    // 上限に達したら truncated が立つ
+    QByteArray many;
+    for (int i = 0; i < 20; ++i)
+        many += QStringLiteral("<a href=\"f%1.nc\">x</a>").arg(i).toLatin1();
+    bool trunc2 = false;
+    const QVector<PageLink> few = scanPageLinks(page, many, 5, &trunc2);
+    check(few.size() == 5 && trunc2, "scan: the link cap is enforced and reported");
+
+    // データリンクが 1 件も無いページ (JS 組み立て等) は空で返る
+    bool trunc3 = false;
+    const QVector<PageLink> none =
+        scanPageLinks(page, "<html><body><script>go()</script></body></html>",
+                       400, &trunc3);
+    check(none.isEmpty(), "scan: a JS-only page yields nothing (reported as such)");
+}
+
 static void testUnderwaterBathymetry()
 {
     g_file = "bathymetry";
@@ -9847,6 +9913,7 @@ int main(int argc, char *argv[])
     testOpticalModeSettings();
     testBellhop();
     testUnderwaterBathymetry();
+    testOceanPageScan();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();
