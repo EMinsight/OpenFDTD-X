@@ -48,6 +48,11 @@ private:
     QString prepareRunInput(QString *workingDir, QString *err);
     void startSolver();
     void stopSolver();
+    // ハイブリッド RIR 合成 (低域 FDTD + 高域 幾何音響)。ファイル 2 本を
+    // acoustics::buildHybridRir へ渡し、結果を WAV へ書き出す。
+    void buildHybrid();
+    // 入力の揃い具合に応じて合成ボタンの有効/無効と理由 (ツールチップ) を更新
+    void updateHybridUi();
 
     Project        *m_p;
     AcousticRunner *m_runner = nullptr;
@@ -62,6 +67,17 @@ private:
     QLabel       *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
     QPlainTextEdit *m_log = nullptr;
+
+    // ── ハイブリッド RIR 合成 (セッション限りの入力欄 — .ofdx へは
+    //    保存しない。シリアライズ出力を 1 バイトも変えないため) ────────────
+    QLineEdit *m_hyLow = nullptr;    // 低域 RIR (FDTD)
+    QLineEdit *m_hyHigh = nullptr;   // 高域 RIR (幾何音響)
+    QLineEdit *m_hyOut = nullptr;    // 出力 RIR
+    QLineEdit *m_hyCross = nullptr;  // クロスオーバー [Hz] (空 = 自動)
+    QPushButton *m_hyRun = nullptr;
+    QPushButton *m_hyAssign = nullptr;
+    QLabel *m_hyResult = nullptr;
+    QString m_hyLastOut;             // 直近の合成結果 (可聴化へ渡す用)
 };
 
 } // namespace ofd

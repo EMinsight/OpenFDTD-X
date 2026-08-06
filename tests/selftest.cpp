@@ -40,6 +40,8 @@
 #include "acoustics/core/SoundInsulation.h"
 #include "acoustics/core/Fft.h"
 #include "acoustics/core/Resampler.h"
+// ハイブリッド RIR 合成 (低域 FDTD + 高域 幾何音響)
+#include "acoustics/core/HybridRir.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/core/RoomModes.h"
 #include "acoustics/core/EnvironmentalNoise.h"
@@ -2804,6 +2806,319 @@ static void testRirSampleRateNotes()
               "just below the threshold is flagged");
         check(rirBandWarnThresholdHz() == 16000.0,
               "band warning threshold is 16 kHz");
+    }
+
+    // ソルバーが申告した有効帯域 (metadata.json の source.fmax_hz) を渡すと、
+    // ナイキストではなくそちらで判定・表示する。FDTD は fmax ≈ fs/17.5 なので
+    // ナイキストで代用すると帯域を桁で過大に見せてしまう (今回の実例)。
+    {
+        const QStringList n = rirSampleRateNotes(1201.0, 48000.0, 68.6);
+        check(n.size() == 2, "solver band: conversion + band notes");
+        if (n.size() == 2) {
+            check(n[1].contains(QStringLiteral("69")),
+                  "solver band: shows the reported fmax (69 Hz), not 601 Hz");
+            check(!n[1].contains(QStringLiteral("601")),
+                  "solver band: does not show the Nyquist value");
+        }
+        // 帯域が十分なら申告値でも警告しない
+        check(rirSampleRateNotes(48000.0, 48000.0, 20000.0).isEmpty(),
+              "solver band: a wide reported band emits no note");
+        // 申告値が広くても fs が低ければ変換の注記だけは出る
+        check(rirSampleRateNotes(44100.0, 48000.0, 20000.0).size() == 1,
+              "solver band: conversion note still appears");
+    }
+}
+
+// ── ソルバー metadata.json の読み取り (ADR-0007 契約) ───────────────────────
+// 有効帯域 (source.fmax_hz) と音源パルス (sigma_s / t0_s) を GUI が使うので、
+// 実ファイルを書いて往復させる。契約外の JSON は valid=false になること。
+static void testSolverMetadata()
+{
+    g_file = "solver-metadata";
+    QTemporaryDir tmp;
+    check(tmp.isValid(), "metadata temp dir");
+    if (!tmp.isValid()) return;
+
+    // OpenAcoustics が実際に出す形 (キーの並び・入れ子を含めて同じ)
+    const QString json = QStringLiteral(
+        "{\n"
+        "  \"contract_version\": 1,\n"
+        "  \"solver\": \"ofdx_acoustic_fdtd\",\n"
+        "  \"grid\": { \"dx_m\": 0.5, \"cells\": [40, 30, 20] },\n"
+        "  \"sample_rate\": 1201,\n"
+        "  \"source\": { \"type\": \"gaussian_derivative_soft\",\n"
+        "                \"fmax_hz\": 68.6, \"sigma_s\": 9.2807e-3,\n"
+        "                \"t0_s\": 4.6404e-2 },\n"
+        "  \"t_sabine_s\": 2.1\n"
+        "}\n");
+    const QString metaPath = tmp.filePath("metadata.json");
+    {
+        QFile f(metaPath);
+        check(f.open(QIODevice::WriteOnly), "write metadata.json");
+        f.write(json.toUtf8());
+    }
+    const QtAcousticAdapter::SolverMetadata m =
+        QtAcousticAdapter::readSolverMetadata(metaPath);
+    check(m.valid, "metadata parsed");
+    check(nearlyEq(m.sampleRateHz, 1201.0), "metadata sample_rate");
+    check(std::fabs(m.sourceFmaxHz - 68.6) < 1e-9, "metadata source.fmax_hz");
+    check(std::fabs(m.sourceSigmaS - 9.2807e-3) < 1e-12,
+          "metadata source.sigma_s");
+    check(std::fabs(m.sourceT0S - 4.6404e-2) < 1e-12, "metadata source.t0_s");
+    check(std::fabs(m.gridDxM - 0.5) < 1e-12, "metadata grid.dx_m");
+    check(std::fabs(m.tSabineS - 2.1) < 1e-12, "metadata t_sabine_s");
+    check(m.solver == QLatin1String("ofdx_acoustic_fdtd"), "metadata solver");
+
+    // rir.wav の隣を自動で探す
+    {
+        QFile f(tmp.filePath("rir.wav"));
+        check(f.open(QIODevice::WriteOnly), "write dummy rir.wav");
+        f.write("RIFF");
+    }
+    const QtAcousticAdapter::SolverMetadata beside =
+        QtAcousticAdapter::metadataForRir(tmp.filePath("rir.wav"));
+    check(beside.valid && std::fabs(beside.sourceFmaxHz - 68.6) < 1e-9,
+          "metadataForRir finds the sibling metadata.json");
+    check(!QtAcousticAdapter::metadataForRir(tmp.filePath("missing.wav")).valid,
+          "metadataForRir on a missing RIR is not valid");
+
+    // 契約外 (sample_rate が無い) は採用しない
+    const QString badPath = tmp.filePath("bad.json");
+    {
+        QFile f(badPath);
+        check(f.open(QIODevice::WriteOnly), "write non-contract json");
+        f.write("{ \"hello\": 1 }");
+    }
+    check(!QtAcousticAdapter::readSolverMetadata(badPath).valid,
+          "json without sample_rate is rejected");
+    check(!QtAcousticAdapter::readSolverMetadata(tmp.filePath("nope.json")).valid,
+          "missing metadata.json is not valid");
+}
+
+// ── ハイブリッド RIR 合成 (低域 FDTD + 高域 幾何音響) ───────────────────────
+// FDTD の有効帯域は fmax = c/(10·dx) しかないので高域を幾何音響で補う。
+// ここでは合成器の 4 つの性質を検証する:
+//   相補性 (足して増減しない) / 時間原点の保存 / 帯域の出所 / 逆フィルタ。
+static void testHybridRir()
+{
+    using namespace acoustics;
+    g_file = "hybrid-rir";
+    const double PI = 3.14159265358979323846;
+    const double fs = 48000.0, fx = 500.0;
+
+    const auto mono = [](const std::vector<double> &x, double rate) {
+        AudioBuffer b;
+        b.sampleRateHz = rate;
+        b.channels.assign(1, x);
+        return b;
+    };
+    // 定常部の単一周波数振幅 (直接 DFT)
+    const auto toneMag = [&](const std::vector<double> &y, double rate,
+                            double f) {
+        double re = 0.0, im = 0.0;
+        for (std::size_t i = 0; i < y.size(); ++i) {
+            const double t = double(i) / rate;
+            re += y[i] * std::cos(2.0 * PI * f * t);
+            im -= y[i] * std::sin(2.0 * PI * f * t);
+        }
+        return 2.0 * std::sqrt(re * re + im * im) / double(y.size());
+    };
+
+    // 1) 相補性: 同じ信号を両ブランチへ入れると出力が入力に一致する
+    //    (LP + HP = 単位インパルス — 合成でエネルギーの山谷を作らない)
+    {
+        std::vector<double> x(8192, 0.0);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(0.03 * double(i)) * std::exp(-1e-4 * double(i)) +
+                   0.3 * std::sin(0.7 * double(i));
+        HybridRirConfig cfg;
+        cfg.crossoverHz = fx;
+        cfg.sourceSigmaS = 0.0;
+        cfg.matchLevels = false;
+        HybridRirInfo info;
+        const AcousticResult<AudioBuffer> r =
+            buildHybridRir(mono(x, fs), mono(x, fs), cfg, &info);
+        check(r.success(), "hybrid: complementary build ok");
+        if (r.success()) {
+            const std::vector<double> &y = r.value().channels[0];
+            double worst = 0.0;
+            for (std::size_t i = info.filterLength;
+                 i + info.filterLength < y.size(); ++i)
+                worst = std::max(worst, std::fabs(y[i] - x[i]));
+            check(worst < 1e-9, "hybrid: LP+HP reconstructs the input exactly");
+            check(info.filterLength % 2 == 1, "hybrid: FIR length is odd");
+            check(nearlyEq(info.crossoverHz, fx), "hybrid: crossover reported");
+        }
+    }
+
+    // 2) 時間原点: インパルスの位置と振幅が動かない (直接音・ITDG を守る)
+    {
+        std::vector<double> d(4096, 0.0);
+        d[1000] = 1.0;
+        HybridRirConfig cfg;
+        cfg.crossoverHz = fx;
+        cfg.sourceSigmaS = 0.0;
+        cfg.matchLevels = false;
+        const AcousticResult<AudioBuffer> r =
+            buildHybridRir(mono(d, fs), mono(d, fs), cfg);
+        check(r.success(), "hybrid: impulse build ok");
+        if (r.success()) {
+            const std::vector<double> &y = r.value().channels[0];
+            std::size_t am = 0;
+            for (std::size_t i = 1; i < y.size(); ++i)
+                if (std::fabs(y[i]) > std::fabs(y[am])) am = i;
+            check(am == 1000, "hybrid: impulse stays at its original sample");
+            check(std::fabs(y[1000] - 1.0) < 1e-9,
+                  "hybrid: impulse keeps unit amplitude");
+        }
+    }
+
+    // 3) 帯域の出所: 低域は FDTD 側から、高域は幾何音響側から来る。
+    //    入れ替えると通らない (混ざっていないことの確認)
+    {
+        const double fLo = 100.0, fHi = 3000.0;
+        std::vector<double> a(24000), b(24000);
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            const double t = double(i) / fs;
+            a[i] = std::sin(2.0 * PI * fLo * t);
+            b[i] = std::sin(2.0 * PI * fHi * t);
+        }
+        HybridRirConfig cfg;
+        cfg.crossoverHz = fx;
+        cfg.sourceSigmaS = 0.0;
+        cfg.matchLevels = false;
+        const AcousticResult<AudioBuffer> ok =
+            buildHybridRir(mono(a, fs), mono(b, fs), cfg);
+        const AcousticResult<AudioBuffer> sw =
+            buildHybridRir(mono(b, fs), mono(a, fs), cfg);
+        check(ok.success() && sw.success(), "hybrid: band split builds ok");
+        if (ok.success() && sw.success()) {
+            const std::vector<double> &y = ok.value().channels[0];
+            const std::vector<double> mid(y.begin() + 4000, y.end() - 4000);
+            check(std::fabs(20.0 * std::log10(toneMag(mid, fs, fLo))) < 0.2,
+                  "hybrid: 100 Hz passes through the FDTD branch");
+            check(std::fabs(20.0 * std::log10(toneMag(mid, fs, fHi))) < 0.2,
+                  "hybrid: 3 kHz passes through the geometric branch");
+            const std::vector<double> &z = sw.value().channels[0];
+            const std::vector<double> mid2(z.begin() + 4000, z.end() - 4000);
+            check(20.0 * std::log10(toneMag(mid2, fs, fLo) + 1e-30) < -80.0,
+                  "hybrid: swapped 100 Hz is rejected (>80 dB)");
+            check(20.0 * std::log10(toneMag(mid2, fs, fHi) + 1e-30) < -80.0,
+                  "hybrid: swapped 3 kHz is rejected (>80 dB)");
+        }
+    }
+
+    // 4) 音源パルスの逆フィルタ: t0 が消え、反射の相対振幅が戻る。
+    //    (FDTD の出力は Green 関数ではなく「音源パルスとの畳み込み」)
+    {
+        const double fsL = 1201.0, fmax = 68.6;
+        const double sigma = 2.0 / (PI * fmax), t0 = 5.0 * sigma;
+        std::vector<double> h(3000, 0.0);
+        h[std::size_t(0.03 * fsL)] = 1.0;
+        h[std::size_t(0.09 * fsL)] = -0.5;
+        h[std::size_t(0.20 * fsL)] = 0.25;
+        std::vector<double> s(std::size_t(2.0 * t0 * fsL) + 200, 0.0);
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            const double u = (double(i) / fsL - t0) / sigma;
+            s[i] = -u * std::exp(0.5 - 0.5 * u * u);
+        }
+        std::vector<double> p(h.size(), 0.0);
+        for (std::size_t i = 0; i < h.size(); ++i) {
+            if (h[i] == 0.0) continue;
+            for (std::size_t k = 0; k < s.size() && i + k < p.size(); ++k)
+                p[i + k] += h[i] * s[k];
+        }
+        const AcousticResult<std::vector<double>> dec = deconvolveSourcePulse(
+            ArrayView<const double>(p), fsL, sigma, t0, 1e-8);
+        check(dec.success(), "hybrid: deconvolution ok");
+        if (dec.success()) {
+            const std::vector<double> &g = dec.value();
+            std::size_t am = 0;
+            for (std::size_t i = 1; i < g.size(); ++i)
+                if (std::fabs(g[i]) > std::fabs(g[am])) am = i;
+            check(std::llabs((long long)am -
+                             (long long)std::size_t(0.03 * fsL)) <= 1,
+                  "hybrid: deconvolution moves the direct sound to r/c "
+                  "(t0 removed)");
+            const double a1 = g[std::size_t(0.03 * fsL)];
+            check(std::fabs(g[std::size_t(0.09 * fsL)] / a1 + 0.5) < 0.05,
+                  "hybrid: 2nd reflection ratio recovered (-0.5)");
+            check(std::fabs(g[std::size_t(0.20 * fsL)] / a1 - 0.25) < 0.05,
+                  "hybrid: 3rd reflection ratio recovered (+0.25)");
+        }
+        // 異常系
+        check(!deconvolveSourcePulse(ArrayView<const double>(p), fsL, 0.0, t0)
+                   .success(),
+              "hybrid: sigma = 0 is rejected");
+    }
+
+    // 5) レベル整合: FDTD を半分の振幅にすると +6.02 dB が報告される
+    {
+        std::vector<double> x(16384, 0.0);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] = std::sin(2.0 * PI * 400.0 * double(i) / fs);
+        std::vector<double> quiet(x);
+        for (std::size_t i = 0; i < quiet.size(); ++i) quiet[i] *= 0.5;
+        HybridRirConfig cfg;
+        cfg.crossoverHz = fx;
+        cfg.sourceSigmaS = 0.0;
+        cfg.matchLevels = true;
+        HybridRirInfo info;
+        const AcousticResult<AudioBuffer> r =
+            buildHybridRir(mono(quiet, fs), mono(x, fs), cfg, &info);
+        check(r.success(), "hybrid: level match ok");
+        check(r.success() && std::fabs(info.fdtdGainDb - 6.0206) < 0.05,
+              "hybrid: reports +6.02 dB for a half-amplitude FDTD RIR");
+    }
+
+    // 6) 実際の組み合わせ (1201 Hz FDTD × 48 kHz 幾何音響、自動クロスオーバー)
+    {
+        const double fsL = 1201.0, fmax = 68.6;
+        const double sigma = 2.0 / (PI * fmax), t0 = 5.0 * sigma;
+        std::vector<double> low(3600, 0.0);
+        for (std::size_t i = 0; i < low.size(); ++i) {
+            const double u = (double(i) / fsL - t0 - 0.03) / sigma;
+            low[i] = -u * std::exp(0.5 - 0.5 * u * u);
+        }
+        std::vector<double> high(144000, 0.0);
+        high[std::size_t(0.03 * fs)] = 1.0;
+        HybridRirConfig cfg;
+        cfg.fdtdFmaxHz = fmax;      // クロスオーバーは自動 (= fmax)
+        cfg.sourceSigmaS = sigma;
+        cfg.sourceT0S = t0;
+        HybridRirInfo info;
+        const AcousticResult<AudioBuffer> r =
+            buildHybridRir(mono(low, fsL), mono(high, fs), cfg, &info);
+        check(r.success(), "hybrid: real case (1201 Hz FDTD x 48 kHz GA)");
+        if (r.success()) {
+            check(nearlyEq(info.crossoverHz, fmax),
+                  "hybrid: crossover falls back to the FDTD fmax");
+            check(info.deconvolved && info.resampled,
+                  "hybrid: real case deconvolves and resamples the low band");
+            check(nearlyEq(info.outputRateHz, fs),
+                  "hybrid: output fs follows the geometric RIR");
+            const std::vector<double> &y = r.value().channels[0];
+            std::size_t am = 0;
+            for (std::size_t i = 1; i < y.size(); ++i)
+                if (std::fabs(y[i]) > std::fabs(y[am])) am = i;
+            check(std::llabs((long long)am -
+                             (long long)std::size_t(0.03 * fs)) < 60,
+                  "hybrid: direct sound lands at t = 0.03 s");
+        }
+    }
+
+    // 7) 異常系: クロスオーバー不明 / ナイキスト以上は黙って進めない
+    {
+        std::vector<double> x(1024, 0.1);
+        HybridRirConfig cfg;   // crossoverHz も fdtdFmaxHz も 0
+        cfg.sourceSigmaS = 0.0;
+        check(!buildHybridRir(mono(x, fs), mono(x, fs), cfg).success(),
+              "hybrid: unknown crossover is an error");
+        HybridRirConfig cfg2;
+        cfg2.crossoverHz = 900.0;      // 低域 fs 1201 Hz のナイキスト超え
+        cfg2.sourceSigmaS = 0.0;
+        check(!buildHybridRir(mono(x, 1201.0), mono(x, fs), cfg2).success(),
+              "hybrid: crossover above the FDTD Nyquist is an error");
     }
 }
 
@@ -9154,6 +9469,8 @@ int main(int argc, char *argv[])
     testCalibrationOffsetGate();
     testResampler();
     testRirSampleRateNotes();
+    testSolverMetadata();
+    testHybridRir();
     testOnnActivation();
     testRcwaCore();
     testOpticsMaterials();

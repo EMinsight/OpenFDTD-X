@@ -33,7 +33,8 @@ namespace tabhelp {
 // はっきり曇るので実用上の境目として採る。
 double rirBandWarnThresholdHz() { return 16000.0; }
 
-QStringList rirSampleRateNotes(double rirFsHz, double outFsHz)
+QStringList rirSampleRateNotes(double rirFsHz, double outFsHz,
+                               double validBandHz)
 {
     QStringList notes;
     if (!(rirFsHz > 0.0) || !(outFsHz > 0.0)) return notes;
@@ -41,9 +42,14 @@ QStringList rirSampleRateNotes(double rirFsHz, double outFsHz)
         notes << I18n::tr("aur_resampled_note")
                      .arg(QString::number(qRound64(rirFsHz)),
                           QString::number(qRound64(outFsHz)));
-    const double band = 0.5 * rirFsHz;
+    // 有効帯域: ソルバーが申告した fmax があればそれ、無ければナイキスト。
+    // FDTD は格子分散があるので fmax ≈ fs/17.5 ≪ fs/2 — 申告値がある方が
+    // 正しく、無いときだけナイキストで代用する (実測 RIR など)。
+    const bool known = (validBandHz > 0.0);
+    const double band = known ? validBandHz : 0.5 * rirFsHz;
     if (band < rirBandWarnThresholdHz())
-        notes << I18n::tr("aur_rir_band_note")
+        notes << I18n::tr(known ? "aur_rir_band_solver_note"
+                                : "aur_rir_band_note")
                      .arg(QString::number(qRound64(band)),
                           QString::number(qRound64(rirFsHz)));
     return notes;

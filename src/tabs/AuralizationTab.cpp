@@ -623,8 +623,14 @@ void AuralizationTab::runConvolution()
         QStringList warn;
         // RIR の fs の注記 (変換した事実 + 帯域が足りない場合の警告)。
         // 3 箇所で同じ文言を出すため tabhelp に集約している。
+        // 有効帯域はソルバーの metadata.json (source.fmax_hz) を優先する
+        // — FDTD はナイキストではなく格子分解能で帯域が決まるため
+        const double validBand =
+            QtAcousticAdapter::metadataForRir(m_p->operaAcoustic().rirPath)
+                .sourceFmaxHz;
         for (const QString &n : tabhelp::rirSampleRateNotes(note.fromHz,
-                                                            note.toHz))
+                                                            note.toHz,
+                                                            validBand))
             warn << QStringLiteral("• ") + n;
         if (gainApplied)
             warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
@@ -982,7 +988,9 @@ void AuralizationTab::startBatchJob(int jobIdx)
             }
             // 行の文字列は短く保ち、詳しい注記 (fs 変換・帯域制限) は
             // ツールチップへ (単発実行と同じ文言)
-            tip << tabhelp::rirSampleRateNotes(d->note.fromHz, d->note.toHz);
+            tip << tabhelp::rirSampleRateNotes(
+                d->note.fromHz, d->note.toHz,
+                QtAcousticAdapter::metadataForRir(job.rirPath).sourceFmaxHz);
             if (info.clipped) {
                 const QString cl = I18n::tr("aurb_row_clipped")
                     .arg(QString::number(qulonglong(info.clippedSampleCount)));
