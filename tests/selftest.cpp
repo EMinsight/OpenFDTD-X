@@ -68,6 +68,9 @@
 // 「音響解析の進め方」パネルの状態判定 (workflowStatus / workflowNavKey)。
 // 同じくヘッダ内 inline の static メソッドだけを検証する。
 #include "tabs/AcousticTab.h"
+// 「④ 音源 (励振)」→ 音源リストへの導線の飛び先キー (acSourceNavKey)。
+// 同じくヘッダ内 inline の static メソッドだけを使う。
+#include "tabs/SourceTab.h"
 // ナビの音響/水中向けラベル (nav_source_ac) の検証用 — I18n.cpp は
 // CMakeLists が selftest に個別追加している (GUI_SOURCES 側)。
 #include "I18n.h"
@@ -8615,6 +8618,32 @@ static void testNavSourceAcLabel()
           "acoustic nav label reads 音源");
     check(!ac.contains(QStringLiteral("波源")),
           "acoustic nav label does not read 波源");
+
+    // 音源設定は 2 系統ある (④ = ソルバ励振の feed / 🎤 = .ofdx の音源リスト)。
+    // 一覧の時点で役割差が分かるよう ④ 側に「(励振)」を付けてある。同名だと
+    // どちらを開けばよいか分からない (今回の改善の出発点) ので、両者が
+    // 別表記であることを日英とも検証する。
+    const QString list = I18n::tr(QStringLiteral("nav_acsource"));
+    check(ac.contains(QStringLiteral("励振")),
+          "acoustic nav label marks itself as the excitation (励振) source");
+    check(ac != list, "④ source label differs from the 🎤 source-list label");
+    const QString lang0 = I18n::instance().lang();
+    I18n::instance().setLanguage(QStringLiteral("en"));
+    const QString acEn = I18n::tr(QStringLiteral("nav_source_ac"));
+    const QString listEn = I18n::tr(QStringLiteral("nav_acsource"));
+    check(acEn.contains(QStringLiteral("excitation"), Qt::CaseInsensitive),
+          "English ④ source label says excitation");
+    check(acEn != listEn, "English ④ / 🎤 source labels differ");
+    I18n::instance().setLanguage(lang0);   // 後続の検証に影響させない
+
+    // ④ の「🎤 音源/WAV/指向性 タブへ」ボタンの飛び先。NavCatalog に無い
+    // キーだとボタンが黙って何も起きない (selectKey が見つけられない) ため、
+    // キーが登録済みで、応用カテゴリの音源リストを指していることを確認する。
+    const char *dst = ofd::SourceTab::acSourceNavKey();
+    check(qstrcmp(dst, "acsource") == 0,
+          "④ source tab links to the acsource nav key");
+    check(ofd::navcat::categoryFor(dst) != nullptr,
+          "the link target is a registered nav key");
 }
 
 // ── 左ナビのカテゴリ割り当て (core/NavCatalog.h) ────────────────────────────
