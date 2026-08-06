@@ -438,6 +438,9 @@ add_library(ofdx_acoustic_core STATIC
     # 有理比ポリフェーズ Kaiser 窓 sinc リサンプラ (負債 #12) —
     # 可聴化の fs 不一致時に RIR をドライ側 fs へ変換する実体
     src/acoustics/core/Resampler.cpp
+    # 低域 FDTD + 高域 幾何音響 のハイブリッド RIR 合成 (音源パルスの
+    # 逆フィルタ + 相補な線形位相クロスオーバー)
+    src/acoustics/core/HybridRir.cpp
     src/acoustics/core/Fft.cpp
     src/acoustics/core/FormantEstimator.cpp
     src/acoustics/core/VocalAnalyzer.cpp

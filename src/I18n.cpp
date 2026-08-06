@@ -929,6 +929,20 @@ void I18n::loadTables() {
         "“🎚 Audio Editor” tab or convert externally, then retry.");
     // RIR の帯域が可聴帯域に届かない場合の警告。出力 fs だけ高くても
     // 高域は復元されない (FDTD の RIR は格子刻みで帯域が決まる)。
+    // ソルバーが有効帯域 (metadata.json の source.fmax_hz) を申告している
+    // 場合。FDTD の帯域は格子分解能 fmax = c/(10·dx) で決まり、fs/2 では
+    // ない (fs は CFL 条件で決まるだけ) — 桁で違うので文言を分ける。
+    add("aur_rir_band_solver_note",
+        "RIR が物理的に有効なのは %1 Hz までです (ソルバー申告値。"
+        "RIR の fs = %2 Hz ですが、FDTD の帯域は格子分解能 "
+        "fmax = c/(10·dx) で決まるためナイキストより桁で低くなります)。"
+        "ウェット音のこれより上は信用できません — メッシュを細かくして"
+        "再計算するか、高域は幾何音響で補ってください。",
+        "The RIR is physically valid only up to %1 Hz (reported by the "
+        "solver; the file's fs is %2 Hz, but an FDTD's band is set by the "
+        "grid — fmax = c/(10·dx) — which is far below Nyquist). Anything "
+        "above that in the wet output is not trustworthy: refine the mesh "
+        "and re-run, or cover the high band with geometrical acoustics.");
     add("aur_rir_band_note",
         "RIR の帯域は %1 Hz までです (RIR の fs = %2 Hz)。ウェット音に"
         "これより高い周波数成分は含まれません — 帯域を伸ばすには室の"

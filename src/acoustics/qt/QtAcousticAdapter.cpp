@@ -3,8 +3,12 @@
 #include "../core/Resampler.h"
 #include "../io/WavWriter.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -178,6 +182,41 @@ QtAcousticAdapter::analyzeVocalFile(const QString &path,
     const VocalAnalyzer analyzer(toVocalConfig(settings));
     return analyzer.analyze(ArrayView<const double>(samples),
                             wav.value().sampleRateHz);
+}
+
+// ── ソルバー metadata.json (ADR-0007 契約) ──────────────────────────────────
+QtAcousticAdapter::SolverMetadata
+QtAcousticAdapter::readSolverMetadata(const QString &metadataPath)
+{
+    SolverMetadata m;
+    QFile f(metadataPath);
+    if (!f.open(QIODevice::ReadOnly)) return m;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isObject()) return m;
+    const QJsonObject o = doc.object();
+    // sample_rate が無いものは契約に沿った metadata.json ではない
+    if (!o.contains(QStringLiteral("sample_rate"))) return m;
+    m.valid = true;
+    m.sampleRateHz = o.value(QStringLiteral("sample_rate")).toDouble(0.0);
+    m.solver = o.value(QStringLiteral("solver")).toString();
+    m.tSabineS = o.value(QStringLiteral("t_sabine_s")).toDouble(0.0);
+    const QJsonObject src = o.value(QStringLiteral("source")).toObject();
+    m.sourceFmaxHz = src.value(QStringLiteral("fmax_hz")).toDouble(0.0);
+    m.sourceSigmaS = src.value(QStringLiteral("sigma_s")).toDouble(0.0);
+    m.sourceT0S    = src.value(QStringLiteral("t0_s")).toDouble(0.0);
+    const QJsonObject grid = o.value(QStringLiteral("grid")).toObject();
+    m.gridDxM = grid.value(QStringLiteral("dx_m")).toDouble(0.0);
+    return m;
+}
+
+QtAcousticAdapter::SolverMetadata
+QtAcousticAdapter::metadataForRir(const QString &rirPath)
+{
+    if (rirPath.trimmed().isEmpty()) return SolverMetadata();
+    const QFileInfo fi(rirPath);
+    if (!fi.exists()) return SolverMetadata();
+    return readSolverMetadata(
+        QDir(fi.absolutePath()).absoluteFilePath(QStringLiteral("metadata.json")));
 }
 
 // ── 可聴化 (フェーズ4) ───────────────────────────────────────────────────────

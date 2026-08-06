@@ -52,7 +52,13 @@ void saveTextFile(QWidget *parent, const QString &caption,
 //      高域が無いことを警告する (出力 fs が高いと「高域まである音」に
 //      見えてしまうため — CLAUDE.md 絶対規則 5)
 // rirFsHz は RIR ファイル本来の fs、outFsHz は出力 (= ドライ) の fs。
-QStringList rirSampleRateNotes(double rirFsHz, double outFsHz);
+// validBandHz は RIR の**物理的に有効な帯域上限** [Hz] (FDTD ソルバーの
+// metadata.json の source.fmax_hz)。0 = 不明で、その場合だけ fs/2
+// (ナイキスト) を上限とみなす。FDTD の有効帯域は格子分解能で決まり
+// fmax = c/(10·dx) ≈ fs/17.5 なので、ナイキストで代用すると帯域を
+// 桁で過大に表示してしまう — 分かるときは必ず渡すこと。
+QStringList rirSampleRateNotes(double rirFsHz, double outFsHz,
+                               double validBandHz = 0.0);
 
 // 上の 2) の判定しきい値 [Hz]。RIR のナイキストがこれ未満なら警告する。
 double rirBandWarnThresholdHz();

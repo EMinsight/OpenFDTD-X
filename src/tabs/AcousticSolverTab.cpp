@@ -1,6 +1,9 @@
 // AcousticSolverTab.cpp
 #include "AcousticSolverTab.h"
 #include "../core/Project.h"
+#include "../acoustics/core/HybridRir.h"
+#include "../acoustics/io/WavWriter.h"
+#include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../io/OfdIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -28,6 +31,74 @@ using namespace ofd::tabhelp;
 // ── タブ固有語彙 (acs_) — file-local 登録 ───────────────────────────────────
 namespace {
 const bool s_i18n = [] {
+    // ── ハイブリッド RIR 合成 ──────────────────────────────────────────────
+    I18n::reg("acs_sec_hybrid",
+        "ハイブリッド RIR 合成 (低域 = FDTD + 高域 = 幾何音響)",
+        "Hybrid RIR (low band = FDTD + high band = geometrical acoustics)");
+    I18n::reg("acs_hy_note",
+        "音響 FDTD の有効帯域は格子分解能で決まります (fmax = c/(10·dx) — "
+        "dx = 0.5 m なら 69 Hz)。歌声の可聴化に要る 4 kHz は FDTD 単独では"
+        "セル数が現実的でないため、低域を FDTD、高域を幾何音響が担う合成を"
+        "行います。ここは**合成 (帯域分割して足す) 側**の実装です — "
+        "高域の幾何音響 RIR は外部ソルバーの出力を指定してください "
+        "(専用ソルバーは未同梱)。合成では FDTD 側の音源パルス (ガウシアン"
+        "微分) の逆フィルタと遅延 t0 の除去、fs 合わせ、クロスオーバー帯での"
+        "レベル整合を自動で行います。",
+        "An acoustic FDTD's usable band is set by the grid "
+        "(fmax = c/(10·dx) — only 69 Hz at dx = 0.5 m). Reaching the 4 kHz a "
+        "singing-voice auralization needs is not feasible with FDTD alone, so "
+        "the low band comes from FDTD and the high band from geometrical "
+        "acoustics. This panel implements the **combining** side: supply the "
+        "high-band RIR from an external geometric solver (not bundled). "
+        "Combining deconvolves the FDTD source pulse (Gaussian derivative), "
+        "removes its t0 delay, matches the sample rates, and matches levels "
+        "in the crossover band.");
+    I18n::reg("acs_hy_low", "低域 RIR (FDTD)", "Low-band RIR (FDTD)");
+    I18n::reg("acs_hy_low_ph",
+              "ソルバー実行結果の rir.wav (metadata.json が隣にあると精度が上がる)",
+              "rir.wav from a solver run (a sibling metadata.json improves it)");
+    I18n::reg("acs_hy_high", "高域 RIR (幾何音響)",
+              "High-band RIR (geometrical)");
+    I18n::reg("acs_hy_high_ph", "幾何音響ソルバーが出力した RIR WAV",
+              "RIR WAV produced by a geometric acoustics solver");
+    I18n::reg("acs_hy_out", "出力 RIR", "Output RIR");
+    I18n::reg("acs_hy_out_ph", "合成した RIR の保存先 WAV",
+              "Where to write the combined RIR");
+    I18n::reg("acs_hy_filter", "WAV ファイル (*.wav)", "WAV files (*.wav)");
+    I18n::reg("acs_hy_cross", "クロスオーバー [Hz]", "Crossover [Hz]");
+    I18n::reg("acs_hy_cross_ph", "自動", "auto");
+    I18n::reg("acs_hy_cross_note",
+        "空欄なら metadata.json の source.fmax_hz (FDTD の有効帯域上限) を使う",
+        "empty = use source.fmax_hz from metadata.json (the FDTD valid band)");
+    I18n::reg("acs_hy_run", "▶ 合成する", "▶ Combine");
+    I18n::reg("acs_hy_assign", "合成結果を可聴化の RIR に設定",
+              "Use the result as the auralization RIR");
+    I18n::reg("acs_hy_need_low", "低域 RIR (FDTD) のファイルを指定してください",
+              "Choose the low-band (FDTD) RIR file");
+    I18n::reg("acs_hy_need_high",
+        "高域 RIR (幾何音響) のファイルを指定してください "
+        "(幾何音響ソルバーは未同梱 — 外部で計算した RIR を指定します)",
+        "Choose the high-band (geometrical) RIR file (no geometric solver is "
+        "bundled — point at a RIR computed elsewhere)");
+    I18n::reg("acs_hy_no_cross",
+        "クロスオーバーが決まりません: 数値を入力するか、低域 RIR の隣に "
+        "metadata.json (source.fmax_hz を含む) を置いてください。",
+        "Cannot determine the crossover: enter a value, or place a "
+        "metadata.json (with source.fmax_hz) next to the low-band RIR.");
+    I18n::reg("acs_hy_done", "完了 — 出力: %1 (クロスオーバー %2 Hz, fs %3 Hz)",
+              "Done — output: %1 (crossover %2 Hz, fs %3 Hz)");
+    I18n::reg("acs_hy_detail",
+        "低域に適用したレベル整合 %1 dB / 音源パルスの逆フィルタ %2 / "
+        "クロスオーバー FIR %3 タップ (線形位相・相補対なので時間原点は不変)",
+        "Level match applied to the low band %1 dB / source deconvolution %2 "
+        "/ crossover FIR %3 taps (linear-phase complementary pair — the time "
+        "origin is preserved)");
+    I18n::reg("acs_hy_deconv_yes", "実施", "applied");
+    I18n::reg("acs_hy_deconv_no", "なし (metadata なし)",
+              "not applied (no metadata)");
+    I18n::reg("acs_hy_failed", "合成に失敗しました: %1",
+              "Combining failed: %1");
+
     I18n::reg("acs_sec_backend",
         "外部音響ソルバー連携 (実装: AcousticRunner — QProcess 疎結合)",
         "External acoustic solver (AcousticRunner — loosely-coupled QProcess)");
@@ -343,6 +414,66 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     conNote->setWordWrap(true);
     s3->vbox()->addWidget(conNote);
     v->addWidget(s3);
+
+    // ── ハイブリッド RIR 合成 (低域 FDTD + 高域 幾何音響) ───────────────────
+    // FDTD の有効帯域は fmax = c/(10·dx) しかないので、歌声の可聴化には
+    // 高域を幾何音響で補う必要がある。ここは「足す」側だけを実装している
+    // (幾何音響ソルバー自体は未提供 — 下の注記で明示する)。
+    auto *s4 = new SectionBox(I18n::tr("acs_sec_hybrid"), body);
+    auto *hyNote = new QLabel(I18n::tr("acs_hy_note"), s4);
+    hyNote->setWordWrap(true);
+    s4->vbox()->addWidget(hyNote);
+
+    const auto fileRow = [this, s4](const char *labelKey, QLineEdit **edit,
+                                    const char *phKey, bool save) {
+        auto *row = new QHBoxLayout();
+        row->addWidget(new QLabel(I18n::tr(labelKey), s4));
+        *edit = new QLineEdit(s4);
+        (*edit)->setPlaceholderText(I18n::tr(phKey));
+        row->addWidget(*edit, 1);
+        auto *b = new QPushButton(I18n::tr("acs_browse"), s4);
+        QLineEdit *e = *edit;
+        connect(b, &QPushButton::clicked, this, [this, e, save] {
+            const QString p = save
+                ? QFileDialog::getSaveFileName(this, I18n::tr("acs_sec_hybrid"),
+                                               e->text(),
+                                               I18n::tr("acs_hy_filter"))
+                : QFileDialog::getOpenFileName(this, I18n::tr("acs_sec_hybrid"),
+                                               e->text(),
+                                               I18n::tr("acs_hy_filter"));
+            if (!p.isEmpty()) e->setText(p);
+            updateHybridUi();
+        });
+        row->addWidget(b);
+        s4->vbox()->addLayout(row);
+    };
+    fileRow("acs_hy_low", &m_hyLow, "acs_hy_low_ph", false);
+    fileRow("acs_hy_high", &m_hyHigh, "acs_hy_high_ph", false);
+    fileRow("acs_hy_out", &m_hyOut, "acs_hy_out_ph", true);
+
+    auto *cr = new QHBoxLayout();
+    cr->addWidget(new QLabel(I18n::tr("acs_hy_cross"), s4));
+    m_hyCross = new QLineEdit(s4);
+    m_hyCross->setPlaceholderText(I18n::tr("acs_hy_cross_ph"));
+    m_hyCross->setMaximumWidth(120);
+    cr->addWidget(m_hyCross);
+    cr->addWidget(new QLabel(I18n::tr("acs_hy_cross_note"), s4), 1);
+    s4->vbox()->addLayout(cr);
+
+    auto *hr = new QHBoxLayout();
+    m_hyRun = new QPushButton(I18n::tr("acs_hy_run"), s4);
+    m_hyAssign = new QPushButton(I18n::tr("acs_hy_assign"), s4);
+    m_hyAssign->setEnabled(false);
+    hr->addWidget(m_hyRun);
+    hr->addWidget(m_hyAssign);
+    hr->addStretch(1);
+    s4->vbox()->addLayout(hr);
+
+    m_hyResult = new QLabel(s4);
+    m_hyResult->setWordWrap(true);
+    m_hyResult->setVisible(false);
+    s4->vbox()->addWidget(m_hyResult);
+    v->addWidget(s4);
     v->addStretch(1);
 
     // ── 接続 ────────────────────────────────────────────────────────────────
@@ -365,6 +496,19 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             &AcousticSolverTab::startSolver);
     connect(m_btnStop, &QPushButton::clicked, this,
             &AcousticSolverTab::stopSolver);
+
+    // ハイブリッド合成
+    for (QLineEdit *e : { m_hyLow, m_hyHigh, m_hyOut })
+        connect(e, &QLineEdit::textChanged, this,
+                [this](const QString &) { updateHybridUi(); });
+    connect(m_hyRun, &QPushButton::clicked, this,
+            &AcousticSolverTab::buildHybrid);
+    connect(m_hyAssign, &QPushButton::clicked, this, [this] {
+        if (m_hyLastOut.isEmpty()) return;
+        m_p->operaAcoustic().rirPath = m_hyLastOut;
+        m_p->touch();
+        emit rirAssigned(m_hyLastOut);   // 実測RIR分析タブへも即反映
+    });
 
     // ランナーからの通知
     connect(m_runner, &AcousticRunner::logLine, this, [this](const QString &l) {
@@ -425,6 +569,9 @@ void AcousticSolverTab::refresh()
     m_extGroup->setVisible(ext);
     if (ext) updateResolution();
     m_updating = false;
+    // 低域 RIR の既定 (直近のソルバー結果) と実行可否を更新する。
+    // m_updating を解いた後に呼ぶ (中でウィジェットを触るため)。
+    updateHybridUi();
 }
 
 void AcousticSolverTab::updateResolution()
@@ -511,4 +658,104 @@ void AcousticSolverTab::startSolver()
 void AcousticSolverTab::stopSolver()
 {
     m_runner->stop();
+}
+
+// ── ハイブリッド RIR 合成 ───────────────────────────────────────────────────
+void AcousticSolverTab::updateHybridUi()
+{
+    if (!m_hyRun) return;
+    // 低域が空なら直近のソルバー結果を既定にする (毎回選ばせない)
+    if (m_hyLow->text().trimmed().isEmpty() &&
+        !m_p->operaAcoustic().rirPath.trimmed().isEmpty())
+        m_hyLow->setText(m_p->operaAcoustic().rirPath);
+
+    const QString low = m_hyLow->text().trimmed();
+    const QString high = m_hyHigh->text().trimmed();
+    QString why;
+    if (low.isEmpty() || !QFileInfo::exists(low))
+        why = I18n::tr("acs_hy_need_low");
+    else if (high.isEmpty() || !QFileInfo::exists(high))
+        why = I18n::tr("acs_hy_need_high");
+    m_hyRun->setEnabled(why.isEmpty());
+    m_hyRun->setToolTip(why);
+
+    // 出力先の既定は低域 RIR と同じ場所の hybrid_rir.wav
+    if (m_hyOut->text().trimmed().isEmpty() && !low.isEmpty()) {
+        const QFileInfo fi(low);
+        m_hyOut->setText(
+            QDir(fi.absolutePath()).absoluteFilePath(
+                QStringLiteral("hybrid_rir.wav")));
+    }
+}
+
+void AcousticSolverTab::buildHybrid()
+{
+    using namespace ofd::acoustics;
+    const QString lowPath = m_hyLow->text().trimmed();
+    const QString highPath = m_hyHigh->text().trimmed();
+    QString outPath = m_hyOut->text().trimmed();
+    if (outPath.isEmpty()) {
+        const QFileInfo fi(lowPath);
+        outPath = QDir(fi.absolutePath()).absoluteFilePath(
+            QStringLiteral("hybrid_rir.wav"));
+        m_hyOut->setText(outPath);
+    }
+
+    const auto fail = [this](const QString &msg) {
+        m_hyResult->setText(I18n::tr("acs_hy_failed").arg(msg));
+        m_hyResult->setVisible(true);
+        m_hyAssign->setEnabled(false);
+    };
+
+    const AcousticResult<AudioBuffer> low = QtAcousticAdapter::readWav(lowPath);
+    if (!low.success())
+        return fail(QStringLiteral("low: ") +
+                    QString::fromStdString(low.message()));
+    const AcousticResult<AudioBuffer> high =
+        QtAcousticAdapter::readWav(highPath);
+    if (!high.success())
+        return fail(QStringLiteral("high: ") +
+                    QString::fromStdString(high.message()));
+
+    // FDTD 側の metadata.json から有効帯域と音源パルスを取る (無ければ
+    // 逆フィルタを行わず、その旨を warning として出す — 黙って進めない)
+    const QtAcousticAdapter::SolverMetadata meta =
+        QtAcousticAdapter::metadataForRir(lowPath);
+    HybridRirConfig cfg;
+    cfg.fdtdFmaxHz = meta.sourceFmaxHz;
+    cfg.sourceSigmaS = meta.sourceSigmaS;
+    cfg.sourceT0S = meta.sourceT0S;
+    bool okCross = false;
+    const double cross = m_hyCross->text().trimmed().toDouble(&okCross);
+    if (okCross && cross > 0.0) cfg.crossoverHz = cross;
+    if (!(cfg.crossoverHz > 0.0) && !(cfg.fdtdFmaxHz > 0.0))
+        return fail(I18n::tr("acs_hy_no_cross"));
+
+    HybridRirInfo info;
+    const AcousticResult<AudioBuffer> mix =
+        buildHybridRir(low.value(), high.value(), cfg, &info);
+    if (!mix.success())
+        return fail(QString::fromStdString(mix.message()));
+
+    const AcousticResult<bool> w =
+        writeWavFile(outPath.toStdString(), mix.value());
+    if (!w.success())
+        return fail(QString::fromStdString(w.message()));
+
+    QStringList lines;
+    lines << I18n::tr("acs_hy_done")
+                 .arg(outPath,
+                      QString::number(info.crossoverHz, 'f', 1),
+                      QString::number(info.outputRateHz, 'f', 0));
+    lines << I18n::tr("acs_hy_detail")
+                 .arg(QString::number(info.fdtdGainDb, 'f', 2),
+                      I18n::tr(info.deconvolved ? "acs_hy_deconv_yes"
+                                                : "acs_hy_deconv_no"),
+                      QString::number(qulonglong(info.filterLength)));
+    for (const std::string &s : info.warnings)
+        lines << QStringLiteral("• ") + QString::fromStdString(s);
+    m_hyResult->setText(lines.join(QStringLiteral("\n")));
+    m_hyResult->setVisible(true);
+    m_hyLastOut = outPath;
+    m_hyAssign->setEnabled(true);
 }

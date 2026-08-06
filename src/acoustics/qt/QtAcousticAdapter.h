@@ -78,6 +78,33 @@ public:
         RirResampleNote() : resampled(false), fromHz(0.0), toHz(0.0) {}
     };
 
+    // ── ソルバー metadata.json (ADR-0007 契約) の読み取り ──────────────────
+    // RIR の**物理的に有効な帯域**は fs/2 ではなく、格子分解能で決まる
+    // fmax = c/(10·dx) (OpenAcoustics)。この値と音源パルス (σ, t0) が
+    // metadata.json に出ているので、帯域の明示とハイブリッド合成の
+    // 逆フィルタに使う。欠落キーは 0 のまま (valid は必須キーの有無で判定)。
+    struct SolverMetadata {
+        bool    valid;          // metadata.json を読めて sample_rate があった
+        double  sampleRateHz;   // "sample_rate"
+        double  sourceFmaxHz;   // "source.fmax_hz" — 有効帯域の上限
+        double  sourceSigmaS;   // "source.sigma_s" — ガウシアン微分パルス
+        double  sourceT0S;      // "source.t0_s"    — 音源の遅延
+        double  gridDxM;        // "grid.dx_m"
+        double  tSabineS;       // "t_sabine_s" (-1 = 無限大)
+        QString solver;         // "solver"
+        SolverMetadata()
+            : valid(false), sampleRateHz(0.0), sourceFmaxHz(0.0),
+              sourceSigmaS(0.0), sourceT0S(0.0), gridDxM(0.0),
+              tSabineS(0.0), solver() {}
+    };
+
+    // metadata.json を直接読む
+    static SolverMetadata readSolverMetadata(const QString &metadataPath);
+    // rir.wav と同じディレクトリの metadata.json を探して読む
+    // (ADR-0007 の契約でソルバーは両方を同じ作業ディレクトリへ出す)。
+    // 見つからなければ valid = false のまま返す (実測 RIR など)。
+    static SolverMetadata metadataForRir(const QString &rirPath);
+
     // dry WAV × rir WAV を畳み込み、outputPath に float32 WAV で書き出す。
     // gainMode: 0=そのまま 1=推奨ゲイン (suggestedGainDb) を適用。
     // gainMode=1 のとき、返す ConvolutionInfo の outputPeak /

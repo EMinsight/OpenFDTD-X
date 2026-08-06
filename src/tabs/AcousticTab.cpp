@@ -1036,8 +1036,9 @@ void AcousticTab::runConvolve()
                             I18n::tr("t_auralization"));
     // RIR の fs の注記 (変換した事実 + 帯域が足りない場合の警告)。
     // 可聴化タブと同じ文言を tabhelp から取る。
-    const QStringList fsNotes =
-        tabhelp::rirSampleRateNotes(note.fromHz, note.toHz);
+    const QStringList fsNotes = tabhelp::rirSampleRateNotes(
+        note.fromHz, note.toHz,
+        QtAcousticAdapter::metadataForRir(s.rirPath).sourceFmaxHz);
     if (!fsNotes.isEmpty())
         done += QStringLiteral("\n\n") + fsNotes.join(QStringLiteral("\n\n"));
     QMessageBox::information(this, I18n::tr("ac2_convolve"), done);
