@@ -4,6 +4,10 @@
 // コピーされていたものをここへ 1 箇所に集約する (.claude/rules/gui.md:
 // 「タブ間で共有できるヘルパーは既存タブからコピーせず共有ヘッダへ抽出」)。
 #pragma once
+#include "../audio/AudioEditEngine.h"   // SourcePrep
+#include "../acoustics/qt/QtAcousticAdapter.h"
+#include "../core/Project.h"            // AcousticOpts
+
 #include <QColor>
 #include <QPointF>
 #include <QString>
@@ -18,6 +22,26 @@ class QWidget;
 
 namespace ofd {
 namespace tabhelp {
+
+// 音源モデリングタブの入力信号設定 (.ofdx acoustic.source_wav) →
+// AudioEditEngine の前処理パラメータ。音源モデリングタブ (プレビュー) と
+// 可聴化タブ (レンダリング) が同じ変換を使うために共有する。
+audioedit::SourcePrep sourcePrep(const AcousticOpts &a);
+
+// ドライ音源へ前処理を掛けてから畳み込む。可聴化の 3 経路 (単発 / 一括 /
+// 音響タブ) が同じ変換を通るように 1 箇所へ集約する。prep が既定
+// (isIdentity) なら読み込んだバッファをそのまま畳み込むので、従来の
+// QtAcousticAdapter::convolveFiles と結果はビット一致する。
+// outPrepped には前処理を適用したかを入れる (UI が必ず明示するため)。
+acoustics::AcousticResult<acoustics::ConvolutionInfo>
+convolveWithPrep(const QString &dryPath, const QString &rirPath,
+                 const QString &outputPath, int gainMode,
+                 const audioedit::SourcePrep &prep,
+                 bool *outPrepped = nullptr,
+                 std::vector<double> *outDry = nullptr,
+                 std::vector<double> *outWet = nullptr,
+                 double *outSampleRate = nullptr,
+                 QtAcousticAdapter::RirResampleNote *outResample = nullptr);
 
 // 品質トークン ("valid" / "warning" / それ以外=invalid) → バッジ文字列
 QString qualityBadge(const QString &token);

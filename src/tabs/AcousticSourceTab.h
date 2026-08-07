@@ -12,6 +12,7 @@
 #include <QScrollArea>
 #include <QVector>
 #include "../core/Project.h"   // AcousticSourceRow (音源リストの行)
+#include "../audio/AudioEditEngine.h"   // SourcePrep (入力信号の前処理)
 
 class QCheckBox;
 class QComboBox;
@@ -75,6 +76,7 @@ public:
 private slots:
     void refresh();              // model → widgets
     void onDomainChanged();      // 音響 ⇔ 水中 で音源リスト等を切替
+    void applyWavPrep();         // WAV 前処理 widgets → model (+ プレビュー再計算)
 
 private:
     void apply();
@@ -84,6 +86,7 @@ private:
     QWidget *buildArrayPage();
     QWidget *buildAuralPage();
     bool isUnderwater() const;
+    audioedit::SourcePrep wavPrep() const;   // モデル → 前処理設定
     // 音源リスト (Project::acoustic().sources / underwater().sources) と
     // 表の同期。ドメインで対象リストが切り替わる。
     QVector<AcousticSourceRow> &sourceList();
@@ -119,6 +122,10 @@ private:
     // signal
     QComboBox    *m_sigKind;
     QLineEdit    *m_wavFile;
+    // 入力信号の前処理 (.ofdx acoustic.source_wav の View)
+    QLineEdit    *m_wavTrim0 = nullptr, *m_wavTrim1 = nullptr;
+    QLineEdit    *m_wavGain = nullptr, *m_wavHpfHz = nullptr;
+    QCheckBox    *m_wavHpf = nullptr;
     QTableWidget *m_libTable;
     MiniPlot     *m_wavePlot;
     QLabel       *m_wavStats = nullptr;    // RMS/Peak/Crest (実計算後に更新)

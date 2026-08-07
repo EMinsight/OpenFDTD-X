@@ -423,6 +423,16 @@ struct AcousticOpts {
     // は単一音源 (srcX_m/srcY_m/srcZ_m/srcSPL_dB) を使うため、この一覧は
     // 現状「配置の記録」であり計算には渡されない (タブに注記あり)。
     QVector<AcousticSourceRow> sources = defaultAcousticSources();
+
+    // ── 入力信号 (WAV) の前処理 (.ofdx "acoustic.source_wav" — 追加キー。
+    //    既定のままならキー自体を書かないので旧ファイルとバイト一致) ──
+    // AcousticSourceTab の「入力信号」ページの設定で、波形プレビューと
+    // 可聴化へ渡すドライ音源の両方に効く (audio/AudioEditEngine::prepareSource)。
+    double  wavTrimStart_s = 0.0;   // 切り出し開始 [s]
+    double  wavTrimEnd_s   = 0.0;   // 切り出し終了 [s] (<= start なら全長)
+    double  wavGain_dB     = 0.0;   // ゲイン [dB]
+    bool    wavHighPass    = false; // ハイパス
+    double  wavHighPassHz  = 80.0;  // カットオフ [Hz]
 };
 
 // ── 実測 RIR 分析 (RirAnalysisTab, .ofdx "acoustic/opera_analysis") ─────────

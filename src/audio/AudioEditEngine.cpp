@@ -892,6 +892,41 @@ std::vector<SpectrumPoint> spectrum(const AudioBuffer &in, std::size_t a,
     return pts;
 }
 
+// ── 無響録音の前処理 ────────────────────────────────────────────────────────
+AudioBuffer prepareSource(const AudioBuffer &in, const SourcePrep &p)
+{
+    if (p.isIdentity()) return in;          // 何もしない設定は入力のまま
+    if (in.channels.empty() || !(in.sampleRateHz > 0.0)) return in;
+
+    AudioBuffer out = in;
+
+    // ① トリム (指定が有効なときだけ)
+    if (p.trimEndSec > p.trimStartSec) {
+        const double fs = in.sampleRateHz;
+        const std::size_t n = in.channels[0].size();
+        double a0 = p.trimStartSec * fs;
+        double z0 = p.trimEndSec * fs;
+        if (a0 < 0.0) a0 = 0.0;
+        if (z0 < 0.0) z0 = 0.0;
+        std::size_t a = (a0 >= double(n)) ? n : std::size_t(a0);
+        std::size_t z = (z0 >= double(n)) ? n : std::size_t(z0);
+        // 範囲が信号の外に出た場合は切らない (空バッファを作らない)
+        if (z > a) out = trimToRange(out, a, z);
+    }
+
+    // ② ハイパス (RBJ biquad, Q = 1/√2 = Butterworth)
+    if (p.highPass && p.highPassHz > 0.0
+        && p.highPassHz < 0.5 * out.sampleRateHz) {
+        out = applyBiquad(out, BiquadKind::HighPass, p.highPassHz,
+                          0.70710678118654752, 0.0);
+    }
+
+    // ③ ゲイン (全範囲)
+    if (p.gainDb != 0.0) out = gainRange(out, 0, 0, p.gainDb);
+
+    return out;
+}
+
 LevelMetrics analyzeLevels(const AudioBuffer &in, std::size_t a,
                            std::size_t z)
 {

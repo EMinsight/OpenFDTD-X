@@ -1011,10 +1011,12 @@ void AcousticTab::runConvolve()
         m_p->touch();
     }
     QtAcousticAdapter::RirResampleNote note;
-    const AcousticResult<ConvolutionInfo> res =
-        QtAcousticAdapter::convolveFiles(s.auralizationDryFile, s.rirPath,
-                                         outPath, s.auralizationGainMode,
-                                         nullptr, nullptr, nullptr, &note);
+    // 可聴化タブと同じ前処理 (音源モデリングタブのトリム/HPF/ゲイン) を通す
+    bool prepped = false;
+    const AcousticResult<ConvolutionInfo> res = tabhelp::convolveWithPrep(
+        s.auralizationDryFile, s.rirPath, outPath, s.auralizationGainMode,
+        tabhelp::sourcePrep(m_p->acoustic()), &prepped,
+        nullptr, nullptr, nullptr, &note);
     if (!res.success()) {
         // fs が不正で自動変換もできない場合のみここに来る
         // (単なる不一致は RIR のリサンプリングで続行 — 可聴化タブと同じ)
@@ -1041,5 +1043,7 @@ void AcousticTab::runConvolve()
         QtAcousticAdapter::metadataForRir(s.rirPath).sourceFmaxHz);
     if (!fsNotes.isEmpty())
         done += QStringLiteral("\n\n") + fsNotes.join(QStringLiteral("\n\n"));
+    if (prepped)   // 黙って音源を加工しない
+        done += QStringLiteral("\n\n") + I18n::tr("aur_src_prep_note");
     QMessageBox::information(this, I18n::tr("ac2_convolve"), done);
 }

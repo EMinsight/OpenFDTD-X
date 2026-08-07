@@ -131,6 +131,19 @@ public:
                   std::vector<double> *outWet = nullptr,
                   double *outSampleRate = nullptr,
                   RirResampleNote *outResample = nullptr);
+
+    // 読み込み済みバッファ版。呼び出し側がドライ音源へ前処理を掛けてから
+    // 畳み込みたいときに使う (音源モデリングタブのトリム/HPF/ゲイン)。
+    // convolveFiles は WAV を読んでこれへ委譲するだけなので、同じ入力なら
+    // 両者の結果は完全に一致する (selftest で検証)。
+    static acoustics::AcousticResult<acoustics::ConvolutionInfo>
+    convolveBuffers(const acoustics::AudioBuffer &dry,
+                    const acoustics::AudioBuffer &rir,
+                    const QString &outputPath, int gainMode,
+                    std::vector<double> *outDry = nullptr,
+                    std::vector<double> *outWet = nullptr,
+                    double *outSampleRate = nullptr,
+                    RirResampleNote *outResample = nullptr);
 };
 
 } // namespace ofd
