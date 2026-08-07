@@ -12,6 +12,7 @@
 #pragma once
 #include <QWidget>
 #include "core/Domain.h"
+#include "io/KernelResultReader.h"
 
 class QDragEnterEvent;
 class QDragMoveEvent;
@@ -38,6 +39,9 @@ public:
 
     Viewport3D *viewport() const { return m_viewport; }
     EvCanvas   *evCanvas() const { return m_ev; }   // カーネル作図の画面
+    // ポスト表示 (ev を介さず far2d.log / near2d.log を直接描く)。
+    // 作業ディレクトリを渡すと読み込んで表示する。空なら未読込表示に戻す。
+    void loadPostMaps(const QString &workdir);
     PlotPanel  *plotPanel() const { return m_plot; }
 
     void setDomain(Domain d);
@@ -104,6 +108,10 @@ private:
     QTabBar        *m_tabs;
     QStackedWidget *m_stack;
     EvCanvas       *m_ev = nullptr;
+    FieldHeatmap   *m_post = nullptr;     // ポスト表示のマップ
+    QComboBox      *m_postPick = nullptr; // どのマップを見るか
+    QLabel         *m_postInfo = nullptr;
+    QVector<FieldMap> m_postMaps;         // 読み込んだ全マップ
     Viewport3D     *m_viewport;
     FieldHeatmap   *m_heatmap;
     PlotPanel      *m_plot;

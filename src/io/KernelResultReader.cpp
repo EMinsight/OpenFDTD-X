@@ -126,6 +126,169 @@ QVector<FarPattern> readFar1d(const QString &path)
     return text.isEmpty() ? QVector<FarPattern>() : parseFar1d(text);
 }
 
+// ── 2 次元の場マップ ────────────────────────────────────────────────────────
+namespace {
+
+// 行頭が 2 つの整数で始まり、その後に数が並ぶデータ行か
+bool dataRow(const QStringList &t, int minCols)
+{
+    if (t.size() < minCols) return false;
+    bool a = false, b = false;
+    t[0].toInt(&a);
+    t[1].toInt(&b);
+    return a && b;
+}
+
+// 収集した (i, j, 面内座標 2 つ, 値) から FieldMap を組む。
+// 番号は 0 始まりで詰まっている前提 (カーネルの出力がそうなっている)。
+FieldMap buildMap(const QVector<int> &ii, const QVector<int> &jj,
+                  const QVector<double> &aa, const QVector<double> &bb,
+                  const QVector<double> &vv)
+{
+    FieldMap m;
+    if (ii.isEmpty()) return m;
+    int imax = 0, jmax = 0;
+    for (int k = 0; k < ii.size(); ++k) {
+        imax = qMax(imax, ii[k]);
+        jmax = qMax(jmax, jj[k]);
+    }
+    m.rows = imax + 1;
+    m.cols = jmax + 1;
+    if (qsizetype(m.rows) * m.cols != ii.size()) {   // 欠けがある = 格子でない
+        m.rows = m.cols = 0;
+        return m;
+    }
+    m.values.resize(qsizetype(m.rows) * m.cols);
+    m.rowMin = m.rowMax = aa.isEmpty() ? 0.0 : aa[0];
+    m.colMin = m.colMax = bb.isEmpty() ? 0.0 : bb[0];
+    for (int k = 0; k < ii.size(); ++k) {
+        m.values[qsizetype(ii[k]) * m.cols + jj[k]] = vv[k];
+        m.rowMin = qMin(m.rowMin, aa[k]); m.rowMax = qMax(m.rowMax, aa[k]);
+        m.colMin = qMin(m.colMin, bb[k]); m.colMax = qMax(m.colMax, bb[k]);
+    }
+    return m;
+}
+
+} // namespace
+
+QVector<FieldMap> parseFar2d(const QString &text)
+{
+    QVector<FieldMap> out;
+    QVector<int> ii, jj;
+    QVector<double> th, ph, val;
+    double freq = 0.0;
+    QString label;
+
+    const auto flush = [&] {
+        if (ii.isEmpty()) return;
+        FieldMap m = buildMap(ii, jj, th, ph, val);
+        if (m.rows > 0) {
+            m.freqHz = freq;
+            m.label = label;
+            m.valueName = QStringLiteral("E-abs[dB]");
+            m.rowAxis = QStringLiteral("theta[deg]");
+            m.colAxis = QStringLiteral("phi[deg]");
+            out.push_back(m);
+        }
+        ii.clear(); jj.clear(); th.clear(); ph.clear(); val.clear();
+    };
+
+    for (const QString &raw : text.split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty()) continue;
+        if (line.contains(QLatin1String("frequency"))) {
+            flush();
+            label = line;
+            const int eq = line.lastIndexOf(QLatin1Char('='));
+            if (eq >= 0) freq = line.mid(eq + 1).trimmed().toDouble();
+            continue;
+        }
+        const QStringList t =
+            line.split(QRegularExpression(QStringLiteral("\\s+")),
+                       Qt::SkipEmptyParts);
+        if (!dataRow(t, 5)) continue;    // 列見出しなどは飛ばす
+        ii.push_back(t[0].toInt());
+        jj.push_back(t[1].toInt());
+        th.push_back(t[2].toDouble());
+        ph.push_back(t[3].toDouble());
+        val.push_back(t[4].toDouble());   // E-abs[dB]
+    }
+    flush();
+    return out;
+}
+
+QVector<FieldMap> parseNear2d(const QString &text)
+{
+    QVector<FieldMap> out;
+    QVector<int> ii, jj;
+    QVector<double> xs, ys, zs, val;
+    double freq = 0.0;
+    QString label;
+
+    const auto flush = [&] {
+        if (ii.isEmpty()) return;
+        // 3 座標のうち変化しない軸が断面の法線。残り 2 軸を面内座標にする。
+        const auto spread = [](const QVector<double> &v) {
+            if (v.isEmpty()) return 0.0;
+            double lo = v[0], hi = v[0];
+            for (const double x : v) { lo = qMin(lo, x); hi = qMax(hi, x); }
+            return hi - lo;
+        };
+        const double sx = spread(xs), sy = spread(ys), sz = spread(zs);
+        const QVector<double> *a = &ys, *b = &zs;
+        QString an = QStringLiteral("Y[m]"), bn = QStringLiteral("Z[m]");
+        if (sx <= sy && sx <= sz)      { a = &ys; b = &zs; an = "Y[m]"; bn = "Z[m]"; }
+        else if (sy <= sx && sy <= sz) { a = &xs; b = &zs; an = "X[m]"; bn = "Z[m]"; }
+        else                           { a = &xs; b = &ys; an = "X[m]"; bn = "Y[m]"; }
+
+        FieldMap m = buildMap(ii, jj, *a, *b, val);
+        if (m.rows > 0) {
+            m.freqHz = freq;
+            m.label = label;
+            m.valueName = QStringLiteral("E[V/m]");
+            m.rowAxis = an;
+            m.colAxis = bn;
+            out.push_back(m);
+        }
+        ii.clear(); jj.clear(); xs.clear(); ys.clear(); zs.clear(); val.clear();
+    };
+
+    for (const QString &raw : text.split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty()) continue;
+        if (line.contains(QLatin1String("frequency"))) {
+            flush();
+            label = line;
+            const int eq = line.lastIndexOf(QLatin1Char('='));
+            if (eq >= 0) freq = line.mid(eq + 1).trimmed().toDouble();
+            continue;
+        }
+        const QStringList t =
+            line.split(QRegularExpression(QStringLiteral("\\s+")),
+                       Qt::SkipEmptyParts);
+        if (!dataRow(t, 6)) continue;
+        ii.push_back(t[0].toInt());
+        jj.push_back(t[1].toInt());
+        xs.push_back(t[2].toDouble());
+        ys.push_back(t[3].toDouble());
+        zs.push_back(t[4].toDouble());
+        val.push_back(t[5].toDouble());   // E[V/m]
+    }
+    flush();
+    return out;
+}
+
+QVector<FieldMap> readFar2d(const QString &path)
+{
+    const QString t = readAll(path);
+    return t.isEmpty() ? QVector<FieldMap>() : parseFar2d(t);
+}
+QVector<FieldMap> readNear2d(const QString &path)
+{
+    const QString t = readAll(path);
+    return t.isEmpty() ? QVector<FieldMap>() : parseNear2d(t);
+}
+
 // ── 熱解析レイヤの診断 ──────────────────────────────────────────────────────
 // 書式はカーネル (sol/solve.c) の sprintf そのもの:
 //   Thermal: dissipated[%d] = %.6e (f=%.6e Hz)

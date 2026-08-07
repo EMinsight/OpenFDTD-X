@@ -37,6 +37,9 @@
 using namespace ofd;
 
 namespace {
+// dB マップの表示ダイナミックレンジ [dB] (最大からこれだけ下まで)
+const double kPostDbRange = 40.0;
+
 const bool s_i18n = [] {
     ofd::I18n::reg("vp_3d",      "🧊 3D シーン",   "🧊 3D scene");
     ofd::I18n::reg("vp_2d",      "📐 2D 断面",     "📐 2D slice");
@@ -49,6 +52,20 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_plot",    "📊 結果プロット", "📊 Result plot");
     ofd::I18n::reg("vp_mesh",    "📏 メッシュ表示", "📏 Mesh view");
     ofd::I18n::reg("vp_ev",      "🖼 カーネル作図", "🖼 Kernel figures");
+    ofd::I18n::reg("vp_post",    "🗺 ポスト表示",   "🗺 Post view");
+    ofd::I18n::reg("vp_post_pick", "表示するマップ", "Map");
+    ofd::I18n::reg("vp_post_none",
+        "ポストのデータ出力がありません。ポスト(2) で遠方界 (far2d) または "
+        "近傍界 (near2d) を有効にして「一括 (計算+ポスト)」を実行してください。"
+        "この画面は ev2d / ev3d を使わず far2d.log / near2d.log を直接読みます。",
+        "No post data files. Enable the 2-D far field (far2d) or near field "
+        "(near2d) on Post-Proc (2) and run \"Solver + post\". This view reads "
+        "far2d.log / near2d.log directly, without ev2d / ev3d.");
+    ofd::I18n::reg("vp_post_info",
+        "%1 — %2 (%3 × %4)  %5: %6 〜 %7  /  %8: %9 〜 %10  最大 %11",
+        "%1 — %2 (%3 x %4)  %5: %6 to %7  /  %8: %9 to %10  max %11");
+    ofd::I18n::reg("vp_post_far", "遠方界 far2d", "Far field (far2d)");
+    ofd::I18n::reg("vp_post_near", "近傍界 near2d", "Near field (near2d)");
     ofd::I18n::reg("vp_reset",   "🔄 Reset",       "🔄 Reset");
     ofd::I18n::reg("vp_select",  "選択 (Q)",       "Select (Q)");
     ofd::I18n::reg("vp_move",    "平行移動 (G)",   "Move (G)");
@@ -127,6 +144,8 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     // カーネルの作図出力 (ev.ev2) をアプリ内に描く画面。
     // 外部ビューワー (ev2d/ev3d) もブラウザも要らずに図が見られる。
     m_tabs->addTab(I18n::tr("vp_ev"));
+    // ポスト表示: ev2d / ev3d を介さず far2d.log / near2d.log を直接描く
+    m_tabs->addTab(I18n::tr("vp_post"));
     v->addWidget(m_tabs);
 
     // ── ビューポートツールバー (3D シーンのときだけ有効) ──
@@ -280,6 +299,62 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     evPrev->setEnabled(false);
     evNext->setEnabled(false);
     m_stack->addWidget(evWrap);
+
+    // ── ポスト表示 (ev を使わない場マップ) ──
+    auto *postWrap = new QWidget(m_stack);
+    auto *pv = new QVBoxLayout(postWrap);
+    pv->setContentsMargins(0, 0, 0, 0);
+    pv->setSpacing(2);
+    auto *pbar = new QWidget(postWrap);
+    auto *ph2 = new QHBoxLayout(pbar);
+    ph2->setContentsMargins(6, 0, 6, 0);
+    ph2->addWidget(new QLabel(I18n::tr("vp_post_pick"), pbar));
+    m_postPick = new QComboBox(pbar);
+    m_postPick->setMinimumWidth(220);
+    ph2->addWidget(m_postPick);
+    ph2->addStretch(1);
+    pv->addWidget(pbar);
+    m_post = new FieldHeatmap(postWrap);
+    pv->addWidget(m_post, 1);
+    m_postInfo = new QLabel(I18n::tr("vp_post_none"), postWrap);
+    m_postInfo->setWordWrap(true);
+    m_postInfo->setStyleSheet("font-size:11px; color:palette(mid);");
+    pv->addWidget(m_postInfo);
+    connect(m_postPick, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int i) {
+        if (i < 0 || i >= m_postMaps.size()) return;
+        const FieldMap &m = m_postMaps[i];
+        double hi = m.values.isEmpty() ? 0.0 : m.values[0];
+        for (const double v : m.values) hi = qMax(hi, v);
+
+        // dB 値のマップは下限を切って表示する。far2d は放射のヌル方向で
+        // -240 dB まで落ちるので、そのまま色に割り当てると最大付近の
+        // 数 dB が 1 色に潰れて何も読めない (アンテナパターンの慣用に
+        // 合わせて最大 -40 dB を下限にする)。線形値 (E[V/m]) は 0 が
+        // 意味のある下限なのでそのまま。
+        // FieldHeatmap は **0..1 に正規化済み** の値を受け取り、そのまま
+        // jet() に渡す。ここで [lo, hi] → [0, 1] に写す。
+        const bool isDb = m.valueName.contains(QLatin1String("dB"));
+        double lo = m.values.isEmpty() ? 0.0 : m.values[0];
+        for (const double v : m.values) lo = qMin(lo, v);
+        if (isDb) lo = hi - kPostDbRange;       // dB は下限を切る
+        else      lo = qMin(lo, 0.0);           // 線形は 0 を下限に含める
+        const double span = (hi > lo) ? (hi - lo) : 1.0;
+        QVector<double> disp = m.values;
+        for (double &v : disp) v = qBound(0.0, (v - lo) / span, 1.0);
+        // FieldHeatmap は (cells, cols, rows) を取る
+        m_post->setData(disp, m.cols, m.rows);
+        m_post->setTitle(m_postPick->itemText(i)
+                         + (isDb ? QStringLiteral("  (%1 dB range)")
+                                       .arg(kPostDbRange, 0, 'g', 2)
+                                 : QString()));
+        m_postInfo->setText(I18n::tr("vp_post_info")
+            .arg(m.label, m.valueName).arg(m.rows).arg(m.cols)
+            .arg(m.rowAxis).arg(m.rowMin, 0, 'g', 4).arg(m.rowMax, 0, 'g', 4)
+            .arg(m.colAxis).arg(m.colMin, 0, 'g', 4).arg(m.colMax, 0, 'g', 4)
+            .arg(hi, 0, 'g', 5));
+    });
+    m_stack->addWidget(postWrap);
     v->addWidget(m_stack, 1);
 
     // ── 配線 ──
@@ -609,4 +684,41 @@ void CenterPane::updateOverlayUi()
     m_overlayCheck->setEnabled(ok);
     m_overlayCheck->setToolTip(ok ? I18n::tr("vp_overlay_tip")
                                   : I18n::tr("vp_overlay_none"));
+}
+
+// ── ポスト表示 (ev2d / ev3d を使わない) ────────────────────────────────────
+// ofd_post が書く far2d.log / near2d.log をそのまま読んで場マップとして描く。
+// ev.ev2 も外部ビューワーも要らないので、作図出力を切っていても結果が見える。
+void CenterPane::loadPostMaps(const QString &workdir)
+{
+    if (!m_postPick) return;
+    m_postMaps.clear();
+    m_postPick->clear();
+    if (!workdir.isEmpty()) {
+        const QDir d(workdir);
+        const auto add = [&](const QVector<FieldMap> &ms, const QString &kind) {
+            for (const FieldMap &m : ms) {
+                if (!m.isValid()) continue;
+                m_postMaps.push_back(m);
+                m_postPick->addItem(QStringLiteral("%1  %2")
+                    .arg(kind, m.label.isEmpty()
+                                   ? QStringLiteral("%1 Hz").arg(m.freqHz)
+                                   : m.label));
+            }
+        };
+        add(KernelResultReader::readFar2d(
+                d.filePath(QStringLiteral("far2d.log"))),
+            I18n::tr("vp_post_far"));
+        add(KernelResultReader::readNear2d(
+                d.filePath(QStringLiteral("near2d.log"))),
+            I18n::tr("vp_post_near"));
+    }
+    if (m_postMaps.isEmpty()) {
+        m_post->clearData();
+        m_post->setTitle(QString());
+        m_postInfo->setText(I18n::tr("vp_post_none"));
+        return;
+    }
+    m_postPick->setCurrentIndex(0);
+    emit m_postPick->currentIndexChanged(0);   // 初回描画
 }

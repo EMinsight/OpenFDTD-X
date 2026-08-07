@@ -1108,6 +1108,8 @@ void MainWindow::openProject(const QString &path)
         if (QFileInfo::exists(evp)) ev->load(evp);
         else                        ev->clear();
     }
+    // 同じフォルダのポストデータ (far2d.log / near2d.log) も読む
+    m_center->loadPostMaps(QFileInfo(p).path());
     // 前のプロジェクトの結果を残さない (別プロジェクトの結果断面が
     // そのまま 3D シーンに残るのを防ぐ — .claude/rules/gui.md)
     m_center->clearResultField();
@@ -1685,6 +1687,10 @@ void MainWindow::onRunnerFinished(bool ok)
             // ファイルが無いことが原因なので、それを言う (無言にしない)。
             m_rightDock->appendLog(I18n::tr("log_ev_none"));
         }
+        // ポスト表示 (ev を使わない場マップ) — far2d.log / near2d.log を
+        // 直接読む。作図出力 (ev) の有無とは無関係なので、
+        // 上の if / else とは別に必ず行う。
+        m_center->loadPostMaps(wd.path());
     }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
     // 表示する (他カーネルの実行で過去の CSV を再表示しない)。

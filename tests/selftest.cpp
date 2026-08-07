@@ -2287,6 +2287,90 @@ static void testProjectTemplates()
 // 熱解析レイヤの診断行 (io/KernelResultReader::parseThermal)。
 // 書式はカーネル sol/solve.c の sprintf そのもの。下の固定文字列は実際に
 // ofd を走らせた ofd.log から転記したもの。
+// far2d.log / near2d.log を 2 次元マップとして読む (io/KernelResultReader)。
+// ev2d/ev3d を使わずアプリ内で描くための素データなので、格子の組み立てと
+// 断面法線の判定を固定する。固定文字列は実際に ofd_post を走らせた出力の転記。
+static void testFieldMapReader()
+{
+    g_file = "fieldmap";
+
+    // ── far2d: (theta 番号, phi 番号) の格子 ──
+    const QString far =
+        "frequency[Hz] = 3.00000e+09\n"
+        " No. No. theta[deg] phi[deg]   E-abs[dB]  E-theta[dB]\n"
+        "   0   0       0.0      0.0     -10.0000     -11.0000\n"
+        "   0   1       0.0     90.0      -6.0000     -12.0000\n"
+        "   1   0      90.0      0.0       0.0000     -13.0000\n"
+        "   1   1      90.0     90.0      -3.0000     -14.0000\n";
+    const QVector<FieldMap> f = KernelResultReader::parseFar2d(far);
+    check(f.size() == 1, "fieldmap: one frequency block");
+    check(f[0].isValid() && f[0].rows == 2 && f[0].cols == 2,
+          "fieldmap: far2d grid shape from the two index columns");
+    check(qFuzzyCompare(f[0].freqHz, 3.0e9), "fieldmap: frequency parsed");
+    check(f[0].valueName == QLatin1String("E-abs[dB]")
+          && f[0].rowAxis == QLatin1String("theta[deg]")
+          && f[0].colAxis == QLatin1String("phi[deg]"),
+          "fieldmap: far2d axis and value names");
+    // 行優先で値が入る: [i*cols + j]
+    check(f[0].values[0] == -10.0 && f[0].values[1] == -6.0
+          && f[0].values[2] == 0.0 && f[0].values[3] == -3.0,
+          "fieldmap: far2d values land at (i, j) in row-major order");
+    check(f[0].rowMin == 0.0 && f[0].rowMax == 90.0
+          && f[0].colMin == 0.0 && f[0].colMax == 90.0,
+          "fieldmap: far2d axis ranges");
+
+    // ── near2d: 変化しない軸が断面の法線 ──
+    // X が一定 → 面内は (Y, Z)
+    const QString nearX =
+        "#1 : frequency[Hz] = 1.00000e+09\n"
+        "  No.  No.     X[m]        Y[m]        Z[m]      E[V/m]    Ex[V/m]\n"
+        "    0    0   3.000e-02  -1.000e-02  -2.000e-02  1.000e+00  0.1\n"
+        "    0    1   3.000e-02  -1.000e-02   2.000e-02  2.000e+00  0.1\n"
+        "    1    0   3.000e-02   1.000e-02  -2.000e-02  3.000e+00  0.1\n"
+        "    1    1   3.000e-02   1.000e-02   2.000e-02  4.000e+00  0.1\n";
+    const QVector<FieldMap> nx = KernelResultReader::parseNear2d(nearX);
+    check(nx.size() == 1 && nx[0].isValid() && nx[0].rows == 2
+          && nx[0].cols == 2, "fieldmap: near2d grid shape");
+    check(nx[0].rowAxis == QLatin1String("Y[m]")
+          && nx[0].colAxis == QLatin1String("Z[m]"),
+          "fieldmap: a constant X makes the slice the Y-Z plane");
+    check(nx[0].values[0] == 1.0 && nx[0].values[3] == 4.0,
+          "fieldmap: near2d values");
+    check(nx[0].valueName == QLatin1String("E[V/m]"),
+          "fieldmap: near2d value name");
+
+    // Z が一定 → 面内は (X, Y)
+    const QString nearZ =
+        "frequency[Hz] = 1.00000e+09\n"
+        "    0    0  -1.000e-02  -2.000e-02   5.000e-02  1.0  0.1\n"
+        "    0    1  -1.000e-02   2.000e-02   5.000e-02  2.0  0.1\n"
+        "    1    0   1.000e-02  -2.000e-02   5.000e-02  3.0  0.1\n"
+        "    1    1   1.000e-02   2.000e-02   5.000e-02  4.0  0.1\n";
+    const QVector<FieldMap> nz = KernelResultReader::parseNear2d(nearZ);
+    check(nz.size() == 1 && nz[0].rowAxis == QLatin1String("X[m]")
+          && nz[0].colAxis == QLatin1String("Y[m]"),
+          "fieldmap: a constant Z makes the slice the X-Y plane");
+
+    // ── 複数周波数は別ブロックになる ──
+    const QString two = far + far;
+    check(KernelResultReader::parseFar2d(two).size() == 2,
+          "fieldmap: each frequency heading starts a new block");
+
+    // ── 壊れた入力 ──
+    check(KernelResultReader::parseFar2d(QString()).isEmpty(),
+          "fieldmap: empty input");
+    check(KernelResultReader::parseFar2d(
+              QStringLiteral("frequency[Hz] = 1e9\nno data here\n")).isEmpty(),
+          "fieldmap: a block with no data rows yields nothing");
+    // 格子に欠けがあるものは「格子でない」として捨てる (穴を 0 で埋めない)
+    const QString holed =
+        "frequency[Hz] = 1e9\n"
+        "   0   0   0.0   0.0   -1.0   0.0\n"
+        "   1   1  90.0  90.0   -2.0   0.0\n";
+    check(KernelResultReader::parseFar2d(holed).isEmpty(),
+          "fieldmap: an incomplete grid is rejected, not zero-filled");
+}
+
 static void testThermalReader()
 {
     g_file = "thermal";
@@ -11485,6 +11569,7 @@ int main(int argc, char *argv[])
     testProjectTemplates();
     testAcousticBudgets();
     testKernelResultReader();
+    testFieldMapReader();
     testThermalReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();

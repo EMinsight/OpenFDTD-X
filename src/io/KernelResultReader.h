@@ -48,11 +48,44 @@ struct ThermalPoint {
     double dissipated = 0.0; // 相対値
 };
 
+// 2 次元の場マップ (far2d.log / near2d.log)。ev2d / ev3d を使わずに
+// アプリ内で描くための素データ。
+//
+// far2d.log : "No. No. theta[deg] phi[deg] E-abs[dB] …"
+//             行頭の 2 つ組が (theta 番号, phi 番号)。
+// near2d.log: "No. No. X[m] Y[m] Z[m] E[V/m] …"
+//             2 つ組が面内の格子番号。3 座標のうち **変化しない 1 軸**が
+//             断面の法線で、残り 2 軸が面内座標になる。
+//
+// どちらも 1 ブロック = 1 周波数。周波数見出しの行で区切られる。
+struct FieldMap {
+    QString label;                   // 見出し (周波数など)
+    double  freqHz = 0.0;
+    int     rows = 0, cols = 0;      // rows = 第 1 番号の数, cols = 第 2 番号
+    QVector<double> values;          // rows*cols、行優先
+    QString valueName;               // "E-abs[dB]" / "E[V/m]"
+    QString rowAxis, colAxis;        // 軸名 ("theta[deg]" / "Y[m]" 等)
+    double  rowMin = 0, rowMax = 0, colMin = 0, colMax = 0;
+
+    bool isValid() const
+    {
+        return rows > 0 && cols > 0
+            && values.size() == qsizetype(rows) * qsizetype(cols);
+    }
+};
+
 namespace KernelResultReader {
 
 // <kernel>.log から給電点表を読む (見つからなければ空)
 QVector<FeedSweep> readFeedSweeps(const QString &logPath);
 QVector<FeedSweep> parseFeedSweeps(const QString &text);
+
+// far2d.log / near2d.log を 2 次元マップとして読む (見つからなければ空)。
+// 周波数ブロックごとに 1 つ返す。
+QVector<FieldMap> readFar2d(const QString &path);
+QVector<FieldMap> parseFar2d(const QString &text);
+QVector<FieldMap> readNear2d(const QString &path);
+QVector<FieldMap> parseNear2d(const QString &text);
 
 // <kernel>.log から熱解析の診断行を読む (見つからなければ空)
 QVector<ThermalPoint> readThermal(const QString &logPath);
