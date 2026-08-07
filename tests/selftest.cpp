@@ -5203,6 +5203,121 @@ static void testOceanPageScan()
 // 回路パラメータ抽出 (OpenPEEC) の入力生成と .ofdx 往復
 
 // フォトニック回路 (S 行列) — リング共振器・MZI を解析解と照合する
+static void testPhotonicThermoAndNetlist()
+{
+    g_file = "photonic_thermo";
+    using namespace ofd::optics;
+
+    // ── 熱光学 ──────────────────────────────────────────────────────────
+    // Si の dn/dT = 1.86e-4 /K。25 → 75 ℃ で Δn = 1.86e-4 × 50 = 9.3e-3
+    const double dndT = 1.86e-4;
+    check(std::fabs(thermoOpticNeff(2.44, dndT, 75.0, 25.0) - (2.44 + 9.3e-3))
+              < 1e-12,
+          "thermo: neff(T) = neff0 + dn/dT * (T - T0)");
+    check(thermoOpticNeff(2.44, dndT, 25.0, 25.0) == 2.44,
+          "thermo: no shift at the reference temperature");
+    check(std::fabs(thermoOpticNeff(2.44, dndT, 5.0, 25.0) - (2.44 - 3.72e-3))
+              < 1e-12,
+          "thermo: cooling lowers the index");
+
+    // 共振シフト Δλ = λ · Δn/ng。λ=1550 nm, ng=4.2, ΔT=50 K
+    //   Δλ = 1550 × 9.3e-3 / 4.2 = 3.4321... nm
+    const double dl = thermoOpticShift_nm(1550.0, dndT, 50.0, 4.2);
+    check(std::fabs(dl - 1550.0 * 9.3e-3 / 4.2) < 1e-9,
+          "thermo: resonance shift matches the closed form");
+    check(dl > 0.0, "thermo: heating shifts to longer wavelengths");
+    check(thermoOpticShift_nm(1550.0, dndT, -50.0, 4.2) < 0.0,
+          "thermo: cooling shifts to shorter wavelengths");
+    // ng を与えていない設定では数字を作らない
+    check(thermoOpticShift_nm(1550.0, dndT, 50.0, 0.0) == 0.0,
+          "thermo: no group index means no shift (do not invent one)");
+
+    // 熱光学シフトが実際に共振を動かすこと (掃引で確認 — 閉形式と一致)
+    {
+        RingResonator cold;
+        cold.wg.neff = 2.44; cold.wg.ng = 4.2; cold.wg.lambda0_nm = 1550.0;
+        cold.wg.loss_dBcm = 2.0;
+        cold.radius_um = 5.0; cold.kappa1 = 0.2;
+        RingResonator hot = cold;
+        hot.wg.neff = thermoOpticNeff(2.44, dndT, 75.0, 25.0);
+
+        const ResonatorMetrics mc = analyseSweep(sweepRing(cold, 1540, 1560, 4001));
+        const ResonatorMetrics mh = analyseSweep(sweepRing(hot,  1540, 1560, 4001));
+        check(mc.valid && mh.valid, "thermo: both sweeps resolve a resonance");
+        // 掃引から読んだシフトが閉形式と 5 % 以内で一致する
+        // (共振は離散的なので、最も近い共振どうしを比べる)
+        const double measured = mh.resonance_nm - mc.resonance_nm;
+        check(std::fabs(measured - dl) < 0.05 * dl,
+              "thermo: the swept shift agrees with lambda*dn/ng");
+    }
+
+    // ── ネットリストの経路解決 ──────────────────────────────────────────
+    g_file = "photonic_netlist";
+    const auto L = [](const char *a, const char *b) {
+        return parseLink(a, b);
+    };
+    check(L("LASER1.out", "MZI1.in1").fromNode == "LASER1"
+          && L("LASER1.out", "MZI1.in1").fromPort == "out"
+          && L("LASER1.out", "MZI1.in1").toNode == "MZI1"
+          && L("LASER1.out", "MZI1.in1").toPort == "in1",
+          "net: terminal names split into node and port");
+    check(L("PD1", "PD2").fromPort.empty(),
+          "net: a name without a dot is all node");
+
+    // 直列 3 段 — 始点が 1 つ、終端まで辿れる
+    std::vector<NetLink> chain = { L("LASER1.out", "MZI1.in1"),
+                                   L("MZI1.out1", "RING1.in"),
+                                   L("RING1.drop", "PD1.in") };
+    const std::vector<std::string> src = sourceNodes(chain);
+    check(src.size() == 1 && src[0] == "LASER1",
+          "net: the only node with no input is the source");
+    const NetPath p = tracePath(chain, "LASER1");
+    check(p.complete && p.nodes.size() == 4
+          && p.nodes[0] == "LASER1" && p.nodes[3] == "PD1",
+          "net: a serial chain traces end to end");
+
+    // 分岐は 1 本の経路にできない — 勝手に選ばず理由を返す
+    std::vector<NetLink> fan = { L("LASER1.out", "RING1.in"),
+                                 L("RING1.drop", "PD1.in"),
+                                 L("RING1.thru", "PD2.in") };
+    const NetPath fp = tracePath(fan, "LASER1");
+    check(!fp.complete, "net: a branch is not a single path");
+    check(fp.note.find("branch") != std::string::npos
+          && fp.note.find("RING1") != std::string::npos,
+          "net: the branch point is named in the reason");
+    check(fp.nodes.size() == 2 && fp.nodes[1] == "RING1",
+          "net: the path stops at the branch, it does not guess");
+
+    // 閉路は打ち切る (無限ループにしない)
+    std::vector<NetLink> loop = { L("A.out", "B.in"), L("B.out", "C.in"),
+                                  L("C.out", "A.in") };
+    const NetPath lp = tracePath(loop, "A");
+    check(!lp.complete && lp.note.find("loop") != std::string::npos,
+          "net: a cycle is detected and reported");
+    check(lp.nodes.size() == 3, "net: the cycle path stops before repeating");
+    check(sourceNodes(loop).empty(),
+          "net: a pure cycle has no source node");
+
+    check(tracePath(chain, std::string()).note.find("no start")
+              != std::string::npos,
+          "net: an empty start is rejected");
+
+    // 出荷時の既定ネットリストがどう解けるかを固定する
+    // (LASER1/LASER2 → MZI1 → RING1 で、RING1 の drop/thru が分岐)
+    std::vector<NetLink> def;
+    for (const PhotonicNetRow &r : ofd::defaultPhotonicNetlist())
+        def.push_back(parseLink(r.from.toStdString(), r.to.toStdString()));
+    const std::vector<std::string> dsrc = sourceNodes(def);
+    check(dsrc.size() == 2 && dsrc[0] == "LASER1" && dsrc[1] == "LASER2",
+          "net: the shipped default has two laser sources");
+    const NetPath dp = tracePath(def, "LASER1");
+    check(dp.nodes.size() == 3 && dp.nodes[1] == "MZI1"
+          && dp.nodes[2] == "RING1",
+          "net: the default traces LASER1 -> MZI1 -> RING1");
+    check(!dp.complete && dp.note.find("branch at RING1") != std::string::npos,
+          "net: the default stops at the ring's drop/thru branch");
+}
+
 static void testPhotonicCircuit()
 {
     using namespace ofd::optics;
@@ -11123,6 +11238,7 @@ int main(int argc, char *argv[])
     testArrivalIr();
     testCircuitExtraction();
     testPhotonicCircuit();
+    testPhotonicThermoAndNetlist();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

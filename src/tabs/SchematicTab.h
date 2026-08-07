@@ -36,6 +36,7 @@ public:
 private slots:
     void runCircuitSim();        // 素子 S 行列 → 波長掃引 → 指標
     void refreshNetlist();                        // model → widgets
+    void refreshNetPath();                        // 経路表示を更新
     void onNetItemChanged(QTableWidgetItem *it);  // widgets → model
 
 private:
@@ -61,6 +62,7 @@ private:
 
     // ノイズ・温度効果 / Noise & temperature
     QCheckBox    *m_shot, *m_thermal, *m_rin, *m_phase, *m_toShift;
+    QLabel       *m_netPath = nullptr;   // ネットリストから辿った経路
     QLineEdit    *m_temp;
 };
 

@@ -225,5 +225,83 @@ ResonatorMetrics analyseSweep(const std::vector<SweepPoint> &s)
     return m;
 }
 
+// ── 熱光学 ─────────────────────────────────────────────────────────────────
+double thermoOpticNeff(double neff0, double dndT_perK, double T_C, double T0_C)
+{
+    return neff0 + dndT_perK * (T_C - T0_C);
+}
+
+double thermoOpticShift_nm(double lambda_nm, double dndT_perK, double dT_K,
+                           double ng)
+{
+    // 共振条件 m·λ = n_eff·L を温度で微分すると Δλ/λ = Δn_eff / n_g。
+    // ng <= 0 は分散を与えていない設定 — シフトを 0 にする (でっち上げない)。
+    if (!(ng > 0.0) || !(lambda_nm > 0.0)) return 0.0;
+    return lambda_nm * (dndT_perK * dT_K) / ng;
+}
+
+// ── ネットリストの経路解決 ─────────────────────────────────────────────────
+NetLink parseLink(const std::string &from, const std::string &to)
+{
+    const auto split = [](const std::string &s,
+                          std::string &node, std::string &port) {
+        const std::size_t dot = s.find('.');
+        if (dot == std::string::npos) { node = s; port.clear(); }
+        else { node = s.substr(0, dot); port = s.substr(dot + 1); }
+    };
+    NetLink l;
+    split(from, l.fromNode, l.fromPort);
+    split(to,   l.toNode,   l.toPort);
+    return l;
+}
+
+std::vector<std::string> sourceNodes(const std::vector<NetLink> &links)
+{
+    std::vector<std::string> froms, tos, out;
+    for (const NetLink &l : links) {
+        froms.push_back(l.fromNode);
+        tos.push_back(l.toNode);
+    }
+    for (const std::string &f : froms) {
+        if (std::find(tos.begin(), tos.end(), f) != tos.end()) continue;
+        if (std::find(out.begin(), out.end(), f) != out.end()) continue;
+        out.push_back(f);
+    }
+    return out;
+}
+
+NetPath tracePath(const std::vector<NetLink> &links, const std::string &start)
+{
+    NetPath p;
+    if (start.empty()) { p.note = "no start node"; return p; }
+    p.nodes.push_back(start);
+
+    std::string cur = start;
+    for (;;) {
+        // cur から出る枝を数える
+        const NetLink *next = nullptr;
+        int fanout = 0;
+        for (const NetLink &l : links)
+            if (l.fromNode == cur) { ++fanout; if (!next) next = &l; }
+
+        if (fanout == 0) { p.complete = true; break; }      // 終端
+        if (fanout > 1) {
+            // 分岐は 1 本の経路にできない — 勝手に選ばない
+            p.note = "branch at " + cur + " (" + std::to_string(fanout)
+                   + " outgoing links)";
+            break;
+        }
+        const std::string &to = next->toNode;
+        // 閉路 (既に通った素子へ戻る) は打ち切る
+        if (std::find(p.nodes.begin(), p.nodes.end(), to) != p.nodes.end()) {
+            p.note = "loop back to " + to;
+            break;
+        }
+        p.nodes.push_back(to);
+        cur = to;
+    }
+    return p;
+}
+
 } // namespace optics
 } // namespace ofd

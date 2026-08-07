@@ -97,5 +97,45 @@ ResonatorMetrics analyseSweep(const std::vector<SweepPoint> &sweep);
 // 解析式による FSR [nm] — FSR = λ²/(ng·L)。検証と設計目安に使う
 double analyticFsr_nm(double lambda_nm, double ng, double length_um);
 
+// ── 熱光学 (thermo-optic) ───────────────────────────────────────────────────
+// Si は dn/dT ≈ 1.86e-4 /K (室温、1550 nm)。温度が上がると屈折率が上がり、
+// 共振は長波長側へ動く。
+//   neff(T) = neff(T0) + (dn/dT)·(T − T0)
+//   Δλ_res  = λ_res · Δn_eff / n_g        (共振条件 m·λ = n_eff·L の微分)
+// ng で割るのは群屈折率が波長依存を含むため (位相屈折率で割ると過大評価)。
+double thermoOpticNeff(double neff0, double dndT_perK, double T_C,
+                       double T0_C = 25.0);
+double thermoOpticShift_nm(double lambda_nm, double dndT_perK, double dT_K,
+                           double ng);
+
+// ── ネットリストの経路解決 ─────────────────────────────────────────────────
+// SchematicTab のネットリスト表 ("LASER1.out" → "MZI1.in1") から、素子の
+// つながりを辿って 1 本の経路にする。回路レベル解析は経路が決まって初めて
+// 掛け算できるので、まずここを解く。
+//
+// 分岐 (同じ素子から 2 本以上出る) は 1 本の経路にできないので、そこで
+// 打ち切って理由を返す — 勝手にどちらかを選んで「つながっている」ことに
+// しない。
+struct NetLink {
+    std::string fromNode, fromPort;   // "LASER1", "out"
+    std::string toNode,   toPort;     // "MZI1",   "in1"
+};
+
+struct NetPath {
+    std::vector<std::string> nodes;   // 通過する素子名 (始点から順)
+    bool        complete = false;     // 終端まで一意に辿れたか
+    std::string note;                 // 辿れなかった理由
+};
+
+// "LASER1.out" のような端子名を素子名とポート名へ割る。
+// ドットが無ければ全体を素子名とし、ポートは空。
+NetLink parseLink(const std::string &from, const std::string &to);
+
+// 入次数 0 の素子 (どこからも入力されない = 始点候補) を返す。
+std::vector<std::string> sourceNodes(const std::vector<NetLink> &links);
+
+// start から辿れるだけ辿る。閉路は検出して打ち切る (無限ループにしない)。
+NetPath tracePath(const std::vector<NetLink> &links, const std::string &start);
+
 } // namespace optics
 } // namespace ofd
