@@ -170,6 +170,12 @@ set(CORE_SOURCES
     src/kernel/Runner.cpp
     src/kernel/Runner.h
 
+    # パラメータを振って同じカーネルを N 回まわす司会進行
+    # (入射角スイープ)。カーネルは 1 実行 1 planewave なので
+    # スイープは GUI 側の役目 — selftest が plan/collect を直接検証する
+    src/kernel/SweepRunner.cpp
+    src/kernel/SweepRunner.h
+
     # 光導波路の断面固有モード (FDE) ソルバ — Qt 非依存。
     # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる
     src/optics/FdeModeSolver.cpp

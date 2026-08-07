@@ -34,6 +34,7 @@
 #include "io/OfdIO.h"
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
+#include "kernel/SweepRunner.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -1845,6 +1846,107 @@ static void testProjectTemplates()
         p.setModified(false);
         emit p.changed();
         check(p.isModified(), "modified: changed() always marks it dirty");
+    }
+
+    // ── 入射角スイープ (kernel/SweepRunner) の純関数部 ──────────────────
+    // カーネルは 1 実行 1 planewave なので、スイープは GUI が N 回まわす。
+    // 実行そのものはカーネルが要るが、値の並び・当て方・集計は純関数なので
+    // ここで固定する。
+    {
+        g_file = "sweep";
+        SweepConfig cfg;
+        cfg.from = 0.0; cfg.to = 180.0; cfg.points = 37;
+        const QVector<double> v = SweepRunner::plan(cfg);
+        check(v.size() == 37, "sweep: point count");
+        check(qFuzzyCompare(v.first(), 0.0) || v.first() == 0.0,
+              "sweep: starts at from");
+        check(qAbs(v.last() - 180.0) < 1e-12, "sweep: ends exactly at to");
+        check(qAbs(v[1] - 5.0) < 1e-12, "sweep: uniform 5-deg step");
+
+        // 逆向き (180 → 0) も同じ規則で並ぶ
+        SweepConfig back;
+        back.from = 180.0; back.to = 0.0; back.points = 5;
+        const QVector<double> bv = SweepRunner::plan(back);
+        check(bv.size() == 5 && qAbs(bv.first() - 180.0) < 1e-12
+              && qAbs(bv.last() - 0.0) < 1e-12, "sweep: descending range");
+
+        // 成立しない設定は空 (1 点は通常実行と同じ / 0 幅は全点同一)
+        SweepConfig one;  one.points = 1;
+        check(SweepRunner::plan(one).isEmpty(), "sweep: 1 point is not a sweep");
+        SweepConfig flat; flat.from = flat.to = 30.0; flat.points = 10;
+        check(SweepRunner::plan(flat).isEmpty(),
+              "sweep: zero-width range is not a sweep");
+
+        // applyPoint: 振った軸だけが変わり、平面波が有効になる
+        Project sp;
+        sp.planewave().enabled = false;
+        sp.planewave().theta = 11.0;
+        sp.planewave().phi = 22.0;
+        SweepRunner::applyPoint(sp, SweepKind::PlaneWaveTheta, 45.0);
+        check(sp.planewave().enabled,
+              "sweep: applyPoint enables the plane wave "
+              "(otherwise every point would run without one)");
+        check(sp.planewave().theta == 45.0 && sp.planewave().phi == 22.0,
+              "sweep: theta sweep leaves phi alone");
+        SweepRunner::applyPoint(sp, SweepKind::PlaneWavePhi, 60.0);
+        check(sp.planewave().theta == 45.0 && sp.planewave().phi == 60.0,
+              "sweep: phi sweep leaves theta alone");
+
+        // ディレクトリ名は 0 詰め 3 桁 (辞書順 = 実行順)
+        check(SweepRunner::pointDirName(0) == QLatin1String("sweep_000")
+              && SweepRunner::pointDirName(12) == QLatin1String("sweep_012")
+              && SweepRunner::pointDirName(345) == QLatin1String("sweep_345"),
+              "sweep: zero-padded dir names sort in run order");
+
+        // 失敗点も CSV に残る (「走ったが結果が無い」ことが読み取れる)
+        QVector<SweepResult> rs;
+        SweepResult a; a.value = 0; a.label = "θ = 0°"; a.ok = true;
+        a.peakEAbs_dB = -3.25; a.hasPeak = true; a.dir = "/tmp/x/sweep_000";
+        SweepResult b; b.value = 90; b.label = "θ = 90°"; b.ok = false;
+        b.dir = "/tmp/x/sweep_001";
+        rs << a << b;
+        const QString csv = SweepRunner::toCsv(rs);
+        const QStringList lines = csv.split('\n', Qt::SkipEmptyParts);
+        check(lines.size() == 3, "sweep: csv has a header plus one row per point");
+        check(lines[0].startsWith("angle_deg,"), "sweep: csv header");
+        check(lines[1].contains("ok") && lines[1].contains("-3.25")
+              && lines[1].contains("sweep_000"), "sweep: csv ok row");
+        check(lines[2].contains("failed"), "sweep: csv keeps failed points");
+
+        // .ofdx 往復 — 既定のままならキーを書かない (旧ファイルとバイト一致)
+        QTemporaryDir sd;
+        check(sd.isValid(), "sweep: temp dir");
+        const QString sPath = sd.filePath("sw.ofd");
+        Project def;
+        QString serr;
+        check(def.save(sPath, &serr), "sweep: default project saved");
+        const QString sidecar = sd.filePath("sw.ofdx");
+        const QByteArray defaultSidecar = [&] {
+            QFile f(sidecar);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }();
+        check(!defaultSidecar.contains("scattering"),
+              "sweep: defaults write no scattering key");
+
+        def.scattering().sweepEnabled = true;
+        def.scattering().sweepAxis = 1;
+        def.scattering().sweepFrom_deg = 10.0;
+        def.scattering().sweepTo_deg = 170.0;
+        def.scattering().sweepPoints = 9;
+        check(def.save(sPath, &serr), "sweep: project with a sweep saved");
+        Project rd;
+        check(rd.load(sPath, &serr), "sweep: reloaded");
+        check(rd.scattering().sweepEnabled && rd.scattering().sweepAxis == 1
+              && rd.scattering().sweepFrom_deg == 10.0
+              && rd.scattering().sweepTo_deg == 170.0
+              && rd.scattering().sweepPoints == 9,
+              "sweep: .ofdx round-trips the sweep settings");
+        check(rd.scattering().sweepValid(), "sweep: reloaded settings are valid");
+
+        // 旧ファイル (scattering キー無し) は既定値になる
+        Project old;
+        check(!old.scattering().sweepEnabled && old.scattering().sweepPoints == 37,
+              "sweep: missing key falls back to the defaults");
     }
 }
 

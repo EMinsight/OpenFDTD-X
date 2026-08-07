@@ -7,10 +7,17 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProgressBar>
+#include <QPushButton>
 #include <QStandardItemModel>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 using namespace ofd;
@@ -46,9 +53,43 @@ const bool s_i18n = [] {
               "Circular polarization is not supported by the kernel "
               "(not implemented)");
     I18n::reg("sct_sweep_notimpl",
-              "▸ 円偏波と入射角スイープはカーネル未対応 (未実装)",
-              "▸ Circular polarization and incidence-angle sweep are not "
-              "supported by the kernel (not implemented)");
+              "▸ 円偏波はカーネル未対応 (未実装)",
+              "▸ Circular polarization is not supported by the kernel "
+              "(not implemented)");
+    // ── 入射角スイープ (kernel/SweepRunner) ──
+    I18n::reg("sct_sweep_axis", "振る角度", "Swept angle");
+    I18n::reg("sct_sweep_how",
+              "カーネルは 1 回の実行につき planewave を 1 組しか受け取らない"
+              "ため、スイープは同じ入力の角度違いを **N 回実行** して行います"
+              "(作業ディレクトリの sweep/sweep_000, 001, … に 1 点ずつ)。"
+              "点数ぶん計算時間がかかります。",
+              "The kernel takes only one planewave per run, so the sweep runs "
+              "the same input N times, one angle per run (into "
+              "sweep/sweep_000, 001, … under the working directory). "
+              "It costs one full solve per point.");
+    I18n::reg("sct_sweep_run", "スイープ実行", "Run sweep");
+    I18n::reg("sct_sweep_stop", "中止", "Stop");
+    I18n::reg("sct_sweep_csv", "CSV 保存", "Save CSV");
+    I18n::reg("sct_sweep_idle", "未実行", "Not run yet");
+    I18n::reg("sct_sweep_running", "実行中 %1 / %2 — %3",
+              "Running %1 / %2 — %3");
+    I18n::reg("sct_sweep_done", "完了 — %1 点", "Done — %1 points");
+    I18n::reg("sct_sweep_failed", "失敗した点があります (%1 / %2 成功)",
+              "Some points failed (%1 of %2 succeeded)");
+    I18n::reg("sct_sweep_need",
+              "スイープには 2 点以上と、始点 ≠ 終点 が要ります。",
+              "A sweep needs at least 2 points, and from must differ from to.");
+    I18n::reg("sct_sweep_col_angle", "角度 [°]", "Angle [deg]");
+    I18n::reg("sct_sweep_col_status", "状態", "Status");
+    I18n::reg("sct_sweep_col_peak", "E-abs ピーク [dB]", "Peak E-abs [dB]");
+    I18n::reg("sct_sweep_col_dir", "出力先", "Output dir");
+    I18n::reg("sct_sweep_ok", "成功", "ok");
+    I18n::reg("sct_sweep_ng", "失敗", "failed");
+    I18n::reg("sct_sweep_nofar",
+              "far1d.log 無し (ポスト(2) で遠方界を有効に)",
+              "no far1d.log (enable the far field on Post-Proc (2))");
+    I18n::reg("sct_sweep_saveto", "スイープ結果を CSV で保存",
+              "Save the sweep results as CSV");
 
     // RCS
     I18n::reg("sct_rcs", "RCS / レーダ断面積", "RCS / Radar cross-section");
@@ -138,8 +179,13 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sInc->form()->addRow(incNote);
 
     m_sweep = new QCheckBox(I18n::tr("sct_sweep"), sInc);
-    tabhelp::markNotImplemented(m_sweep);        // 入射角スイープはカーネル未対応
     sInc->form()->addRow(m_sweep);
+
+    m_sweepAxis = new QComboBox(sInc);
+    m_sweepAxis->addItem(QStringLiteral("θ"));   // index 0
+    m_sweepAxis->addItem(QStringLiteral("φ"));   // index 1
+    m_sweepAxis->setMaximumWidth(70);
+    sInc->form()->addRow(I18n::tr("sct_sweep_axis"), m_sweepAxis);
 
     auto *swRow = new QHBoxLayout();
     m_sweepFrom = numEdit("0", 70, sInc);
@@ -153,7 +199,38 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     swRow->addWidget(new QLabel(I18n::tr("sct_points") + QStringLiteral(")"), sInc));
     swRow->addStretch(1);
     sInc->form()->addRow(I18n::tr("sct_sweep_range"), swRow);
-    // 円偏波・入射角スイープのみ未実装 (θ/φ/偏波は配線済み — 絶対規則 5)
+
+    // スイープが「N 回実行」であることを明示する (点数ぶん時間がかかる)
+    auto *howNote = new QLabel(I18n::tr("sct_sweep_how"), sInc);
+    howNote->setWordWrap(true);
+    howNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sInc->form()->addRow(howNote);
+
+    // 実行 / 進捗 / CSV
+    auto *runRow = new QHBoxLayout();
+    m_sweepRun = new QPushButton(I18n::tr("sct_sweep_run"), sInc);
+    m_sweepCsv = new QPushButton(I18n::tr("sct_sweep_csv"), sInc);
+    m_sweepCsv->setEnabled(false);
+    m_sweepProgress = new QProgressBar(sInc);
+    m_sweepProgress->setVisible(false);
+    runRow->addWidget(m_sweepRun);
+    runRow->addWidget(m_sweepCsv);
+    runRow->addWidget(m_sweepProgress, 1);
+    sInc->form()->addRow(runRow);
+    m_sweepStatus = new QLabel(I18n::tr("sct_sweep_idle"), sInc);
+    m_sweepStatus->setWordWrap(true);
+    sInc->form()->addRow(m_sweepStatus);
+
+    m_sweepTable = new QTableWidget(0, 4, sInc);
+    m_sweepTable->setHorizontalHeaderLabels({
+        I18n::tr("sct_sweep_col_angle"), I18n::tr("sct_sweep_col_status"),
+        I18n::tr("sct_sweep_col_peak"), I18n::tr("sct_sweep_col_dir") });
+    m_sweepTable->horizontalHeader()->setStretchLastSection(true);
+    m_sweepTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_sweepTable->setMinimumHeight(140);
+    sInc->form()->addRow(m_sweepTable);
+
+    // 円偏波のみ未実装 (θ/φ/偏波とスイープは配線済み — 絶対規則 5)
     auto *sweepNote = new QLabel(I18n::tr("sct_sweep_notimpl"), sInc);
     sweepNote->setWordWrap(true);
     sweepNote->setStyleSheet("font-size:11px; color:palette(mid);");
@@ -203,20 +280,65 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
 
+    // ── スイープ実行 ─────────────────────────────────────────────────────
+    m_sweeper = new SweepRunner(this);
+    connect(m_sweeper, &SweepRunner::logLine, this, &ScatteringTab::sweepLog);
+    connect(m_sweeper, &SweepRunner::pointStarted, this,
+            [this](int i, int n, const QString &label) {
+        m_sweepProgress->setRange(0, n);
+        m_sweepProgress->setValue(i);
+        m_sweepStatus->setText(
+            I18n::tr("sct_sweep_running").arg(i + 1).arg(n).arg(label));
+    });
+    connect(m_sweeper, &SweepRunner::pointFinished, this,
+            [this](int, const SweepResult &r) {
+        const int row = m_sweepTable->rowCount();
+        m_sweepTable->insertRow(row);
+        m_sweepTable->setItem(row, 0, tabhelp::roItem(
+            QString::number(r.value, 'g', 6)));
+        m_sweepTable->setItem(row, 1, tabhelp::roItem(
+            r.ok ? I18n::tr("sct_sweep_ok") : I18n::tr("sct_sweep_ng")));
+        // ピークが無いのは「遠方界を出していない」ケース — 空欄にせず理由を出す
+        m_sweepTable->setItem(row, 2, tabhelp::roItem(
+            r.hasPeak ? QString::number(r.peakEAbs_dB, 'f', 3)
+                      : I18n::tr("sct_sweep_nofar")));
+        m_sweepTable->setItem(row, 3, tabhelp::roItem(
+            QFileInfo(r.dir).fileName()));
+        m_sweepProgress->setValue(m_sweepTable->rowCount());
+    });
+    connect(m_sweeper, &SweepRunner::finished, this, [this](bool ok) {
+        const QVector<SweepResult> &rs = m_sweeper->results();
+        int good = 0;
+        for (const SweepResult &r : rs) if (r.ok) ++good;
+        m_sweepStatus->setText(
+            ok ? I18n::tr("sct_sweep_done").arg(rs.size())
+               : I18n::tr("sct_sweep_failed").arg(good).arg(rs.size()));
+        m_sweepProgress->setVisible(false);
+        m_sweepRun->setText(I18n::tr("sct_sweep_run"));
+        m_sweepCsv->setEnabled(!rs.isEmpty());
+        updateSweepUi();
+    });
+    connect(m_sweepRun, &QPushButton::clicked, this, &ScatteringTab::startSweep);
+    connect(m_sweepCsv, &QPushButton::clicked, this, &ScatteringTab::exportCsv);
+
     // スイープ範囲はスイープ ON のときだけ編集可 (モックのラベル順を維持)
-    auto syncSweep = [this] {
-        const bool on = m_sweep->isChecked();
-        m_sweepFrom->setEnabled(on);
-        m_sweepTo->setEnabled(on);
-        m_sweepPts->setEnabled(on);
-    };
-    connect(m_sweep, &QCheckBox::toggled, this, syncSweep);
-    syncSweep();
+    connect(m_sweep, &QCheckBox::toggled, this, [this] {
+        apply();
+        updateSweepUi();
+    });
+    updateSweepUi();
 
     // ── 入射波 (θ/φ/偏波) の配線: Project::planewave() の View ────────────
     connect(m_theta, &QLineEdit::editingFinished, this, &ScatteringTab::apply);
     connect(m_phi,   &QLineEdit::editingFinished, this, &ScatteringTab::apply);
     connect(m_pol, &QComboBox::currentIndexChanged, this, &ScatteringTab::apply);
+    connect(m_sweepAxis, &QComboBox::currentIndexChanged, this,
+            &ScatteringTab::apply);
+    for (QLineEdit *e : { m_sweepFrom, m_sweepTo, m_sweepPts })
+        connect(e, &QLineEdit::editingFinished, this, [this] {
+            apply();
+            updateSweepUi();
+        });
 
     // SourceTab など他ビューでの平面波編集も反映する (同一モデルの共有)
     connect(project, &Project::loaded,  this, &ScatteringTab::refresh);
@@ -236,7 +358,88 @@ void ScatteringTab::apply()
     // 円偏波 (index 2) は選択不可だが、万一の場合もモデルへは書かない。
     if (m_pol->currentIndex() >= 0 && m_pol->currentIndex() <= 1)
         pw.pol = m_pol->currentIndex() + 1;
+
+    ScatteringOpts &s = m_p->scattering();
+    s.sweepEnabled = m_sweep->isChecked();
+    s.sweepAxis = qBound(0, m_sweepAxis->currentIndex(), 1);
+    s.sweepFrom_deg = m_sweepFrom->text().toDouble();
+    s.sweepTo_deg = m_sweepTo->text().toDouble();
+    s.sweepPoints = m_sweepPts->text().toInt();
     m_p->touch();
+}
+
+// スイープ設定の有効性で操作可否を決める。
+// 不正な範囲のまま「実行」を押せると、押してから初めて失敗する
+// (.claude/rules/gui.md: 警告表示だけで済ませず実行をブロックする)。
+void ScatteringTab::updateSweepUi()
+{
+    const bool on = m_sweep->isChecked();
+    const bool busy = m_sweeper && m_sweeper->isRunning();
+    m_sweepAxis->setEnabled(on && !busy);
+    m_sweepFrom->setEnabled(on && !busy);
+    m_sweepTo->setEnabled(on && !busy);
+    m_sweepPts->setEnabled(on && !busy);
+
+    const ScatteringOpts &s = m_p->scattering();
+    const bool valid = s.sweepValid();
+    m_sweepRun->setEnabled(on && (busy || valid));
+    m_sweepRun->setToolTip(valid ? QString() : I18n::tr("sct_sweep_need"));
+    if (!busy && on && !valid)
+        m_sweepStatus->setText(I18n::tr("sct_sweep_need"));
+}
+
+void ScatteringTab::startSweep()
+{
+    if (m_sweeper->isRunning()) {   // 実行中の押下は中止
+        m_sweeper->stop();
+        return;
+    }
+    const ScatteringOpts &s = m_p->scattering();
+    if (!s.sweepValid()) {
+        m_sweepStatus->setText(I18n::tr("sct_sweep_need"));
+        return;
+    }
+    SweepConfig cfg;
+    cfg.kind = (s.sweepAxis == 1) ? SweepKind::PlaneWavePhi
+                                  : SweepKind::PlaneWaveTheta;
+    cfg.from = s.sweepFrom_deg;
+    cfg.to = s.sweepTo_deg;
+    cfg.points = s.sweepPoints;
+    cfg.run = m_runCfg;
+    // スイープは 1 点ずつ完結させる (ポストまで走らせて far1d.log を出す)
+    cfg.run.mode = RunMode::Both;
+    cfg.run.kernel = Runner::kernelForProject(*m_p);
+
+    m_sweepTable->setRowCount(0);
+    m_sweepCsv->setEnabled(false);
+    m_sweepProgress->setVisible(true);
+    m_sweepProgress->setRange(0, cfg.points);
+    m_sweepProgress->setValue(0);
+    if (!m_sweeper->start(*m_p, cfg)) {
+        m_sweepProgress->setVisible(false);
+        m_sweepStatus->setText(I18n::tr("sct_sweep_need"));
+        return;
+    }
+    m_sweepRun->setText(I18n::tr("sct_sweep_stop"));
+    updateSweepUi();
+}
+
+void ScatteringTab::exportCsv()
+{
+    const QVector<SweepResult> &rs = m_sweeper->results();
+    if (rs.isEmpty()) return;
+    const QString p = QFileDialog::getSaveFileName(
+        this, I18n::tr("sct_sweep_saveto"),
+        QStringLiteral("sweep.csv"), QStringLiteral("CSV (*.csv)"));
+    if (p.isEmpty()) return;
+    QFile f(p);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit sweepLog(QStringLiteral("sweep: cannot write %1: %2")
+                          .arg(p, f.errorString()));
+        return;
+    }
+    f.write(SweepRunner::toCsv(rs).toUtf8());
+    emit sweepLog(QStringLiteral("sweep: wrote %1").arg(p));
 }
 
 // model → widgets (m_updating ガード付き)
@@ -247,7 +450,15 @@ void ScatteringTab::refresh()
     m_theta->setText(QString::number(pw.theta, 'g', 8));
     m_phi->setText(QString::number(pw.phi, 'g', 8));
     m_pol->setCurrentIndex(pw.pol == 2 ? 1 : 0);
+
+    const ScatteringOpts &s = m_p->scattering();
+    m_sweep->setChecked(s.sweepEnabled);
+    m_sweepAxis->setCurrentIndex(qBound(0, s.sweepAxis, 1));
+    m_sweepFrom->setText(QString::number(s.sweepFrom_deg, 'g', 8));
+    m_sweepTo->setText(QString::number(s.sweepTo_deg, 'g', 8));
+    m_sweepPts->setText(QString::number(s.sweepPoints));
     m_updating = false;
+    updateSweepUi();
 }
 
 SectionBox *ScatteringTab::checkSection(QWidget *parent, const char *titleKey,

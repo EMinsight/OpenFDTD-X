@@ -432,8 +432,23 @@ void MainWindow::buildToolbar()
         m_deviceBoxAction->setVisible(gpu);
     };
     connect(m_engineBox, &QComboBox::currentIndexChanged, this,
-            [syncDevice](int) { syncDevice(); });
+            [this, syncDevice](int) { syncDevice(); syncTabRunConfig(); });
     syncDevice();
+    // 自前で Runner を回すタブ (散乱の入射角スイープ) へ実行設定を配る。
+    // ツールバーの値が唯一の正 — タブ側に別の設定を持たせない。
+    connect(m_threadsBox, &QSpinBox::valueChanged, this,
+            [this](int) { syncTabRunConfig(); });
+    connect(m_deviceBox, &QSpinBox::valueChanged, this,
+            [this](int) { syncTabRunConfig(); });
+}
+
+// ツールバーの実行設定を、自前で Runner を回すタブへ配る。
+// タブ生成前・ツールバー生成前のどちらから呼ばれても安全 (null ガード)。
+void MainWindow::syncTabRunConfig()
+{
+    if (!m_engineBox || !m_threadsBox || !m_deviceBox) return;
+    if (auto *sct = qobject_cast<ScatteringTab *>(m_tabScattering))
+        sct->setRunConfig(currentRunConfig());
 }
 
 // エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)。
@@ -649,6 +664,12 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabAntennaChar  = new AntennaCharTab(P);
     m_tabTxLine       = new TransmissionLineTab(P);
     m_tabScattering   = new ScatteringTab(P);
+    // 入射角スイープは自前で Runner を N 回まわす。実行設定 (エンジン /
+    // スレッド数) はツールバー側が正なので開くたびに渡し、進捗ログは
+    // 通常実行と同じ計算コンソールへ出す。
+    if (auto *sct = qobject_cast<ScatteringTab *>(m_tabScattering))
+        connect(sct, &ScatteringTab::sweepLog, this,
+                [this](const QString &line) { m_rightDock->appendLog(line); });
     m_tabCircuit      = new CircuitSolversTab(P);
     m_tabEmc          = new EmcTab(P);
     m_tabSar          = new SarTab(P);

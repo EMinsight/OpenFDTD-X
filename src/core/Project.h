@@ -589,6 +589,28 @@ struct CircuitOpts {
 // 抽出結果ではない (利用者が表で編集し .ofdx に保存される)。
 QVector<CircuitPortRow> defaultCircuitPorts();
 
+// ── 散乱解析の入射角スイープ (.ofdx "scattering") ───────────────────────────
+// ScatteringTab「入射角スイープ (バイスタティック)」の設定。
+//
+// カーネル (OpenFDTD) は 1 回の実行につき planewave = θ φ pol を 1 組しか
+// 受け付けない。したがってスイープは **GUI 側が N 回実行を回す** もので、
+// カーネルの改修は要らない (kernel/SweepRunner が担う)。
+// 既定のまま (enabled = false) なら .ofdx にキーを書かない — 後方互換。
+struct ScatteringOpts {
+    bool   sweepEnabled = false;
+    // 振る角度 [deg]。axis: 0 = θ, 1 = φ
+    int    sweepAxis = 0;
+    double sweepFrom_deg = 0.0;
+    double sweepTo_deg = 180.0;
+    int    sweepPoints = 37;
+
+    // 1 点あたりの実行が成立する最低条件を満たすか (点数 >= 2、範囲が有限)
+    bool sweepValid() const
+    {
+        return sweepPoints >= 2 && sweepFrom_deg != sweepTo_deg;
+    }
+};
+
 // ── フォトニック回路のネットリスト (.ofdx "schematic.netlist") ──────────────
 // SchematicTab「ネットリスト」表の 1 行。要素間の接続 (from/to) と、その
 // 接続で想定する波長範囲の自由記述。回路シミュレータは未実装なので、
@@ -782,6 +804,7 @@ public:
     QVector<RefineRegion> &refineRegions() { return m_refineRegions; }
     QVector<CircuitPortRow> &circuitPorts() { return m_circuitPorts; }
     CircuitOpts &circuit() { return m_circuit; }
+    ScatteringOpts &scattering() { return m_scattering; }
     QVector<PhotonicNetRow> &photonicNetlist() { return m_photonicNet; }
     QVector<MonitorRow>     &monitors()       { return m_monitors; }
     QVector<AnalysisGroupRow> &analysisGroups() { return m_analysisGroups; }
@@ -805,6 +828,7 @@ public:
     const QVector<RefineRegion> &refineRegions() const { return m_refineRegions; }
     const QVector<CircuitPortRow> &circuitPorts() const { return m_circuitPorts; }
     const CircuitOpts &circuit() const { return m_circuit; }
+    const ScatteringOpts &scattering() const { return m_scattering; }
     const QVector<PhotonicNetRow> &photonicNetlist() const { return m_photonicNet; }
     const QVector<MonitorRow>     &monitors()       const { return m_monitors; }
     const QVector<AnalysisGroupRow> &analysisGroups() const { return m_analysisGroups; }
@@ -869,6 +893,7 @@ private:
     // 既定行のままなら .ofdx へキーを書かない (旧ファイルとバイト一致)
     QVector<CircuitPortRow> m_circuitPorts = defaultCircuitPorts();
     CircuitOpts m_circuit;
+    ScatteringOpts m_scattering;
     QVector<PhotonicNetRow> m_photonicNet = defaultPhotonicNetlist();
     // モニター定義 / 解析グループも既定のままなら .ofdx へキーを書かない。
     // 既定は「新規プロジェクトのドメイン (EM)」のもので、ドメイン切替時に
