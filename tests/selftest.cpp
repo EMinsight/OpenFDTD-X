@@ -4804,6 +4804,68 @@ static void testCircuitExtraction()
               "peec: substituting a finite conductivity for PEC is reported");
     }
 
+    // (f2) OpenFEM (.ofe) — マイクロストリップ断面
+    {
+        Project p;
+        p.mesh(0).nodes = { -4e-3, -1e-3, 1e-3, 4e-3 };
+        p.mesh(0).divs  = { 30, 80, 30 };
+        p.mesh(1).nodes = { 0, 0.4e-3, 0.435e-3, 4e-3 };
+        p.mesh(1).divs  = { 16, 2, 60 };
+        p.mesh(2).nodes = { 0, 1e-4 };
+        p.mesh(2).divs  = { 1 };                    // 分割 1 = 線路軸
+        p.materials().clear();
+        Material fr4;  fr4.epsr = 4.4;
+        Material metal; metal.esgm = 5.8e7;
+        p.materials().push_back(fr4);               // id 2
+        p.materials().push_back(metal);             // id 3
+        auto box = [&](int mat, double x1, double x2, double y1, double y2) {
+            Geometry g;
+            g.materialId = mat; g.shape = 1;
+            g.g[0] = x1; g.g[1] = x2; g.g[2] = y1; g.g[3] = y2;
+            g.g[4] = 0;  g.g[5] = 1e-4;
+            p.geometries().push_back(g);
+        };
+        box(2, -4e-3, 4e-3, 0, 0.4e-3);             // 基板
+        box(3, -4e-3, 4e-3, 0, 0);                  // 地導体
+        box(3, -0.375e-3, 0.375e-3, 0.4e-3, 0.435e-3);   // 信号線
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.x1_m = 0; port.y1_m = 0.4175e-3; port.z1_m = 0.5e-4;
+        port.x2_m = 0; port.y2_m = 0.0;       port.z2_m = 0.5e-4;   // 地導体の中
+        p.circuitPorts().push_back(port);
+
+        const CircuitInput in = CircuitIO::femText(p);
+        check(in.isValid() && in.conductors == 2,
+              "ofe: two conductors (ground + trace); the substrate is a dielectric");
+        check(in.text.contains(QLatin1String("xmesh = -0.004 30 -0.001 80 0.001 30 0.004")),
+              "ofe: mesh is written in the .ofd syntax");
+        check(in.text.contains(QLatin1String("conductor = 0 1 -0.004 0.004 0 0 0 0.0001")),
+              "ofe: the box containing terminal B becomes the reference (id 0)");
+        check(in.text.contains(QLatin1String("conductor = 1 1 -0.000375 0.000375")),
+              "ofe: the signal trace becomes conductor 1");
+        check(in.text.contains(QLatin1String("geometry = 2 1 -0.004 0.004")),
+              "ofe: the dielectric stays a geometry line");
+        // analysis = C L は tline を要求し、σ を読まない
+        check(in.text.contains(QLatin1String("tline = Z")),
+              "ofe: the line axis (the one with a single division) is emitted");
+        check(in.text.contains(QLatin1String("material = 1 0")),
+              "ofe: sigma is zeroed for an analysis that does not read it");
+        check(in.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("導電率")),
+              "ofe: zeroing sigma is reported");
+        // σ を読む解析ならそのまま出る
+        p.circuit().femAnalysis = QStringLiteral("R");
+        const CircuitInput r2 = CircuitIO::femText(p);
+        check(r2.text.contains(QLatin1String("material = 1 58000000"))
+                  && !r2.text.contains(QLatin1String("tline")),
+              "ofe: analysis R keeps sigma and needs no tline");
+        // 基準導体を決められないときは理由を出す
+        p.circuitPorts().clear();
+        const CircuitInput r3 = CircuitIO::femText(p);
+        check(r3.isValid()
+                  && r3.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("基準導体")),
+              "ofe: an undetermined reference conductor is reported");
+    }
+
     // (g) カーネル解決 — 環境変数名とバイナリ名
     {
         check(qstrcmp(Runner::homeVarFor(Kernel::PEEC), "OPENPEEC_HOME") == 0,

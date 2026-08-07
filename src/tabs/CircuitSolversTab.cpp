@@ -144,6 +144,10 @@ const bool s_i18n = [] {
               "zin.csv could not be read (check the log)");
     I18n::reg("cir_ex_done", "完了: %1 行の入力インピーダンス (%2)",
               "Done: %1 input-impedance rows (%2)");
+    I18n::reg("cir_ex_nolog",
+              "ofe.log が読めませんでした (ログを確認してください)",
+              "ofe.log could not be read (check the log)");
+    I18n::reg("cir_ex_value", "値", "Value");
     I18n::reg("cir_ex_port", "ポート", "Port");
     I18n::reg("cir_ex_freq", "周波数", "Frequency");
     I18n::reg("cir_ex_r", "Rin [Ω]", "Rin [ohm]");
@@ -1003,6 +1007,11 @@ void CircuitSolversTab::onExtractionFinished(int exitCode)
         m_extractLog->setVisible(true);
         return;
     }
+    // PEEC は zin.csv、FEM は ofe.log に結果が出る
+    if (m_solver && m_solver->currentIndex() != 0) {
+        showFemLog(m_runDir + QStringLiteral("/ofe.log"));
+        return;
+    }
     showZinCsv(m_runDir + QStringLiteral("/zin.csv"));
 }
 
@@ -1016,6 +1025,10 @@ void CircuitSolversTab::showZinCsv(const QString &path)
     }
     const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
     m_zinTable->setRowCount(0);
+    m_zinTable->setColumnCount(4);
+    m_zinTable->setHorizontalHeaderLabels(
+        { I18n::tr("cir_ex_port"), I18n::tr("cir_ex_freq"),
+          I18n::tr("cir_ex_r"), I18n::tr("cir_ex_x") });
     int rows = 0;
     for (const QString &line : lines) {
         const QStringList t = line.split(QLatin1Char(','));
@@ -1046,3 +1059,36 @@ void CircuitSolversTab::showZinCsv(const QString &path)
         : I18n::tr("cir_ex_nocsv"));
 }
 
+// OpenFEM の結果は ofe.log の表 (C / L / R / Z0 / eps_eff) に出る。
+// 「= 数値 [単位]」の行だけを拾って項目表にする。
+void CircuitSolversTab::showFemLog(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        m_extractStatus->setText(I18n::tr("cir_ex_nolog"));
+        return;
+    }
+    static const QRegularExpression re(
+        QStringLiteral("^\\s*([A-Za-z_][\\w\\[\\]/,]*)\\s*=\\s*"
+                       "([-+0-9.eE]+)\\s*(\\[[^\\]]*\\])?\\s*$"));
+    m_zinTable->setRowCount(0);
+    m_zinTable->setColumnCount(2);
+    m_zinTable->setHorizontalHeaderLabels(
+        { I18n::tr("cir_col_item"), I18n::tr("cir_ex_value") });
+    int rows = 0;
+    for (const QString &line :
+         QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+        const auto m = re.match(line);
+        if (!m.hasMatch()) continue;
+        const int r = m_zinTable->rowCount();
+        m_zinTable->insertRow(r);
+        m_zinTable->setItem(r, 0, new QTableWidgetItem(m.captured(1)));
+        m_zinTable->setItem(r, 1, new QTableWidgetItem(
+            (m.captured(2) + QLatin1Char(' ') + m.captured(3)).trimmed()));
+        ++rows;
+    }
+    m_zinTable->setVisible(rows > 0);
+    m_extractStatus->setText(rows > 0
+        ? I18n::tr("cir_ex_done").arg(rows).arg(QDir::toNativeSeparators(m_runDir))
+        : I18n::tr("cir_ex_nolog"));
+}

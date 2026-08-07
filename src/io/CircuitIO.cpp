@@ -204,10 +204,139 @@ CircuitInput CircuitIO::peecText(const Project &p)
     return r;
 }
 
+// ── OpenFEM (.ofe) ─────────────────────────────────────────────────────────
+// .ofe は .ofd と同じメッシュ記法を使う準静的 FEM の入力。断面 2 次元の
+// 伝送線路解析 (analysis = C L) を主用途にする。
+//   xmesh/ymesh/zmesh   = .ofd と同じ (節点と分割数の交互列)
+//   material = <epsr> <sigma>
+//   geometry = <matid> <shape> <g0..g5>       (誘電体)
+//   conductor = <id> <shape> <g0..g5>         (id = 0 が基準導体)
+//   analysis / tline / voltage / solver
+//
+// **導体 id の決め方**: ポート表の端子 B (基準側) を含む導体を 0 番
+// (基準導体) とし、残りを 1 番から振る。どの形状にも当たらない場合は
+// 最初の導体を基準にして、その旨を warnings に出す (黙って決めない)。
 CircuitInput CircuitIO::femText(const Project &p)
 {
     CircuitInput r;
-    r.reason = QStringLiteral("OpenFEM (.ofe) の入力生成は未実装です");
-    Q_UNUSED(p);
+    const CircuitOpts &c = p.circuit();
+
+    // 導体 / 誘電体の仕分け
+    struct Shape { const Geometry *g; Box box; };
+    QVector<Shape> conductors, dielectrics;
+    int skippedShape = 0;
+    for (const Geometry &g : p.geometries()) {
+        Box b;
+        if (!boxOf(g, &b)) { ++skippedShape; continue; }
+        (isConductor(p, g.materialId) ? conductors : dielectrics)
+            .push_back({ &g, b });
+    }
+    if (skippedShape > 0)
+        r.warnings << QStringLiteral(
+            "直方体でない形状 %1 個を除外しました (.ofe の直方体指定へ写せません)")
+            .arg(skippedShape);
+    if (conductors.isEmpty()) {
+        r.reason = QStringLiteral(
+            "導体形状がありません。ジオメトリタブで直方体を置き、材料を "
+            "PEC か導電率 σ>0 のものにしてください。");
+        return r;
+    }
+
+    // 基準導体 (id 0) を決める — 端子 B を含む導体
+    int refIndex = -1;
+    for (const CircuitPortRow &row : p.circuitPorts()) {
+        if (!row.enabled || !row.hasEndpoints()) continue;
+        for (int i = 0; i < conductors.size() && refIndex < 0; ++i) {
+            const Box &b = conductors[i].box;
+            const double q[3] = { row.x2_m, row.y2_m, row.z2_m };
+            bool inside = true;
+            for (int a = 0; a < 3; ++a)
+                inside = inside && (q[a] >= b.lo[a] - 1e-12)
+                                && (q[a] <= b.hi[a] + 1e-12);
+            if (inside) refIndex = i;
+        }
+        if (refIndex >= 0) break;
+    }
+    if (refIndex < 0) {
+        refIndex = 0;
+        r.warnings << QStringLiteral(
+            "基準導体を特定できなかったので最初の導体を基準 (id 0) にしました。"
+            "ポート表の端子 B を基準導体の内側に置くと確定します。");
+    }
+
+    QString text;
+    QTextStream out(&text);
+    out << "OpenFEM 1 0\n";
+    out << "title = " << (p.general().title.isEmpty()
+                              ? QStringLiteral("OpenFDTD-X circuit extraction")
+                              : p.general().title) << "\n";
+    // メッシュ (.ofd と同じ書式)
+    static const char *meshKey[3] = { "xmesh", "ymesh", "zmesh" };
+    for (int a = 0; a < 3; ++a) {
+        const MeshAxis &ax = p.mesh(a);
+        if (ax.nodes.size() < 2) {
+            r.reason = QStringLiteral("メッシュが未設定です (%1)")
+                           .arg(QLatin1String(meshKey[a]));
+            return CircuitInput{ QString(), r.warnings, r.reason, 0, 0 };
+        }
+        out << meshKey[a] << " = " << num(ax.nodes[0]);
+        for (int i = 0; i < ax.divs.size(); ++i)
+            out << " " << ax.divs[i] << " " << num(ax.nodes[i + 1]);
+        out << "\n";
+    }
+    // 材料 (.ofe は epsr と sigma の 2 値)。
+    // σ を読むのは analysis R / A / E / F だけで、C・L 解析に σ を渡すと
+    // 「読まれないキー」警告が出る。導体は conductor 行で与えるので、
+    // σ を読まない解析では 0 にして出す (その旨は warnings に出す)。
+    const QString an = c.femAnalysis.toUpper();
+    const bool usesSigma = an.contains(QLatin1Char('R')) || an.contains(QLatin1Char('A'))
+                        || an.contains(QLatin1Char('E')) || an.contains(QLatin1Char('F'));
+    bool zeroed = false;
+    for (const Material &m : p.materials()) {
+        const double sg = usesSigma ? m.esgm : 0.0;
+        if (!usesSigma && m.esgm > 0.0) zeroed = true;
+        out << "material = " << num(m.epsr) << " " << num(sg) << "\n";
+    }
+    if (zeroed)
+        r.warnings << QStringLiteral(
+            "解析 %1 は導電率を読まないため、材料の σ は 0 として書き出しました "
+            "(導体は conductor 行で与えます)。").arg(c.femAnalysis);
+    auto emitBox = [&](const char *key, int id, const Box &b) {
+        out << key << " = " << id << " 1"
+            << " " << num(b.lo[0]) << " " << num(b.hi[0])
+            << " " << num(b.lo[1]) << " " << num(b.hi[1])
+            << " " << num(b.lo[2]) << " " << num(b.hi[2]) << "\n";
+    };
+    for (const Shape &s : dielectrics)
+        emitBox("geometry", s.g->materialId, s.box);
+    int nextId = 1;
+    for (int i = 0; i < conductors.size(); ++i)
+        emitBox("conductor", (i == refIndex) ? 0 : nextId++, conductors[i].box);
+
+    out << "analysis = " << c.femAnalysis << "\n";
+    // 伝送線路解析 (C / L / Z0) は線路軸 tline を要求する。
+    // 断面 2 次元モデルなので「分割が 1 の軸」= 線路軸。
+    if (an.contains(QLatin1Char('C')) || an.contains(QLatin1Char('L'))) {
+        static const char kAxis[3] = { 'X', 'Y', 'Z' };
+        int lineAxis = -1;
+        for (int a = 0; a < 3; ++a) {
+            int total = 0;
+            for (const int d : p.mesh(a).divs) total += d;
+            if (total == 1) { lineAxis = a; break; }
+        }
+        if (lineAxis < 0) {
+            lineAxis = 2;
+            r.warnings << QStringLiteral(
+                "線路軸を特定できなかったので Z 軸としました "
+                "(断面 2 次元モデルでは分割数 1 の軸が線路軸です)。");
+        }
+        out << "tline = " << kAxis[lineAxis] << "\n";
+    }
+    out << "voltage = " << num(c.femVoltage_V) << "\n";
+    out << "end\n";
+
+    r.text = text;
+    r.conductors = int(conductors.size());
+    r.ports = std::max(0, nextId - 1);
     return r;
 }

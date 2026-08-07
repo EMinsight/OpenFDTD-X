@@ -47,6 +47,7 @@ private:
     void runExtraction();
     void onExtractionFinished(int exitCode);
     void showZinCsv(const QString &path);
+    void showFemLog(const QString &path);
 
     QWidget *buildModelPage();          // モデル/ポート
     QWidget *buildExtractPage();        // 抽出設定 (+ FDTD連成)
