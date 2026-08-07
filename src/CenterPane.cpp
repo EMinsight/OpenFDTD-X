@@ -6,6 +6,7 @@
 #include "widgets/FieldHeatmap.h"
 #include "io/ShdReader.h"
 #include "widgets/MeshPreview.h"
+#include "widgets/EvCanvas.h"
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
 
@@ -47,6 +48,7 @@ const bool s_i18n = [] {
                    "%1-%2 dB; warmer = better reach)");
     ofd::I18n::reg("vp_plot",    "📊 結果プロット", "📊 Result plot");
     ofd::I18n::reg("vp_mesh",    "📏 メッシュ表示", "📏 Mesh view");
+    ofd::I18n::reg("vp_ev",      "🖼 カーネル作図", "🖼 Kernel figures");
     ofd::I18n::reg("vp_reset",   "🔄 Reset",       "🔄 Reset");
     ofd::I18n::reg("vp_select",  "選択 (Q)",       "Select (Q)");
     ofd::I18n::reg("vp_move",    "平行移動 (G)",   "Move (G)");
@@ -122,6 +124,9 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     m_tabs->addTab(I18n::tr("vp_2d"));
     m_tabs->addTab(I18n::tr("vp_plot"));
     m_tabs->addTab(I18n::tr("vp_mesh"));
+    // カーネルの作図出力 (ev.ev2) をアプリ内に描く画面。
+    // 外部ビューワー (ev2d/ev3d) もブラウザも要らずに図が見られる。
+    m_tabs->addTab(I18n::tr("vp_ev"));
     v->addWidget(m_tabs);
 
     // ── ビューポートツールバー (3D シーンのときだけ有効) ──
@@ -240,6 +245,41 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     m_stack->addWidget(m_heatmap);
     m_stack->addWidget(m_plot);
     m_stack->addWidget(m_mesh);
+    // カーネル作図 = キャンバス + ページ送り (ofd_post は 1 実行で
+    // 複数ページを書く — 収束 / 給電点 / 遠方界 / 近傍界 …)
+    auto *evWrap = new QWidget(m_stack);
+    auto *evv = new QVBoxLayout(evWrap);
+    evv->setContentsMargins(0, 0, 0, 0);
+    evv->setSpacing(2);
+    m_ev = new EvCanvas(evWrap);
+    evv->addWidget(m_ev, 1);
+    auto *evBar = new QWidget(evWrap);
+    auto *evh = new QHBoxLayout(evBar);
+    evh->setContentsMargins(6, 0, 6, 0);
+    auto *evPrev = new QToolButton(evBar);
+    evPrev->setText(QStringLiteral("◀"));
+    auto *evNext = new QToolButton(evBar);
+    evNext->setText(QStringLiteral("▶"));
+    auto *evPage = new QLabel(QStringLiteral("0/0"), evBar);
+    evh->addWidget(evPrev);
+    evh->addWidget(evNext);
+    evh->addWidget(evPage);
+    evh->addStretch(1);
+    evv->addWidget(evBar);
+    connect(evPrev, &QToolButton::clicked, this,
+            [this] { m_ev->setPage(m_ev->page() - 1); });
+    connect(evNext, &QToolButton::clicked, this,
+            [this] { m_ev->setPage(m_ev->page() + 1); });
+    connect(m_ev, &EvCanvas::pageChanged, this,
+            [evPage, evPrev, evNext](int page, int count) {
+        evPage->setText(QStringLiteral("%1/%2")
+                            .arg(count ? page + 1 : 0).arg(count));
+        evPrev->setEnabled(page > 0);
+        evNext->setEnabled(page + 1 < count);
+    });
+    evPrev->setEnabled(false);
+    evNext->setEnabled(false);
+    m_stack->addWidget(evWrap);
     v->addWidget(m_stack, 1);
 
     // ── 配線 ──

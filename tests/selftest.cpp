@@ -35,6 +35,7 @@
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
 #include "kernel/SweepRunner.h"
+#include "io/EvReader.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -94,6 +95,8 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTemporaryDir>
+#include <QImage>
+#include <QPainter>
 
 #ifdef OFD_USE_HDF5
 #include <hdf5.h>
@@ -1947,6 +1950,102 @@ static void testProjectTemplates()
         Project old;
         check(!old.scattering().sweepEnabled && old.scattering().sweepPoints == 37,
               "sweep: missing key falls back to the defaults");
+    }
+
+    // ── カーネルの作図出力 .ev2 のパーサ (io/EvReader) ──────────────────
+    // 書式は OpenFDTD post/ev2d.c の ev2d_end_data() が書くものそのまま。
+    // 下の固定文字列はその fprintf の並びを転記したもの (GUI 側で書式を
+    // 決めない — カーネルが正)。
+    {
+        g_file = "ev2";
+        const QString text = QStringLiteral(
+            "-1 300 200\n"
+            "-2 0 0 0\n"
+            "2 10 20 110 120\n"           // 線
+            "-2 255 0 0\n"                 // 以降赤
+            "3 0 0 10 0 0 10\n"            // 塗り三角
+            "4 1 2 3 4 5 6 7 8\n"          // 塗り四角
+            "21 50 50 70 90\n"             // 楕円 (外形)
+            "22 50 50 70 90\n"             // 楕円 (塗り)
+            "-3 5 6 12\n"                  // 文字列 — 本文は次行
+            "Zin [ohm]\n"
+            "-1 300 200\n"                 // 2 ページ目
+            "-2 0 0 255\n"
+            "2 0 0 300 200\n");
+        EvDocument doc;
+        QString err;
+        check(EvReader::parse(text, doc, &err), "ev2: parses");
+        check(doc.pages.size() == 2, "ev2: -1 starts a new page");
+
+        const EvPage &p0 = doc.pages[0];
+        check(p0.width == 300.0 && p0.height == 200.0, "ev2: canvas size");
+        check(p0.commands.size() == 6, "ev2: six commands on page 1");
+
+        check(p0.commands[0].kind == EvCommand::Line
+              && p0.commands[0].color == QColor(0, 0, 0)
+              && p0.commands[0].pts.size() == 2
+              && p0.commands[0].pts[0] == QPointF(10, 20)
+              && p0.commands[0].pts[1] == QPointF(110, 120),
+              "ev2: line with the colour in force");
+        // -2 は「以降の色」— 直後のコマンドから適用される
+        check(p0.commands[1].kind == EvCommand::FillTriangle
+              && p0.commands[1].color == QColor(255, 0, 0)
+              && p0.commands[1].pts.size() == 3,
+              "ev2: colour applies to following commands");
+        check(p0.commands[2].kind == EvCommand::FillQuad
+              && p0.commands[2].pts.size() == 4
+              && p0.commands[2].pts[3] == QPointF(7, 8), "ev2: filled quad");
+        check(p0.commands[3].kind == EvCommand::Ellipse
+              && p0.commands[4].kind == EvCommand::FillEllipse,
+              "ev2: 21 = outline, 22 = filled ellipse");
+        check(p0.commands[5].kind == EvCommand::Text
+              && p0.commands[5].text == QLatin1String("Zin [ohm]")
+              && p0.commands[5].height == 12.0
+              && p0.commands[5].pts[0] == QPointF(5, 6),
+              "ev2: text takes its body from the next line");
+
+        // ページ頭で色は黒へ戻る (書き出し側と同じ)
+        check(doc.pages[1].commands.size() == 1
+              && doc.pages[1].commands[0].color == QColor(0, 0, 255),
+              "ev2: page 2 keeps its own colour state");
+
+        // 壊れた入力で落ちない / 図形ゼロは false
+        EvDocument junk;
+        check(!EvReader::parse(QStringLiteral("hello\nworld\n"), junk),
+              "ev2: non-ev text is rejected");
+        check(!EvReader::parse(QString(), junk), "ev2: empty text is rejected");
+        check(!EvReader::parse(QStringLiteral("-1 300 200\n"), junk),
+              "ev2: a page with no drawing is not a document");
+        // 座標が足りない行は捨てる (落ちない)
+        EvDocument partial;
+        check(EvReader::parse(QStringLiteral(
+                  "-1 10 10\n2 1 2\n2 1 2 3 4\n"), partial),
+              "ev2: short lines are skipped, good ones kept");
+        check(partial.pages.size() == 1 && partial.pages[0].commands.size() == 1,
+              "ev2: only the complete line survives");
+
+        // 描画が例外なく通り、実際に画素を塗ること (左下原点 → 上下反転)
+        QImage img(60, 40, QImage::Format_RGB32);
+        img.fill(Qt::white);
+        {
+            QPainter pr(&img);
+            EvPage one;
+            one.width = 60; one.height = 40;
+            EvCommand c;
+            c.kind = EvCommand::FillQuad;
+            c.color = QColor(255, 0, 0);
+            // ev 座標で下半分 (y = 0..20) を塗る
+            c.pts = { QPointF(0, 0), QPointF(60, 0), QPointF(60, 20),
+                      QPointF(0, 20) };
+            one.commands.push_back(c);
+            EvReader::render(pr, QRectF(0, 0, 60, 40), one);
+        }
+        // 反転しているので、塗られるのは画面の **下** 半分
+        check(img.pixelColor(30, 35).red() > 200
+              && img.pixelColor(30, 35).blue() < 80,
+              "ev2: render fills the bottom half (ev origin is bottom-left)");
+        check(img.pixelColor(30, 4) == QColor(Qt::white),
+              "ev2: the top stays untouched");
     }
 }
 

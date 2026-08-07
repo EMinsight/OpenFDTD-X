@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QProcess>
 #include <QPushButton>
@@ -18,22 +19,23 @@ using namespace ofd;
 EvViewer::EvViewer(QWidget *parent)
     : QWidget(parent)
 {
-    auto *h = new QHBoxLayout(this);
+    auto *v = new QVBoxLayout(this);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(4);
+    auto *bar = new QWidget(this);
+    auto *h = new QHBoxLayout(bar);
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(6);
 
     h->addWidget(new QLabel(I18n::tr("ev_backend") + ":", this));
 
     m_backendBox = new QComboBox(this);
+    m_backendBox->addItem(I18n::tr("ev_native"));    // Native (既定)
     m_backendBox->addItem(I18n::tr("ev_html"));      // Html
     m_backendBox->addItem(I18n::tr("ev_process"));   // Process
-    m_backendBox->addItem(I18n::tr("ev_native"));    // Native (skeleton — disabled)
-    // The native .ev2/.ev3 parser (io/EvReader) is a documented skeleton;
-    // disable selecting it so only the working HTML / external-viewer
-    // strategies are offered.
-    if (auto *model = qobject_cast<QStandardItemModel *>(m_backendBox->model()))
-        if (auto *item = model->item(2))
-            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+    // ネイティブ描画 (io/EvReader) を既定にする。ブラウザも外部ビューワーも
+    // 要らず、ポスト処理の既定出力 (ev.ev2) をそのまま読めるため。
+    m_backendBox->setCurrentIndex(int(EvBackend::Native));
     h->addWidget(m_backendBox, 1);
 
     auto *b2 = new QPushButton(I18n::tr("ev_open2d"), this);
@@ -46,7 +48,10 @@ EvViewer::EvViewer(QWidget *parent)
 
     connect(b2, &QPushButton::clicked, this, &EvViewer::open2D);
     connect(b3, &QPushButton::clicked, this, &EvViewer::open3D);
+
+    v->addWidget(bar);
 }
+
 
 EvBackend EvViewer::backend() const
 {
@@ -82,9 +87,20 @@ void EvViewer::open(bool threeD)
             m_status->setText("error: cannot launch " + exe);
         break;
     }
-    case EvBackend::Native:
-        // EvReader (io/EvReader.h) はパーサ骨格のみ — docs/ev-format.md 参照
-        m_status->setText(I18n::tr("ev_native"));
+    case EvBackend::Native: {
+        // アプリ内描画は中央の「カーネル作図」タブが持つ。ここはその入口。
+        const QString ev = dir.filePath(threeD ? "ev.ev3" : "ev.ev2");
+        if (threeD) {
+            // .ev3 (3D) のパーサは未実装 — 出来ないことを出来ると見せない
+            m_status->setText(I18n::tr("ev_native_no3d"));
+            break;
+        }
+        if (!QFileInfo::exists(ev)) {
+            m_status->setText(I18n::tr("ev_nofile"));
+            break;
+        }
+        emit showNativeRequested(ev);
         break;
+    }
     }
 }

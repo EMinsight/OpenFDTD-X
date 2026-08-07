@@ -1016,7 +1016,11 @@ void I18n::loadTables() {
     add("ev_backend", "表示バックエンド", "Viewer backend");
     add("ev_html", "HTML出力 (-html) をブラウザで開く", "Open -html output in browser");
     add("ev_process", "外部ビューワー (ev2d/ev3d) を起動", "Launch external viewer");
-    add("ev_native", "ネイティブ描画 (未実装)", "Native rendering (TODO)");
+    add("ev_native", "アプリ内に描画 (ev.ev2 を直接読む)",
+        "Draw in-app (reads ev.ev2 directly)");
+    add("ev_native_no3d",
+        "3D 作図 (.ev3) のアプリ内描画は未実装です。外部ビューワーか HTML 出力を選んでください。",
+        "In-app drawing of 3-D figures (.ev3) is not implemented — choose the external viewer or the HTML output.");
     add("ev_open2d", "ev2d を開く", "Open ev2d");
     add("ev_open3d", "ev3d を開く", "Open ev3d");
     add("ev_nofile", "出力ファイルが見つかりません。先にポスト処理を実行してください。",
@@ -1149,6 +1153,16 @@ void I18n::loadTables() {
         "feed + frequency1 in the feed table, the radiation pattern needs "
         "far1d.log). The Post-Proc (1) checkboxes drive the 2-D view "
         "(ev.ev2) and the HTML output, not the result plots.");
+    add("log_ev_native",
+        "カーネル作図を読み込みました (%1 ページ) — 中央の「カーネル作図」タブで見られます",
+        "Loaded the kernel figures (%1 pages) — see the \"Kernel figures\" tab in the centre");
+    add("log_ev_none",
+        "作図出力 (ev.ev2 / ev.ev3) は生成されませんでした。"
+        "ポスト(1)・ポスト(2) で描く図を 1 つ以上選び、実行モードを"
+        "「一括 (計算+ポスト)」または「ポストのみ」にしてください。",
+        "No figure output (ev.ev2 / ev.ev3) was produced. Select at least "
+        "one plot on Post-Proc (1) / (2) and run with \"Solver + post\" or "
+        "\"Post only\".");
     add("log_h5_not_hdf5",
         "%1 は HDF5 ファイルではありません (中身が空か書きかけ) — "
         "読み込みませんでした",

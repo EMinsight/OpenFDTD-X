@@ -19,6 +19,7 @@
 #include "io/Touchstone.h"
 
 #include "widgets/EvViewer.h"
+#include "widgets/EvCanvas.h"
 #include "widgets/PlotPanel.h"
 #include "widgets/Viewport3D.h"
 
@@ -599,6 +600,18 @@ void MainWindow::buildCentral()
 
     m_evViewer = new EvViewer(centerWrap);
     cv->addWidget(m_evViewer);
+    // 「アプリ内に描画」で ev2d を開く → 中央の「カーネル作図」タブへ
+    connect(m_evViewer, &EvViewer::showNativeRequested, this,
+            [this](const QString &path) {
+        if (auto *ev = m_center->evCanvas()) {
+            QString err;
+            if (!ev->load(path, &err)) {
+                m_rightDock->appendLog(err);
+                return;
+            }
+            m_center->selectTabContaining(I18n::tr("vp_ev"));
+        }
+    });
 
     split->addWidget(leftWrap);
     split->addWidget(centerWrap);
@@ -1074,6 +1087,14 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
+    // 同じフォルダにカーネルの作図出力があれば「カーネル作図」画面へ載せる
+    // (どのファイルを見ているかは常に見える — H5 アニメと同じ扱い)
+    if (auto *ev = m_center->evCanvas()) {
+        const QString evp = QFileInfo(p).dir().filePath(
+            QStringLiteral("ev.ev2"));
+        if (QFileInfo::exists(evp)) ev->load(evp);
+        else                        ev->clear();
+    }
     // 前のプロジェクトの結果を残さない (別プロジェクトの結果断面が
     // そのまま 3D シーンに残るのを防ぐ — .claude/rules/gui.md)
     m_center->clearResultField();
@@ -1238,6 +1259,11 @@ RunConfig MainWindow::currentRunConfig() const
     // (画面で何を設定しても mpiexec -n 2 になっていた)。
     cfg.processes = qMax(1, ResourceDialog::savedProcesses());
     cfg.device = m_deviceBox->value();
+    // 表示バックエンドに「HTML出力」を選んでいるときだけ ofd_post へ -html を
+    // 渡す。従来ここが繋がっておらず、-html は一度も渡されないのに EvViewer は
+    // ev2d.htm を探しにいくため、既定設定では必ず「出力ファイルが
+    // 見つかりません」になっていた。
+    cfg.evHtml = m_evViewer && m_evViewer->needsHtmlOutput();
     QSettings().setValue("run/device", cfg.device);
     QSettings().setValue("run/threads", cfg.threads);
 
@@ -1615,13 +1641,27 @@ void MainWindow::onRunnerFinished(bool ok)
         // 作図出力 (ev.ev2 / ev.ev3) — 図形表示の実体。EvViewer をこの実行の
         // 作業ディレクトリへ向け、生成を計算コンソールに知らせる
         QStringList evFiles;
-        for (const char *name : { "ev.ev2", "ev.ev3", "ev2d.ev2", "ev3d.ev3" })
+        for (const char *name : { "ev.ev2", "ev.ev3", "ev2d.ev2", "ev3d.ev3",
+                                  "ev2d.htm", "ev3d.htm" })
             if (!freshFile(QString::fromLatin1(name)).isEmpty())
                 evFiles << QString::fromLatin1(name);
         if (!evFiles.isEmpty()) {
-            m_evViewer->setWorkdir(wd.path());
+            m_evViewer->setWorkdir(wd.path());   // 中で ev.ev2 を読み直す
+            // 中央の「カーネル作図」画面へも読み込む — 外部ビューワーも
+            // ブラウザも無い環境で図が見られるようにする
+            if (auto *ev = m_center->evCanvas()) {
+                const QString p2 = wd.filePath(QStringLiteral("ev.ev2"));
+                QString everr;
+                if (QFileInfo::exists(p2) && ev->load(p2, &everr))
+                    m_rightDock->appendLog(
+                        I18n::tr("log_ev_native").arg(ev->pageCount()));
+            }
             m_rightDock->appendLog(
                 I18n::tr("log_ev_ready").arg(evFiles.join(QStringLiteral(", "))));
+        } else {
+            // ポスト段が作図を出さなかった。どちらの経路で見るにせよ
+            // ファイルが無いことが原因なので、それを言う (無言にしない)。
+            m_rightDock->appendLog(I18n::tr("log_ev_none"));
         }
     }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ

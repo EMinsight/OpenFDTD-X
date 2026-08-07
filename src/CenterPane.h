@@ -29,6 +29,7 @@ class Viewport3D;
 class PlotPanel;
 class FieldHeatmap;
 class MeshPreview;
+class EvCanvas;
 
 class CenterPane : public QWidget {
     Q_OBJECT
@@ -36,6 +37,7 @@ public:
     explicit CenterPane(Project *project, QWidget *parent = nullptr);
 
     Viewport3D *viewport() const { return m_viewport; }
+    EvCanvas   *evCanvas() const { return m_ev; }   // カーネル作図の画面
     PlotPanel  *plotPanel() const { return m_plot; }
 
     void setDomain(Domain d);
@@ -101,6 +103,7 @@ private:
     Project        *m_p;
     QTabBar        *m_tabs;
     QStackedWidget *m_stack;
+    EvCanvas       *m_ev = nullptr;
     Viewport3D     *m_viewport;
     FieldHeatmap   *m_heatmap;
     PlotPanel      *m_plot;

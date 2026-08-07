@@ -156,7 +156,6 @@ set(CORE_SOURCES
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp
     src/io/KernelResultReader.h
-    src/io/EvReader.h
     src/io/StlImporter.cpp
     src/io/StlImporter.h
     # 取込メッシュの位相・幾何検査 (重複頂点 / 縮退三角形 / 境界・非多様体辺 /
@@ -166,6 +165,11 @@ set(CORE_SOURCES
     src/io/MeshDiagnostics.h
     src/io/Voxelizer.cpp
     src/io/Voxelizer.h
+
+    # カーネルの作図出力 (.ev2) のパーサ + QPainter 描き直し。
+    # 形式は post/ev2d.c の出力そのまま — selftest が parse を直接検証する
+    src/io/EvReader.cpp
+    src/io/EvReader.h
 
     src/kernel/Runner.cpp
     src/kernel/Runner.h
@@ -254,6 +258,8 @@ set(GUI_SOURCES
     src/widgets/PlotPanel.h
     src/widgets/LogConsole.cpp
     src/widgets/LogConsole.h
+    src/widgets/EvCanvas.cpp
+    src/widgets/EvCanvas.h
     src/widgets/EvViewer.cpp
     src/widgets/EvViewer.h
     src/widgets/AudioWaveformView.cpp
