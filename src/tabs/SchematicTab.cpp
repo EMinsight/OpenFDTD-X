@@ -81,12 +81,31 @@ const bool s_i18n = [] {
               "Extinction %1 dB. Metrics unavailable: %2");
     I18n::reg("sch_pc_note",
               "▸ 素子は解析形の S 行列です。実素子の κ・neff は FDTD / FDE で"
-              "求めた値を入れてください。ネットリストからの自動接続と"
-              "熱光学シフトの自動適用は未実装です。",
+              "求めた値を入れてください。熱光学シフトは「ノイズ・温度効果」の"
+              "温度から自動で効きます。ネットリストは経路まで解きますが、"
+              "経路上の素子を直列に掛け合わせる回路レベル解析は未対応で、"
+              "上の応答は選択した 1 素子ぶんです。",
               "\u25b8 The elements use closed-form S-matrices. Take the real "
-              "kappa / neff from an FDTD / FDE run. Building the circuit from "
-              "the netlist and applying the thermo-optic shift automatically "
-              "are not implemented.");
+              "kappa / neff from an FDTD / FDE run. The thermo-optic shift is "
+              "applied automatically from the temperature under \"Noise and "
+              "temperature\". The netlist is resolved into a path, but "
+              "cascading the elements along it is not supported yet — the "
+              "response above is for the single selected element.");
+    I18n::reg("sch_to_applied",
+              "熱光学シフト適用: %1 ℃ → 共振 %2 nm ずれ (dn/dT = 1.86e-4 /K, Si)",
+              "Thermo-optic shift applied: %1 degC -> resonance moved %2 nm "
+              "(dn/dT = 1.86e-4 /K, Si)");
+    I18n::reg("sch_net_empty",
+              "有効な接続がありません — 表に行を足すと経路を解きます",
+              "No enabled connections — add rows and the path is resolved");
+    I18n::reg("sch_net_nosrc",
+              "入力を持たない素子がありません (全体が閉路になっています) — "
+              "始点が決まらないので経路を解けません",
+              "No node without an input (the netlist is a closed loop), so "
+              "there is no start point to trace from");
+    I18n::reg("sch_net_path_ok", "経路: %1", "Path: %1");
+    I18n::reg("sch_net_path_cut", "経路: %1 — ここで打ち切り (%2)",
+              "Path: %1 — stopped here (%2)");
     I18n::reg("sch_mode",       "シミュレーションモード", "Simulation mode");
     I18n::reg("sch_mode_freq",  "周波数領域",             "Frequency domain");
     I18n::reg("sch_mode_time",  "時間領域",               "Time domain");
@@ -160,6 +179,10 @@ const ElemDef kElements[12] = {
     { "☼",  "Laser source",       "DFB 1550nm",      false },
     { "◐",  "Modulator (EOM)",    "sch_el_eom_s",    true  },
 };
+
+// 熱光学の定数 (Si @ 1550 nm、室温)。ModeSolverTab / MultiphysicsTab と同値。
+const double kToDnDt_Si   = 1.86e-4;   // dn/dT [1/K]
+const double kToRefTemp_C = 25.0;      // 基準温度
 
 } // namespace
 
@@ -251,6 +274,12 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     netBtns->addWidget(delBtn);
     netBtns->addStretch(1);
     sNet->vbox()->addLayout(netBtns);
+    // 表から素子のつながりを辿った結果 (optics/PhotonicCircuit::tracePath)。
+    // 分岐や閉路は 1 本の経路にできないので、その理由をそのまま出す。
+    m_netPath = new QLabel(sNet);
+    m_netPath->setWordWrap(true);
+    m_netPath->setStyleSheet("font-size:11px;");
+    sNet->vbox()->addWidget(m_netPath);
     v->addWidget(sNet);
 
     connect(addBtn, &QPushButton::clicked, this, [this] {
@@ -343,7 +372,10 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
         note->setStyleSheet("font-size:11px; color:palette(mid);");
         sec->vbox()->addWidget(note);
         v->addWidget(sec);
-        runCircuitSim();   // 既定値の応答を最初から出す
+        // runCircuitSim() はここでは呼ばない。熱光学シフトが「ノイズ・温度
+        // 効果」セクション (この下で組み立てる) の温度を読むため、ここで
+        // 呼ぶとまだ存在しないウィジェットを触ることになる。
+        // コンストラクタの最後にまとめて呼ぶ。
     }
 
     // ── ノイズ・温度効果 ───────────────────────────────────────────────────
@@ -381,6 +413,9 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     v->addWidget(sNo);
 
     v->addStretch(1);
+    // 全セクションを組み立ててから初回の応答を出す (熱光学シフト込み)
+    runCircuitSim();
+
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
@@ -392,6 +427,8 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
 // モデル → 表 (m_updating ガード付き。行数が変わるので毎回作り直す)
 void SchematicTab::refreshNetlist()
 {
+    // 表を作り直したら経路表示も更新する (呼び忘れを作らない)
+    struct PathSync { SchematicTab *t; ~PathSync() { t->refreshNetPath(); } } sync{ this };
     m_updating = true;
     const QVector<PhotonicNetRow> &net = m_p->photonicNetlist();
     m_net->setRowCount(net.size());
@@ -444,6 +481,21 @@ void SchematicTab::runCircuitSim()
     wg.lambda0_nm = 0.5 * (l1 + l2);
     wg.loss_dBcm = m_loss->value();
 
+    // 熱光学シフト — 「ノイズ・温度効果」の温度と有効化チェックを実際に読む。
+    // neff(T) = neff + (dn/dT)(T − 25 ℃)。Si の dn/dT = 1.86e-4 /K。
+    // 共振は Δλ = λ·Δn/ng だけ長波長側へ動く (掃引結果に現れる)。
+    double shift_nm = 0.0;
+    if (m_toShift && m_toShift->isChecked() && m_temp) {
+        bool tok = false;
+        const double tC = m_temp->text().trimmed().toDouble(&tok);
+        if (tok) {
+            const double dT = tC - kToRefTemp_C;
+            wg.neff = thermoOpticNeff(wg.neff, kToDnDt_Si, tC, kToRefTemp_C);
+            shift_nm = thermoOpticShift_nm(wg.lambda0_nm, kToDnDt_Si, dT,
+                                           wg.ng);
+        }
+    }
+
     std::vector<SweepPoint> sweep;
     double length_um = 0.0;
     const int dev = m_device->currentIndex();
@@ -495,4 +547,50 @@ void SchematicTab::runCircuitSim()
             .arg(m.extinction_dB, 0, 'f', 2)
             .arg(QString::fromStdString(m.note)));
     }
+    // 熱光学シフトを効かせたときは、その量を結果へ添える (効いたことが
+    // 数字で分かるように — 内部で静かに変えて終わりにしない)
+    if (shift_nm != 0.0)
+        m_simResult->setText(m_simResult->text() + QLatin1Char('\n')
+                             + I18n::tr("sch_to_applied")
+                                   .arg(m_temp->text().trimmed())
+                                   .arg(shift_nm, 0, 'f', 3));
+}
+
+// ── ネットリストから素子のつながりを辿る ───────────────────────────────────
+// 表は「接続の記録」だったが、辿った結果を出すようにする。回路レベルの
+// 掛け算はまだ 1 素子ぶんなので、経路が出せることと、その経路がどの素子を
+// 通るかまでを示す (掛け算の自動化は未対応であることも併せて出す)。
+void SchematicTab::refreshNetPath()
+{
+    using namespace ofd::optics;
+    if (!m_netPath) return;
+    std::vector<NetLink> links;
+    for (const PhotonicNetRow &r : m_p->photonicNetlist()) {
+        if (!r.enabled) continue;
+        if (r.from.trimmed().isEmpty() || r.to.trimmed().isEmpty()) continue;
+        links.push_back(parseLink(r.from.trimmed().toStdString(),
+                                  r.to.trimmed().toStdString()));
+    }
+    if (links.empty()) {
+        m_netPath->setText(I18n::tr("sch_net_empty"));
+        return;
+    }
+    const std::vector<std::string> src = sourceNodes(links);
+    if (src.empty()) {
+        m_netPath->setText(I18n::tr("sch_net_nosrc"));
+        return;
+    }
+    QStringList lines;
+    for (const std::string &s0 : src) {
+        const NetPath p = tracePath(links, s0);
+        QStringList nodes;
+        for (const std::string &n : p.nodes)
+            nodes << QString::fromStdString(n);
+        const QString chain = nodes.join(QStringLiteral(" → "));
+        lines << (p.complete
+                      ? I18n::tr("sch_net_path_ok").arg(chain)
+                      : I18n::tr("sch_net_path_cut")
+                            .arg(chain, QString::fromStdString(p.note)));
+    }
+    m_netPath->setText(lines.join(QLatin1Char('\n')));
 }
