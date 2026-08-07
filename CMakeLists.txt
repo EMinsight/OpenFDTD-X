@@ -176,6 +176,11 @@ set(CORE_SOURCES
     src/io/EvReader.cpp
     src/io/EvReader.h
 
+    # GDSII (Calma Stream) の最小限の読み書き。外部ライブラリを足さない
+    # 方針のため自前実装 — selftest が REAL8 のビット列と往復を検証する
+    src/io/GdsIO.cpp
+    src/io/GdsIO.h
+
     src/kernel/Runner.cpp
     src/kernel/Runner.h
 

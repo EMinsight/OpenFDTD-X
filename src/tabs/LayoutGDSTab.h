@@ -43,6 +43,10 @@ class LayoutGDSTab : public QScrollArea {
 public:
     explicit LayoutGDSTab(Project *project, QWidget *parent = nullptr);
 
+private slots:
+    void exportGds();         // Footprint → GDSII (BOUNDARY)
+    void importGds();         // GDSII → 内容の要約 (形状取込は未対応)
+
 private:
     void refreshLayout();     // 形状 → セル一覧 + DRC を作り直す
     void rebuildCells(const QVector<Footprint> &foots, int skipped);
@@ -54,6 +58,7 @@ private:
     QComboBox    *m_grid;
     QTableWidget *m_layers, *m_cells, *m_drc;
     QLabel       *m_cellsSkipped = nullptr;  // 除外ユニット数の注記
+    QLabel       *m_ioStatus = nullptr;      // GDS 入出力の結果表示
     // 直前の投影 (Project::changed の度に DRC を回さないためのキャッシュ)
     QVector<Footprint> m_lastFoots;
     int          m_lastSkipped = -1;

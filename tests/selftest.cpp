@@ -36,6 +36,7 @@
 #include "kernel/Runner.h"
 #include "kernel/SweepRunner.h"
 #include "io/EvReader.h"
+#include "io/GdsIO.h"
 #include "core/MonteCarlo.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
@@ -5203,6 +5204,140 @@ static void testOceanPageScan()
 // 回路パラメータ抽出 (OpenPEEC) の入力生成と .ofdx 往復
 
 // フォトニック回路 (S 行列) — リング共振器・MZI を解析解と照合する
+// GDSII の最小読み書き (io/GdsIO)。外部ライブラリを足さない自前実装なので、
+// 形式の要である REAL8 (excess-64 / 基数 16) を既知のビット列と突き合わせ、
+// そのうえで往復させる。
+static void testGdsIO()
+{
+    g_file = "gds";
+    using namespace ofd::GdsIO;
+
+    // ── REAL8 ────────────────────────────────────────────────────────────
+    // 値 = (-1)^s · (仮数/2^56) · 16^(指数−64)
+    // 1.0 = (1/16)·16^1 → 指数 65 (0x41)、仮数 = 2^56/16 = 0x10000000000000
+    check(toReal8(1.0) == 0x4110000000000000ULL, "gds: REAL8(1.0) bit pattern");
+    check(toReal8(-1.0) == 0xC110000000000000ULL, "gds: REAL8(-1.0) sets sign");
+    check(toReal8(0.0) == 0ULL, "gds: REAL8(0) is all zero");
+    // 0.5 = (8/16)·16^0 → 指数 64 (0x40)、仮数 = 8/16·2^56 = 0x80000000000000
+    check(toReal8(0.5) == 0x4080000000000000ULL, "gds: REAL8(0.5)");
+
+    check(fromReal8(0x4110000000000000ULL) == 1.0, "gds: REAL8 -> 1.0");
+    check(fromReal8(0xC110000000000000ULL) == -1.0, "gds: REAL8 -> -1.0");
+    check(fromReal8(0ULL) == 0.0, "gds: REAL8 -> 0");
+
+    // レイアウトで実際に使う単位が往復すること (ここがずれると寸法が狂う)
+    for (const double v : { 1e-3, 1e-9, 1e-6, 0.25, 123.456, 2.5e-7 })
+        check(std::fabs(fromReal8(toReal8(v)) - v) <= 1e-15 * std::fabs(v),
+              "gds: REAL8 round-trips a layout unit");
+    check(std::fabs(fromReal8(toReal8(-2.5e-7)) + 2.5e-7) <= 1e-21,
+          "gds: REAL8 round-trips a negative value");
+
+    // ── ライブラリの往復 ─────────────────────────────────────────────────
+    GdsLibrary lib;
+    lib.name = QStringLiteral("TESTLIB");
+    lib.userUnit = 1e-3;
+    lib.dbUnit_m = 1e-9;      // 1 nm
+    GdsStructure st;
+    st.name = QStringLiteral("TOP");
+    GdsPolygon p1;
+    p1.layer = 1; p1.datatype = 0;
+    // 2 µm × 1 µm の矩形 (nm 格子に乗る値)
+    p1.x_m = { 0.0, 2e-6, 2e-6, 0.0 };
+    p1.y_m = { 0.0, 0.0,  1e-6, 1e-6 };
+    GdsPolygon p2;
+    p2.layer = 10; p2.datatype = 3;
+    p2.x_m = { -1e-6, 1e-6, 0.0 };      // 負座標を含む三角形
+    p2.y_m = { -1e-6, -1e-6, 5e-7 };
+    st.polygons << p1 << p2;
+    lib.structures << st;
+
+    const QByteArray bytes = serialize(lib);
+    check(bytes.size() > 0 && bytes.size() % 2 == 0,
+          "gds: the stream is non-empty and even-length");
+    // 先頭は HEADER レコード (長さ 6, 型 0x00, データ型 0x02)
+    check(quint8(bytes[0]) == 0 && quint8(bytes[1]) == 6
+          && quint8(bytes[2]) == 0x00 && quint8(bytes[3]) == 0x02,
+          "gds: starts with a HEADER record");
+    // 末尾は ENDLIB (長さ 4, 型 0x04, データ無し)
+    const int n = bytes.size();
+    check(quint8(bytes[n - 4]) == 0 && quint8(bytes[n - 3]) == 4
+          && quint8(bytes[n - 2]) == 0x04 && quint8(bytes[n - 1]) == 0x00,
+          "gds: ends with an ENDLIB record");
+
+    GdsLibrary back;
+    QString err;
+    check(parse(bytes, back, &err), "gds: parses its own output");
+    check(back.name == QLatin1String("TESTLIB"), "gds: library name");
+    check(std::fabs(back.dbUnit_m - 1e-9) <= 1e-24, "gds: database unit");
+    check(back.structures.size() == 1
+          && back.structures[0].name == QLatin1String("TOP"),
+          "gds: structure name");
+    check(back.polygonCount() == 2, "gds: both polygons survive");
+
+    const GdsPolygon &r1 = back.structures[0].polygons[0];
+    check(r1.layer == 1 && r1.datatype == 0, "gds: layer / datatype");
+    // 書き出し側が輪郭を閉じる (先頭点を末尾へ足す) 仕様
+    check(r1.x_m.size() == 5, "gds: the boundary is closed on write");
+    check(r1.x_m.first() == r1.x_m.last() && r1.y_m.first() == r1.y_m.last(),
+          "gds: first point equals last");
+    for (int i = 0; i < 4; ++i) {
+        check(std::fabs(r1.x_m[i] - p1.x_m[i]) <= 0.5e-9
+              && std::fabs(r1.y_m[i] - p1.y_m[i]) <= 0.5e-9,
+              "gds: coordinates survive to within half a database unit");
+    }
+    const GdsPolygon &r2 = back.structures[0].polygons[1];
+    check(r2.layer == 10 && r2.datatype == 3,
+          "gds: a second layer / datatype is kept");
+    check(std::fabs(r2.x_m[0] + 1e-6) <= 0.5e-9
+          && std::fabs(r2.y_m[0] + 1e-6) <= 0.5e-9,
+          "gds: negative coordinates survive");
+
+    // 同じ入力から同じバイト列 (日時を 0 で埋めているので再現する)
+    check(serialize(lib) == bytes, "gds: serialisation is deterministic");
+
+    // ── 異常入力 ────────────────────────────────────────────────────────
+    GdsLibrary bad;
+    // 任意のテキストは先頭 2 バイトが長さとして読まれ、ストリーム長を超える
+    // ので「途中で切れている」として弾かれる
+    err.clear();
+    check(!parse(QByteArray("not a gds file at all"), bad, &err)
+          && !err.isEmpty(),
+          "gds: a non-GDS byte stream is rejected with a reason");
+    // 形の整ったレコードだが HEADER が無い場合は、その旨で弾く。
+    // ENDLIB (長さ 4 / 型 0x04 / データ無し) だけのストリーム。
+    const QByteArray noHeader = QByteArray::fromHex("00040400");
+    err.clear();
+    check(!parse(noHeader, bad, &err) && err.contains(QLatin1String("HEADER")),
+          "gds: a well-formed stream without HEADER is named as such");
+    check(!parse(QByteArray(), bad, &err), "gds: empty input is rejected");
+    // 途中で切れたストリーム — 落ちずに理由を返す
+    check(!parse(bytes.left(bytes.size() - 3), bad, &err)
+          || bad.polygonCount() <= 2,
+          "gds: a truncated stream does not crash");
+
+    // 点数が足りない多角形は書き出さない (不正な BOUNDARY を作らない)
+    GdsLibrary thin;
+    GdsStructure ts; ts.name = QStringLiteral("T");
+    GdsPolygon tp; tp.layer = 1;
+    tp.x_m = { 0.0, 1e-6 };   // 2 点 = 多角形にならない
+    tp.y_m = { 0.0, 0.0 };
+    ts.polygons << tp;
+    thin.structures << ts;
+    GdsLibrary thinBack;
+    check(parse(serialize(thin), thinBack, &err) && thinBack.polygonCount() == 0,
+          "gds: a degenerate polygon is not written");
+
+    // ファイル経由でも同じ結果になること
+    QTemporaryDir gd;
+    check(gd.isValid(), "gds: temp dir");
+    const QString gp = gd.filePath(QStringLiteral("t.gds"));
+    check(save(gp, lib, &err), "gds: save to file");
+    GdsLibrary fileBack;
+    check(load(gp, fileBack, &err) && fileBack.polygonCount() == 2
+          && fileBack.structures[0].name == QLatin1String("TOP"),
+          "gds: load from file matches");
+}
+
 static void testPhotonicThermoAndNetlist()
 {
     g_file = "photonic_thermo";
@@ -11239,6 +11374,7 @@ int main(int argc, char *argv[])
     testCircuitExtraction();
     testPhotonicCircuit();
     testPhotonicThermoAndNetlist();
+    testGdsIO();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();
