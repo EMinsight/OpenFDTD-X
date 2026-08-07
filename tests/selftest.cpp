@@ -2281,6 +2281,45 @@ static void testProjectTemplates()
     }
 }
 
+// 熱解析レイヤの診断行 (io/KernelResultReader::parseThermal)。
+// 書式はカーネル sol/solve.c の sprintf そのもの。下の固定文字列は実際に
+// ofd を走らせた ofd.log から転記したもの。
+static void testThermalReader()
+{
+    g_file = "thermal";
+    // 実ログからの転記 (dipole.ofd — 損失材料が無いので 0)
+    const QString real =
+        "  Ez[3]  1.0000e+00  0.0000e+00\n"
+        "Thermal: dissipated[0] = 0.000000e+00 (f=3.000000e+09 Hz)\n"
+        "=== normal end ===\n";
+    const QVector<ThermalPoint> t = KernelResultReader::parseThermal(real);
+    check(t.size() == 1, "thermal: one line, one point");
+    check(t[0].index == 0 && t[0].dissipated == 0.0
+          && qFuzzyCompare(t[0].freqHz, 3.0e9),
+          "thermal: index / value / frequency");
+
+    // 複数周波数 (frequency2 が複数のとき) — 並び順を保つ
+    const QString multi =
+        "Thermal: dissipated[0] = 1.234560e-03 (f=1.930000e+14 Hz)\n"
+        "Thermal: dissipated[1] = 2.000000e-03 (f=1.940000e+14 Hz)\n";
+    const QVector<ThermalPoint> tm = KernelResultReader::parseThermal(multi);
+    check(tm.size() == 2 && tm[0].index == 0 && tm[1].index == 1,
+          "thermal: keeps the frequency order");
+    check(qFuzzyCompare(tm[0].dissipated, 1.23456e-3)
+          && qFuzzyCompare(tm[1].dissipated, 2.0e-3),
+          "thermal: parses the mantissa/exponent form");
+
+    // 他のログ行は拾わない / 壊れた行は落とす
+    check(KernelResultReader::parseThermal(
+              "TPA: transmission = 0.5 (I0=1e9 W/m^2)\n").isEmpty(),
+          "thermal: other diagnostics are not picked up");
+    check(KernelResultReader::parseThermal(
+              "Thermal: dissipated[0] = (f=3e9 Hz)\n").isEmpty(),
+          "thermal: a malformed line is dropped");
+    check(KernelResultReader::parseThermal(QString()).isEmpty(),
+          "thermal: empty input");
+}
+
 // カーネル結果リーダ (io/KernelResultReader) — 実行後の結果反映の入口。
 // 実カーネル出力から転記した固定文字列で、給電点表と far1d.log の
 // パースを検証する (書式はカーネル側が正 — GUI で変えない)。
@@ -11065,6 +11104,7 @@ int main(int argc, char *argv[])
     testProjectTemplates();
     testAcousticBudgets();
     testKernelResultReader();
+    testThermalReader();
     testAudioEditEngine();
     testCalibrationOffsetGate();
     testResampler();

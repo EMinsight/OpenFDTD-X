@@ -1633,6 +1633,15 @@ void MainWindow::onRunnerFinished(bool ok)
             if (!farPath.isEmpty())
                 patterns = KernelResultReader::readFar1d(farPath);
         }
+        // 熱解析レイヤ (ofd が入力キー無しで常に出す診断) を連成タブへ。
+        // この実行が更新したログに限る (残存ログを再表示しない)。
+        if (!logName.isEmpty()) {
+            if (auto *mp = qobject_cast<MultiphysicsTab *>(m_tabMultiphysics)) {
+                const QString lp = freshFile(logName);
+                if (lp.isEmpty()) mp->clearThermal();
+                else              mp->loadThermalFrom(lp);
+            }
+        }
         if (!sweeps.isEmpty() || !patterns.isEmpty()) {
             m_plotPanel->setRunResults(sweeps, patterns);
             if (!sweeps.isEmpty()) {

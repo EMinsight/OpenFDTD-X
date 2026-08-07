@@ -1,6 +1,7 @@
 // MultiphysicsTab.cpp
 #include "MultiphysicsTab.h"
 #include "../core/Project.h"
+#include "../io/KernelResultReader.h"
 #include "../optics/PlasmaDispersion.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -51,6 +52,38 @@ const bool s_i18n = [] {
 
     // 光: 熱光学 / プラズマ
     I18n::reg("mph_thermo", "熱光学連成設定", "Thermo-optic");
+    I18n::reg("mph_th_hint",
+              "▸ カーネル (ofd) の熱解析レイヤは **入力キーを持たず常に動作**し、"
+              "周波数ごとの発熱密度の総和を ofd.log へ書きます。上の設定群は "
+              ".ofd に対応キーが無いためカーネルへは渡りません。"
+              "値は近傍界 DFT が入射スペクトルで正規化されていないため "
+              "**絶対的な W ではなく相対量**です。"
+              "CPU 版 (ofd) のみ — ofd_mpi / ofd_cuda には熱解析レイヤがありません。",
+              "The kernel's thermal layer takes no input keys and always runs, "
+              "writing the integrated dissipation per frequency into ofd.log. "
+              "The settings above have no matching .ofd key and are not passed "
+              "to the kernel. The values are relative, not absolute watts "
+              "(the near-field DFT is not normalised by the incident "
+              "spectrum). CPU build only — ofd_mpi / ofd_cuda have no thermal "
+              "layer.");
+    I18n::reg("mph_th_c_idx", "#", "#");
+    I18n::reg("mph_th_c_freq", "周波数 [Hz]", "Frequency [Hz]");
+    I18n::reg("mph_th_c_val", "発熱密度の総和 (相対値)",
+              "Integrated dissipation (relative)");
+    I18n::reg("mph_th_idle",
+              "未実行 — 計算を実行すると ofd.log から読み込みます",
+              "Not run yet — read from ofd.log after a run");
+    I18n::reg("mph_th_none",
+              "この実行のログに熱解析の行がありません "
+              "(CPU 版 ofd で frequency2 を設定して実行してください)",
+              "No thermal lines in this run's log (run the CPU ofd build with "
+              "frequency2 set)");
+    I18n::reg("mph_th_zero",
+              "全周波数で 0 — 損失材料 (σ > 0) が解析領域に無いためです",
+              "Zero at every frequency — there is no lossy material "
+              "(sigma > 0) in the domain");
+    I18n::reg("mph_th_ok", "%1 周波数を読み込みました",
+              "Loaded %1 frequencies");
     I18n::reg("mph_heatsrc", "熱源", "Heat sources");
     I18n::reg("mph_absorb", "光吸収", "Optical absorption");
     I18n::reg("mph_joule", "ジュール熱", "Joule heating");
@@ -288,7 +321,34 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         bcRow->addWidget(check(I18n::tr("mph_ambient"), true, m_secThermo));
         bcRow->addStretch(1);
         m_secThermo->form()->addRow(I18n::tr("mph_heat_bc"), bcRow);
+        // 上の設定群は .ofd に対応キーが無く、カーネルへ渡せない
         m_secThermo->form()->addRow(tabhelp::unwiredNote(m_secThermo));
+
+        // ── カーネルの熱解析レイヤ (実測値) ──────────────────────────────
+        // ofd は入力キー無しで常に発熱密度を積算し、周波数ごとに
+        //   Thermal: dissipated[i] = <値> (f=<周波数> Hz)
+        // を ofd.log へ書く。GUI はこれまでこれを読んでいなかった。
+        auto *thHint = new QLabel(I18n::tr("mph_th_hint"), m_secThermo);
+        thHint->setWordWrap(true);
+        thHint->setStyleSheet("background:#DEECF9; color:#204E7A; "
+                              "border-radius:3px; padding:4px 8px; "
+                              "font-size:11px;");
+        m_secThermo->vbox()->addWidget(thHint);
+
+        m_thermalTbl = new QTableWidget(0, 3, m_secThermo);
+        m_thermalTbl->setHorizontalHeaderLabels({ I18n::tr("mph_th_c_idx"),
+            I18n::tr("mph_th_c_freq"), I18n::tr("mph_th_c_val") });
+        m_thermalTbl->horizontalHeader()->setSectionResizeMode(
+            QHeaderView::Stretch);
+        m_thermalTbl->verticalHeader()->setVisible(false);
+        m_thermalTbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_thermalTbl->setMinimumHeight(110);
+        m_secThermo->vbox()->addWidget(m_thermalTbl);
+
+        m_thermalStatus = new QLabel(I18n::tr("mph_th_idle"), m_secThermo);
+        m_thermalStatus->setWordWrap(true);
+        m_thermalStatus->setStyleSheet("font-size:11px; color:palette(mid);");
+        m_secThermo->vbox()->addWidget(m_thermalStatus);
     }
     v->addWidget(m_secThermo);
 
@@ -553,4 +613,40 @@ void MultiphysicsTab::rebuildDomain()
     m_secSar->setVisible(d == Domain::EM);
     m_secVibro->setVisible(d == Domain::Acoustic);
     m_secOcean->setVisible(d == Domain::Underwater);
+}
+
+// ── カーネルの熱解析レイヤの読み込み ────────────────────────────────────────
+// 値は絶対的な W ではなく相対量 (近傍界 DFT が入射スペクトルで正規化されて
+// いないため — カーネル README)。単位を付けずに「相対値」と明示して出す
+// (校正なしの絶対値を出さない — 絶対規則 6 と同じ考え方)。
+void MultiphysicsTab::loadThermalFrom(const QString &logPath)
+{
+    if (!m_thermalTbl) return;
+    const QVector<ThermalPoint> pts =
+        KernelResultReader::readThermal(logPath);
+    m_thermalTbl->setRowCount(pts.size());
+    for (int r = 0; r < pts.size(); ++r) {
+        m_thermalTbl->setItem(r, 0, tabhelp::roItem(
+            QString::number(pts[r].index)));
+        m_thermalTbl->setItem(r, 1, tabhelp::roItem(
+            QStringLiteral("%1").arg(pts[r].freqHz, 0, 'g', 6)));
+        m_thermalTbl->setItem(r, 2, tabhelp::roItem(
+            QStringLiteral("%1").arg(pts[r].dissipated, 0, 'e', 6)));
+    }
+    if (pts.isEmpty()) {
+        m_thermalStatus->setText(I18n::tr("mph_th_none"));
+        return;
+    }
+    // 全て 0 なら「損失材料が無い」— 数字だけ見せて放置しない
+    bool allZero = true;
+    for (const ThermalPoint &p : pts) if (p.dissipated != 0.0) allZero = false;
+    m_thermalStatus->setText(allZero ? I18n::tr("mph_th_zero")
+                                     : I18n::tr("mph_th_ok").arg(pts.size()));
+}
+
+void MultiphysicsTab::clearThermal()
+{
+    if (!m_thermalTbl) return;
+    m_thermalTbl->setRowCount(0);
+    m_thermalStatus->setText(I18n::tr("mph_th_idle"));
 }

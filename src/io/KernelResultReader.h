@@ -37,11 +37,26 @@ struct FarPattern {
     QVector<double> eAbsDb;     // E-abs [dB]
 };
 
+// 熱解析レイヤの診断 1 点 (sol/solve.c が周波数ごとに 1 行書く)。
+//   Thermal: dissipated[0] = 1.234560e-03 (f=3.000000e+09 Hz)
+// 値は **絶対的な W ではなく相対量** — 近傍界 DFT が入射スペクトルで
+// 正規化されていないため (カーネル README の注記)。表示側は必ずその旨を
+// 添えること (校正なしの絶対値を出さない)。
+struct ThermalPoint {
+    int    index = 0;        // dissipated[i] の i (frequency2 の並び)
+    double freqHz = 0.0;
+    double dissipated = 0.0; // 相対値
+};
+
 namespace KernelResultReader {
 
 // <kernel>.log から給電点表を読む (見つからなければ空)
 QVector<FeedSweep> readFeedSweeps(const QString &logPath);
 QVector<FeedSweep> parseFeedSweeps(const QString &text);
+
+// <kernel>.log から熱解析の診断行を読む (見つからなければ空)
+QVector<ThermalPoint> readThermal(const QString &logPath);
+QVector<ThermalPoint> parseThermal(const QString &text);
 
 // far1d.log から遠方界パターンを読む (見つからなければ空)
 QVector<FarPattern> readFar1d(const QString &path);

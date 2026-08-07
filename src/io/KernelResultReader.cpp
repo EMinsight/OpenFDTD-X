@@ -126,5 +126,34 @@ QVector<FarPattern> readFar1d(const QString &path)
     return text.isEmpty() ? QVector<FarPattern>() : parseFar1d(text);
 }
 
+// ── 熱解析レイヤの診断 ──────────────────────────────────────────────────────
+// 書式はカーネル (sol/solve.c) の sprintf そのもの:
+//   Thermal: dissipated[%d] = %.6e (f=%.6e Hz)
+// 読めない行は黙って読み飛ばす (他のログ行に混ざって出るため)。
+QVector<ThermalPoint> parseThermal(const QString &text)
+{
+    QVector<ThermalPoint> out;
+    static const QRegularExpression re(
+        QStringLiteral("^\\s*Thermal:\\s*dissipated\\[(\\d+)\\]\\s*=\\s*"
+                       "([-+0-9.eE]+)\\s*\\(f\\s*=\\s*([-+0-9.eE]+)\\s*Hz\\)"));
+    for (const QString &line : text.split(QLatin1Char('\n'))) {
+        const QRegularExpressionMatch m = re.match(line);
+        if (!m.hasMatch()) continue;
+        bool okI = false, okV = false, okF = false;
+        ThermalPoint p;
+        p.index = m.captured(1).toInt(&okI);
+        p.dissipated = m.captured(2).toDouble(&okV);
+        p.freqHz = m.captured(3).toDouble(&okF);
+        if (okI && okV && okF) out.push_back(p);
+    }
+    return out;
+}
+
+QVector<ThermalPoint> readThermal(const QString &path)
+{
+    const QString text = readAll(path);
+    return text.isEmpty() ? QVector<ThermalPoint>() : parseThermal(text);
+}
+
 } // namespace KernelResultReader
 } // namespace ofd
