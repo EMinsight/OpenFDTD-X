@@ -5640,6 +5640,49 @@ static void testH5Reader()
     check(dims == (QVector<qlonglong>{ 3, 4 }) && flat.size() == 12 &&
           flat[6] == 12.0, "h5: readAll dims/values");
 
+    // ── HDF5 でないファイルの扱い ──────────────────────────────────────
+    // 拡張子が .h5 でも中身が違うとき、HDF5 ライブラリに開かせると 7 行の
+    // HDF5-DIAG スタックが stderr に出る。呼び出し側は同じファイルに対して
+    // 複数のデータセットを順に試すので、これが何度も並んで実際の
+    // エラーが埋もれる。署名を先に見て、ライブラリを呼ばずに落とす。
+    check(H5Reader::isHdf5(path), "h5: isHdf5 accepts a real HDF5 file");
+    {
+        const QString bogus = dir.filePath("bogus.h5");
+        QFile f(bogus);
+        check(f.open(QIODevice::WriteOnly), "h5: bogus fixture opened");
+        f.write("this is not an HDF5 file\n");
+        f.close();
+        check(!H5Reader::isHdf5(bogus), "h5: isHdf5 rejects a text file");
+
+        // 失敗しても理由が「HDF5 ではない」と分かること (呼び出し側が
+        // 利用者に出せる。ライブラリの stderr 出力に頼らない)
+        QString why;
+        QVector<double> v; int rr = 0, cc = 0;
+        check(!H5Reader::read2D(bogus, "/field/Ixz", v, rr, cc, &why),
+              "h5: read2D fails on a non-HDF5 file");
+        check(why.contains(QLatin1String("not an HDF5 file")),
+              "h5: the failure says it is not an HDF5 file");
+        QVector<H5DatasetInfo> dl;
+        check(!H5Reader::listDatasets(bogus, dl, &why),
+              "h5: listDatasets fails on a non-HDF5 file");
+        check(why.contains(QLatin1String("not an HDF5 file")),
+              "h5: listDatasets gives the same reason");
+
+        // 空ファイルと存在しないファイルも同じ経路で静かに落ちる
+        const QString empty = dir.filePath("empty.h5");
+        QFile e(empty);
+        check(e.open(QIODevice::WriteOnly), "h5: empty fixture opened");
+        e.close();
+        check(!H5Reader::isHdf5(empty), "h5: isHdf5 rejects an empty file");
+        check(!H5Reader::isHdf5(dir.filePath("no-such-file.h5")),
+              "h5: isHdf5 rejects a missing file");
+        check(!H5Reader::read2D(dir.filePath("no-such-file.h5"), "/x", v, rr,
+                                cc, &why),
+              "h5: read2D fails on a missing file");
+        check(why.contains(QLatin1String("no such file")),
+              "h5: the missing-file reason is distinct");
+    }
+
     // ofd レイアウトの空間再構成: 2×2×2 セル (ノード 3×3×3, 余白なし)。
     // node = 9i + 3j + k。全 6 成分 = node → |E| = node·√6。
     // /data000000 はゼロ、/data000100 に実値 — 最終グループが選ばれること

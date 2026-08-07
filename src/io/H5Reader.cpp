@@ -1,10 +1,13 @@
 // H5Reader.cpp
 #include "H5Reader.h"
 
+#include <QFile>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QStringList>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #ifdef OFD_USE_HDF5
 #include <hdf5.h>
@@ -21,6 +24,24 @@ bool H5Reader::available()
 #endif
 }
 
+// HDF5 の署名 (先頭 8 バイト)。ユーザーブロックがある場合は 512 バイトの
+// べき乗倍のオフセットに置かれる仕様なので、そこまで見る。
+// これは HDF5 ライブラリを使わないので、無効ビルドでも同じ判定ができる。
+bool H5Reader::isHdf5(const QString &path)
+{
+    static const char kSig[8] = { '\x89', 'H', 'D', 'F', '\r', '\n', '\x1a', '\n' };
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const qint64 size = f.size();
+    for (qint64 off = 0; off == 0 || off < size; off = off ? off * 2 : 512) {
+        if (!f.seek(off)) break;
+        char buf[8];
+        if (f.read(buf, 8) != 8) break;
+        if (memcmp(buf, kSig, 8) == 0) return true;
+    }
+    return false;
+}
+
 #ifdef OFD_USE_HDF5
 
 namespace {
@@ -28,6 +49,38 @@ namespace {
 void setErr(QString *err, const QString &msg)
 {
     if (err) *err = msg;
+}
+
+// HDF5 ライブラリの自動エラー出力を止める (初回の open で 1 度だけ)。
+// 失敗は戻り値と err 文字列で呼び出し側へ伝えているので、ライブラリが
+// stderr へ吐く 7 行のスタックは二重報告のうえ利用者には読めない。
+void silenceHdf5Diagnostics()
+{
+    static const bool done = [] {
+        H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+        return true;
+    }();
+    (void)done;
+}
+
+// 読み取り用に開く共通口。署名を先に見るので、HDF5 でないファイルには
+// ライブラリを一切呼ばない (同じファイルに何度もデータセットを試す
+// 呼び出し側でも、出力が繰り返されない)。
+hid_t openRead(const QString &path, QString *err)
+{
+    silenceHdf5Diagnostics();
+    if (!QFileInfo::exists(path)) {
+        setErr(err, QStringLiteral("cannot open %1 (no such file)").arg(path));
+        return -1;
+    }
+    if (!H5Reader::isHdf5(path)) {
+        setErr(err, QStringLiteral("cannot open %1 (not an HDF5 file)").arg(path));
+        return -1;
+    }
+    const hid_t f = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
+                            H5P_DEFAULT);
+    if (f < 0) setErr(err, QStringLiteral("cannot open %1").arg(path));
+    return f;
 }
 
 QString typeNameOf(hid_t dset)
@@ -95,12 +148,8 @@ bool H5Reader::listDatasets(const QString &path, QVector<H5DatasetInfo> &out,
                             QString *err)
 {
     out.clear();
-    const hid_t file = H5Fopen(path.toLocal8Bit().constData(),
-                               H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (file < 0) {
-        setErr(err, QStringLiteral("cannot open %1").arg(path));
-        return false;
-    }
+    const hid_t file = openRead(path, err);
+    if (file < 0) return false;
 #if H5_VERSION_GE(1, 12, 0)
     H5Ovisit3(file, H5_INDEX_NAME, H5_ITER_NATIVE, visitCb, &out,
               H5O_INFO_BASIC);
@@ -115,9 +164,8 @@ bool H5Reader::read2D(const QString &path, const QString &dset,
                       QVector<double> &out, int &rows, int &cols, QString *err)
 {
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
     id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
     if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
     id.space = H5Dget_space(id.dset);
@@ -145,9 +193,8 @@ bool H5Reader::read2DWindow(const QString &path, const QString &dset,
                             QString *err)
 {
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
     id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
     if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
     id.space = H5Dget_space(id.dset);
@@ -186,9 +233,8 @@ bool H5Reader::read1DWindow(const QString &path, const QString &dset,
                             QString *err)
 {
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
     id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
     if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
     id.space = H5Dget_space(id.dset);
@@ -222,9 +268,8 @@ bool H5Reader::readFrame(const QString &path, const QString &dset, int frame,
                          QString *err)
 {
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
     id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
     if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
     id.space = H5Dget_space(id.dset);
@@ -263,9 +308,8 @@ bool H5Reader::readAll(const QString &path, const QString &dset,
     out.clear();
     dims.clear();
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) { setErr(err, QStringLiteral("cannot open %1").arg(path)); return false; }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
     id.dset = H5Dopen2(id.file, dset.toUtf8().constData(), H5P_DEFAULT);
     if (id.dset < 0) { setErr(err, QStringLiteral("no dataset %1").arg(dset)); return false; }
     id.space = H5Dget_space(id.dset);
@@ -407,12 +451,8 @@ bool H5Reader::readOfdMidSlice(const QString &path, QVector<double> &cells,
     // (大規模格子で全体を読まない)
     {
         Ids id;
-        id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                          H5P_DEFAULT);
-        if (id.file < 0) {
-            setErr(err, QStringLiteral("cannot open %1").arg(path));
-            return false;
-        }
+        id.file = openRead(path, err);
+        if (id.file < 0) return false;
         if (H5Lexists(id.file, "/freqdomain", H5P_DEFAULT) > 0 &&
             H5Lexists(id.file, "/freqdomain/E", H5P_DEFAULT) > 0) {
             id.dset = H5Dopen2(id.file, "/freqdomain/E", H5P_DEFAULT);
@@ -489,12 +529,8 @@ bool H5Reader::ofdSeriesInfo(const QString &path, const QString &comp,
     // ── 新: /timeseries/<comp> {Nt, Nx+1, Ny+1, Nz+1, 3} ───────────────────
     {
         Ids id;
-        id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                          H5P_DEFAULT);
-        if (id.file < 0) {
-            setErr(err, QStringLiteral("cannot open %1").arg(path));
-            return false;
-        }
+        id.file = openRead(path, err);
+        if (id.file < 0) return false;
         const QByteArray ds = (QStringLiteral("/timeseries/") + comp).toUtf8();
         if (H5Lexists(id.file, "/timeseries", H5P_DEFAULT) > 0 &&
             H5Lexists(id.file, ds.constData(), H5P_DEFAULT) > 0) {
@@ -552,12 +588,8 @@ bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
     // ── 新: /timeseries/<comp> の 1 フレームをハイパースラブで読む ──────────
     {
         Ids id;
-        id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                          H5P_DEFAULT);
-        if (id.file < 0) {
-            setErr(err, QStringLiteral("cannot open %1").arg(path));
-            return false;
-        }
+        id.file = openRead(path, err);
+        if (id.file < 0) return false;
         const QByteArray ds = (QStringLiteral("/timeseries/") + comp).toUtf8();
         if (H5Lexists(id.file, "/timeseries", H5P_DEFAULT) > 0 &&
             H5Lexists(id.file, ds.constData(), H5P_DEFAULT) > 0) {
@@ -671,12 +703,8 @@ bool H5Reader::ofdGridCoords(const QString &path, QVector<double> &xs,
     zs.clear();
 
     Ids id;
-    id.file = H5Fopen(path.toLocal8Bit().constData(), H5F_ACC_RDONLY,
-                      H5P_DEFAULT);
-    if (id.file < 0) {
-        setErr(err, QStringLiteral("cannot open %1").arg(path));
-        return false;
-    }
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
 
     // 節点座標の置き場所は 2 通り: 新レイアウトは /geometry、旧レイアウトは
     // /metadata (実ファイルで確認済み: /metadata/Xn {Nx+1} native double)。

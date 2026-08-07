@@ -1055,7 +1055,12 @@ void MainWindow::openProject(const QString &path)
     // ゲート付き経路のみが行う)
     const QString h5 = QFileInfo(p).dir()
                            .filePath(QStringLiteral("time_series_data.h5"));
-    if (QFileInfo::exists(h5)) {
+    if (QFileInfo::exists(h5) && !H5Reader::isHdf5(h5)) {
+        // 名前は .h5 でも中身が HDF5 でない (途中で止まった実行が残した
+        // 空ファイル等)。黙って読みにいくと HDF5 ライブラリのエラースタックが
+        // 出るだけで何が起きたか分からないので、理由をログに出して読まない。
+        m_rightDock->appendLog(I18n::tr("log_h5_not_hdf5").arg(h5));
+    } else if (QFileInfo::exists(h5)) {
         if (auto *viewer = qobject_cast<H5ViewerTab *>(m_tabH5Viewer))
             viewer->openFile(h5);
         m_rightDock->appendLog(I18n::tr("log_h5_found").arg(h5));
@@ -1500,6 +1505,12 @@ void MainWindow::onRunnerFinished(bool ok)
                                .filePath(QStringLiteral("time_series_data.h5"));
         const QFileInfo fi(h5);
         if (fi.exists()
+            && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs
+            && !H5Reader::isHdf5(h5)) {
+            // カーネルが書きかけ / 空のまま終わったケース。読みにいかず
+            // 理由を出す (エラースタックの山より 1 行の方が分かる)。
+            m_rightDock->appendLog(I18n::tr("log_h5_not_hdf5").arg(h5));
+        } else if (fi.exists()
             && fi.lastModified().toMSecsSinceEpoch() >= m_runStartMs) {
             if (m_center->loadResultField(h5))
                 m_rightDock->appendLog(

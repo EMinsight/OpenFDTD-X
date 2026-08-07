@@ -35,6 +35,14 @@ public:
     // ビルドに HDF5 読み取りが含まれるか (USE_HDF5)
     static bool available();
 
+    // path が実際に HDF5 ファイルか (署名を見るだけ。開かない)。
+    // 「拡張子が .h5 でも中身が違う」ケースを、HDF5 ライブラリを呼ぶ前に
+    // はじくために使う。ライブラリに開かせると失敗のたびに 7 行の
+    // HDF5-DIAG スタックが stderr に出て、しかも呼び出し側は同じファイルへ
+    // 複数のデータセットを試すので同じ出力が何度も並ぶ。
+    // HDF5 無効ビルドでは常に false。
+    static bool isHdf5(const QString &path);
+
     // ファイル内の全データセットを列挙する
     static bool listDatasets(const QString &path,
                              QVector<H5DatasetInfo> &out,

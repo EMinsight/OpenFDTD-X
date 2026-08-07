@@ -1137,6 +1137,10 @@ void I18n::loadTables() {
         "既存の HDF5 結果を検出し H5アニメタブへセットしました: %1",
         "Found an existing HDF5 result and set it on the H5 Animation "
         "tab: %1");
+    add("log_h5_not_hdf5",
+        "%1 は HDF5 ファイルではありません (中身が空か書きかけ) — "
+        "読み込みませんでした",
+        "%1 is not an HDF5 file (empty or partially written) — not loaded");
     add("log_slice3d",
         "3D シーンに結果断面を重ねられます "
         "(「3D シーン」タブ → ツールバーの「結果断面を重ねる」)",
