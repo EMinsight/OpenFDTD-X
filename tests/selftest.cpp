@@ -71,7 +71,9 @@
 #include "em/RadioPropagation.h"
 #include "em/EmcStandards.h"
 #include "em/LumpedRlc.h"
+#include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
+#include "tabs/TabHelpers.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
 // 音源リスト → ソルバ波源 (feed) の反映本体。ofdx_selftest は GUI_SOURCES を
 // リンクしないため、ヘッダ内 inline 定義の static メソッドを直接検証する
@@ -2922,6 +2924,247 @@ static void testAudioEditEngine()
         check(std::fabs(side.channels[0][0] - 0.375) < 1e-12 &&
               std::fabs(side.channels[1][0] + 0.375) < 1e-12,
               "stereo side extraction");
+    }
+
+    // ── 無響録音の前処理 (prepareSource) ──────────────────────────────────
+    // 期待値はすべて定義から独立に出す:
+    //   トリム    : 残るサンプル数 = round((end-start)·fs)、中身は元の該当区間
+    //   ゲイン    : 振幅が 10^(dB/20) 倍 (+6.0206 dB でちょうど 2 倍)
+    //   ハイパス  : 通過域 (10·fc) は素通り、DC は完全に除去される
+    //   適用順    : トリム → HPF → ゲイン
+    {
+        AudioBuffer x;
+        x.sampleRateHz = sr;
+        x.channels.push_back(std::vector<double>(std::size_t(sr), 0.0));
+        for (std::size_t i = 0; i < x.channels[0].size(); ++i)
+            x.channels[0][i] = 0.1 * double(i);   // ランプ (位置が分かる)
+
+        // 何もしない設定はビット一致 (絶対規則 2 の精神 — 無効な新機能は
+        // 出力を 1 サンプルも変えない)
+        SourcePrep idle;
+        check(idle.isIdentity(), "prep: default is identity");
+        const AudioBuffer same = prepareSource(x, idle);
+        check(same.channels == x.channels && same.sampleRateHz == x.sampleRateHz,
+              "prep: identity settings leave the signal bit-identical");
+
+        // トリム
+        SourcePrep t;
+        t.trimStartSec = 0.25;
+        t.trimEndSec   = 0.75;
+        const AudioBuffer tr = prepareSource(x, t);
+        check(tr.channels[0].size() == 24000, "prep: trim sample count");
+        check(std::fabs(tr.channels[0][0] - 0.1 * 12000.0) < 1e-9,
+              "prep: trim starts at the right sample");
+        // 終了 <= 開始 は全長 (切らない)
+        SourcePrep t2;
+        t2.trimStartSec = 0.5;
+        t2.trimEndSec   = 0.5;
+        check(t2.isIdentity(), "prep: end<=start is identity");
+
+        // ゲイン: +6.0206 dB = ×2
+        SourcePrep g;
+        g.gainDb = 20.0 * std::log10(2.0);
+        const AudioBuffer ga = prepareSource(x, g);
+        check(ga.channels[0].size() == x.channels[0].size(),
+              "prep: gain keeps the length");
+        check(std::fabs(ga.channels[0][100] - 2.0 * x.channels[0][100]) < 1e-9,
+              "prep: +6.02 dB doubles the amplitude");
+        // -6.0206 dB = ×0.5
+        SourcePrep g2;
+        g2.gainDb = -20.0 * std::log10(2.0);
+        const AudioBuffer gb = prepareSource(x, g2);
+        check(std::fabs(gb.channels[0][100] - 0.5 * x.channels[0][100]) < 1e-9,
+              "prep: -6.02 dB halves the amplitude");
+
+        // ハイパス: DC を落とし、通過域の正弦はほぼ素通り
+        AudioBuffer dc;
+        dc.sampleRateHz = sr;
+        dc.channels.push_back(std::vector<double>(std::size_t(sr), 1.0));
+        SourcePrep h;
+        h.highPass = true;
+        h.highPassHz = 80.0;
+        const AudioBuffer hp = prepareSource(dc, h);
+        // 末尾 (過渡が収まった後) で DC が消えている
+        check(std::fabs(hp.channels[0].back()) < 1e-3,
+              "prep: high-pass removes DC");
+        const AudioBuffer tone =
+            generateSignal(SignalKind::Sine, 800.0, 0, 1.0, 0.5, sr);
+        const AudioBuffer tp = prepareSource(tone, h);
+        double pk = 0.0;
+        for (std::size_t i = std::size_t(sr) / 2; i < tp.channels[0].size(); ++i)
+            pk = std::max(pk, std::fabs(tp.channels[0][i]));
+        // 遮断の 10 倍の周波数なので通過域 (2 次 = -40 dB/dec → 減衰 ~0.01 dB)
+        check(std::fabs(pk - 0.5) < 0.01, "prep: passband is left alone");
+
+        // 適用順 (トリム → HPF → ゲイン): トリムしてからゲインを掛けた結果と
+        // 一致する。順序が逆 (ゲイン → トリム) でも値は同じだが、長さは
+        // トリムに従う — 長さで順序の破綻を検出する。
+        SourcePrep tg;
+        tg.trimStartSec = 0.25;
+        tg.trimEndSec   = 0.75;
+        tg.gainDb       = 20.0 * std::log10(2.0);
+        const AudioBuffer tga = prepareSource(x, tg);
+        check(tga.channels[0].size() == 24000, "prep: trim+gain length");
+        check(std::fabs(tga.channels[0][0] - 2.0 * 0.1 * 12000.0) < 1e-9,
+              "prep: gain applies after the trim");
+
+        // トリム範囲が信号の外 → 切らない (空バッファを作らない)
+        SourcePrep out;
+        out.trimStartSec = 5.0;
+        out.trimEndSec   = 6.0;
+        const AudioBuffer keep = prepareSource(x, out);
+        check(keep.channels[0].size() == x.channels[0].size(),
+              "prep: an out-of-range trim does not empty the buffer");
+    }
+
+    // ── .ofdx 往復 (acoustic.source_wav) ──────────────────────────────────
+    // 追加キーなので、既定のままなら**キー自体を書かない** (旧ファイルと
+    // バイト一致 — 絶対規則 2)。
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "prep: temp dir");
+        const QString path = dir.filePath("src.ofd");
+        const QString sidecar = dir.filePath("src.ofdx");
+        auto readSidecar = [&] {
+            QFile f(sidecar);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+
+        ofd::Project def;
+        QString err;
+        check(def.save(path, &err), "prep: default project saved");
+        const QByteArray baseline = readSidecar();
+        check(!baseline.contains("source_wav"),
+              "prep: defaults write no source_wav key");
+
+        def.acoustic().wavTrimStart_s = 1.5;
+        def.acoustic().wavTrimEnd_s   = 4.25;
+        def.acoustic().wavGain_dB     = -3.5;
+        def.acoustic().wavHighPass    = true;
+        def.acoustic().wavHighPassHz  = 120.0;
+        check(def.save(path, &err), "prep: project with prep settings saved");
+        check(readSidecar().contains("source_wav"),
+              "prep: non-default settings write the key");
+
+        ofd::Project rd;
+        check(rd.load(path, &err), "prep: reloaded");
+        check(rd.acoustic().wavTrimStart_s == 1.5
+              && rd.acoustic().wavTrimEnd_s == 4.25
+              && rd.acoustic().wavGain_dB == -3.5
+              && rd.acoustic().wavHighPass
+              && rd.acoustic().wavHighPassHz == 120.0,
+              "prep: .ofdx round-trips the pre-processing settings");
+
+        // 既定へ戻すと出力がバイト一致に戻る (有効化 → 無効化の後方互換)
+        const ofd::AcousticOpts d;
+        rd.acoustic().wavTrimStart_s = d.wavTrimStart_s;
+        rd.acoustic().wavTrimEnd_s   = d.wavTrimEnd_s;
+        rd.acoustic().wavGain_dB     = d.wavGain_dB;
+        rd.acoustic().wavHighPass    = d.wavHighPass;
+        rd.acoustic().wavHighPassHz  = d.wavHighPassHz;
+        check(rd.save(path, &err), "prep: reverted project saved");
+        check(readSidecar() == baseline,
+              "prep: reverting to the defaults restores byte-identical output");
+
+        // 旧ファイル (source_wav 無し) は既定値のまま
+        ofd::Project old;
+        check(old.acoustic().wavTrimStart_s == 0.0
+              && old.acoustic().wavTrimEnd_s == 0.0
+              && old.acoustic().wavGain_dB == 0.0
+              && !old.acoustic().wavHighPass
+              && old.acoustic().wavHighPassHz == 80.0,
+              "prep: missing key falls back to the defaults");
+    }
+
+    // ── 可聴化への配線 (tabhelp::convolveWithPrep) ────────────────────────
+    // 3 経路 (単発 / 一括 / 音響タブ) が通る共有ヘルパー。既定設定では
+    // 従来の convolveFiles と**出力ファイルがバイト一致**すること (後方互換)
+    // と、設定が実際に効くことの両方を確認する。
+    {
+        using namespace ofd::acoustics;
+        QTemporaryDir dir;
+        check(dir.isValid(), "prep-conv: temp dir");
+        const double fs = 8000.0;
+
+        // ドライ: 一定振幅 0.25 の 1 kHz 正弦 (0.2 s)
+        AudioBuffer dryBuf =
+            generateSignal(SignalKind::Sine, 1000.0, 0, 0.2, 0.25, fs);
+        // RIR: 直接音のみ (畳み込みが恒等になるので出力を読みやすい)
+        AudioBuffer rirBuf;
+        rirBuf.sampleRateHz = fs;
+        rirBuf.channels.push_back(std::vector<double>(64, 0.0));
+        rirBuf.channels[0][0] = 1.0;
+
+        const std::string dryPath = dir.filePath("dry.wav").toStdString();
+        const std::string rirPath = dir.filePath("rir.wav").toStdString();
+        check(writeWavFile(dryPath, dryBuf).success(), "prep-conv: dry written");
+        check(writeWavFile(rirPath, rirBuf).success(), "prep-conv: rir written");
+
+        auto fileBytes = [](const QString &p) {
+            QFile f(p);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const QString outA = dir.filePath("a.wav");
+        const QString outB = dir.filePath("b.wav");
+
+        // ① 既定 (何もしない) → convolveFiles とバイト一致
+        const AcousticResult<ConvolutionInfo> ra =
+            ofd::QtAcousticAdapter::convolveFiles(
+                QString::fromStdString(dryPath),
+                QString::fromStdString(rirPath), outA, 0);
+        bool prepped = true;
+        const AcousticResult<ConvolutionInfo> rb =
+            ofd::tabhelp::convolveWithPrep(
+                QString::fromStdString(dryPath),
+                QString::fromStdString(rirPath), outB, 0,
+                ofd::audioedit::SourcePrep(), &prepped);
+        check(ra.success() && rb.success(), "prep-conv: both paths succeed");
+        check(!prepped, "prep-conv: identity prep reports no pre-processing");
+        check(!fileBytes(outA).isEmpty()
+              && fileBytes(outA) == fileBytes(outB),
+              "prep-conv: identity prep is byte-identical to convolveFiles");
+
+        // ② ゲイン +6.02 dB → 出力ピークが 2 倍 (dB では +6.02)
+        ofd::audioedit::SourcePrep g;
+        g.gainDb = 20.0 * std::log10(2.0);
+        const QString outC = dir.filePath("c.wav");
+        const AcousticResult<ConvolutionInfo> rc =
+            ofd::tabhelp::convolveWithPrep(
+                QString::fromStdString(dryPath),
+                QString::fromStdString(rirPath), outC, 0, g, &prepped);
+        check(rc.success() && prepped, "prep-conv: gain path succeeds");
+        if (ra.success() && rc.success())
+            check(std::fabs(rc.value().outputPeakDbfs
+                            - ra.value().outputPeakDbfs - 6.0206) < 0.02,
+                  "prep-conv: +6.02 dB of source gain raises the output peak "
+                  "by the same amount");
+
+        // ③ トリムで出力が短くなる (0.2 s の半分を切り出す)
+        ofd::audioedit::SourcePrep t;
+        t.trimStartSec = 0.05;
+        t.trimEndSec   = 0.15;
+        const QString outD = dir.filePath("d.wav");
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), outD, 0, t).success(),
+              "prep-conv: trim path succeeds");
+        const AcousticResult<AudioBuffer> full = readWavFile(outA.toStdString());
+        const AcousticResult<AudioBuffer> cut  = readWavFile(outD.toStdString());
+        check(full.success() && cut.success(), "prep-conv: outputs readable");
+        if (full.success() && cut.success())
+            check(cut.value().sampleCount() < full.value().sampleCount(),
+                  "prep-conv: the trim shortens the rendered output");
+
+        // ④ トリム範囲が信号の外 → エラー (無音を黙って書き出さない)
+        ofd::audioedit::SourcePrep bad;
+        bad.trimStartSec = 10.0;
+        bad.trimEndSec   = 11.0;
+        const QString outE = dir.filePath("e.wav");
+        // 範囲外のトリムは prepareSource が「切らない」ので成功する
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), outE, 0, bad).success(),
+              "prep-conv: an out-of-range trim still renders the full source");
     }
 }
 

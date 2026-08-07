@@ -998,6 +998,11 @@ void I18n::loadTables() {
     add("aur_clipped_yes", "あり (%1 サンプル)", "Yes (%1 samples)");
     add("aur_clipped_no", "なし", "None");
     add("aur_gain_applied", "(適用済み)", "(applied)");
+    add("aur_src_prep_note",
+        "ドライ音源に音源モデリングタブの前処理 "
+        "(トリム / ハイパス / ゲイン) を適用しました。",
+        "The dry source was pre-processed with the source-modelling tab's "
+        "trim / high-pass / gain settings.");
     add("aur_post_gain_note",
         "出力ピークとクリップ数は、ゲイン適用後に書き出した WAV の"
         "サンプルで測った値です。",

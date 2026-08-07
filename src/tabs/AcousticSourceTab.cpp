@@ -225,6 +225,24 @@ const bool s_i18n = [] {
     I18n::reg("asrc_file", "ファイル", "File");
     I18n::reg("asrc_browse", "📁 参照…", "📁 Browse…");
     I18n::reg("asrc_listen", "▶ 試聴", "▶ Preview");
+    I18n::reg("asrc_prep_note",
+              "▸ トリム・ゲイン・ハイパスは **トリム → HPF → ゲイン** の順で"
+              "適用され、下の波形プレビューと、可聴化 (単発・一括・音響タブ) が"
+              "畳み込むドライ音源の両方に効く。"
+              "トリムは終了 ≤ 開始のとき全長を使う。HPF は 2 次バタワース "
+              "(RBJ biquad, Q=1/√2)。",
+              "▸ Trim, gain and the high-pass filter are applied in the order "
+              "**trim → HPF → gain**, and affect both the waveform preview "
+              "below and the dry source convolved by the auralisation (single, "
+              "batch and the acoustics tab alike). The trim is "
+              "ignored when the end is not after the start. The HPF is a "
+              "2nd-order Butterworth (RBJ biquad, Q=1/√2).");
+    I18n::reg("asrc_prep_applied", "前処理あり", "pre-processed");
+    I18n::reg("asrc_prep_empty",
+              "トリム範囲が信号の外にあるため、前処理後の信号が空になりました "
+              "(設定を見直してください)。",
+              "The trim range lies outside the signal, so nothing is left after "
+              "pre-processing — please revise the settings.");
     I18n::reg("asrc_formats", "対応形式", "Supported formats");
     I18n::reg("asrc_channels", "チャンネル", "Channels");
     I18n::reg("asrc_ch_mono", "モノ → 1音源", "Mono → 1 source");
@@ -1317,28 +1335,48 @@ QWidget *AcousticSourceTab::buildSignalPage()
     auto *loop = new QCheckBox(I18n::tr("asrc_loop_chk"), sw);
     sw->form()->addRow(I18n::tr("asrc_loop"), loop);
 
+    // ── 前処理 (トリム / ゲイン / HPF) — モデル (.ofdx acoustic.source_wav) の
+    //    View。波形プレビューと可聴化へ渡すドライ音源の両方に効く。
+    const AcousticOpts &a0 = m_p->acoustic();
     auto *trimRow = new QHBoxLayout();
-    auto *trim0 = new QLineEdit("0.0", sw); trim0->setMaximumWidth(60);
-    auto *trim1 = new QLineEdit("5.0", sw); trim1->setMaximumWidth(60);
-    trimRow->addWidget(trim0);
+    m_wavTrim0 = new QLineEdit(QString::number(a0.wavTrimStart_s, 'g', 6), sw);
+    m_wavTrim0->setMaximumWidth(60);
+    m_wavTrim1 = new QLineEdit(QString::number(a0.wavTrimEnd_s, 'g', 6), sw);
+    m_wavTrim1->setMaximumWidth(60);
+    trimRow->addWidget(m_wavTrim0);
     trimRow->addWidget(new QLabel(QString::fromUtf8("〜"), sw));
-    trimRow->addWidget(trim1);
+    trimRow->addWidget(m_wavTrim1);
     trimRow->addWidget(new QLabel("s", sw));
     trimRow->addStretch(1);
     sw->form()->addRow(I18n::tr("asrc_trim"), trimRow);
 
     auto *gainRow = new QHBoxLayout();
-    auto *gain = new QLineEdit("0.0", sw); gain->setMaximumWidth(60);
-    gainRow->addWidget(gain);
+    m_wavGain = new QLineEdit(QString::number(a0.wavGain_dB, 'g', 6), sw);
+    m_wavGain->setMaximumWidth(60);
+    gainRow->addWidget(m_wavGain);
     gainRow->addWidget(new QLabel("dB", sw));
     gainRow->addStretch(1);
     sw->form()->addRow(I18n::tr("asrc_gain"), gainRow);
 
-    auto *hpf = new QCheckBox(I18n::tr("asrc_hpf_chk"), sw);
-    hpf->setChecked(true);
-    sw->form()->addRow(I18n::tr("asrc_hpf"), hpf);
-    // WAV 入力設定はまだどこにも読まれない
-    sw->vbox()->addWidget(tabhelp::unwiredNote(sw));
+    auto *hpfRow = new QHBoxLayout();
+    m_wavHpf = new QCheckBox(I18n::tr("asrc_hpf_chk"), sw);
+    m_wavHpf->setChecked(a0.wavHighPass);
+    m_wavHpfHz = new QLineEdit(QString::number(a0.wavHighPassHz, 'g', 6), sw);
+    m_wavHpfHz->setMaximumWidth(60);
+    hpfRow->addWidget(m_wavHpf);
+    hpfRow->addWidget(m_wavHpfHz);
+    hpfRow->addWidget(new QLabel("Hz", sw));
+    hpfRow->addStretch(1);
+    sw->form()->addRow(I18n::tr("asrc_hpf"), hpfRow);
+    auto *prepNote = new QLabel(I18n::tr("asrc_prep_note"), sw);
+    prepNote->setWordWrap(true);
+    prepNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sw->vbox()->addWidget(prepNote);
+    for (QLineEdit *e : { m_wavTrim0, m_wavTrim1, m_wavGain, m_wavHpfHz })
+        connect(e, &QLineEdit::editingFinished, this,
+                &AcousticSourceTab::applyWavPrep);
+    connect(m_wavHpf, &QCheckBox::toggled, this,
+            &AcousticSourceTab::applyWavPrep);
     v->addWidget(sw);
 
     auto *sl = new SectionBox(I18n::tr("asrc_lib_section"), page);
@@ -1432,6 +1470,45 @@ QWidget *AcousticSourceTab::buildSignalPage()
 // 選択 WAV を実読込し、包絡線 (min/max) と RMS/Peak/Crest を実計算して表示。
 // 読込と解析は QThread で非同期 (gui.md: 秒単位処理を GUI スレッドで同期
 // 実行しない)。失敗時は見本表示のまま、エラーだけ統計行へ出す。
+// 前処理の設定 (モデル → AudioEditEngine の入力)
+audioedit::SourcePrep AcousticSourceTab::wavPrep() const
+{
+    return tabhelp::sourcePrep(m_p->acoustic());
+}
+
+// 前処理の widgets → model。プレビュー済みなら同じファイルを再解析して
+// 波形と指標を新しい設定で出し直す (設定と表示が乖離しないように)。
+void AcousticSourceTab::applyWavPrep()
+{
+    if (m_updating || !m_wavTrim0) return;
+    AcousticOpts a = m_p->acoustic();
+    auto num = [](QLineEdit *e, double fallback) {
+        bool ok = false;
+        const double v = e->text().trimmed().toDouble(&ok);
+        return ok ? v : fallback;
+    };
+    const AcousticOpts d;
+    a.wavTrimStart_s = qMax(0.0, num(m_wavTrim0, d.wavTrimStart_s));
+    a.wavTrimEnd_s   = qMax(0.0, num(m_wavTrim1, d.wavTrimEnd_s));
+    a.wavGain_dB     = num(m_wavGain, d.wavGain_dB);
+    a.wavHighPass    = m_wavHpf->isChecked();
+    a.wavHighPassHz  = qMax(0.0, num(m_wavHpfHz, d.wavHighPassHz));
+    if (a.wavTrimStart_s == m_p->acoustic().wavTrimStart_s
+        && a.wavTrimEnd_s == m_p->acoustic().wavTrimEnd_s
+        && a.wavGain_dB == m_p->acoustic().wavGain_dB
+        && a.wavHighPass == m_p->acoustic().wavHighPass
+        && a.wavHighPassHz == m_p->acoustic().wavHighPassHz)
+        return;                                   // 変化なし (再解析しない)
+    m_p->acoustic() = a;
+    m_p->touch();
+
+    if (!m_previewPath.isEmpty()) {
+        const QString path = m_previewPath;
+        m_previewPath.clear();                    // 再読込ガードを外す
+        loadWavPreview(path);
+    }
+}
+
 void AcousticSourceTab::loadWavPreview(const QString &path)
 {
     if (m_previewBusy || path.trimmed().isEmpty()) return;
@@ -1443,10 +1520,15 @@ void AcousticSourceTab::loadWavPreview(const QString &path)
         double fs = 0.0;
         std::vector<double> mono;          // 平均モノ (包絡線用)
         audioedit::LevelMetrics lv;
+        bool prepped = false;              // 前処理を適用したか (注記用)
+        bool prepEmpty = false;            // 前処理で空になった (トリム範囲が外)
     };
     auto d = std::make_shared<PreviewData>();
     const std::string p = path.toStdString();
-    QThread *th = QThread::create([p, d] {
+    // プレビューは前処理 (トリム/HPF/ゲイン) を適用した後の信号を出す —
+    // 設定を変えたら波形と RMS/Peak/Crest がその場で追従する。
+    const audioedit::SourcePrep prep = wavPrep();
+    QThread *th = QThread::create([p, d, prep] {
         const acoustics::AcousticResult<acoustics::AudioBuffer> res =
             acoustics::readWavFile(p);
         if (!res.success()) {
@@ -1454,19 +1536,28 @@ void AcousticSourceTab::loadWavPreview(const QString &path)
             return;
         }
         d->fs = res.value().sampleRateHz;
-        d->mono = QtAcousticAdapter::selectChannel(res.value(), 2);
-        // 指標も包絡線と同じ平均モノで測る (チャンネル間の齟齬を避ける)
+        // 平均モノにしてから前処理する (指標と包絡線を同じ信号で測る)
         acoustics::AudioBuffer mb;
         mb.sampleRateHz = d->fs;
-        mb.channels.push_back(d->mono);
+        mb.channels.push_back(QtAcousticAdapter::selectChannel(res.value(), 2));
+        mb = audioedit::prepareSource(mb, prep);
+        if (mb.channels.empty() || mb.channels[0].empty()) {
+            d->err = QString();
+            d->prepEmpty = true;
+            return;
+        }
+        d->mono = mb.channels[0];
         d->lv = audioedit::analyzeLevels(mb, 0, 0);   // a >= z → 全範囲
+        d->prepped = !prep.isIdentity();
         d->ok = true;
     });
     connect(th, &QThread::finished, this, [this, th, d, path] {
         th->deleteLater();
         m_previewBusy = false;
         if (!d->ok) {
-            m_wavStats->setText(I18n::tr("asrc_preview_fail").arg(d->err));
+            m_wavStats->setText(d->prepEmpty
+                ? I18n::tr("asrc_prep_empty")
+                : I18n::tr("asrc_preview_fail").arg(d->err));
             return;   // 見本波形と注記はそのまま
         }
         QVector<QPointF> top, bottom;
@@ -1481,7 +1572,9 @@ void AcousticSourceTab::loadWavPreview(const QString &path)
                      QString::number(d->lv.peakDbfs, 'f', 1),
                      QString::number(d->lv.crestDb, 'f', 1))
             + QStringLiteral(" · %1 s")
-                  .arg(QString::number(d->lv.durationSec, 'f', 2)));
+                  .arg(QString::number(d->lv.durationSec, 'f', 2))
+            + (d->prepped ? QStringLiteral(" · ") + I18n::tr("asrc_prep_applied")
+                          : QString()));
         m_srateValue->setText(QStringLiteral("%1 Hz").arg(qRound(d->fs)));
         m_previewNote->setVisible(false);   // 実データ表示 — 見本注記を外す
         m_previewPath = path;
@@ -2140,6 +2233,15 @@ void AcousticSourceTab::refresh()
     const int sr = m_p->acoustic().sampleRate;
     m_renderRate->setCurrentIndex(
         sr == 44100 ? 0 : sr == 96000 ? 2 : sr == 192000 ? 3 : 1);
+    // 入力信号の前処理 (.ofdx acoustic.source_wav) を読み直す
+    if (m_wavTrim0) {
+        const AcousticOpts &a = m_p->acoustic();
+        m_wavTrim0->setText(QString::number(a.wavTrimStart_s, 'g', 6));
+        m_wavTrim1->setText(QString::number(a.wavTrimEnd_s, 'g', 6));
+        m_wavGain->setText(QString::number(a.wavGain_dB, 'g', 6));
+        m_wavHpf->setChecked(a.wavHighPass);
+        m_wavHpfHz->setText(QString::number(a.wavHighPassHz, 'g', 6));
+    }
     // 音源リスト (.ofdx) を読み直す
     refreshSourceTable();
     // 別プロジェクトが読み込まれたら、前の RIR の分析結果は無効 — 未算出へ

@@ -28,6 +28,51 @@ const bool s_i18n = [] {
 namespace ofd {
 namespace tabhelp {
 
+acoustics::AcousticResult<acoustics::ConvolutionInfo>
+convolveWithPrep(const QString &dryPath, const QString &rirPath,
+                 const QString &outputPath, int gainMode,
+                 const audioedit::SourcePrep &prep, bool *outPrepped,
+                 std::vector<double> *outDry, std::vector<double> *outWet,
+                 double *outSampleRate,
+                 QtAcousticAdapter::RirResampleNote *outResample)
+{
+    using acoustics::AcousticResult;
+    using acoustics::AudioBuffer;
+    using acoustics::ConvolutionInfo;
+    typedef AcousticResult<ConvolutionInfo> Result;
+
+    if (outPrepped) *outPrepped = false;
+    const AcousticResult<AudioBuffer> dry = QtAcousticAdapter::readWav(dryPath);
+    if (!dry.success())
+        return Result::error(dry.errorCode(),
+                             std::string("dry: ") + dry.message());
+    const AcousticResult<AudioBuffer> rir = QtAcousticAdapter::readWav(rirPath);
+    if (!rir.success())
+        return Result::error(rir.errorCode(),
+                             std::string("rir: ") + rir.message());
+
+    const AudioBuffer dryBuf = audioedit::prepareSource(dry.value(), prep);
+    if (dryBuf.channels.empty() || dryBuf.channels[0].empty())
+        return Result::error(acoustics::AcousticErrorCode::InvalidArgument,
+                             "the source pre-processing left an empty dry "
+                             "signal");
+    if (outPrepped) *outPrepped = !prep.isIdentity();
+    return QtAcousticAdapter::convolveBuffers(dryBuf, rir.value(), outputPath,
+                                              gainMode, outDry, outWet,
+                                              outSampleRate, outResample);
+}
+
+audioedit::SourcePrep sourcePrep(const AcousticOpts &a)
+{
+    audioedit::SourcePrep p;
+    p.trimStartSec = a.wavTrimStart_s;
+    p.trimEndSec   = a.wavTrimEnd_s;
+    p.gainDb       = a.wavGain_dB;
+    p.highPass     = a.wavHighPass;
+    p.highPassHz   = a.wavHighPassHz;
+    return p;
+}
+
 // RIR のナイキストがこの値未満なら「高域が無い」と警告する。
 // 16 kHz は可聴帯域上端 (20 kHz) より下だが、これを下回ると音色が
 // はっきり曇るので実用上の境目として採る。

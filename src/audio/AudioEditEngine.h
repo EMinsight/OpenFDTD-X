@@ -156,6 +156,31 @@ std::vector<SpectrumPoint> spectrum(const AudioBuffer &in, std::size_t a,
                                     WindowKind window,
                                     std::size_t fftSize = 4096);
 
+// ── 無響録音の前処理 (音源モデリングタブの WAV 入力設定) ───────────────────
+// 音源ファイルを可聴化へ渡す前の下ごしらえ。適用順は **トリム → HPF →
+// ゲイン** で固定する (順序で結果が変わるため — HPF をゲインの後に掛けると
+// クリップ済みの信号を濾すことになり、トリムを最後にすると HPF の
+// 過渡応答が切り口に残る)。
+struct SourcePrep {
+    double trimStartSec = 0.0;   // 切り出し開始 [s]
+    double trimEndSec   = 0.0;   // 切り出し終了 [s] (<= start なら全長)
+    double gainDb       = 0.0;   // ゲイン [dB] (0 = 無変更)
+    bool   highPass     = false; // ハイパスフィルタ
+    double highPassHz   = 80.0;  // カットオフ [Hz] (無響録音の暗騒音・
+                                 // 空調・風切りは概ね 80 Hz 以下)
+
+    // 既定 (何もしない) か
+    bool isIdentity() const
+    {
+        return !(trimEndSec > trimStartSec) && gainDb == 0.0 && !highPass;
+    }
+};
+
+// 前処理を適用する。isIdentity() のときは入力をそのまま返す
+// (ビット一致 — 何もしない設定で信号が変わらないことを selftest で検証)。
+// HPF は RBJ の 2 次バイクアッド (Q = 1/√2 = Butterworth)。
+AudioBuffer prepareSource(const AudioBuffer &in, const SourcePrep &p);
+
 // レベル指標 + Schroeder 逆積分の残響指標 (選択範囲を IR とみなす)。
 // 減衰が該当レベルへ達しない場合は has* = false (「それらしい値」を返さない)
 struct LevelMetrics {

@@ -563,6 +563,7 @@ void AuralizationTab::runConvolution()
         QtAcousticAdapter::RirResampleNote note;
         std::vector<double> dry, wet;
         double fs = 0.0;
+        bool prepped = false;   // 音源の前処理を適用したか (注記用)
     };
     auto d = std::make_shared<RunData>();
     const QString dryPath = s.auralizationDryFile;
@@ -574,10 +575,15 @@ void AuralizationTab::runConvolution()
     updateBusyUi();
     m_status->setText(I18n::tr("aur_status_running"));
 
-    QThread *th = QThread::create([d, dryPath, rirPath, outPath, gainMode] {
-        d->res = QtAcousticAdapter::convolveFiles(
-            dryPath, rirPath, outPath, gainMode,
-            &d->dry, &d->wet, &d->fs, &d->note);
+    // ドライ音源には音源モデリングタブの前処理 (トリム / HPF / ゲイン) を
+    // 掛けてから畳み込む。既定 (何もしない) なら読み込んだままのバッファを
+    // 使うので、従来と結果はビット一致する。
+    const audioedit::SourcePrep prep = tabhelp::sourcePrep(m_p->acoustic());
+    QThread *th = QThread::create([d, dryPath, rirPath, outPath, gainMode,
+                                   prep] {
+        d->res = tabhelp::convolveWithPrep(dryPath, rirPath, outPath, gainMode,
+                                           prep, &d->prepped, &d->dry, &d->wet,
+                                           &d->fs, &d->note);
     });
     connect(th, &QThread::finished, this, [this, th, d, outPath, gainMode] {
         th->deleteLater();
@@ -632,6 +638,8 @@ void AuralizationTab::runConvolution()
                                                             note.toHz,
                                                             validBand))
             warn << QStringLiteral("• ") + n;
+        if (d->prepped)   // 黙って音源を加工しない (適用した事実を必ず出す)
+            warn << QStringLiteral("• ") + I18n::tr("aur_src_prep_note");
         if (gainApplied)
             warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
         for (const std::string &w : info.warnings)
@@ -961,15 +969,18 @@ void AuralizationTab::startBatchJob(int jobIdx)
     struct RunData {
         AcousticResult<ConvolutionInfo> res;
         QtAcousticAdapter::RirResampleNote note;
+        bool prepped = false;
     };
     auto d = std::make_shared<RunData>();
     const QString dryPath = m_p->operaAcoustic().auralizationDryFile;
     const int gainMode = qBound(0, m_p->operaAcoustic().auralizationGainMode, 1);
+    // 単発実行と同じ前処理を通す (一括だけ違う音になるのを防ぐ)
+    const audioedit::SourcePrep prep = tabhelp::sourcePrep(m_p->acoustic());
 
-    QThread *th = QThread::create([d, dryPath, job, gainMode] {
-        d->res = QtAcousticAdapter::convolveFiles(
-            dryPath, job.rirPath, job.outPath, gainMode,
-            nullptr, nullptr, nullptr, &d->note);
+    QThread *th = QThread::create([d, dryPath, job, gainMode, prep] {
+        d->res = tabhelp::convolveWithPrep(dryPath, job.rirPath, job.outPath,
+                                           gainMode, prep, &d->prepped,
+                                           nullptr, nullptr, nullptr, &d->note);
     });
     connect(th, &QThread::finished, this, [this, th, d, job, jobIdx] {
         th->deleteLater();
@@ -997,6 +1008,7 @@ void AuralizationTab::startBatchJob(int jobIdx)
                 txt += QStringLiteral(" ") + cl;
                 tip << cl;
             }
+            if (d->prepped) tip << I18n::tr("aur_src_prep_note");
             for (const std::string &w : info.warnings)
                 tip << QString::fromStdString(w);
             setBatchRowStatus(job.row, txt, tip.join(QStringLiteral("\n")));

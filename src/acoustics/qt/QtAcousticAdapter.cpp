@@ -246,6 +246,22 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     if (!rir.success())
         return Result::error(rir.errorCode(),
                              std::string("rir: ") + rir.message());
+    return convolveBuffers(dry.value(), rir.value(), outputPath, gainMode,
+                           outDry, outWet, outSampleRate, outResample);
+}
+
+AcousticResult<ConvolutionInfo>
+QtAcousticAdapter::convolveBuffers(const AudioBuffer &dryBuf,
+                                   const AudioBuffer &rirBuf,
+                                   const QString &outputPath, int gainMode,
+                                   std::vector<double> *outDry,
+                                   std::vector<double> *outWet,
+                                   double *outSampleRate,
+                                   RirResampleNote *outResample)
+{
+    typedef AcousticResult<ConvolutionInfo> Result;
+
+    if (outResample) *outResample = RirResampleNote();
     if (outputPath.trimmed().isEmpty())
         return Result::error(AcousticErrorCode::InvalidArgument,
                              "empty output path");
@@ -254,18 +270,18 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     // 音源素材 (ドライ) は変えない。変換の事実は outResample で通知し、
     // 呼び出し側 UI が必ず表示する (黙って変換しない)。fs 自体が不正
     // (非正・非整数など) で変換できない場合はここでエラーになる。
-    AudioBuffer rirUsed = rir.value();
+    AudioBuffer rirUsed = rirBuf;
     // fromHz / toHz は変換の有無に関わらず埋める (RIR の帯域は変換しても
     // 広がらないので、呼び出し側が帯域の注記を出せるようにするため)。
     if (outResample) {
         outResample->fromHz = rirUsed.sampleRateHz;
-        outResample->toHz = dry.value().sampleRateHz;
+        outResample->toHz = dryBuf.sampleRateHz;
     }
-    if (dry.value().sampleRateHz > 0.0 && rirUsed.sampleRateHz > 0.0 &&
-        rirUsed.sampleRateHz != dry.value().sampleRateHz) {
+    if (dryBuf.sampleRateHz > 0.0 && rirUsed.sampleRateHz > 0.0 &&
+        rirUsed.sampleRateHz != dryBuf.sampleRateHz) {
         const double fromHz = rirUsed.sampleRateHz;
         AcousticResult<AudioBuffer> rs =
-            resampleBuffer(rirUsed, dry.value().sampleRateHz);
+            resampleBuffer(rirUsed, dryBuf.sampleRateHz);
         if (!rs.success())
             return Result::error(rs.errorCode(),
                                  std::string("rir resample: ") + rs.message());
@@ -280,7 +296,7 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     // 畳み込み (fs はここで一致済み。コアは不一致を引き続きエラーにする)
     const ConvolutionEngine engine;
     AcousticResult<ConvolvedAudio> conv =
-        engine.convolve(dry.value(), rirUsed);
+        engine.convolve(dryBuf, rirUsed);
     if (!conv.success())
         return Result::error(conv.errorCode(), conv.message());
 
@@ -343,7 +359,7 @@ QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
     if (!wr.success())
         return Result::error(wr.errorCode(), wr.message());
 
-    if (outDry) *outDry = selectChannel(dry.value(), 2);
+    if (outDry) *outDry = selectChannel(dryBuf, 2);
     if (outWet && out.audio.channelCount() > 0) *outWet = out.audio.channels[0];
     if (outSampleRate) *outSampleRate = out.audio.sampleRateHz;
     return Result::ok(info);

@@ -735,6 +735,21 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"absorption", budget}, {"noise_levels", noise},
             {"noise_sources", noiseSrc}, {"receivers", recv},
             {"sources", srcList} };
+        {   // 入力信号 (WAV) の前処理 — 既定のままならキー自体を書かない
+            // (旧ファイルとバイト一致。絶対規則 2)
+            const AcousticOpts d;
+            if (a.wavTrimStart_s != d.wavTrimStart_s
+                || a.wavTrimEnd_s != d.wavTrimEnd_s
+                || a.wavGain_dB != d.wavGain_dB
+                || a.wavHighPass != d.wavHighPass
+                || a.wavHighPassHz != d.wavHighPassHz) {
+                ac["source_wav"] = QJsonObject{
+                    {"trim_s", QJsonArray{ a.wavTrimStart_s, a.wavTrimEnd_s }},
+                    {"gain_db", a.wavGain_dB},
+                    {"highpass", a.wavHighPass},
+                    {"highpass_hz", a.wavHighPassHz} };
+            }
+        }
         // 実測 RIR 分析 (RirAnalysisTab, 指示書 §15) — 追加キーのみ。
         // 既存キーの改名・削除・型変更は後方互換のため禁止。
         const OperaAcousticSettings &oa = p.operaAcoustic();
@@ -1270,6 +1285,18 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 r.measure = o.value("measure").toString();
                 a.noiseSources.push_back(r);
             }
+        }
+        // 入力信号 (WAV) の前処理 — 追加キー。キーが無ければ既定のまま
+        if (ac.contains("source_wav")) {
+            const QJsonObject w = ac["source_wav"].toObject();
+            const QJsonArray t = w.value("trim_s").toArray();
+            if (t.size() == 2) {
+                a.wavTrimStart_s = t[0].toDouble(a.wavTrimStart_s);
+                a.wavTrimEnd_s   = t[1].toDouble(a.wavTrimEnd_s);
+            }
+            a.wavGain_dB    = w.value("gain_db").toDouble(a.wavGain_dB);
+            a.wavHighPass   = w.value("highpass").toBool(a.wavHighPass);
+            a.wavHighPassHz = w.value("highpass_hz").toDouble(a.wavHighPassHz);
         }
         // 音源リスト — 追加キー。キーが無い旧ファイルは既定 3 行のまま
         // (旧ファイル互換)。空配列は「音源なし」として尊重する。
