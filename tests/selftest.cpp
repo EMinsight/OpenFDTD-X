@@ -26,6 +26,7 @@
 #include "io/BellhopIO.h"
 #include "io/ArrReader.h"
 #include "io/CircuitIO.h"
+#include "optics/PhotonicCircuit.h"
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
@@ -4625,6 +4626,171 @@ static void testOceanPageScan()
 // BELLHOP の到達 (.arr) の読み取りと受信インパルス応答の合成
 
 // 回路パラメータ抽出 (OpenPEEC) の入力生成と .ofdx 往復
+
+// フォトニック回路 (S 行列) — リング共振器・MZI を解析解と照合する
+static void testPhotonicCircuit()
+{
+    using namespace ofd::optics;
+    g_file = "photonic";
+
+    // (a) 導波路: 損失と位相。1 cm で loss_dBcm ぶんちょうど減る
+    {
+        Waveguide wg;
+        wg.neff = 2.44; wg.ng = 0.0;      // 分散なし
+        wg.loss_dBcm = 3.0;
+        const cplx t = wg.transfer(1550.0, 10000.0);   // 10000 μm = 1 cm
+        const double dB = 10.0 * std::log10(std::norm(t));
+        check(std::fabs(dB + 3.0) < 1e-9, "wg: 1 cm of 3 dB/cm loses 3 dB");
+        // 位相 β L = 2π neff L / λ
+        const double beta = 2.0 * M_PI * 2.44 / 1.55;   // [1/μm]
+        const double expected = std::fmod(beta * 10000.0, 2.0 * M_PI);
+        double got = std::fmod(-std::arg(t) + 2.0 * M_PI, 2.0 * M_PI);
+        check(std::fabs(got - std::fmod(expected + 2.0 * M_PI, 2.0 * M_PI)) < 1e-6,
+              "wg: the accumulated phase is beta*L");
+        // 無損失なら |t| = 1
+        wg.loss_dBcm = 0.0;
+        check(std::fabs(std::abs(wg.transfer(1550.0, 1234.0)) - 1.0) < 1e-12,
+              "wg: lossless propagation is unitary");
+    }
+
+    // (b) 全域通過リング: 無損失なら |t| = 1 (全波長で)、共振で位相が回る
+    {
+        RingResonator ring;
+        ring.wg.loss_dBcm = 0.0;
+        ring.wg.ng = 0.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;
+        bool unit = true;
+        for (int i = 0; i <= 40; ++i) {
+            const double lam = 1540.0 + 20.0 * i / 40.0;
+            unit = unit && std::fabs(std::abs(ring.through(lam)) - 1.0) < 1e-9;
+        }
+        check(unit, "ring: a lossless all-pass ring is unitary at every wavelength");
+    }
+
+    // (c) 臨界結合: 往復損失と結合が釣り合うと through がゼロになる
+    //     全域通過リングは t1 = a のとき t_th = 0 (完全消光)
+    {
+        RingResonator ring;
+        ring.radius_um = 10.0;
+        ring.wg.neff = 2.4; ring.wg.ng = 0.0;
+        ring.wg.loss_dBcm = 5.0;
+        // 1 周の振幅透過 a を求め、t1 = a となる κ1 を選ぶ
+        const double L = ring.circumference_um();
+        const double a = std::abs(ring.wg.transfer(1550.0, L));
+        ring.kappa1 = std::sqrt(std::max(0.0, 1.0 - a * a));
+        // 共振は掃引の刻みに当たるとは限らないので、共振波長を **直接** 出す。
+        // 分散なし (ng = 0) なので neff·L / λ = m (整数) が共振条件。
+        const double m0 = std::round(ring.wg.neff * L / 1.550);   // λ [μm]
+        const double lamRes = ring.wg.neff * L / m0 * 1000.0;     // [nm]
+        const double dB = 10.0 * std::log10(std::norm(ring.through(lamRes)));
+        check(dB < -60.0,
+              "ring: critical coupling (t1 = a) extinguishes the through port");
+        // 共振から半値幅ぶん離れれば戻る (共振が鋭いことの確認)
+        const double fsr = analyticFsr_nm(lamRes, ring.wg.neff, L);
+        const double off = 10.0 * std::log10(std::norm(
+            ring.through(lamRes + 0.25 * fsr)));
+        check(off > -1.0, "ring: away from resonance the through port recovers");
+    }
+
+    // (d) FSR が解析解 λ²/(ng L) と一致する
+    {
+        RingResonator ring;
+        ring.radius_um = 20.0;
+        ring.wg.neff = 2.44;
+        ring.wg.ng = 4.2;
+        ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 2.0;
+        ring.kappa1 = 0.25;
+        const double L = ring.circumference_um();
+        const double fsrTheory = analyticFsr_nm(1550.0, 4.2, L);
+        const std::vector<SweepPoint> s =
+            sweepRing(ring, 1550.0 - 3 * fsrTheory, 1550.0 + 3 * fsrTheory, 40001);
+        const ResonatorMetrics m = analyseSweep(s);
+        check(m.valid, "ring: the sweep resolves the resonances");
+        check(std::fabs(m.fsr_nm - fsrTheory) / fsrTheory < 0.02,
+              "ring: FSR matches lambda^2/(ng L) within 2%");
+        // Q とフィネスの整合: F = FSR/FWHM, Q = lambda/FWHM
+        check(m.fwhm_nm > 0 && std::fabs(m.qFactor - m.resonance_nm / m.fwhm_nm) < 1e-6,
+              "ring: Q = lambda / FWHM");
+        check(std::fabs(m.finesse - m.fsr_nm / m.fwhm_nm) < 1e-6,
+              "ring: finesse = FSR / FWHM");
+        // 分散を無視すると FSR は λ²/(neff L) になり、ng 版とは食い違う
+        // (群屈折率を使う理由 — 誤って neff を使う実装への回帰よけ)
+        check(std::fabs(m.fsr_nm - analyticFsr_nm(1550.0, 2.44, L)) / m.fsr_nm > 0.5,
+              "ring: FSR follows the *group* index, not the effective index");
+    }
+
+    // (e) アド・ドロップ: 無損失なら |through|^2 + |drop|^2 = 1 (エネルギー保存)
+    {
+        RingResonator ring;
+        ring.radius_um = 8.0;
+        ring.wg.loss_dBcm = 0.0;
+        ring.wg.ng = 0.0;
+        ring.kappa1 = 0.35;
+        ring.kappa2 = 0.35;
+        bool conserved = true;
+        double worst = 0.0;
+        for (int i = 0; i <= 200; ++i) {
+            const double lam = 1549.0 + 2.0 * i / 200.0;
+            const double p = std::norm(ring.through(lam)) + std::norm(ring.drop(lam));
+            worst = std::max(worst, std::fabs(p - 1.0));
+            conserved = conserved && std::fabs(p - 1.0) < 1e-9;
+        }
+        check(conserved,
+              "ring: a lossless add-drop ring conserves through + drop power");
+    }
+
+    // (f) MZI: 50:50 の両端、無損失なら bar/cross の電力和が 1、
+    //     アーム長差 ΔL の FSR = λ²/(ng ΔL)
+    {
+        MachZehnder mzi;
+        mzi.wg.neff = 2.44; mzi.wg.ng = 4.2; mzi.wg.lambda0_nm = 1550.0;
+        mzi.wg.loss_dBcm = 0.0;
+        mzi.length1_um = 100.0;
+        mzi.length2_um = 200.0;          // ΔL = 100 μm
+        bool conserved = true;
+        for (int i = 0; i <= 100; ++i) {
+            const double lam = 1540.0 + 20.0 * i / 100.0;
+            const double p = std::norm(mzi.bar(lam)) + std::norm(mzi.cross(lam));
+            conserved = conserved && std::fabs(p - 1.0) < 1e-9;
+        }
+        check(conserved, "mzi: a lossless MZI conserves power");
+
+        const double fsrTheory = analyticFsr_nm(1550.0, 4.2, 100.0);
+        const std::vector<SweepPoint> s =
+            sweepMzi(mzi, 1550.0 - 2.5 * fsrTheory, 1550.0 + 2.5 * fsrTheory, 40001);
+        const ResonatorMetrics m = analyseSweep(s);
+        check(m.fsr_nm > 0 && std::fabs(m.fsr_nm - fsrTheory) / fsrTheory < 0.02,
+              "mzi: the interference FSR matches lambda^2/(ng dL) within 2%");
+        // 位相シフタ (熱光学) で π ずらすと bar と cross が入れ替わる
+        MachZehnder shifted = mzi;
+        shifted.phaseShift_rad = M_PI;
+        const double lam = 1550.0;
+        check(std::fabs(std::norm(shifted.bar(lam)) - std::norm(mzi.cross(lam))) < 1e-9
+                  && std::fabs(std::norm(shifted.cross(lam)) - std::norm(mzi.bar(lam))) < 1e-9,
+              "mzi: a pi phase shift swaps the bar and cross outputs");
+    }
+
+    // (g) 読めないときは valid=false + 理由 (数字をでっち上げない)
+    {
+        check(!analyseSweep({}).valid, "metrics: an empty sweep is invalid");
+        RingResonator flat;
+        flat.kappa1 = 0.0;    // 結合なし = 共振が出ない
+        flat.wg.ng = 0.0;
+        const ResonatorMetrics m = analyseSweep(sweepRing(flat, 1540, 1560, 501));
+        check(!m.valid && !m.note.empty(),
+              "metrics: no resonance -> invalid with a stated reason");
+        RingResonator one;
+        one.radius_um = 200.0;   // FSR が狭い → 掃引を狭くすると 1 本だけ
+        one.wg.ng = 4.2; one.kappa1 = 0.2; one.wg.loss_dBcm = 2.0;
+        const ResonatorMetrics m1 =
+            analyseSweep(sweepRing(one, 1549.95, 1550.05, 4001));
+        check(m1.fsr_nm == 0.0 && !m1.note.empty(),
+              "metrics: a single resonance yields no FSR (and says why)");
+    }
+}
+
 static void testCircuitExtraction()
 {
     g_file = "circuit";
@@ -10302,6 +10468,7 @@ int main(int argc, char *argv[])
     testOceanPageScan();
     testArrivalIr();
     testCircuitExtraction();
+    testPhotonicCircuit();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

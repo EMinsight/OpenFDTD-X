@@ -9,6 +9,8 @@
 
 class QCheckBox;
 
+class QLabel;
+
 namespace ofd {
 
 class Project;
@@ -20,6 +22,10 @@ public:
     explicit AntennaCharTab(Project *project, QWidget *parent = nullptr);
 
 private:
+    // 直近の計算結果 (給電点表 + 遠方界パターン) を CSV へ書き出す
+    void exportCsv();
+    QLabel *m_exportNote = nullptr;
+
     // 1セクション = チェックボックスの縦並び (モックの <Row><Check/></Row> 群)
     SectionBox *checkSection(QWidget *parent, const char *titleKey,
                              const char *const *keys, const bool *checked, int n,

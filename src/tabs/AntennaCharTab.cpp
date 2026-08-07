@@ -2,6 +2,13 @@
 #include "AntennaCharTab.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
+#include "../io/KernelResultReader.h"
+#include <QFileDialog>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QTextStream>
+#include <cmath>
 #include "../I18n.h"
 #include "TabHelpers.h"
 
@@ -62,6 +69,23 @@ const bool s_i18n = [] {
     I18n::reg("ant_arr_grating", "グレーティングローブ検出", "Grating-lobe detection");
 
     I18n::reg("ant_output", "出力先", "Outputs");
+    I18n::reg("ant_csv_hint",
+              "CSV は直近の計算結果 (<ケース名>.log の給電点表と far1d.log の"
+              "遠方界パターン) から書き出します。HDF5 / NEC・FFE の書き出しは"
+              "未実装です。",
+              "The CSV is written from the latest run (<case>.log feed table and "
+              "the far1d.log patterns). HDF5 and NEC/FFE export are not "
+              "implemented.");
+    I18n::reg("ant_csv_none",
+              "書き出せる結果がありません。先に「計算」と「ポスト処理」を"
+              "実行してください (%1 に .log が見つかりません)。",
+              "There is no result to export. Run the solver and the "
+              "post-processing first (no .log found in %1).");
+    I18n::reg("ant_csv_ok",
+              "書き出しました: %1 — 給電点 %2 個 (%3 周波数)、遠方界 %4 面",
+              "Exported %1 \u2014 %2 feed(s) over %3 frequencies, %4 pattern cut(s)");
+    I18n::reg("ant_csv_fail", "書き出しに失敗しました: %1",
+              "Export failed: %1");
     return true;
 }();
 
@@ -114,7 +138,8 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     auto *csvBtn = new QPushButton("📄 antenna_report.csv", sOut);
     auto *h5Btn  = new QPushButton("📊 antenna_pattern.h5", sOut);
     auto *necBtn = new QPushButton("📐 .nec / .ffe", sOut);
-    tabhelp::markNotImplemented(csvBtn);
+    // CSV は実装済み (ofd の実行結果を読んで書く)。HDF5 / NEC は未実装。
+    connect(csvBtn, &QPushButton::clicked, this, &AntennaCharTab::exportCsv);
     tabhelp::markNotImplemented(h5Btn);
     tabhelp::markNotImplemented(necBtn);
     row->addWidget(csvBtn);
@@ -122,6 +147,10 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     row->addWidget(necBtn);
     row->addStretch(1);
     sOut->vbox()->addLayout(row);
+    m_exportNote = new QLabel(I18n::tr("ant_csv_hint"), sOut);
+    m_exportNote->setWordWrap(true);
+    m_exportNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sOut->vbox()->addWidget(m_exportNote);
     v->addWidget(sOut);
 
     v->addStretch(1);
@@ -144,4 +173,69 @@ SectionBox *AntennaCharTab::checkSection(QWidget *parent, const char *titleKey,
     // チェック状態はまだどこにも読まれない (ローカル状態のみ)
     s->vbox()->addWidget(tabhelp::unwiredNote(s));
     return s;
+}
+
+// アンテナ特性レポート (CSV) — 直近の計算結果から書き出す。
+// 給電点表 (<ケース名>.log) と遠方界パターン (far1d.log) を 1 ファイルに
+// まとめる。結果が無ければ **書かずに理由を出す** (絶対規則 5)。
+void AntennaCharTab::exportCsv()
+{
+    const QString dir = m_p->filePath().isEmpty()
+                            ? QString()
+                            : QFileInfo(m_p->filePath()).path();
+    if (dir.isEmpty()) {
+        m_exportNote->setText(I18n::tr("ant_csv_none")
+                                  .arg(QStringLiteral("(未保存のプロジェクト)")));
+        return;
+    }
+    const QString base = QFileInfo(m_p->filePath()).completeBaseName();
+    const QVector<FeedSweep> feeds =
+        KernelResultReader::readFeedSweeps(dir + QLatin1Char('/') + base + ".log");
+    const QVector<FarPattern> cuts =
+        KernelResultReader::readFar1d(dir + QStringLiteral("/far1d.log"));
+    if (feeds.isEmpty() && cuts.isEmpty()) {
+        m_exportNote->setText(
+            I18n::tr("ant_csv_none").arg(QDir::toNativeSeparators(dir)));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ant_output"),
+        dir + QStringLiteral("/antenna_report.csv"),
+        QStringLiteral("CSV (*.csv)"));
+    if (path.isEmpty()) return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_exportNote->setText(I18n::tr("ant_csv_fail").arg(f.errorString()));
+        return;
+    }
+    QTextStream out(&f);
+    out << "# OpenFDTD-X antenna report\n";
+    out << "# project," << QFileInfo(m_p->filePath()).fileName() << "\n";
+    int freqCount = 0;
+    for (const FeedSweep &fs : feeds) {
+        out << "\n[feed " << fs.feedIndex << "] z0[ohm]," << fs.z0 << "\n";
+        out << "frequency[Hz],Rin[ohm],Xin[ohm],|Z|[ohm],Ref[dB],VSWR\n";
+        for (const FeedSweepPoint &p : fs.points) {
+            out << QString::number(p.freqHz, 'g', 10) << ","
+                << QString::number(p.rin, 'g', 8) << ","
+                << QString::number(p.xin, 'g', 8) << ","
+                << QString::number(std::hypot(p.rin, p.xin), 'g', 8) << ","
+                << QString::number(p.refDb, 'g', 6) << ","
+                << QString::number(p.vswr, 'g', 6) << "\n";
+            ++freqCount;
+        }
+    }
+    for (const FarPattern &c : cuts) {
+        out << "\n[pattern] plane," << c.plane << ",frequency[Hz],"
+            << QString::number(c.freqHz, 'g', 10) << "\n";
+        out << "angle[deg],E-abs[dB]\n";
+        for (int i = 0; i < c.deg.size() && i < c.eAbsDb.size(); ++i)
+            out << QString::number(c.deg[i], 'g', 6) << ","
+                << QString::number(c.eAbsDb[i], 'g', 6) << "\n";
+    }
+    f.close();
+    m_exportNote->setText(I18n::tr("ant_csv_ok")
+                              .arg(QFileInfo(path).fileName())
+                              .arg(feeds.size()).arg(freqCount).arg(cuts.size()));
 }

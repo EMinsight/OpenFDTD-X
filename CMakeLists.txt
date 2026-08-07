@@ -175,6 +175,12 @@ set(CORE_SOURCES
     src/optics/FdeModeSolver.cpp
     src/optics/FdeModeSolver.h
 
+    # フォトニック集積回路の回路レベル解析 (S 行列で素子を接続) — Qt 非依存。
+    # SchematicTab の計算実体で、selftest からリング共振器の閉形式・
+    # FSR = λ²/(ng L) と直接突き合わせる
+    src/optics/PhotonicCircuit.cpp
+    src/optics/PhotonicCircuit.h
+
     # 曲がり導波路の共形変換と重なり積分 (Heiblum-Harris / Marcuse) —
     # Qt 非依存。ModeSolverTab の曲げ節の計算実体
     src/optics/BendWaveguide.cpp

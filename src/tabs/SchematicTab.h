@@ -15,11 +15,16 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
+class QDoubleSpinBox;
+class QSpinBox;
 class QLineEdit;
 class QTableWidget;
 class QTableWidgetItem;
 
 namespace ofd {
+
+class MiniPlot;
 
 class Project;
 
@@ -29,6 +34,7 @@ public:
     explicit SchematicTab(Project *project, QWidget *parent = nullptr);
 
 private slots:
+    void runCircuitSim();        // 素子 S 行列 → 波長掃引 → 指標
     void refreshNetlist();                        // model → widgets
     void onNetItemChanged(QTableWidgetItem *it);  // widgets → model
 
@@ -42,6 +48,16 @@ private:
     // ネットリスト / Connections
     QTableWidget *m_net;
     QFont         m_netFont;            // 波長列の等幅フォント
+
+    // 回路シミュレーション (optics/PhotonicCircuit)
+    QComboBox      *m_device = nullptr;    // リング (全域通過/アドドロップ) / MZI
+    QDoubleSpinBox *m_neff = nullptr, *m_ng = nullptr, *m_loss = nullptr;
+    QDoubleSpinBox *m_radius = nullptr, *m_k1 = nullptr, *m_k2 = nullptr;
+    QDoubleSpinBox *m_dL = nullptr, *m_shift = nullptr;
+    QDoubleSpinBox *m_lam1 = nullptr, *m_lam2 = nullptr;
+    QSpinBox       *m_points = nullptr;
+    MiniPlot       *m_spectrum = nullptr;
+    QLabel         *m_simResult = nullptr;
 
     // ノイズ・温度効果 / Noise & temperature
     QCheckBox    *m_shot, *m_thermal, *m_rin, *m_phase, *m_toShift;
