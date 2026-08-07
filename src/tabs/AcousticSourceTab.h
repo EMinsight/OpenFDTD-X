@@ -88,6 +88,7 @@ private:
     // 表の同期。ドメインで対象リストが切り替わる。
     QVector<AcousticSourceRow> &sourceList();
     void applySourceCell(int row, int col);  // widgets → model (1 セル)
+    void refreshSourceCount();   // 有効音源数の注記を更新
     void refreshSourceTable();               // model → widgets
     void addSourceRow(const AcousticSourceRow &row);
     // 選択 WAV を実読込して包絡線とレベル指標を表示 (QThread で非同期)
@@ -111,6 +112,7 @@ private:
     QPushButton  *m_syncBtn  = nullptr;      // 有効行の位置 → feed へ反映
     QLabel       *m_syncNote = nullptr;      // 反映は位置のみ、の説明
     QLabel       *m_srcModelNote = nullptr;  // 「計算へは渡されない」注記
+    QLabel       *m_srcCountNote = nullptr;  // 有効音源数と負荷の注記
     QLineEdit    *m_baseSpl;
     QLabel       *m_baseSplUnit;
 

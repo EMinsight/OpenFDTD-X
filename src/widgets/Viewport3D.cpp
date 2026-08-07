@@ -2,6 +2,7 @@
 #include "Viewport3D.h"
 #include "../core/ComponentCatalog.h"   // 部品→ドメイン許可表 (ComponentsTab と共有)
 #include "../core/Project.h"
+#include "../core/AimDirection.h"
 #include "../I18n.h"
 #include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
 
@@ -691,6 +692,41 @@ void Viewport3D::paintEvent(QPaintEvent *)
         const QPointF c = projectPoint(pr.x, pr.y, pr.z);
         p.setBrush(QColor("#69d069"));
         p.drawEllipse(c, 4, 4);
+    }
+
+    // 室内音響: スピーカーの位置と **向き** を法線矢印で描く。
+    // aim ("+X" / "-Z 30°" / "0,0,-1") が解けたものだけ矢印を出す —
+    // 解けない文字列に適当な向きを描くと、間違った情報を見せることになる
+    // (core/AimDirection)。矢印長は解析領域の 12 % (どの規模でも見える)。
+    if (m_domain == Domain::Acoustic) {
+        const double arrow = ext * 0.12;
+        for (const AcousticSourceRow &sr : m_project->acoustic().sources) {
+            if (!sr.enabled) continue;
+            const QPointF c = projectPoint(sr.x_m, sr.y_m, sr.z_m);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#ffb02e"));
+            p.drawEllipse(c, 4, 4);
+
+            double d[3];
+            if (!parseAim(sr.aim, d)) continue;   // 向き不明 → 矢印は描かない
+            const QPointF tip = projectPoint(sr.x_m + d[0] * arrow,
+                                             sr.y_m + d[1] * arrow,
+                                             sr.z_m + d[2] * arrow);
+            p.setPen(QPen(QColor("#ffb02e"), 2));
+            p.drawLine(c, tip);
+            // 矢じり (画面上で作る — 投影後の向きに合わせる)
+            const QPointF v = tip - c;
+            const double len = std::hypot(v.x(), v.y());
+            if (len > 1.0) {
+                const QPointF u = v / len, n(-u.y(), u.x());
+                QPolygonF head;
+                head << tip << (tip - u * 8.0 + n * 4.0)
+                     << (tip - u * 8.0 - n * 4.0);
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor("#ffb02e"));
+                p.drawPolygon(head);
+            }
+        }
     }
     if (m_project->planewave().enabled) {
         // incident direction arrow from outside the box

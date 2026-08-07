@@ -38,6 +38,7 @@
 #include "io/EvReader.h"
 #include "io/GdsIO.h"
 #include "core/MonteCarlo.h"
+#include "core/AimDirection.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -5207,6 +5208,60 @@ static void testOceanPageScan()
 // GDSII の最小読み書き (io/GdsIO)。外部ライブラリを足さない自前実装なので、
 // 形式の要である REAL8 (excess-64 / 基数 16) を既知のビット列と突き合わせ、
 // そのうえで往復させる。
+// 音源の向き文字列 → 単位ベクトル (core/AimDirection)。
+// 3D シーンの法線矢印がこれに乗るので、解ける形と解けない形をはっきりさせる。
+static void testAimDirection()
+{
+    g_file = "aim";
+    double v[3];
+    const auto near3 = [&](double x, double y, double z) {
+        return std::fabs(v[0] - x) < 1e-12 && std::fabs(v[1] - y) < 1e-12
+            && std::fabs(v[2] - z) < 1e-12;
+    };
+    const auto unit = [&] {
+        return std::fabs(std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]) - 1.0)
+               < 1e-12;
+    };
+
+    // ① 軸トークン (出荷時の既定値がこの形)
+    check(parseAim("+X", v) && near3(1, 0, 0), "aim: +X");
+    check(parseAim("-Z", v) && near3(0, 0, -1), "aim: -Z");
+    check(parseAim("Y", v) && near3(0, 1, 0), "aim: bare axis means +");
+    check(parseAim(" -y ", v) && near3(0, -1, 0), "aim: whitespace and case");
+
+    // ② 軸 + 角度。水平軸は下向き (−Z) へ傾く
+    check(parseAim("+X 90", v) && near3(0, 0, -1),
+          "aim: +X tilted 90 deg points straight down");
+    check(parseAim("+X 0", v) && near3(1, 0, 0), "aim: 0 deg is the axis");
+    check(parseAim("+X 30°", v) && unit()
+          && std::fabs(v[0] - std::cos(30.0 * 3.14159265358979323846 / 180.0))
+                 < 1e-12
+          && v[2] < 0.0,
+          "aim: 30 deg tilts downward by cos/sin");
+    check(parseAim("+Y 45deg", v) && unit() && v[1] > 0 && v[2] < 0,
+          "aim: deg suffix and the Y axis");
+    // 軸が ±Z のときは下向きが定義できないので +X へ傾ける (文書化した基準)
+    check(parseAim("-Z 90", v) && near3(1, 0, 0),
+          "aim: a Z axis tilts toward +X (down is undefined there)");
+    check(parseAim("-Z 30°", v) && unit() && v[0] > 0 && v[2] < 0,
+          "aim: the shipped default -Z 30 deg resolves");
+
+    // ③ 明示ベクトル (正規化される)
+    check(parseAim("0,0,-1", v) && near3(0, 0, -1), "aim: explicit vector");
+    check(parseAim("2 0 0", v) && near3(1, 0, 0), "aim: vector is normalised");
+    check(parseAim("1, 1, 0", v) && unit()
+          && std::fabs(v[0] - v[1]) < 1e-12, "aim: diagonal vector");
+
+    // 解けないものは false — 適当な向きを作らない
+    check(!parseAim("", v), "aim: empty");
+    check(!parseAim("   ", v), "aim: blank");
+    check(!parseAim("front", v), "aim: a word is not a direction");
+    check(!parseAim("0,0,0", v), "aim: the zero vector has no direction");
+    check(!parseAim("+W", v), "aim: there is no W axis");
+    check(!parseAim("1,2", v), "aim: two components is not a vector");
+    check(!parseAim("+X 30 40", v), "aim: a trailing extra number is rejected");
+}
+
 static void testGdsIO()
 {
     g_file = "gds";
@@ -11375,6 +11430,7 @@ int main(int argc, char *argv[])
     testPhotonicCircuit();
     testPhotonicThermoAndNetlist();
     testGdsIO();
+    testAimDirection();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();
