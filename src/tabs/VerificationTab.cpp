@@ -1,6 +1,8 @@
 // VerificationTab.cpp
 #include "VerificationTab.h"
 #include "TabHelpers.h"
+
+#include <limits>
 #include "../core/FdtdVerification.h"
 #include "../core/Project.h"
 #include "../kernel/Runner.h"
@@ -61,6 +63,26 @@ const bool s_i18n = [] {
               "Cell count, λ/Δx and estimated memory are computed from the "
               "current mesh.");
     I18n::reg("ver_mesh_qty", "チェックする量", "Quantity to check");
+    I18n::reg("ver_mesh_stop", "収束テストを中止", "Stop the convergence test");
+    I18n::reg("ver_mesh_running", "収束テスト実行中 %1 / %2 — メッシュ %3",
+              "Convergence test running %1 / %2 — mesh %3");
+    I18n::reg("ver_mesh_run_failed",
+              "収束テストを開始できませんでした (ログを確認してください)",
+              "Could not start the convergence test (see the log)");
+    I18n::reg("ver_mesh_run_partial",
+              "収束テストの一部の解像度が失敗しました",
+              "Some resolutions failed during the convergence test");
+    I18n::reg("ver_mesh_failed", "実行失敗", "run failed");
+    I18n::reg("ver_mesh_noqty", "給電点表なし", "no feed table");
+    I18n::reg("ver_mesh_noqty_all",
+              "チェック量を取得できた解像度が 2 つ未満です "
+              "(波源と frequency1 が要ります)",
+              "Fewer than two resolutions yielded the quantity "
+              "(a feed and frequency1 are required)");
+    I18n::reg("ver_mesh_ref", "基準 (最細)", "reference (finest)");
+    I18n::reg("ver_mesh_conv_fmt",
+              "最細解像度との差が ±%3 dB 以内: %1 / %2 解像度",
+              "Within +/-%3 dB of the finest resolution: %1 of %2");
     I18n::reg("ver_h_mesh", "メッシュ (倍率)", "Mesh (factor)");
     I18n::reg("ver_h_cells", "セル数", "Cells");
     I18n::reg("ver_h_res", "λ/Δx", "λ/Δx");
@@ -491,6 +513,8 @@ QString runLogName(ofd::Kernel k)
 
 // 表示する解像度レベル (現在のメッシュに対する 1 軸あたり分割数の倍率)
 const double kRefineFactors[5] = { 0.5, 0.707106781, 1.0, 1.414213562, 2.0 };
+// 収束したとみなす差 [dB] (最細解像度の値との差がこれ以下)
+const double kConvergedTol_dB = 0.5;
 // ② で設計反射率を出す入射角 [deg]
 const double kAngles[5] = { 0.0, 30.0, 45.0, 60.0, 80.0 };
 // 実行ログの読み込み上限 [byte] (GUI スレッドを止めないための保険)
@@ -522,8 +546,8 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     sMesh->vbox()->addWidget(hintLabel(I18n::tr("ver_mesh_hint"), sMesh));
     m_qtyBox = new QComboBox(sMesh);
     sMesh->form()->addRow(I18n::tr("ver_mesh_qty"), m_qtyBox);
-    // 「チェックする量」は収束テスト (未実装) のための選択でどこにも読まれない
-    sMesh->form()->addRow(tabhelp::unwiredNote(sMesh));
+    // 「チェックする量」は下の自動収束テストが読む (ドメインごとに固定)。
+    // 電磁では給電点表の反射係数 Ref[dB] を frequency1 の中心で拾う。
 
     m_meshTbl = new QTableWidget(5, 6, sMesh);
     m_meshTbl->setHorizontalHeaderLabels({
@@ -541,9 +565,10 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     auto *meshRow = new QHBoxLayout();
     m_meshStatus = makeBadge(QString(), "", sMesh);
     meshRow->addWidget(m_meshStatus);
-    auto *meshRunBtn = new QPushButton(I18n::tr("ver_mesh_run"), sMesh);
-    tabhelp::markNotImplemented(meshRunBtn);   // 自動収束テストは未実装
-    meshRow->addWidget(meshRunBtn);
+    m_meshRunBtn = new QPushButton(I18n::tr("ver_mesh_run"), sMesh);
+    meshRow->addWidget(m_meshRunBtn);
+    connect(m_meshRunBtn, &QPushButton::clicked, this,
+            &VerificationTab::startMeshConvergence);
     meshRow->addStretch(1);
     sMesh->vbox()->addLayout(meshRow);
     m_meshNote = noteLabel(I18n::tr("ver_mesh_note")
@@ -781,6 +806,134 @@ void VerificationTab::updateMeshTable()
     } else {
         m_meshStatus->setText(I18n::tr("ver_mesh_res_na"));
         styleBadge(m_meshStatus, "warn");
+    }
+}
+
+// ── ① 自動収束テスト (各解像度で実際に走らせる) ────────────────────────────
+// 表の「結果」「誤差」列はソルバーを各解像度で走らせないと埋まらない。
+// kernel/SweepRunner に倍率の列を渡し、1 点ずつ順に走らせて埋める。
+// 誤差は **最も細かい解像度を基準** にした差 (収束の見方はこれが標準)。
+void VerificationTab::startMeshConvergence()
+{
+    if (m_meshSweep && m_meshSweep->isRunning()) {   // 実行中の押下は中止
+        m_meshSweep->stop();
+        return;
+    }
+    // 水中 (BELLHOP) は FDTD のメッシュ概念が無いのでこの画面自体を出さない
+    if (m_p->activeDomain() == Domain::Underwater) return;
+
+    if (!m_meshSweep) {
+        m_meshSweep = new SweepRunner(this);
+        connect(m_meshSweep, &SweepRunner::logLine, this,
+                &VerificationTab::sweepLog);
+        connect(m_meshSweep, &SweepRunner::pointStarted, this,
+                [this](int i, int n, const QString &label) {
+            m_meshStatus->setText(
+                I18n::tr("ver_mesh_running").arg(i + 1).arg(n).arg(label));
+            styleBadge(m_meshStatus, "warn");
+        });
+        connect(m_meshSweep, &SweepRunner::pointFinished, this,
+                [this](int i, const SweepResult &r) { fillMeshResult(i, r); });
+        connect(m_meshSweep, &SweepRunner::finished, this,
+                &VerificationTab::finishMeshConvergence);
+    }
+
+    SweepConfig cfg;
+    cfg.kind = SweepKind::MeshRefine;
+    cfg.values.clear();
+    for (const double f : kRefineFactors) cfg.values.push_back(f);
+    cfg.run = m_runCfg;
+    cfg.run.mode = RunMode::Both;      // 給電点表はソルバー段が書くが、
+                                       // ポストまで通して他の図も残す
+    cfg.run.kernel = Runner::kernelForProject(*m_p);
+
+    m_meshValues.clear();
+    // QVector::assign は Qt 6.6+ — CI Linux の下限は 6.4.2 なので fill を使う
+    m_meshQty.fill(std::numeric_limits<double>::quiet_NaN(),
+                   int(std::size(kRefineFactors)));
+    // 走らせる前に結果列を「実行中」に戻す (前回の値を残さない)
+    const QString dash = I18n::tr("ver_dash");
+    for (int r = 0; r < m_meshTbl->rowCount(); ++r)
+        for (int c = 4; c < 6; ++c)
+            if (m_meshTbl->item(r, c)) m_meshTbl->item(r, c)->setText(dash);
+
+    if (!m_meshSweep->start(*m_p, cfg)) {
+        m_meshStatus->setText(I18n::tr("ver_mesh_run_failed"));
+        styleBadge(m_meshStatus, "err");
+        return;
+    }
+    m_meshRunBtn->setText(I18n::tr("ver_mesh_stop"));
+}
+
+// 1 点ぶんの結果を表へ入れる。取れなかった量は数字を作らず理由を出す。
+void VerificationTab::fillMeshResult(int row, const SweepResult &r)
+{
+    m_meshValues.push_back(r.value);
+    if (row < 0 || row >= m_meshTbl->rowCount()) return;
+    for (int c = 4; c < 6; ++c)
+        if (!m_meshTbl->item(row, c))
+            m_meshTbl->setItem(row, c, new QTableWidgetItem());
+
+    double qty = std::numeric_limits<double>::quiet_NaN();
+    if (!r.ok) {
+        m_meshTbl->item(row, 4)->setText(I18n::tr("ver_mesh_failed"));
+    } else if (SweepRunner::refDbNear(r.feeds, centerFreq1(m_p->general()),
+                                      &qty)) {
+        m_meshTbl->item(row, 4)->setText(
+            QStringLiteral("%1 dB").arg(qty, 0, 'f', 3));
+    } else {
+        // 給電点が無い / frequency1 が無いと表が出ない — 事実をそのまま出す
+        m_meshTbl->item(row, 4)->setText(I18n::tr("ver_mesh_noqty"));
+    }
+    if (row < m_meshQty.size()) m_meshQty[row] = qty;
+    m_meshTbl->item(row, 4)->setForeground(QColor(0, 0, 0));
+    m_meshTbl->item(row, 5)->setText(I18n::tr("ver_dash"));
+}
+
+void VerificationTab::finishMeshConvergence(bool ok)
+{
+    m_meshRunBtn->setText(I18n::tr("ver_mesh_run"));
+
+    // 誤差列 = 最も細かい解像度 (倍率最大) の値との差 [dB]。
+    // 基準が取れていなければ誤差は出さない (差の意味が無い)。
+    int refRow = -1;
+    double refVal = 0.0, refFactor = 0.0;
+    for (int i = 0; i < m_meshQty.size() && i < m_meshValues.size(); ++i) {
+        if (!std::isfinite(m_meshQty[i])) continue;
+        if (refRow < 0 || m_meshValues[i] > refFactor) {
+            refRow = i;
+            refFactor = m_meshValues[i];
+            refVal = m_meshQty[i];
+        }
+    }
+    int converged = 0, usable = 0;
+    if (refRow >= 0) {
+        for (int i = 0; i < m_meshQty.size(); ++i) {
+            if (i >= m_meshTbl->rowCount() || !m_meshTbl->item(i, 5)) continue;
+            if (!std::isfinite(m_meshQty[i])) continue;
+            ++usable;
+            const double d = m_meshQty[i] - refVal;
+            m_meshTbl->item(i, 5)->setText(
+                (i == refRow) ? I18n::tr("ver_mesh_ref")
+                              : QStringLiteral("%1%2 dB")
+                                    .arg(d >= 0 ? QStringLiteral("+")
+                                                : QString())
+                                    .arg(d, 0, 'f', 3));
+            if (std::fabs(d) <= kConvergedTol_dB) ++converged;
+        }
+    }
+
+    if (!ok) {
+        m_meshStatus->setText(I18n::tr("ver_mesh_run_partial"));
+        styleBadge(m_meshStatus, "warn");
+    } else if (usable < 2) {
+        m_meshStatus->setText(I18n::tr("ver_mesh_noqty_all"));
+        styleBadge(m_meshStatus, "warn");
+    } else {
+        m_meshStatus->setText(I18n::tr("ver_mesh_conv_fmt")
+                                  .arg(converged).arg(usable)
+                                  .arg(kConvergedTol_dB, 0, 'g', 2));
+        styleBadge(m_meshStatus, converged == usable ? "ok" : "warn");
     }
 }
 

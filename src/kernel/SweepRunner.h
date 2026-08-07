@@ -31,15 +31,40 @@ class Project;
 enum class SweepKind {
     PlaneWaveTheta,   // 平面波の入射角 θ [deg]
     PlaneWavePhi,     // 同 φ [deg]
+    MeshRefine,       // メッシュ分割数の倍率 (収束テスト。値は倍率そのもの)
+};
+
+// モンテカルロ用: 1 サンプルで **複数のパラメータを同時に** 動かす。
+// SweepKind は 1 軸を振るためのもので、ばらつき解析には足りない。
+enum class SweepParam {
+    PlaneWaveTheta,      // θ [deg] (絶対値)
+    PlaneWavePhi,        // φ [deg] (絶対値)
+    MeshRefine,          // メッシュ分割数の倍率
+    MaterialEpsrDelta,   // 材料 index の比誘電率へ加算する差分
+};
+
+struct SweepColumn {
+    SweepParam param = SweepParam::MaterialEpsrDelta;
+    int        index = 1;      // MaterialEpsrDelta のとき材料番号
+    QString    label;          // 表示用 (「比誘電率 εr」等)
 };
 
 struct SweepConfig {
     SweepKind kind = SweepKind::PlaneWaveTheta;
-    double    from = 0.0;      // 振る範囲 [deg]
+    double    from = 0.0;      // 振る範囲 [deg] (MeshRefine では倍率)
     double    to   = 180.0;
     int       points = 37;     // >= 2
     RunConfig run;             // 各実行の設定 (engine / threads / kernel)
     QString   baseDir;         // 実行用の親ディレクトリ (空 = Runner の既定)
+    // plan() の等間隔生成を使わず、振る値を直接与える (収束テストの
+    // ×0.5 / ×0.707 / ×1 / ×1.414 / ×2 のような不等間隔の列のため)。
+    // 空でなければ from/to/points より優先する。
+    QVector<double> values;
+
+    // モンテカルロ: 1 行 = 1 サンプル、列は columns と 1:1。
+    // 空でなければ kind / values / from-to-points より優先する。
+    QVector<SweepColumn>          columns;
+    QVector<QVector<double>>      samples;
 };
 
 // 1 点の結果
@@ -68,6 +93,10 @@ public:
     // 振る値の列。points < 2 または from == to なら空を返す
     // (1 点スイープは通常実行と同じなので、スイープとしては成立しない)。
     static QVector<double> plan(const SweepConfig &cfg);
+    // 1 サンプル (複数パラメータ同時) をプロジェクトへ当てる。
+    // 列と値の数が食い違う場合は短い方までしか当てない (黙って壊さない)。
+    static void applySample(Project &p, const QVector<SweepColumn> &columns,
+                            const QVector<double> &values);
     // 1 点ぶんの値をプロジェクトへ当てる。平面波が無効なら有効化する
     // (スイープは平面波入射の解析なので、無効のままでは意味が無い)。
     static void applyPoint(Project &p, SweepKind kind, double value);
@@ -80,6 +109,11 @@ public:
                                SweepKind kind, double value, bool ok);
     // 結果表 → CSV テキスト (先頭行はヘッダ)
     static QString toCsv(const QVector<SweepResult> &results);
+
+    // 給電点表から、指定周波数に最も近い点の反射係数 Ref [dB] を取る。
+    // 収束テストの「チェックする量」(S11) がこれ。表が無ければ false。
+    static bool refDbNear(const QVector<FeedSweep> &feeds, double freqHz,
+                          double *refDb);
 
     // ── 実行 ────────────────────────────────────────────────────────────
     bool isRunning() const { return m_running; }

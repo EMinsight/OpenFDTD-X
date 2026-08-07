@@ -448,8 +448,13 @@ void MainWindow::buildToolbar()
 void MainWindow::syncTabRunConfig()
 {
     if (!m_engineBox || !m_threadsBox || !m_deviceBox) return;
+    const RunConfig cfg = currentRunConfig();
     if (auto *sct = qobject_cast<ScatteringTab *>(m_tabScattering))
-        sct->setRunConfig(currentRunConfig());
+        sct->setRunConfig(cfg);
+    if (auto *ver = qobject_cast<VerificationTab *>(m_tabVerification))
+        ver->setRunConfig(cfg);
+    if (auto *tol = qobject_cast<ToleranceTab *>(m_tabTolerance))
+        tol->setRunConfig(cfg);
 }
 
 // エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)。
@@ -664,8 +669,16 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabFamily       = new FamilySolverTab(P);
     m_tabSolverSel    = new SolverSelectorTab(P);
     m_tabVerification = new VerificationTab(P);
+    // 自動収束テストも自前で Runner を回す — 進捗を計算コンソールへ
+    if (auto *ver = qobject_cast<VerificationTab *>(m_tabVerification))
+        connect(ver, &VerificationTab::sweepLog, this,
+                [this](const QString &line) { m_rightDock->appendLog(line); });
     m_tabOptimize     = new OptimizeTab(P);
     m_tabTolerance    = new ToleranceTab(P);
+    // モンテカルロも自前で Runner を回す — 進捗を計算コンソールへ
+    if (auto *tol = qobject_cast<ToleranceTab *>(m_tabTolerance))
+        connect(tol, &ToleranceTab::sweepLog, this,
+                [this](const QString &line) { m_rightDock->appendLog(line); });
     m_tabScripts      = new ScriptsTab(P);
     m_tabMultiphysics = new MultiphysicsTab(P);
     m_tabTidy3d       = new Tidy3dTab(P);

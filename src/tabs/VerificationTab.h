@@ -15,6 +15,9 @@
 //   診断行) は refreshDomain() で出し分ける。
 #pragma once
 #include <QScrollArea>
+#include <QVector>
+
+#include "../kernel/SweepRunner.h"
 #include <QString>
 #include <vector>
 
@@ -36,6 +39,12 @@ class VerificationTab : public QScrollArea {
     Q_OBJECT
 public:
     explicit VerificationTab(Project *project, QWidget *parent = nullptr);
+
+    // 実行設定 (エンジン / スレッド数) は MainWindow が持つので外から渡す
+    void setRunConfig(const RunConfig &cfg) { m_runCfg = cfg; }
+
+signals:
+    void sweepLog(const QString &line);   // 進捗を計算コンソールへ
 
 protected:
     // タブが見えたときにだけ実行ログを読み直す (常時監視はしない)
@@ -62,6 +71,9 @@ private:
         DiagRowCount
     };
 
+    void startMeshConvergence(); // ① 各解像度で実際に走らせる (SweepRunner)
+    void fillMeshResult(int row, const SweepResult &r);
+    void finishMeshConvergence(bool ok);
     void updateMeshTable();      // ① メッシュ解像度の計画値
     void updateBoundaryTable();  // ② 設計反射率
     void updateEnergyPlot();     // ③ 収束履歴のプロットとバッジ
@@ -71,6 +83,12 @@ private:
     QComboBox    *m_qtyBox;       // ① チェックする量 (ドメイン別)
     QTableWidget *m_meshTbl;      // ① メッシュ解像度表
     QLabel       *m_meshStatus;   // ① 現在メッシュの λ/Δx バッジ
+    // ① 自動収束テスト — 各倍率でソルバーを実際に走らせる
+    SweepRunner  *m_meshSweep = nullptr;
+    QPushButton  *m_meshRunBtn = nullptr;
+    RunConfig     m_runCfg;
+    QVector<double> m_meshValues;      // 走らせた倍率 (表の行と 1:1)
+    QVector<double> m_meshQty;         // 各行のチェック量 (NaN = 取れず)
     QLabel       *m_meshNote;     // ① 何が実計算で何が未実行かの注記
 
     SectionBox   *m_pmlSection;   // ② 境界吸収 (水中では非表示)

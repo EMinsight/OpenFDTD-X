@@ -83,6 +83,11 @@ set(CORE_SOURCES
     src/core/ToleranceStats.cpp
     src/core/ToleranceStats.h
 
+    # 製造ばらつきのサンプリング (乱数 / ラテン超方格) と結果統計。
+    # ToleranceStats が入力分布、こちらが標本と FoM 側 — Qt 非依存。
+    src/core/MonteCarlo.cpp
+    src/core/MonteCarlo.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h

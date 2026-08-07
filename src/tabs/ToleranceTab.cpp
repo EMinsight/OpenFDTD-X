@@ -2,17 +2,20 @@
 #include "ToleranceTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../core/MonteCarlo.h"
 #include "../core/ToleranceStats.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <cmath>
@@ -44,6 +47,48 @@ const bool s_i18n = [] {
 
     I18n::reg("tol_sources", "ばらつき要因", "Variation sources");
     I18n::reg("tol_c_item", "項目", "Item");
+    I18n::reg("tol_mc_run", "モンテカルロ実行", "Run Monte Carlo");
+    I18n::reg("tol_mc_stop", "中止", "Stop");
+    I18n::reg("tol_mc_idle", "未実行", "Not run yet");
+    I18n::reg("tol_mc_note",
+              "1 サンプル = ソルバー 1 回。%1 サンプル × %2 要因を走らせます。",
+              "One sample = one solver run. %1 samples over %2 source(s).");
+    I18n::reg("tol_mc_skipped",
+              "カーネル入力へ当てられない要因 %1 件はサンプルに含めません "
+              "(.ofd に対応キーが無いため — 分布の表示のみ)。",
+              "%1 source(s) cannot be applied to the kernel input and are "
+              "excluded (no matching .ofd key — shown as distributions only).");
+    I18n::reg("tol_mc_capped",
+              "サンプル数は %1 で打ち切ります (それ以上は現実的な計算時間を"
+              "超えるため)。",
+              "The sample count is capped at %1 (beyond that the run time is "
+              "impractical).");
+    I18n::reg("tol_mc_noapplied",
+              "カーネル入力へ当てられる要因がありません "
+              "(比誘電率のばらつきを有効にしてください)。",
+              "No source can be applied to the kernel input "
+              "(enable the permittivity variation).");
+    I18n::reg("tol_mc_need", "サンプル数は 2 以上にしてください",
+              "The sample count must be at least 2");
+    I18n::reg("tol_mc_failed", "モンテカルロを開始できませんでした",
+              "Could not start the Monte Carlo run");
+    I18n::reg("tol_mc_running", "実行中 %1 / %2", "Running %1 / %2");
+    I18n::reg("tol_mc_done", "完了 — %1 サンプル", "Done — %1 samples");
+    I18n::reg("tol_mc_partial", "一部のサンプルが失敗しました",
+              "Some samples failed");
+    I18n::reg("tol_mc_nofom",
+              "FoM (給電点の反射係数) を取得できたサンプルが 2 個未満です "
+              "(波源と frequency1 が要ります)",
+              "Fewer than two samples yielded the FoM (feed reflection) "
+              "— a feed and frequency1 are required");
+    I18n::reg("tol_sobol_na", "Sobol' 列は未実装",
+              "Sobol' sequences are not implemented");
+    I18n::reg("tol_yield_fmt", "歩留まり %1 % (%2 / %3 サンプル)",
+              "Yield %1 % (%2 of %3 samples)");
+    I18n::reg("tol_stats_fmt",
+              "平均 %1 dB / σ %2 dB / 99.73 %% 区間 [%3, %4] dB",
+              "mean %1 dB / sigma %2 dB / 99.73 %% interval [%3, %4] dB");
+    I18n::reg("tol_hist_fom", "FoM の分布", "FoM distribution");
     I18n::reg("tol_c_dist", "分布", "Distribution");
     I18n::reg("tol_c_center", "中心", "Center");
     I18n::reg("tol_c_sigma", "σ / 半幅", "σ / half-width");
@@ -149,11 +194,18 @@ struct SourceDef {
     double      spread;
     const char *unit;      // 直接表示する短い単位 (nullptr = i18n キー使用)
     const char *unitKey;
+    // モンテカルロで **実際にカーネル入力へ当てられるか**。
+    // .ofd に対応するキーが無い要因 (温度・はんだ量・形状の個別寸法など) は
+    // 分布の表示だけを行い、走らせるサンプルには含めない。
+    // どの要因が計算に効いているかを画面で区別できるようにするための印
+    // (絶対規則 5 — 効いていないものを効いているように見せない)。
+    bool        applied = false;
 };
 
 const SourceDef kEmSrc[] = {
     { true,  "tol_i_patch",  Dist::Normal,  0.0, 0.05,  "mm", nullptr },
-    { true,  "tol_i_epsr",   Dist::Normal,  0.0, 0.05,  nullptr, "tol_u_none" },
+    { true,  "tol_i_epsr",   Dist::Normal,  0.0, 0.05,  nullptr, "tol_u_none",
+      true },   // material の epsr へ加算できる唯一の要因
     { true,  "tol_i_subth",  Dist::Normal,  0.0, 0.025, "mm", nullptr },
     { true,  "tol_i_feed",   Dist::Normal,  0.0, 0.1,   "mm", nullptr },
     { false, "tol_i_solder", Dist::Uniform, 0.0, 0.1,   "mm", nullptr },
@@ -211,6 +263,24 @@ QLabel *makeBadge(const QString &text, const char *kind, QWidget *parent)
     else                                  css += "background:palette(midlight);";
     b->setStyleSheet(css);
     return b;
+}
+
+// 既存バッジの色だけ差し替える (makeBadge と同じ配色)
+void styleBadge(QLabel *b, const char *kind)
+{
+    if (!b) return;
+    QString css = "border-radius:3px; padding:1px 6px; font-size:11px;";
+    if (qstrcmp(kind, "ok") == 0)        css += "background:#DFF6DD; color:#0F7B0F;";
+    else if (qstrcmp(kind, "warn") == 0) css += "background:#FFF4CE; color:#9D5D00;";
+    else if (qstrcmp(kind, "err") == 0)  css += "background:#FDE7E9; color:#A4262C;";
+    else                                  css += "background:palette(midlight);";
+    b->setStyleSheet(css);
+}
+
+// frequency1 の中心周波数 [Hz] (FoM を読む周波数)
+double centerFreq1Hz(const ofd::GeneralOpts &g)
+{
+    return 0.5 * (g.f1min + g.f1max);
 }
 
 QLabel *hintLabel(const QString &text, QWidget *parent)
@@ -277,10 +347,34 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     m_sampling->addItem(I18n::tr("tol_random"));
     m_sampling->addItem(I18n::tr("tol_lhs"));
     m_sampling->addItem(I18n::tr("tol_sobol"));
+    // Sobol' 列は未実装 — 選ばせない (選べるのに効かない状態を作らない)
+    if (auto *sm = qobject_cast<QStandardItemModel *>(m_sampling->model()))
+        if (auto *it = sm->item(2)) {
+            it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+            it->setToolTip(I18n::tr("tol_sobol_na"));
+        }
     m_sampling->setCurrentIndex(1);          // 既定 "lhs"
     sMc->form()->addRow(I18n::tr("tol_method"), m_sampling);
-    // サンプル数・サンプリング法はモンテカルロ未実装のためどこにも読まれない
-    sMc->form()->addRow(tabhelp::unwiredNote(sMc));
+    // 実行 — 1 サンプル = ソルバー 1 回。何サンプル走るのか、どの要因が
+    // 実際にカーネル入力へ当たるのかを押す前に出す (時間の見積りのため)。
+    m_mcNote = new QLabel(sMc);
+    m_mcNote->setWordWrap(true);
+    m_mcNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sMc->form()->addRow(m_mcNote);
+
+    auto *mcRow = new QHBoxLayout();
+    m_mcRun = new QPushButton(I18n::tr("tol_mc_run"), sMc);
+    mcRow->addWidget(m_mcRun);
+    m_mcStatus = new QLabel(I18n::tr("tol_mc_idle"), sMc);
+    m_mcStatus->setWordWrap(true);
+    mcRow->addWidget(m_mcStatus, 1);
+    sMc->form()->addRow(mcRow);
+    connect(m_mcRun, &QPushButton::clicked, this,
+            &ToleranceTab::startMonteCarlo);
+    connect(m_samples, &QLineEdit::editingFinished, this,
+            [this] { updateMcUi(); });
+    connect(m_sampling, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateMcUi(); });
     v->addWidget(sMc);
 
     // ── 合格条件 / Pass criteria ───────────────────────────────────────────
@@ -297,8 +391,8 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     critRow->addWidget(m_goalAt);
     critRow->addStretch(1);
     sCrit->vbox()->addLayout(critRow);
-    // 合格判定はソルバー結果が要るためどこにも読まれない
-    sCrit->vbox()->addWidget(tabhelp::unwiredNote(sCrit));
+    // 合格判定はモンテカルロの FoM 標本に対して適用される (歩留まりの
+    // しきい値)。走らせるまでは判定できないので、結果欄は未実行表示のまま。
     v->addWidget(sCrit);
 
     // ── 入力ばらつきの分布 / 結果 ──────────────────────────────────────────
@@ -346,6 +440,7 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
 
     connect(project, &Project::domainChanged, this, &ToleranceTab::rebuildDomain);
     rebuildDomain();
+    updateMcUi();
 }
 
 void ToleranceTab::rebuildDomain()
@@ -377,6 +472,7 @@ void ToleranceTab::rebuildDomain()
         r.var.dist     = defs[i].dist;
         r.var.center   = defs[i].center;
         r.var.spread   = defs[i].spread;
+        r.applied      = defs[i].applied;
         m_vars.append(r);
     }
     fillSourceTable();
@@ -393,6 +489,172 @@ void ToleranceTab::rebuildDomain()
 
     refreshVarChoices();
     updateDistribution();
+}
+
+
+// ── モンテカルロ (実サンプルでソルバーを N 回まわす) ────────────────────────
+// 1 サンプル = ソルバー 1 回。UI の既定は 1000 サンプルだが、FDTD を 1000 回
+// 走らせるのは現実的でないので、実行できる上限を設けて理由とともに出す。
+// カーネル入力へ当てられる要因 (applied) だけをサンプルに含める — 当たらない
+// 要因を混ぜると「振ったのに結果が動かない」ことになる。
+namespace {
+const int kMcMaxSamples = 200;    // これ以上は実行させない (時間の壁)
+}
+
+// 実行に使う変数列 (applied かつ有効かつ連続) を取り出す
+void ToleranceTab::updateMcUi()
+{
+    if (!m_mcNote) return;
+    int appliedCount = 0, skipped = 0;
+    for (const VarRow &r : m_vars) {
+        if (!r.enabled || !tolstat::isContinuous(r.var)) continue;
+        if (r.applied) ++appliedCount; else ++skipped;
+    }
+    bool ok = false;
+    int n = m_samples->text().trimmed().toInt(&ok);
+    if (!ok || n < 2) n = 0;
+    const int capped = qMin(n, kMcMaxSamples);
+
+    QString note = I18n::tr("tol_mc_note").arg(capped).arg(appliedCount);
+    if (skipped > 0) note += QLatin1Char(' ')
+                          + I18n::tr("tol_mc_skipped").arg(skipped);
+    if (n > kMcMaxSamples)
+        note += QLatin1Char(' ') + I18n::tr("tol_mc_capped").arg(kMcMaxSamples);
+    m_mcNote->setText(note);
+
+    const bool busy = m_mc && m_mc->isRunning();
+    m_mcRun->setEnabled(busy || (capped >= 2 && appliedCount > 0));
+    m_mcRun->setToolTip(appliedCount > 0 ? QString()
+                                         : I18n::tr("tol_mc_noapplied"));
+}
+
+void ToleranceTab::startMonteCarlo()
+{
+    if (m_mc && m_mc->isRunning()) { m_mc->stop(); return; }
+
+    // 実際に当てられる変数だけを集める
+    std::vector<tolstat::Variable> vars;
+    QVector<SweepColumn> cols;
+    for (const VarRow &r : m_vars) {
+        if (!r.enabled || !r.applied || !tolstat::isContinuous(r.var)) continue;
+        vars.push_back(r.var);
+        SweepColumn c;
+        c.param = SweepParam::MaterialEpsrDelta;
+        c.index = 1;              // 既定の誘電体 (材料 1)
+        c.label = r.name;
+        cols.push_back(c);
+    }
+    if (vars.empty()) {
+        m_mcStatus->setText(I18n::tr("tol_mc_noapplied"));
+        return;
+    }
+
+    bool ok = false;
+    int n = m_samples->text().trimmed().toInt(&ok);
+    if (!ok || n < 2) { m_mcStatus->setText(I18n::tr("tol_mc_need")); return; }
+    n = qMin(n, kMcMaxSamples);
+
+    const montecarlo::Method method =
+        (m_sampling->currentIndex() == 0) ? montecarlo::Method::Random
+                                          : montecarlo::Method::Latin;
+    // seed は固定 — 同じ設定で同じ結果が出ないと解析として使えない
+    const std::vector<double> flat =
+        montecarlo::sample(vars, n, method, 20260807ULL);
+
+    SweepConfig cfg;
+    cfg.columns = cols;
+    cfg.samples.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        QVector<double> row;
+        row.reserve(int(vars.size()));
+        for (std::size_t j = 0; j < vars.size(); ++j)
+            row.push_back(flat[std::size_t(i) * vars.size() + j]);
+        cfg.samples.push_back(row);
+    }
+    cfg.run = m_runCfg;
+    cfg.run.mode = RunMode::Solver;    // FoM は給電点表 = ソルバー段だけで足りる
+    cfg.run.kernel = Runner::kernelForProject(*m_p);
+    cfg.baseDir = QDir(Runner::resolveWorkingDir(m_p, cfg.run))
+                      .filePath(QStringLiteral("montecarlo"));
+
+    if (!m_mc) {
+        m_mc = new SweepRunner(this);
+        connect(m_mc, &SweepRunner::logLine, this, &ToleranceTab::sweepLog);
+        connect(m_mc, &SweepRunner::pointStarted, this,
+                [this](int i, int total, const QString &) {
+            m_mcStatus->setText(
+                I18n::tr("tol_mc_running").arg(i + 1).arg(total));
+        });
+        connect(m_mc, &SweepRunner::pointFinished, this,
+                [this](int, const SweepResult &r) {
+            double v = std::numeric_limits<double>::quiet_NaN();
+            if (r.ok) SweepRunner::refDbNear(r.feeds,
+                                             centerFreq1Hz(m_p->general()), &v);
+            m_fom.push_back(v);
+        });
+        connect(m_mc, &SweepRunner::finished, this,
+                &ToleranceTab::finishMonteCarlo);
+    }
+    m_fom.clear();
+    if (!m_mc->start(*m_p, cfg)) {
+        m_mcStatus->setText(I18n::tr("tol_mc_failed"));
+        return;
+    }
+    m_mcRun->setText(I18n::tr("tol_mc_stop"));
+    updateMcUi();
+}
+
+void ToleranceTab::finishMonteCarlo(bool ok)
+{
+    m_mcRun->setText(I18n::tr("tol_mc_run"));
+    updateMcUi();
+
+    const montecarlo::Stats st = montecarlo::summarize(m_fom);
+    if (!st.valid) {
+        // 数字を作らない — 何が足りないのかを出す
+        m_mcStatus->setText(ok ? I18n::tr("tol_mc_nofom")
+                               : I18n::tr("tol_mc_partial"));
+        m_yield->setText(I18n::tr("tol_yield_na"));
+        styleBadge(m_yield, "warn");
+        m_sigma3->clear();
+        return;
+    }
+
+    // 合格条件 — 反射係数 (S11) は「しきい値以下」が合格
+    bool gok = false;
+    const double th = m_goalVal->text().trimmed().toDouble(&gok);
+    const montecarlo::Yield yl = gok
+        ? montecarlo::yieldOf(m_fom, th, montecarlo::Goal::LessOrEqual)
+        : montecarlo::Yield{};
+
+    m_mcStatus->setText(ok ? I18n::tr("tol_mc_done").arg(st.count)
+                           : I18n::tr("tol_mc_partial"));
+    if (yl.count > 0) {
+        m_yield->setText(I18n::tr("tol_yield_fmt")
+                             .arg(100.0 * yl.fraction, 0, 'f', 1)
+                             .arg(yl.pass).arg(yl.count));
+        styleBadge(m_yield, yl.fraction >= 0.95 ? "ok"
+                          : yl.fraction >= 0.8  ? "warn" : "err");
+    } else {
+        m_yield->setText(I18n::tr("tol_yield_na"));
+        styleBadge(m_yield, "warn");
+    }
+    m_sigma3->setText(I18n::tr("tol_stats_fmt")
+                          .arg(st.mean, 0, 'f', 3)
+                          .arg(st.stdDev, 0, 'f', 3)
+                          .arg(st.p3sigmaLo, 0, 'f', 3)
+                          .arg(st.p3sigmaHi, 0, 'f', 3));
+
+    // FoM のヒストグラム (入力分布ではなく結果の分布)
+    const std::vector<montecarlo::Bin> bins = montecarlo::histogram(m_fom, 24);
+    QVector<QPointF> pts;
+    for (const montecarlo::Bin &b : bins)
+        pts.push_back(QPointF(b.center, b.count));
+    MiniSeries se;
+    se.pts = pts;
+    se.color = QColor(0, 120, 212);
+    se.label = I18n::tr("tol_hist_fom");
+    m_hist->setSeries({ se });
 }
 
 // m_vars → 表 (再入防止のため m_updating で囲む)
