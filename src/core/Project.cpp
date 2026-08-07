@@ -99,6 +99,16 @@ QVector<PhotonicNetRow> ofd::defaultPhotonicNetlist()
 Project::Project(QObject *parent) : QObject(parent)
 {
     clear();
+    // 編集は全て changed() を経由する (タブの apply() → touch())。
+    // 個々の編集箇所に印を付けて回るのではなく、ここ 1 箇所で拾う。
+    connect(this, &Project::changed, this, [this] { setModified(true); });
+}
+
+void Project::setModified(bool m)
+{
+    if (m_dirty == m) return;
+    m_dirty = m;
+    emit modifiedChanged(m_dirty);
 }
 
 void Project::clear()
@@ -209,6 +219,8 @@ bool Project::load(const QString &path, QString *err)
     emit loaded();
     emit domainChanged(m_domain);
     emit changed();
+    // 読み込み直後は未変更 (上の changed() で立った印を下ろす)
+    setModified(false);
     return true;
 }
 
@@ -221,5 +233,6 @@ bool Project::save(const QString &path, QString *err)
     if (!OfdxIO::save(ofdx, *this, err)) return false;
 
     m_filePath = path;
+    setModified(false);
     return true;
 }

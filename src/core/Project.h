@@ -817,6 +817,12 @@ public:
     QString filePath() const { return m_filePath; }
     void    setFilePath(const QString &p) { m_filePath = p; }
 
+    // 未保存の変更があるか。changed() が出るたびに立ち、load/save で下りる。
+    // 「保存を押したのに何も起きない (ように見える)」を防ぐための状態で、
+    // タイトルバーの * とステータスバーの通知がこれを見る。
+    bool isModified() const { return m_dirty; }
+    void setModified(bool m);
+
     qint64 totalCells() const;
     double estimatedMemoryMB() const;
     double courantDt() const;    // CFL timestep estimate from min spacing
@@ -836,10 +842,12 @@ signals:
     void changed();    // structural change → viewport / tree / statusbar refresh
     void loaded();     // file (re)loaded → all tabs re-read their widgets
     void materialsEdited();  // 別タブが materials() を書き換えた → MaterialTab 再表示
+    void modifiedChanged(bool modified);  // 未保存状態が変わった
 
 private:
     Domain  m_domain = Domain::EM;
     QString m_filePath;
+    bool    m_dirty = false;   // 未保存の変更 (isModified)
 
     GeneralOpts        m_general;
     MeshAxis           m_mesh[3];

@@ -100,6 +100,7 @@ private:
     void buildStatusBar();
     RunConfig currentRunConfig() const;
     void updateWindowTitle();
+    void reportSaved(const QString &path);   // 保存できたことを画面に出す
     void updateEngineItems(Domain d);
     // 実行中は実行設定 (エンジン / モード / スレッド数 / デバイス /
     // Resources) を触れなくする。RunConfig は起動時に 1 度スナップショット

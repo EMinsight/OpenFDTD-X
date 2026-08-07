@@ -1801,6 +1801,51 @@ static void testProjectTemplates()
         check(!templates::apply(p, "em", "no_such_template"),
               "unknown template id rejected");
     }
+
+    // ── 未保存状態 (isModified) の一生 ──────────────────────────────────
+    // 「保存を押したのに何も起きない」に見えていたので、保存できたことを
+    // タイトルの * とステータスバーで示すようにした。その土台の状態遷移。
+    {
+        g_file = "project:modified";
+        QTemporaryDir dir;
+        check(dir.isValid(), "modified: temp dir");
+        Project p;
+        check(!p.isModified(), "modified: a fresh project is clean");
+
+        // 編集 (タブの apply() は必ず touch() を通る) で立つ
+        p.general().title = QStringLiteral("dirty");
+        p.touch();
+        check(p.isModified(), "modified: touch() marks it dirty");
+
+        // 保存で下りる
+        const QString path = dir.filePath(QStringLiteral("m.ofd"));
+        QString err;
+        check(p.save(path, &err), "modified: save succeeds");
+        check(!p.isModified(), "modified: save clears the flag");
+        check(p.filePath() == path, "modified: save records the path");
+
+        // 読み込み直後も未変更 (load 内の changed() で立った印を下ろす)
+        Project q;
+        check(q.load(path, &err), "modified: load succeeds");
+        check(!q.isModified(), "modified: load leaves it clean");
+
+        // テンプレート適用はファイルパスを持たない = 保存は「名前を付けて」
+        // になる。ここが空でないと、直前に開いていたファイルを
+        // テンプレートの内容で上書きしてしまう。
+        Project t;
+        check(t.load(path, &err), "modified: fixture reloaded");
+        check(!t.filePath().isEmpty(), "modified: loaded project has a path");
+        check(templates::apply(t, "em", "em_rcs"), "modified: template applies");
+        check(t.filePath().isEmpty(),
+              "modified: applying a template clears the file path "
+              "(save must ask for a new name)");
+
+        // 変更が無ければ保存後に何度 changed() が来ても立たない…わけではなく、
+        // changed() は必ず未保存を意味する (編集の唯一の通知経路)
+        p.setModified(false);
+        emit p.changed();
+        check(p.isModified(), "modified: changed() always marks it dirty");
+    }
 }
 
 // カーネル結果リーダ (io/KernelResultReader) — 実行後の結果反映の入口。

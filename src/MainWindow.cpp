@@ -149,6 +149,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_project, &Project::domainChanged, this, &MainWindow::onDomainChanged);
     connect(m_project, &Project::changed, this, &MainWindow::onProjectChanged);
+    // 未保存状態 (*) をタイトルへ即座に反映する
+    connect(m_project, &Project::modifiedChanged, this,
+            [this] { updateWindowTitle(); });
 
     // 3D シーンへの結果断面の反映結果をログに出す (ドック生成後に接続)
     connect(m_center, &CenterPane::result3DSliceStatus, this,
@@ -1019,7 +1022,11 @@ void MainWindow::updateWindowTitle()
     const QString file = m_project->filePath().isEmpty()
         ? I18n::tr("untitled")
         : QFileInfo(m_project->filePath()).fileName();
-    setWindowTitle(QStringLiteral("OpenFDTD-X — %1").arg(file));
+    // 未保存の変更は * で示す。これが無いと「保存を押しても何も起きない」の
+    // ように見え、保存できているのか判断できない。
+    setWindowTitle(QStringLiteral("OpenFDTD-X — %1%2")
+                       .arg(file, m_project->isModified()
+                                      ? QStringLiteral(" *") : QString()));
 }
 
 void MainWindow::newProject()
@@ -1079,8 +1086,25 @@ void MainWindow::saveProject()
         return;
     }
     QString err;
-    if (!m_project->save(m_project->filePath(), &err))
+    if (!m_project->save(m_project->filePath(), &err)) {
         QMessageBox::warning(this, I18n::tr("tb_save"), err);
+        return;
+    }
+    reportSaved(m_project->filePath());
+}
+
+// 保存できたことを利用者に見える形で伝える。成功時に何も出ないと
+// 「ボタンが効いていない」と区別が付かない (実際にそう見えていた)。
+// .ofd と同時に .ofdx サイドカーも書くので、両方の名前を出す。
+void MainWindow::reportSaved(const QString &path)
+{
+    const QFileInfo fi(path);
+    const QString ofdx = fi.completeBaseName() + QStringLiteral(".ofdx");
+    statusBar()->showMessage(
+        I18n::tr("save_ok").arg(fi.fileName(), ofdx), 5000);
+    m_rightDock->appendLog(
+        I18n::tr("save_ok_log").arg(fi.absoluteFilePath(), ofdx));
+    updateWindowTitle();
 }
 
 void MainWindow::saveProjectAs()
@@ -1096,7 +1120,7 @@ void MainWindow::saveProjectAs()
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());
-    updateWindowTitle();
+    reportSaved(p);
 }
 
 // ── Dialogs ─────────────────────────────────────────────────────────────────
@@ -1561,6 +1585,11 @@ void MainWindow::onRunnerFinished(bool ok)
                 m_rightDock->appendLog(
                     I18n::tr("log_farpattern").arg(patterns.size()));
             m_center->showPlot();
+        } else if (!logName.isEmpty()) {
+            // 結果プロットに出せるものが何も無かった。ポスト(1) のチェックを
+            // 入れても結果プロットは変わらない (あちらは ev2d / HTML 向け) —
+            // 何を足せば出るのかをここで言う (絶対規則 5)。
+            m_rightDock->appendLog(I18n::tr("log_noplotdata").arg(logName));
         }
         // 作図出力 (ev.ev2 / ev.ev3) — 図形表示の実体。EvViewer をこの実行の
         // 作業ディレクトリへ向け、生成を計算コンソールに知らせる
