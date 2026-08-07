@@ -14,6 +14,9 @@
 
 class QCheckBox;
 class QComboBox;
+class QPlainTextEdit;
+class QProcess;
+class QPushButton;
 class QLabel;
 class QLineEdit;
 class QStackedWidget;
@@ -39,6 +42,12 @@ private slots:
     void updateResults();               // 集中定数モデル → 結果表 + |Z| 曲線
 
 private:
+    // 抽出実行 (OpenPEEC / OpenFEM を QProcess で起動する)。
+    // 入力生成 → 起動 → zin.csv の読み取り → 結果表示 まで。
+    void runExtraction();
+    void onExtractionFinished(int exitCode);
+    void showZinCsv(const QString &path);
+
     QWidget *buildModelPage();          // モデル/ポート
     QWidget *buildExtractPage();        // 抽出設定 (+ FDTD連成)
     QWidget *buildSpicePage();          // SPICE連成
@@ -57,6 +66,12 @@ private:
 
     QStackedWidget *m_extractStack;     // ソルバ別の抽出設定
     QLabel         *m_estimate;         // 推定計算時間
+    QPushButton    *m_runExtract = nullptr;
+    QLabel         *m_extractStatus = nullptr;
+    QPlainTextEdit *m_extractLog = nullptr;
+    QTableWidget   *m_zinTable = nullptr;    // zin.csv (周波数 × Rin/Xin)
+    QProcess       *m_proc = nullptr;
+    QString         m_runDir;
 
     QTableWidget   *m_portTable;
 

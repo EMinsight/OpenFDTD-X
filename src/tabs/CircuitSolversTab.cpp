@@ -5,6 +5,15 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../em/LumpedRlc.h"
+#include "../io/CircuitIO.h"
+#include "../kernel/Runner.h"
+#include <QProcess>
+#include <QPlainTextEdit>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QStandardPaths>
+#include <QRegularExpression>
 #include "../I18n.h"
 #include "../Theme.h"
 
@@ -90,6 +99,10 @@ const bool s_i18n = [] {
     I18n::reg("cir_col_kind", "種類", "Type");
     I18n::reg("cir_col_net", "接続ネット", "Net");
     I18n::reg("cir_col_ref", "基準", "Reference");
+    // 抽出ソルバ用の端子座標 (PEEC はポートを節点 2 点で与える)
+    I18n::reg("cir_col_p1", "端子A x,y,z [m]", "Terminal A x,y,z [m]");
+    I18n::reg("cir_col_p2", "端子B x,y,z [m]", "Terminal B x,y,z [m]");
+    I18n::reg("cir_col_z0", "Z0 [Ω]", "Z0 [ohm]");
     I18n::reg("cir_kind_lumped", "集中ポート", "Lumped port");
     I18n::reg("cir_kind_probe", "内部観測", "Internal probe");
     I18n::reg("cir_port_add", "＋ ポートを追加", "+ Add a port");
@@ -106,6 +119,35 @@ const bool s_i18n = [] {
 
     // 抽出設定
     I18n::reg("cir_extract", "抽出設定", "Extraction");
+    // 抽出実行 (OpenPEEC / OpenFEM)
+    I18n::reg("cir_ex_idle",
+              "「抽出実行」で OpenPEEC / OpenFEM を起動します。導体はジオメトリ"
+              "タブの直方体 (材料が PEC か σ>0)、ポートは下のポート表の端子座標"
+              "から作ります。",
+              "Run extraction launches OpenPEEC / OpenFEM. Conductors come from "
+              "the boxes on the Geometry tab (PEC or sigma>0 material), ports "
+              "from the terminal coordinates in the port table below.");
+    I18n::reg("cir_ex_noinput", "入力を作れませんでした: %1",
+              "Could not build the input: %1");
+    I18n::reg("cir_ex_nokernel",
+              "カーネル %1 が見つかりません。環境変数 %2 かカーネルパス設定で"
+              "場所を指定してください。",
+              "The kernel %1 was not found. Set %2 or configure the kernel path.");
+    I18n::reg("cir_ex_nowrite", "入力ファイルを書けませんでした: %1",
+              "Could not write the input file: %1");
+    I18n::reg("cir_ex_running", "実行中: %1 (導体 %2 本、ポート %3 個)",
+              "Running: %1 (%2 conductors, %3 ports)");
+    I18n::reg("cir_ex_failed", "抽出に失敗しました (終了コード %1)",
+              "Extraction failed (exit code %1)");
+    I18n::reg("cir_ex_nocsv",
+              "zin.csv が読めませんでした (ログを確認してください)",
+              "zin.csv could not be read (check the log)");
+    I18n::reg("cir_ex_done", "完了: %1 行の入力インピーダンス (%2)",
+              "Done: %1 input-impedance rows (%2)");
+    I18n::reg("cir_ex_port", "ポート", "Port");
+    I18n::reg("cir_ex_freq", "周波数", "Frequency");
+    I18n::reg("cir_ex_r", "Rin [Ω]", "Rin [ohm]");
+    I18n::reg("cir_ex_x", "Xin [Ω]", "Xin [ohm]");
     I18n::reg("cir_peec_mesh", "メッシュ分割", "Mesh division");
     I18n::reg("cir_peec_mesh_unit", "mm (導体分割幅)", "mm (conductor cell width)");
     I18n::reg("cir_peec_lp", "部分インダクタンス Lp", "Partial inductance Lp");
@@ -355,11 +397,14 @@ QWidget *CircuitSolversTab::buildModelPage()
     // ポート定義 / Ports — Project::circuitPorts() のビュー。
     // 編集は即座にモデルへ書き戻し .ofdx ("circuit.ports") へ保存される。
     auto *sPort = new SectionBox(I18n::tr("cir_ports"), page);
-    m_portTable = new QTableWidget(0, 6, sPort);
+    m_portTable = new QTableWidget(0, 9, sPort);
     m_portTable->setHorizontalHeaderLabels({ QString(), "#", I18n::tr("cir_col_name"),
                                              I18n::tr("cir_col_kind"),
                                              I18n::tr("cir_col_net"),
-                                             I18n::tr("cir_col_ref") });
+                                             I18n::tr("cir_col_ref"),
+                                             I18n::tr("cir_col_p1"),
+                                             I18n::tr("cir_col_p2"),
+                                             I18n::tr("cir_col_z0") });
     m_portTable->verticalHeader()->setVisible(false);
     m_portTable->verticalHeader()->setDefaultSectionSize(24);
     m_portTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -429,6 +474,19 @@ void CircuitSolversTab::refreshPorts()
         m_portTable->setItem(r, 1, num);
 
         m_portTable->setItem(r, 2, new QTableWidgetItem(p.name));
+        // 端子座標は "x, y, z" のテキストで編集する (3 列に割らない —
+        // 表が横に伸びすぎるため)。未設定 (両端が同じ) は空欄で出す。
+        auto xyz = [](double x, double y, double z) {
+            return QStringLiteral("%1, %2, %3")
+                .arg(x, 0, 'g', 8).arg(y, 0, 'g', 8).arg(z, 0, 'g', 8);
+        };
+        const bool set = p.hasEndpoints();
+        m_portTable->setItem(r, 6, new QTableWidgetItem(
+            set ? xyz(p.x1_m, p.y1_m, p.z1_m) : QString()));
+        m_portTable->setItem(r, 7, new QTableWidgetItem(
+            set ? xyz(p.x2_m, p.y2_m, p.z2_m) : QString()));
+        m_portTable->setItem(r, 8, new QTableWidgetItem(
+            QString::number(p.z0_ohm, 'g', 6)));
 
         // 種類は 2 択なのでセル内コンボ (行を作り直すたびに張り替える)
         auto *kind = new QComboBox(m_portTable);
@@ -466,6 +524,34 @@ void CircuitSolversTab::onPortItemChanged(QTableWidgetItem *item)
     case 2: ports[row].name = item->text(); break;
     case 4: ports[row].net = item->text(); break;
     case 5: ports[row].ref = item->text(); break;
+    case 6: case 7: {
+        // "x, y, z" を読む。3 個そろわない入力は **モデルへ書かず**
+        // 表示を元へ戻す (UI と保存内容が食い違わないように — gui.md)
+        static const QRegularExpression sep(QStringLiteral("[,\\s]+"));
+        const QStringList t =
+            item->text().trimmed().split(sep, Qt::SkipEmptyParts);
+        double v[3] = {};
+        bool ok = (t.size() == 3);
+        for (int i = 0; ok && i < 3; ++i) {
+            bool good = false;
+            v[i] = t[i].toDouble(&good);
+            ok = ok && good;
+        }
+        if (!ok) { refreshPorts(); return; }
+        if (item->column() == 6) {
+            ports[row].x1_m = v[0]; ports[row].y1_m = v[1]; ports[row].z1_m = v[2];
+        } else {
+            ports[row].x2_m = v[0]; ports[row].y2_m = v[1]; ports[row].z2_m = v[2];
+        }
+        break;
+    }
+    case 8: {
+        bool ok = false;
+        const double z0 = item->text().toDouble(&ok);
+        if (!ok || z0 <= 0.0) { refreshPorts(); return; }
+        ports[row].z0_ohm = z0;
+        break;
+    }
     default: return;
     }
     m_p->touch();
@@ -574,13 +660,32 @@ QWidget *CircuitSolversTab::buildExtractPage()
     sExt->vbox()->addWidget(tabhelp::unwiredNote(sExt));
 
     auto *runRow = new QHBoxLayout();
-    auto *runBtn = new QPushButton(I18n::tr("cir_run_extract"), sExt);
-    tabhelp::markNotImplemented(runBtn);          // 抽出実行は未配線 (絶対規則 5)
-    runRow->addWidget(runBtn);
+    m_runExtract = new QPushButton(I18n::tr("cir_run_extract"), sExt);
+    connect(m_runExtract, &QPushButton::clicked,
+            this, &CircuitSolversTab::runExtraction);
+    runRow->addWidget(m_runExtract);
     m_estimate = new QLabel(sExt);
     runRow->addWidget(m_estimate);
     runRow->addStretch(1);
     sExt->vbox()->addLayout(runRow);
+    m_extractStatus = new QLabel(I18n::tr("cir_ex_idle"), sExt);
+    m_extractStatus->setWordWrap(true);
+    sExt->vbox()->addWidget(m_extractStatus);
+    m_zinTable = new QTableWidget(0, 4, sExt);
+    m_zinTable->setHorizontalHeaderLabels(
+        { I18n::tr("cir_ex_port"), I18n::tr("cir_ex_freq"),
+          I18n::tr("cir_ex_r"), I18n::tr("cir_ex_x") });
+    m_zinTable->horizontalHeader()->setStretchLastSection(true);
+    m_zinTable->verticalHeader()->setVisible(false);
+    m_zinTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_zinTable->setMinimumHeight(150);
+    m_zinTable->setVisible(false);
+    sExt->vbox()->addWidget(m_zinTable);
+    m_extractLog = new QPlainTextEdit(sExt);
+    m_extractLog->setReadOnly(true);
+    m_extractLog->setMaximumHeight(120);
+    m_extractLog->setVisible(false);
+    sExt->vbox()->addWidget(m_extractLog);
     v->addWidget(sExt);
 
     // FDTD連成 / Hand-off to FDTD
@@ -816,3 +921,128 @@ void CircuitSolversTab::updateResults()
     }
     m_zPlot->setSeries({ z });
 }
+
+// ── 抽出実行 (OpenPEEC / OpenFEM) ───────────────────────────────────────────
+// 入力を作業ディレクトリへ書き、QProcess で起動して zin.csv を読む。
+// 入力が作れない場合は **起動せず理由を出す** (絶対規則 5 / gui.md)。
+void CircuitSolversTab::runExtraction()
+{
+    if (m_proc && m_proc->state() != QProcess::NotRunning) return;
+
+    const int kind = m_solver ? m_solver->currentIndex() : 0;
+    const Kernel kernel = (kind == 0) ? Kernel::PEEC : Kernel::FEM;
+    const CircuitInput in = (kind == 0) ? CircuitIO::peecText(*m_p)
+                                        : CircuitIO::femText(*m_p);
+    m_zinTable->setVisible(false);
+    m_extractLog->setVisible(false);
+    if (!in.isValid()) {
+        m_extractStatus->setText(I18n::tr("cir_ex_noinput").arg(in.reason));
+        return;
+    }
+    RunConfig cfg;
+    cfg.kernel = kernel;
+    const QString bin = Runner::resolvedSolverPath(cfg);
+    if (bin.isEmpty()) {
+        m_extractStatus->setText(
+            I18n::tr("cir_ex_nokernel")
+                .arg(kind == 0 ? QStringLiteral("peec") : QStringLiteral("ofe"))
+                .arg(QLatin1String(Runner::homeVarFor(kernel))));
+        return;
+    }
+
+    // 作業ディレクトリ: プロジェクトの隣 (無題ならテンポラリ)
+    m_runDir = m_p->filePath().isEmpty()
+                   ? QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                         + QStringLiteral("/openfdtd-x/circuit")
+                   : QFileInfo(m_p->filePath()).path() + QStringLiteral("/circuit_run");
+    QDir().mkpath(m_runDir);
+    const QString base = CircuitIO::caseName(*m_p);
+    const QString inPath = m_runDir + QLatin1Char('/') + base
+                           + (kind == 0 ? QStringLiteral(".peec")
+                                        : QStringLiteral(".ofe"));
+    // 前回の結果を消す (残骸を今回の結果として拾わない)
+    QFile::remove(m_runDir + QStringLiteral("/zin.csv"));
+    QFile f(inPath);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_extractStatus->setText(I18n::tr("cir_ex_nowrite").arg(f.errorString()));
+        return;
+    }
+    f.write(in.text.toUtf8());
+    f.close();
+
+    QString head = I18n::tr("cir_ex_running")
+                       .arg(QFileInfo(inPath).fileName())
+                       .arg(in.conductors).arg(in.ports);
+    for (const QString &w : in.warnings)
+        head += QStringLiteral("\n• ") + w;
+    m_extractStatus->setText(head);
+
+    if (!m_proc) {
+        m_proc = new QProcess(this);
+        m_proc->setProcessChannelMode(QProcess::MergedChannels);
+        connect(m_proc, &QProcess::readyReadStandardOutput, this, [this] {
+            m_extractLog->setVisible(true);
+            m_extractLog->appendPlainText(
+                QString::fromLocal8Bit(m_proc->readAllStandardOutput()).trimmed());
+        });
+        connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this](int code, QProcess::ExitStatus) {
+                    onExtractionFinished(code);
+                });
+    }
+    m_runExtract->setEnabled(false);
+    m_proc->setWorkingDirectory(m_runDir);
+    m_proc->start(bin, { QFileInfo(inPath).fileName() });
+}
+
+void CircuitSolversTab::onExtractionFinished(int exitCode)
+{
+    m_runExtract->setEnabled(true);
+    if (exitCode != 0) {
+        m_extractStatus->setText(I18n::tr("cir_ex_failed").arg(exitCode));
+        m_extractLog->setVisible(true);
+        return;
+    }
+    showZinCsv(m_runDir + QStringLiteral("/zin.csv"));
+}
+
+// zin.csv: port, frequency[Hz], Rin[ohm], Xin[ohm], Gin[mS], Bin[mS], Zabs[ohm]
+void CircuitSolversTab::showZinCsv(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        m_extractStatus->setText(I18n::tr("cir_ex_nocsv"));
+        return;
+    }
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    m_zinTable->setRowCount(0);
+    int rows = 0;
+    for (const QString &line : lines) {
+        const QStringList t = line.split(QLatin1Char(','));
+        if (t.size() < 4) continue;
+        bool okF = false, okR = false, okX = false;
+        const double fr = t[1].toDouble(&okF);
+        const double re = t[2].toDouble(&okR);
+        const double im = t[3].toDouble(&okX);
+        if (!okF || !okR || !okX) continue;   // ヘッダ行
+        const int r = m_zinTable->rowCount();
+        m_zinTable->insertRow(r);
+        m_zinTable->setItem(r, 0, new QTableWidgetItem(t[0].trimmed()));
+        m_zinTable->setItem(r, 1, new QTableWidgetItem(
+            QString::number(fr / 1e6, 'g', 6) + QStringLiteral(" MHz")));
+        m_zinTable->setItem(r, 2, new QTableWidgetItem(QString::number(re, 'g', 6)));
+        // Xin から等価 L / C も出す (X>0 は誘導性、X<0 は容量性)
+        const double L = (fr > 0 && im > 0) ? im / (2 * M_PI * fr) : 0.0;
+        const double C = (fr > 0 && im < 0) ? -1.0 / (2 * M_PI * fr * im) : 0.0;
+        QString x = QString::number(im, 'g', 6);
+        if (L > 0) x += QStringLiteral("  (L = %1 nH)").arg(L * 1e9, 0, 'g', 5);
+        if (C > 0) x += QStringLiteral("  (C = %1 pF)").arg(C * 1e12, 0, 'g', 5);
+        m_zinTable->setItem(r, 3, new QTableWidgetItem(x));
+        ++rows;
+    }
+    m_zinTable->setVisible(rows > 0);
+    m_extractStatus->setText(rows > 0
+        ? I18n::tr("cir_ex_done").arg(rows).arg(QDir::toNativeSeparators(m_runDir))
+        : I18n::tr("cir_ex_nocsv"));
+}
+

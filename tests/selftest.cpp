@@ -25,6 +25,7 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/ArrReader.h"
+#include "io/CircuitIO.h"
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
@@ -4622,6 +4623,196 @@ static void testOceanPageScan()
 
 
 // BELLHOP の到達 (.arr) の読み取りと受信インパルス応答の合成
+
+// 回路パラメータ抽出 (OpenPEEC) の入力生成と .ofdx 往復
+static void testCircuitExtraction()
+{
+    g_file = "circuit";
+
+    // (a) 既定のままなら .ofdx は従来とバイト一致 (後方互換)
+    {
+        Project q0, q1;
+        q1.circuit().fmin_Hz = 1e6;      // 既定値を明示代入
+        q1.circuitPorts()[0].z0_ohm = 50.0;
+        const QString j0 = btyTmpPath("cir0.ofdx"), j1 = btyTmpPath("cir1.ofdx");
+        OfdxIO::save(j0, q0); OfdxIO::save(j1, q1);
+        check(btyReadAll(j0) == btyReadAll(j1),
+              "circuit: default solver settings / port endpoints are not written");
+        check(!btyReadAll(j0).contains("p1_m"),
+              "circuit: no endpoint key while the ports have none");
+    }
+
+    // (b) 端点座標と抽出設定のラウンドトリップ
+    {
+        Project p;
+        CircuitPortRow &r0 = p.circuitPorts()[0];
+        r0.x1_m = 0.0; r0.y1_m = 0.0; r0.z1_m = 0.0;
+        r0.x2_m = 0.0; r0.y2_m = 0.0; r0.z2_m = 1.0;
+        r0.z0_ohm = 75.0;
+        CircuitOpts &c = p.circuit();
+        c.solver = 1;
+        c.fmin_Hz = 1e3; c.fmax_Hz = 1e8; c.fdiv = 20;
+        c.peecSkinEffect = false;
+        c.peecMesh_mm = 2.5;
+        const QString j = btyTmpPath("cir_rt.ofdx");
+        OfdxIO::save(j, p);
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "circuit: sidecar reload");
+        const CircuitPortRow &g0 = q.circuitPorts()[0];
+        check(qFuzzyCompare(g0.z2_m, 1.0) && qFuzzyCompare(g0.z0_ohm, 75.0)
+                  && g0.hasEndpoints(),
+              "circuit: port endpoints round-trip");
+        check(q.circuit().solver == 1 && q.circuit().fdiv == 20
+                  && !q.circuit().peecSkinEffect
+                  && qFuzzyCompare(q.circuit().peecMesh_mm, 2.5),
+              "circuit: solver settings round-trip");
+    }
+
+    // (c) .peec の生成 — OpenPEEC の解析解つき検証ケースと同じ入力になること。
+    //     角線 1 m x 10 mm x 1 mm / sigma 5.8e7 / 1 MHz は
+    //     data/sample/bar_single.peec と同一 (L = 1.141093e-6 H, R = 1.724138e-3)
+    {
+        Project p;
+        p.general().title = QStringLiteral("bar");
+        p.materials().clear();
+        Material cu;
+        cu.esgm = 5.8e7;
+        p.materials().push_back(cu);
+        Geometry g;
+        g.materialId = 2;
+        g.shape = 1;
+        g.g[0] = -5e-3;   g.g[1] = 5e-3;      // 幅 10 mm
+        g.g[2] = -0.5e-3; g.g[3] = 0.5e-3;    // 厚さ 1 mm
+        g.g[4] = 0.0;     g.g[5] = 1.0;       // 長さ 1 m
+        p.geometries().push_back(g);
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.kind = CircuitPortRow::Lumped;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        CircuitOpts &c = p.circuit();
+        c.fmin_Hz = 1e6; c.fmax_Hz = 1e6; c.fdiv = 0;
+        c.peecMesh_mm = 1000.0;
+        c.peecSkinEffect = false;
+        c.peecCapacitance = false;
+
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid() && in.conductors == 1 && in.ports == 1,
+              "peec: one conductor and one port");
+        check(in.text.startsWith(QLatin1String("OpenPEEC 1 0\n")),
+              "peec: header line");
+        check(in.text.contains(QLatin1String(
+                  "bar = 0 0 0 0 0 1 0.01 0.001 58000000 1")),
+              "peec: the bar line matches OpenPEEC's analytic sample");
+        check(in.text.contains(QLatin1String("node = 1 0 0 0\n"))
+                  && in.text.contains(QLatin1String("node = 2 0 0 1\n")),
+              "peec: conductor endpoints become nodes");
+        check(in.text.contains(QLatin1String("port = 1 2 50")),
+              "peec: the port references the endpoint nodes (no duplicates)");
+        check(in.text.contains(QLatin1String("frequency = 1000000 1000000 0")),
+              "peec: single-frequency sweep");
+        check(!in.text.contains(QLatin1String("skineffect"))
+                  && !in.text.contains(QLatin1String("capacitance")),
+              "peec: disabled options are not written (kernel default = off)");
+
+        // 任意機能は有効なときだけ書く
+        c.peecSkinEffect = true;
+        c.peecCapacitance = true;
+        c.peecRetardation = true;
+        const QString t2 = CircuitIO::peecText(p).text;
+        check(t2.contains(QLatin1String("skineffect = 1"))
+                  && t2.contains(QLatin1String("capacitance = 1"))
+                  && t2.contains(QLatin1String("retardation = 1")),
+              "peec: enabled options are written");
+    }
+
+    // (d) 作れないときは理由を返して text は空 (黙って壊れた入力を出さない)
+    {
+        Project p;                     // 導体形状なし
+        p.circuitPorts().clear();
+        const CircuitInput a = CircuitIO::peecText(p);
+        check(!a.isValid() && a.reason.contains(QStringLiteral("導体")),
+              "peec: no conductor -> refused with a reason");
+
+        Material cu; cu.esgm = 5.8e7;
+        p.materials().clear();
+        p.materials().push_back(cu);
+        Geometry g;
+        g.materialId = 2; g.shape = 1;
+        g.g[1] = 1e-3; g.g[3] = 1e-3; g.g[5] = 1.0;
+        p.geometries().push_back(g);
+        const CircuitInput b = CircuitIO::peecText(p);   // ポートなし
+        check(!b.isValid() && b.reason.contains(QStringLiteral("ポート")),
+              "peec: no port -> refused with a reason");
+
+        // 端点未設定のポートは除外され、理由が warnings に出る
+        CircuitPortRow bad;
+        bad.name = QStringLiteral("P?");
+        p.circuitPorts().push_back(bad);
+        const CircuitInput c2 = CircuitIO::peecText(p);
+        check(!c2.isValid()
+                  && c2.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("P?")),
+              "peec: a port without endpoints is dropped and reported");
+    }
+
+    // (e) 直方体でない形状・非導体は落として理由を積む
+    {
+        Project p;
+        Material cu; cu.esgm = 5.8e7;
+        Material die; die.epsr = 4.4;
+        p.materials().clear();
+        p.materials().push_back(cu);    // id 2
+        p.materials().push_back(die);   // id 3 (σ = 0 → 非導体)
+        Geometry bar;
+        bar.materialId = 2; bar.shape = 1;
+        bar.g[1] = 1e-3; bar.g[3] = 1e-3; bar.g[5] = 1.0;
+        Geometry sphere;
+        sphere.materialId = 2; sphere.shape = 11;   // 直方体でない
+        Geometry sub;
+        sub.materialId = 3; sub.shape = 1;          // 非導体
+        sub.g[1] = 1.0; sub.g[3] = 1.0; sub.g[5] = 1e-3;
+        p.geometries() = { bar, sphere, sub };
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid() && in.conductors == 1,
+              "peec: only the box conductor is used");
+        const QString w = in.warnings.join(QLatin1Char('\n'));
+        check(w.contains(QStringLiteral("直方体でない")) && w.contains(QStringLiteral("導体でない")),
+              "peec: both kinds of dropped geometry are reported");
+    }
+
+    // (f) PEC は有限導電率に置き換え、その旨を出す
+    {
+        Project p;
+        Geometry g;
+        g.materialId = 1;      // PEC
+        g.shape = 1;
+        g.g[1] = 1e-3; g.g[3] = 1e-3; g.g[5] = 1.0;
+        g.name = QStringLiteral("trace");
+        p.geometries().push_back(g);
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid(), "peec: PEC geometry is usable");
+        check(in.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("trace")),
+              "peec: substituting a finite conductivity for PEC is reported");
+    }
+
+    // (g) カーネル解決 — 環境変数名とバイナリ名
+    {
+        check(qstrcmp(Runner::homeVarFor(Kernel::PEEC), "OPENPEEC_HOME") == 0,
+              "circuit: PEEC home var");
+        check(qstrcmp(Runner::homeVarFor(Kernel::FEM), "OPENFEM_HOME") == 0,
+              "circuit: FEM home var");
+    }
+}
+
 static void testArrivalIr()
 {
     g_file = "arrival-ir";
@@ -10048,6 +10239,7 @@ int main(int argc, char *argv[])
     testUnderwaterBathymetry();
     testOceanPageScan();
     testArrivalIr();
+    testCircuitExtraction();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

@@ -27,12 +27,19 @@ static QString kernelPrefix(Kernel k) {
         case Kernel::RCWA:    return "orcwa";
         case Kernel::BPM:     return "obpm";
         case Kernel::Bellhop: return "bellhopcxx";
+        // 回路パラメータ抽出 (別リポジトリの姉妹ソルバ)
+        case Kernel::PEEC:    return "peec";
+        case Kernel::FEM:     return "ofe";
     }
     return "ofd";
 }
 
 QString Runner::solverBinary(const RunConfig &cfg) {
     QString base = kernelPrefix(cfg.kernel);
+    if (cfg.kernel == Kernel::PEEC || cfg.kernel == Kernel::FEM) {
+        // 回路抽出ソルバは CPU 単一実装 (MPI/GPU 変種なし)
+        return resolveBinary(cfg, base);
+    }
     if (cfg.kernel == Kernel::Bellhop) {
         // bellhopcuda のバイナリは bellhopcxx (CPU, 内部マルチスレッド) と
         // bellhopcuda (GPU) の 2 系統。MPI 変種は存在しないため CPU に倒す。
@@ -56,6 +63,8 @@ QString Runner::postBinary(const RunConfig &cfg) {
 // カーネルの場所を指す環境変数名 (探索とエラーメッセージで共用)
 const char *Runner::homeVarFor(Kernel k) {
     switch (k) {
+        case Kernel::PEEC:    return "OPENPEEC_HOME";
+        case Kernel::FEM:     return "OPENFEM_HOME";
         case Kernel::RCWA:    return "OPENRCWA_HOME";
         case Kernel::BPM:     return "OPENBPM_HOME";
         case Kernel::Bellhop: return "BELLHOPCUDA_HOME";

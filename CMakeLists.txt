@@ -134,6 +134,10 @@ set(CORE_SOURCES
     # 水中の可聴化の入口 — selftest から合成結果を直接検証する
     src/io/ArrReader.cpp
     src/io/ArrReader.h
+    # 回路パラメータ抽出ソルバ (OpenPEEC / OpenFEM) の入力生成。
+    # CircuitSolversTab と selftest が共有する
+    src/io/CircuitIO.cpp
+    src/io/CircuitIO.h
     src/io/BathymetryIO.cpp
     src/io/BathymetryIO.h
     # 配布ページ (HTML) からデータファイルへのリンクを抜き出す (Qt Core のみ)。

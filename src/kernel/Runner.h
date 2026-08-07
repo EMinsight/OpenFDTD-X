@@ -22,7 +22,7 @@ namespace ofd {
 class Project;
 
 enum class Engine  { CPU, CPU_MPI, GPU, GPU_MPI };
-enum class Kernel  { FDTD, RCWA, BPM, Bellhop }; // solver family
+enum class Kernel  { FDTD, RCWA, BPM, Bellhop, PEEC, FEM }; // solver family
 enum class RunMode { Solver, Post, Both };
 
 struct RunConfig {
