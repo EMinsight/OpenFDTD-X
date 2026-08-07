@@ -97,6 +97,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QDirIterator>
 #include <QTemporaryDir>
 #include <QImage>
 #include <QPainter>
@@ -11048,6 +11049,81 @@ static void testRirAutoAssign()
 // TabNavigator は音響/水中ドメインで nav_source の代わりに nav_source_ac を
 // 表示する (音源設定 2 系統の混乱対策)。GUI 非リンクのため I18n テーブルを
 // 直接検証する: キーが登録済みで、日本語表記が「音源」であり「波源」でないこと。
+// ── I18n キーの登録漏れ検査 ────────────────────────────────────────────────
+// タブ固有のキーは各 .cpp の file-local I18n::reg() で登録する規約だが、
+// **登録を書き忘れても静かに通る**: I18n::tr は未登録キーに対してキー文字列
+// そのものを返すので、画面にキーが出るだけで落ちない。さらに書式引数がある
+// キーだと "QString::arg: Argument missing" が実行時に大量に出る
+// (実際に AcousticSourceTab の asrc_count_* で発生した)。
+//
+// タブは selftest にリンクされていないので実行時には確かめられない。
+// そこでソースを走査し、tr で使っているキーが必ずどこかで reg / add されて
+// いることを検査する。
+static void testI18nKeysRegistered()
+{
+    g_file = "i18n-keys";
+    // リポジトリの src/ を探す (tests/data と同じ歩き方)
+    const QString base = QCoreApplication::applicationDirPath();
+    QString srcDir;
+    for (const QString &c : { base + "/../src", base + "/../../src",
+                              QStringLiteral("src") }) {
+        if (QDir(c).exists()) { srcDir = c; break; }
+    }
+    if (srcDir.isEmpty()) {
+        std::printf("  (i18n key scan skipped: src/ not found)\n");
+        return;
+    }
+
+    static const QRegularExpression trRe(
+        QStringLiteral("I18n::tr\\(\\s*(?:QStringLiteral\\(\\s*)?\"([A-Za-z0-9_]+)\""));
+    // 登録は 2 通りある: 関数呼び出し I18n::reg("k", …) / add("k", …) と、
+    // テーブルリテラル { "k", "ja", "en" } (GeometryTab がこの形)。両方拾う。
+    static const QRegularExpression regRe(
+        QStringLiteral("(?:I18n::)?(?:reg|add)\\(\\s*\"([A-Za-z0-9_]+)\""));
+    static const QRegularExpression tableRe(
+        QStringLiteral("\\{\\s*\"([A-Za-z0-9_]+)\"\\s*,\\s*\""));
+
+    QSet<QString> used, defined;
+    QDirIterator it(srcDir, { QStringLiteral("*.cpp") }, QDir::Files,
+                    QDirIterator::Subdirectories);
+    int files = 0;
+    while (it.hasNext()) {
+        QFile f(it.next());
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        ++files;
+        for (auto m = trRe.globalMatch(text); m.hasNext(); )
+            used.insert(m.next().captured(1));
+        for (auto m = regRe.globalMatch(text); m.hasNext(); )
+            defined.insert(m.next().captured(1));
+        for (auto m = tableRe.globalMatch(text); m.hasNext(); )
+            defined.insert(m.next().captured(1));
+    }
+    check(files > 50, "i18n: scanned the source tree");
+    check(used.size() > 200, "i18n: found the tr() call sites");
+
+    QStringList missing;
+    for (const QString &k : used) {
+        // 末尾が _ のものは動的キーの接頭辞 (tr("ge_shape_" + name) の形)。
+        // 完全なキーはコード中に文字列として現れないので検査できない。
+        if (k.endsWith(QLatin1Char('_'))) continue;
+        if (!defined.contains(k)) missing << k;
+    }
+    missing.sort();
+    if (!missing.isEmpty())
+        std::printf("  unregistered i18n keys: %s\n",
+                    qPrintable(missing.join(QStringLiteral(", "))));
+    check(missing.isEmpty(),
+          "i18n: every tr() key is registered somewhere (an unregistered key "
+          "shows the raw key and breaks arg() substitution)");
+
+    // 今回落ちた 4 キーは名指しで固定する
+    for (const char *k : { "asrc_count_fmt", "asrc_count_none",
+                           "asrc_count_ok", "asrc_count_many" })
+        check(defined.contains(QLatin1String(k)),
+              "i18n: the acoustic source-count keys are registered");
+}
+
 static void testNavSourceAcLabel()
 {
     g_file = "nav-source-ac";
@@ -11461,6 +11537,7 @@ int main(int argc, char *argv[])
     testDisplayMetrics();
     testParaxialTrace();
     testDisplayIlluminationSettings();
+    testI18nKeysRegistered();
     testNavSourceAcLabel();
     testNavCategories();
     testRoomAcRunButtonLabels();

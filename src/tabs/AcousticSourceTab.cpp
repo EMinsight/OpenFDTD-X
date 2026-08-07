@@ -127,6 +127,24 @@ const bool s_i18n = [] {
     I18n::reg("asrc_new_src", "新規音源", "New source");
     // 音源一覧はモデル (.ofdx) に保存されるが、まだソルバー入力には
     // 渡していない — 何が有効かを正しく述べる (絶対規則 5)
+    I18n::reg("asrc_count_fmt", "有効な音源 %1 / %2 件。",
+              "%1 of %2 sources enabled.");
+    I18n::reg("asrc_count_none",
+              "1 件も有効でないため、可聴化・指標とも計算できません。",
+              "None are enabled, so neither auralisation nor the metrics "
+              "can be computed.");
+    I18n::reg("asrc_count_ok",
+              "室内応答は音源ごとに独立に求めて重ね合わせるので、"
+              "計算量は音源数に比例します (急に破綻はしません)。",
+              "Room responses are computed per source and summed, so the "
+              "cost grows linearly with the source count.");
+    I18n::reg("asrc_count_many",
+              "%1 件は多めです — 可聴化は音源ごとに IR 畳み込みを行うため、"
+              "書き出し時間とメモリが音源数に比例して増えます。"
+              "確認用には一部だけ有効にすることを勧めます。",
+              "%1 is a lot — auralisation convolves an IR per source, so "
+              "render time and memory grow with the count. Enable a "
+              "subset while checking.");
     I18n::reg("asrc_src_model_note",
               "▸ 音源一覧はプロジェクト (.ofdx) に保存され、次回読み込み時に"
               "復元されます。現在の音響計算 (統計推定・ソルバー連携) は"
