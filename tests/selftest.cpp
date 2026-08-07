@@ -1687,10 +1687,21 @@ static void testProjectTemplates()
             const GeneralOpts &g = p.general();
             check(g.f1min <= g.f1max && g.f1div >= 1 && g.f2min > 0,
                   "template frequencies sane");
-            // 波源: 給電 / 平面波 / RCWA 層スタックのいずれかを必ず持つ
-            check(!p.feeds().isEmpty() || p.planewave().enabled ||
-                  isValidRcwaStack(p.optical().rcwaLayerList),
-                  "template has a source");
+            // 波源: 給電 / 平面波 / RCWA 層スタックのいずれかを必ず持つ。
+            // ただし回路パラメータ抽出 (PEEC / FEM) のテンプレートは FDTD を
+            // 走らせないので波源を持たない — 代わりに **ポートの端点** が
+            // 入っていることを要求する (抽出はこれが無いと動かない)。
+            const bool isExtraction = id.startsWith(QLatin1String("cir_"));
+            if (isExtraction) {
+                bool hasPort = false;
+                for (const CircuitPortRow &r : p.circuitPorts())
+                    hasPort = hasPort || (r.enabled && r.hasEndpoints());
+                check(hasPort, "extraction template has a port with endpoints");
+            } else {
+                check(!p.feeds().isEmpty() || p.planewave().enabled ||
+                      isValidRcwaStack(p.optical().rcwaLayerList),
+                      "template has a source");
+            }
             // 障害物ジオメトリはメッシュ領域の内側に収まっていること。
             // (領域外へはみ出した形状はボクセル化で丸ごと落ちるため無意味。
             //  室内音響の障害物 = 客席ブロック・間仕切り等でとくに起きやすい)
@@ -1732,8 +1743,8 @@ static void testProjectTemplates()
         }
     }
     g_file = "templates";
-    // 8 EM + 10 光 + 13 音響 + 7 水中 + 4 tidy3d
-    check(total == 42, "42 templates registered");
+    // 8 EM + 2 回路抽出 + 10 光 + 13 音響 + 7 水中 + 4 tidy3d
+    check(total == 44, "44 templates registered");
 
     // 室内音響テンプレートの障害物ジオメトリ (会場の実構成が入っていること)。
     // ac_imagesource だけは鏡像法の解析解が空の直方体でしか成立しないため
@@ -5030,6 +5041,41 @@ static void testCircuitExtraction()
         check(r3.isValid()
                   && r3.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("基準導体")),
               "ofe: an undetermined reference conductor is reported");
+    }
+
+    // (h) 動作確認テンプレート — 解析解つきのケースがそのまま流れること
+    {
+        Project p;
+        check(templates::apply(p, QStringLiteral("em"),
+                               QStringLiteral("cir_peec_bar"), nullptr),
+              "template: PEEC verification case applies");
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid() && in.conductors == 1 && in.ports == 1,
+              "template: PEEC case produces a runnable input");
+        // OpenPEEC の data/sample/bar_single.peec と同じ導体・ポート・周波数
+        check(in.text.contains(QLatin1String(
+                  "bar = 0 0 0 0 0 1 0.01 0.001 58000000 1"))
+                  && in.text.contains(QLatin1String("port = 1 2 50"))
+                  && in.text.contains(QLatin1String("frequency = 1000000 1000000 0")),
+              "template: PEEC case matches the analytic sample "
+              "(R = l/(sigma w t), L = Grover)");
+        check(!in.text.contains(QLatin1String("skineffect")),
+              "template: skin effect is off so R comes out at its DC value");
+    }
+    {
+        Project p;
+        check(templates::apply(p, QStringLiteral("em"),
+                               QStringLiteral("cir_fem_ms"), nullptr),
+              "template: FEM verification case applies");
+        const CircuitInput in = CircuitIO::femText(p);
+        check(in.isValid() && in.conductors == 2,
+              "template: FEM case has the trace and the ground plane");
+        check(in.text.contains(QLatin1String("conductor = 0 1 -0.004 0.004 0 0"))
+                  && in.text.contains(QLatin1String("tline = Z")),
+              "template: the ground plane is the reference and the line axis is Z");
+        check(p.circuit().solver == 1
+                  && p.circuit().femAnalysis == QLatin1String("C L"),
+              "template: the FEM case selects the quasi-static solver");
     }
 
     // (g) カーネル解決 — 環境変数名とバイナリ名
