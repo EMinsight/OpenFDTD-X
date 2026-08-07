@@ -2,6 +2,7 @@
 #include "LayoutGDSTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/GdsIO.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -12,6 +13,9 @@
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMap>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -104,6 +108,30 @@ const bool s_i18n = [] {
     I18n::reg("gds_run_drc", "▶ DRC 実行",        "▶ Run DRC");
     I18n::reg("gds_export",  "📤 GDS エクスポート", "📤 GDS export");
     I18n::reg("gds_import",  "📥 GDS インポート",   "📥 GDS import");
+    I18n::reg("gds_io_note",
+              "▸ エクスポートは形状を XY 平面へ投影した **外接矩形** を "
+              "レイヤー 1 の BOUNDARY として書きます (実際の断面形状ではなく"
+              "占有領域です)。単位は 1 µm ユーザー単位 / 1 nm データベース単位。"
+              "インポートは内容を読んで要約しますが、**形状としては取り込みません** "
+              "— Project の形状モデルは直方体・球などのパラメトリック立体で、"
+              "任意多角形を受ける型が無いためです。",
+              "\u25b8 Export writes the XY bounding boxes of the shapes as "
+              "BOUNDARY records on layer 1 (footprints, not the actual "
+              "cross-sections), with a 1 um user unit / 1 nm database unit. "
+              "Import reads and summarises the file but does not create "
+              "geometry — the project's shape model is parametric solids "
+              "(boxes, spheres), with no type for arbitrary polygons.");
+    I18n::reg("gds_exp_empty",
+              "書き出せる形状がありません (ジオメトリタブで形状を追加してください)",
+              "No shapes to export (add geometry on the Geometry tab)");
+    I18n::reg("gds_exp_ok", "%1 を書き出しました (%2 多角形)",
+              "Wrote %1 (%2 polygons)");
+    I18n::reg("gds_imp_ok",
+              "%1 を読み込みました — ライブラリ %2 / 構造 %3 / 多角形 %4 / "
+              "レイヤー(数) %5 / 外接 %6 × %7 µm。形状としては未取込です。",
+              "Read %1 — library %2 / %3 structures / %4 polygons / "
+              "layers(count) %5 / bounds %6 x %7 um. Not imported as geometry.");
+    I18n::reg("gds_imp_nolayer", "なし", "none");
     I18n::reg("gds_fdtd_section", "FDTD-IC 連携 / FDTD ↔ IC layout",
               "FDTD ↔ IC layout");
     I18n::reg("gds_fdtd_hint",
@@ -335,12 +363,17 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     auto *btnExport = new QPushButton(I18n::tr("gds_export"), sDrc);
     auto *btnImport = new QPushButton(I18n::tr("gds_import"), sDrc);
     drcRow->addWidget(btnDrc);
-    for (QPushButton *b : { btnExport, btnImport }) {
-        tabhelp::markNotImplemented(b);
-        drcRow->addWidget(b);
-    }
+    drcRow->addWidget(btnExport);
+    drcRow->addWidget(btnImport);
     drcRow->addStretch(1);
     sDrc->vbox()->addLayout(drcRow);
+    m_ioStatus = new QLabel(sDrc);
+    m_ioStatus->setWordWrap(true);
+    m_ioStatus->setStyleSheet("font-size:11px;");
+    sDrc->vbox()->addWidget(m_ioStatus);
+    sDrc->vbox()->addWidget(mutedLabel(I18n::tr("gds_io_note"), sDrc));
+    connect(btnExport, &QPushButton::clicked, this, &LayoutGDSTab::exportGds);
+    connect(btnImport, &QPushButton::clicked, this, &LayoutGDSTab::importGds);
     v->addWidget(sDrc);
 
     // FDTD-IC 連携 / FDTD ↔ IC layout
@@ -545,4 +578,96 @@ void LayoutGDSTab::rebuildDrc(const QVector<Footprint> &foots)
         det->setFont(mono);
         m_drc->setItem(i, 3, det);
     }
+}
+
+// ── GDSII 書き出し ─────────────────────────────────────────────────────────
+// 形状を XY 平面へ投影した外接矩形 (このタブが DRC に使っているのと同じ
+// Footprint) を BOUNDARY として書く。実際の断面形状ではなく **占有領域** で
+// あることを注記で明示する (見た目の形をそのまま出したように見せない)。
+void LayoutGDSTab::exportGds()
+{
+    if (m_lastFoots.isEmpty()) {
+        m_ioStatus->setText(I18n::tr("gds_exp_empty"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("gds_export"), QStringLiteral("layout.gds"),
+        QStringLiteral("GDSII (*.gds *.gdsii)"));
+    if (path.isEmpty()) return;
+
+    GdsLibrary lib;
+    lib.name = m_p->general().title.isEmpty()
+        ? QStringLiteral("OFDX") : m_p->general().title.left(31).toUpper();
+    lib.userUnit = 1e-3;      // 1 µm ユーザー単位
+    lib.dbUnit_m = 1e-9;      // 1 nm データベース単位 (業界慣用)
+
+    GdsStructure st;
+    st.name = QStringLiteral("TOP");
+    for (const Footprint &f : m_lastFoots) {
+        GdsPolygon p;
+        p.layer = 1;          // Si 導波路コア (レイヤー表の 1 行目)
+        p.datatype = 0;
+        p.x_m = { f.x0, f.x1, f.x1, f.x0 };
+        p.y_m = { f.y0, f.y0, f.y1, f.y1 };
+        st.polygons.push_back(p);
+    }
+    lib.structures.push_back(st);
+
+    QString err;
+    if (!GdsIO::save(path, lib, &err)) {
+        m_ioStatus->setText(err);
+        return;
+    }
+    m_ioStatus->setText(I18n::tr("gds_exp_ok")
+                            .arg(QFileInfo(path).fileName())
+                            .arg(lib.polygonCount()));
+}
+
+// ── GDSII 読み込み ─────────────────────────────────────────────────────────
+// 中身を要約して出す。**形状としては取り込まない** — Project の形状モデルは
+// 直方体・球などのパラメトリック立体で、任意多角形を受ける型が無いため。
+// 「読めたが取り込めない」ことを隠さない (絶対規則 5)。
+void LayoutGDSTab::importGds()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("gds_import"), QString(),
+        QStringLiteral("GDSII (*.gds *.gdsii);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    GdsLibrary lib;
+    QString err;
+    if (!GdsIO::load(path, lib, &err)) {
+        m_ioStatus->setText(err);
+        return;
+    }
+    // レイヤーごとの多角形数と全体の外接矩形
+    QMap<int, int> perLayer;
+    double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    bool first = true;
+    for (const GdsStructure &st : lib.structures) {
+        for (const GdsPolygon &p : st.polygons) {
+            perLayer[p.layer] += 1;
+            for (int i = 0; i < p.x_m.size(); ++i) {
+                if (first) {
+                    x0 = x1 = p.x_m[i];
+                    y0 = y1 = p.y_m[i];
+                    first = false;
+                } else {
+                    x0 = qMin(x0, p.x_m[i]); x1 = qMax(x1, p.x_m[i]);
+                    y0 = qMin(y0, p.y_m[i]); y1 = qMax(y1, p.y_m[i]);
+                }
+            }
+        }
+    }
+    QStringList layers;
+    for (auto it = perLayer.cbegin(); it != perLayer.cend(); ++it)
+        layers << QStringLiteral("%1:%2").arg(it.key()).arg(it.value());
+
+    m_ioStatus->setText(I18n::tr("gds_imp_ok")
+        .arg(QFileInfo(path).fileName(), lib.name)
+        .arg(lib.structures.size()).arg(lib.polygonCount())
+        .arg(layers.isEmpty() ? I18n::tr("gds_imp_nolayer")
+                              : layers.join(QStringLiteral(", ")))
+        .arg((x1 - x0) * 1e6, 0, 'f', 3)
+        .arg((y1 - y0) * 1e6, 0, 'f', 3));
 }
