@@ -148,5 +148,21 @@ AcousticMetricsSet computeAcousticMetrics(ArrayView<const double> rir,
     return out;
 }
 
+double requiredInrDb(DecayMetricKind k)
+{
+    // 評価区間の深さ + ISO 3382-2 の 10 dB マージン
+    switch (k) {
+        case DecayMetricKind::EDT: return 10.0 + 10.0;
+        case DecayMetricKind::T20: return 25.0 + 10.0;
+        case DecayMetricKind::T30: return 35.0 + 10.0;
+    }
+    return 45.0;
+}
+
+bool inrSufficient(double inrDb, DecayMetricKind k)
+{
+    return inrDb >= requiredInrDb(k);
+}
+
 } // namespace acoustics
 } // namespace ofd

@@ -1,6 +1,7 @@
 // RoomAcousticsTab.cpp
 #include "RoomAcousticsTab.h"
 #include "TabHelpers.h"
+#include "../acoustics/core/AcousticMetrics.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../core/OperaHalls.h"
 #include "../core/Project.h"
@@ -123,8 +124,47 @@ const bool s_i18n = [] {
     I18n::reg("rah_schroeder_section", "Schroeder 減衰曲線",
               "Schroeder decay curve");
     I18n::reg("rah_col_metric", "指標", "Metric");
-    I18n::reg("rah_inr_check", "INR (Impulse-to-Noise Ratio) 検査 ≥ 45dB",
-              "INR (impulse-to-noise ratio) check ≥ 45 dB");
+    I18n::reg("rah_inr_check", "帯域内 INR (Impulse-to-Noise Ratio) を表示",
+              "Show the per-band INR (impulse-to-noise ratio)");
+    I18n::reg("rah_inr_tip",
+              "帯域信号のピークと末尾ノイズフロアの差 [dB] (ISO 18233:2006 §3.6)。"
+              "ISO 3382-2:2008 §5.3 / Table 1 は EDT に 20 dB、T20 に 35 dB、"
+              "T30 に 45 dB を要求する (評価区間の下端よりさらに 10 dB 下まで"
+              "ノイズが下がっていること)。実測 IR を解析したときだけ出せる。",
+              "Difference between the band peak and the tail noise floor [dB] "
+              "(ISO 18233:2006 §3.6). ISO 3382-2:2008 §5.3 / Table 1 requires "
+              "20 dB for EDT, 35 dB for T20 and 45 dB for T30 (the noise must "
+              "sit a further 10 dB below the bottom of the evaluation range). "
+              "Only available once a measured IR has been analysed.");
+    I18n::reg("rah_inr_row", "INR [dB]", "INR [dB]");
+    I18n::reg("rah_inr_cell_tip",
+              "INR = %1 dB — 必要値 EDT %2 / T20 %3 / T30 %4 dB\n"
+              "EDT: %5   T20: %6   T30: %7",
+              "INR = %1 dB — required EDT %2 / T20 %3 / T30 %4 dB\n"
+              "EDT: %5   T20: %6   T30: %7");
+    I18n::reg("rah_inr_yes", "足りている", "sufficient");
+    I18n::reg("rah_inr_no", "不足", "insufficient");
+    I18n::reg("rah_inr_none_band", "なし", "none");
+    I18n::reg("rah_inr_measonly",
+              "▸ INR は実測 IR を解析したときだけ出せる "
+              "(統計推定にはノイズフロアが無いため)。",
+              "▸ The INR is only available for an analysed measured IR "
+              "(a statistical estimate has no noise floor).");
+    I18n::reg("rah_inr_none", "▸ INR を推定できた帯域がない。",
+              "▸ The INR could not be estimated in any band.");
+    I18n::reg("rah_inr_all_ok",
+              "▸ 全帯域が T30 の要求 (45 dB) を満たす (最小 %1 dB)。",
+              "▸ Every band meets the T30 requirement of 45 dB "
+              "(lowest %1 dB).");
+    I18n::reg("rah_inr_short",
+              "▸ T30 の 45 dB に足りない帯域: %1 Hz / T20 の 35 dB に"
+              "足りない帯域: %2 Hz (最小 INR %3 dB)。"
+              "その帯域の減衰時間が「—」なのはこのため — "
+              "測定の S/N を上げる (音源出力を上げる・平均回数を増やす) 必要がある。",
+              "▸ Bands short of the 45 dB needed for T30: %1 Hz; short of the "
+              "35 dB needed for T20: %2 Hz (lowest INR %3 dB). This is why the "
+              "decay time reads \"—\" in those bands — the measurement needs a "
+              "better signal-to-noise ratio (louder source, more averages).");
     I18n::reg("rah_validation_section", "実測 vs シミュレーション",
               "Measured vs simulation");
     I18n::reg("rah_col_metric1k", "指標 @1kHz", "Metric @1 kHz");
@@ -1298,9 +1338,15 @@ QWidget *RoomAcousticsTab::buildIRPage()
     sd->vbox()->addWidget(m_irMethodNote);
     m_irT2030Note = makeHint(QString(), sd);   // T20/T30 乖離の判定結果
     sd->vbox()->addWidget(m_irT2030Note);
-    auto *inrCheck = makeCheck(I18n::tr("rah_inr_check"), false, sd);
-    tabhelp::markNotImplemented(inrCheck);   // INR 検査は未実装・未使用
-    sd->vbox()->addWidget(inrCheck);
+    // 帯域内 INR (ISO 3382-2 の動的範囲要求) の表示切替。
+    // 減衰時間が「—」になった帯域の理由を数値で示すのが目的。
+    m_inrCheck = makeCheck(I18n::tr("rah_inr_check"), false, sd);
+    m_inrCheck->setToolTip(I18n::tr("rah_inr_tip"));
+    sd->vbox()->addWidget(m_inrCheck);
+    m_inrNote = makeHint(QString(), sd);
+    sd->vbox()->addWidget(m_inrNote);
+    connect(m_inrCheck, &QCheckBox::toggled, this,
+            [this] { refreshIrPage(); });
     v->addWidget(sd);
 
     auto *sv = new SectionBox(I18n::tr("rah_validation_section"), page);
@@ -2183,9 +2229,15 @@ void RoomAcousticsTab::refreshIrPage()
     // ── 帯域別指標
     static const char *kIrRow[6] = { "EDT [s]", "T20 [s]", "T30 [s]",
                                      "C80 [dB]", "D50 [-]", "Ts [ms]" };
+    // INR 行は実測解析のときだけ意味がある (統計推定にノイズフロアは無い)
+    const bool showInr = m_inrCheck && m_inrCheck->isChecked() && measOk;
+    m_irBandTable->setRowCount(showInr ? 7 : 6);
     for (int i = 0; i < 6; ++i)
         m_irBandTable->setItem(i, 0,
             new QTableWidgetItem(QString::fromUtf8(kIrRow[i])));
+    if (showInr)
+        m_irBandTable->setItem(6, 0,
+            new QTableWidgetItem(I18n::tr("rah_inr_row")));
     auto mv = [&](const MeasuredValue &x, int dec) {
         return x.ok ? QString::number(x.v, 'f', dec) : dash;
     };
@@ -2209,6 +2261,68 @@ void RoomAcousticsTab::refreshIrPage()
         }
         for (int i = 0; i < 6; ++i)
             m_irBandTable->setItem(i, b + 1, numItem(c[i]));
+
+        if (!showInr) continue;
+        const MeasuredValue &inr = m_measIr.inr[b];
+        QTableWidgetItem *it = numItem(inr.ok ? QString::number(inr.v, 'f', 1)
+                                              : dash);
+        if (inr.ok) {
+            // ISO 3382-2 の要求 (T30 45 / T20 35 / EDT 20 dB) に照らして色付け。
+            // 「足りない」ことと「何 dB 足りないか」を両方見せる。
+            using acoustics::DecayMetricKind;
+            using acoustics::inrSufficient;
+            using acoustics::requiredInrDb;
+            const bool okT30 = inrSufficient(inr.v, DecayMetricKind::T30);
+            const bool okT20 = inrSufficient(inr.v, DecayMetricKind::T20);
+            const bool okEdt = inrSufficient(inr.v, DecayMetricKind::EDT);
+            it->setForeground(QColor(okT30 ? kOk : okT20 ? kWarn : kErr));
+            it->setToolTip(I18n::tr("rah_inr_cell_tip")
+                .arg(QString::number(inr.v, 'f', 1),
+                     QString::number(requiredInrDb(DecayMetricKind::EDT), 'f', 0),
+                     QString::number(requiredInrDb(DecayMetricKind::T20), 'f', 0),
+                     QString::number(requiredInrDb(DecayMetricKind::T30), 'f', 0),
+                     I18n::tr(okEdt ? "rah_inr_yes" : "rah_inr_no"),
+                     I18n::tr(okT20 ? "rah_inr_yes" : "rah_inr_no"),
+                     I18n::tr(okT30 ? "rah_inr_yes" : "rah_inr_no")));
+        }
+        m_irBandTable->setItem(6, b + 1, it);
+    }
+
+    // ── INR のまとめ (どの帯域が何に足りないか)
+    if (m_inrNote) {
+        if (!showInr) {
+            m_inrNote->setText(m_inrCheck && m_inrCheck->isChecked()
+                                   ? I18n::tr("rah_inr_measonly") : QString());
+        } else {
+            using acoustics::DecayMetricKind;
+            using acoustics::inrSufficient;
+            static const char *kBandLbl[6] = { "125", "250", "500", "1k",
+                                               "2k", "4k" };
+            QStringList shortT30, shortT20;
+            double worst = 0.0;
+            bool haveWorst = false;
+            for (int b = 0; b < 6; ++b) {
+                if (!m_measIr.inr[b].ok) continue;
+                const double v = m_measIr.inr[b].v;
+                if (!haveWorst || v < worst) { worst = v; haveWorst = true; }
+                if (!inrSufficient(v, DecayMetricKind::T30))
+                    shortT30 << QString::fromUtf8(kBandLbl[b]);
+                if (!inrSufficient(v, DecayMetricKind::T20))
+                    shortT20 << QString::fromUtf8(kBandLbl[b]);
+            }
+            if (!haveWorst) {
+                m_inrNote->setText(I18n::tr("rah_inr_none"));
+            } else if (shortT30.isEmpty()) {
+                m_inrNote->setText(I18n::tr("rah_inr_all_ok")
+                                       .arg(QString::number(worst, 'f', 1)));
+            } else {
+                m_inrNote->setText(I18n::tr("rah_inr_short")
+                    .arg(shortT30.join(QStringLiteral(", ")),
+                         shortT20.isEmpty() ? I18n::tr("rah_inr_none_band")
+                                            : shortT20.join(QStringLiteral(", ")),
+                         QString::number(worst, 'f', 1)));
+            }
+        }
     }
 
     // ── 算出方法の明示
@@ -2576,6 +2690,9 @@ void RoomAcousticsTab::runMeasuredIr()
         put(m_measIr.c80[b], m.c80, 1.0);
         put(m_measIr.d50[b], m.d50, 1.0);
         put(m_measIr.ts[b],  m.ts, 1000.0);   // [s] → [ms]
+        const acoustics::BandMetricsResult &bm = r.bands[std::size_t(b)];
+        m_measIr.inr[b].ok = bm.noiseOk;
+        m_measIr.inr[b].v  = bm.inrDb;
     }
     m_measIr.loaded = n > 0;
     m_measIr.status = I18n::tr("rah_ir_status_ok")

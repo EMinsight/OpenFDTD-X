@@ -78,7 +78,20 @@ struct BandMetricsResult {
     std::string filterWarning; // 失敗理由 (成功時は空)
     AcousticMetricsSet metrics;
 
-    BandMetricsResult() : band(), filterOk(false), filterWarning(), metrics() {}
+    // ── 帯域内の動的範囲 (INR: impulse-to-noise ratio) ──
+    // 帯域信号のピークと末尾区間ノイズフロアの差 [dB] (ISO 18233:2006 §3.6)。
+    // 減衰時間が評価できるかはこの値で決まる — EDT 20 dB / T20 35 dB /
+    // T30 45 dB が ISO 3382-2:2008 の要求 (AcousticMetrics.h の
+    // requiredInrDb を参照)。広帯域の preprocess.dynamicRangeDb とは別物で、
+    // 低域ほど厳しくなるため**帯域ごとに見る必要がある**。
+    bool   noiseOk;            // 推定できたか (帯域フィルタ成功時のみ true)
+    double peakDb;             // 帯域信号のピーク [dBFS]
+    double noiseFloorDb;       // 帯域信号の末尾区間ノイズフロア [dBFS]
+    double inrDb;              // peakDb - noiseFloorDb
+
+    BandMetricsResult()
+        : band(), filterOk(false), filterWarning(), metrics(),
+          noiseOk(false), peakDb(-300.0), noiseFloorDb(-300.0), inrDb(0.0) {}
 };
 
 struct RirAnalysisResult {

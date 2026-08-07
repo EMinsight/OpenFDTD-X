@@ -145,6 +145,14 @@ RirAnalyzer::analyze(ArrayView<const double> rir, double sampleRateHz) const {
             bm.metrics = computeAcousticMetrics(
                 fv, sampleRateHz, res.directSound.sampleIndex,
                 m_config.metrics);
+            // 帯域内 INR (減衰時間が評価できるかを決める量。低域ほど厳しい)
+            const NoiseFloorEstimate bnf = estimateNoiseFloor(fv);
+            if (bnf.valid) {
+                bm.noiseOk = true;
+                bm.peakDb = bnf.peakDb;
+                bm.noiseFloorDb = bnf.noiseFloorDb;
+                bm.inrDb = bnf.dynamicRangeDb;
+            }
         }
         res.bands.push_back(bm);
     }

@@ -52,6 +52,9 @@ struct MeasuredValue {
 // 実測 IR (WAV) の帯域別指標 125/250/500/1k/2k/4k Hz
 struct MeasuredIrBands {
     MeasuredValue edt[6], t20[6], t30[6], c80[6], d50[6], ts[6];
+    // 帯域内 INR [dB] (ピーク − 末尾ノイズフロア)。減衰時間が評価できるかを
+    // 決める量なので、値が「—」になった理由を示すのに使う。
+    MeasuredValue inr[6];
     bool    loaded = false;   // 解析が成功して値が入っているか
     QString status;           // 状態表示 (ファイル名 / エラー内容)
 };
@@ -174,6 +177,8 @@ private:
     QLineEdit    *m_irFileEdit;    // 実測 WAV (opera_analysis の rirPath と共有)
     QPushButton  *m_irRunBtn;
     QLabel       *m_irMethodNote, *m_irStatus, *m_irValNote, *m_irT2030Note;
+    QCheckBox    *m_inrCheck = nullptr;   // 帯域内 INR 行の表示 (ISO 3382-2)
+    QLabel       *m_inrNote = nullptr;    // INR の判定まとめ
     MeasuredIrBands m_measIr;      // 実測解析の結果 (未解析なら loaded=false)
     QVector<QPointF> m_measDecay;  // 実測 Schroeder 減衰曲線 (x=秒, y=dB)
 
