@@ -57,6 +57,22 @@ struct AcousticMetricsSet {
 };
 
 // rir[directIndex] を t = 0 として全指標を計算する。
+// ── 減衰指標に必要な動的範囲 (INR) ──────────────────────────────────────────
+// ISO 3382-2:2008 は減衰時間の評価に「評価区間の下端よりさらに 10 dB 下まで
+// ノイズフロアが下がっていること」を求める (§5.3 / Table 1)。評価区間は
+//   EDT :  0 〜 -10 dB  → 必要 20 dB
+//   T20 : -5 〜 -25 dB  → 必要 35 dB
+//   T30 : -5 〜 -35 dB  → 必要 45 dB
+// ここでいう INR (impulse-to-noise ratio) は帯域信号のピークと末尾区間の
+// ノイズフロアの差 [dB] (ISO 18233:2006 §3.6 の定義)。
+enum class DecayMetricKind { EDT, T20, T30 };
+
+// 指標 k の評価に必要な INR [dB]
+double requiredInrDb(DecayMetricKind k);
+
+// 実測 INR が指標 k に足りているか
+bool inrSufficient(double inrDb, DecayMetricKind k);
+
 AcousticMetricsSet computeAcousticMetrics(ArrayView<const double> rir,
                                           double sampleRateHz,
                                           std::size_t directIndex,

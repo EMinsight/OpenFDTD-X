@@ -784,6 +784,31 @@ Qt 非依存コアへ切り出し、selftest から公表基準値・恒等式�
 
 `ofdx_selftest` 7880 → 7941 checks / 0 failures。
 
+### 室内音響タブ: 帯域内 INR の検査 (ISO 3382-2) (2026-08-07)
+
+「INR (Impulse-to-Noise Ratio) 検査」チェックボックスが未実装のまま置かれて
+いたのを実装した。減衰時間が評価できるかは信号対雑音比で決まるので、
+**帯域ごとの** INR を出せないと「なぜこの帯域の T30 が『—』なのか」が
+分からない (絶対規則 6 の裏返し — 無効にするだけでなく理由を示す)。
+
+- `AcousticMetrics.h` に `requiredInrDb()` / `inrSufficient()` を追加。
+  ISO 3382-2:2008 §5.3 / Table 1 の要求 (評価区間の深さ + 10 dB マージン) を
+  そのまま表にしたもの: EDT 20 dB / T20 35 dB / T30 45 dB
+- `RirAnalyzer` が帯域信号のピークと末尾ノイズフロアの差を
+  `BandMetricsResult::{noiseOk, peakDb, noiseFloorDb, inrDb}` へ入れる
+  (ISO 18233:2006 §3.6 の INR)。**広帯域の `preprocess.dynamicRangeDb` とは
+  別物**で、低域ほど厳しくなるため帯域ごとに見る必要がある
+- タブ側はチェックで表に INR 行を足し、ISO の要求に照らして色分け
+  (T30 可 / T20 まで / 不足) + 何 dB 足りないかをツールチップに出す。
+  まとめ行に「T30 の 45 dB に足りない帯域」「T20 の 35 dB に足りない帯域」と
+  最小 INR を出し、S/N を上げる手段 (音源出力・平均回数) を添える。
+  統計推定にはノイズフロアが無いので、実測 IR を解析したときだけ出す
+
+検証は新規 ctest `acoustics.inr` (65 checks)。芯は **INR の判定と指標の
+`valid` が食い違わないこと** — INR が要求を下回る帯域で T30 が valid に
+なったら画面の説明が嘘になる。ノイズフロア −70/−45/−28 dBFS × 6 帯域で確認。
+数値は `docs/opera-acoustics-validation.md` §13 に記載。
+
 ## 5. 次の作業 (優先順)
 
 1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。

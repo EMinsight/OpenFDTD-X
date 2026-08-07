@@ -614,6 +614,7 @@ if(BUILD_TESTS)
         estimator
         fft
         formant
+        inr
         reflections
         reverberation
         vocal
