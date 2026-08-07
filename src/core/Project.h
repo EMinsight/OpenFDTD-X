@@ -548,6 +548,41 @@ struct CircuitPortRow {
     int     kind = Lumped;
     QString net;      // 接続ネット名 (自由記述)
     QString ref;      // 基準導体名 (自由記述)
+
+    // ── 抽出ソルバ (OpenPEEC / OpenFEM) へ渡す実体 (.ofdx 追加キー) ─────────
+    // PEEC はポートを「節点 2 点」で与えるため、端点の座標が要る。
+    // 既定は原点同士 (= 未設定) で、その状態のポートは入力生成から除外する
+    // (0 長のポートを黙ってカーネルへ渡さない)。
+    double  x1_m = 0.0, y1_m = 0.0, z1_m = 0.0;   // 端子 A
+    double  x2_m = 0.0, y2_m = 0.0, z2_m = 0.0;   // 端子 B (基準側)
+    double  z0_ohm = 50.0;                        // 基準抵抗
+
+    // 端点が与えられているか (両端が一致していたらポートとして成立しない)
+    bool hasEndpoints() const
+    {
+        return !(x1_m == x2_m && y1_m == y2_m && z1_m == z2_m);
+    }
+};
+
+// ── 回路系抽出ソルバの設定 (.ofdx "circuit.solver" — 追加キー) ──────────────
+// CircuitSolversTab の抽出フォームの実体。既定値のままなら .ofdx へ書かない。
+struct CircuitOpts {
+    // 抽出ソルバ: 0 = PEEC (OpenPEEC), 1 = 準静的 FEM (OpenFEM),
+    // 2 = 渦電流 FEM (OpenFEM analysis=F)
+    int     solver = 0;
+    // 周波数掃引 [Hz] — div = 0 なら単一周波数 (fmin)
+    double  fmin_Hz = 1e6, fmax_Hz = 1e9;
+    int     fdiv = 40;
+    bool    fLog = true;              // true = 対数掃引
+    // PEEC の任意機能 (キー省略時はカーネル既定 = 無効で従来動作)
+    bool    peecCapacitance = true;   // 電位係数 P → 節点容量
+    bool    peecSkinEffect = true;    // 表皮効果
+    bool    peecRetardation = false;  // 遅延 (フルウェーブ)
+    double  peecMesh_mm = 5.0;        // 導体分割幅 [mm]
+    double  peecSigma_Spm = 5.8e7;    // 導体の導電率 [S/m] (既定: 銅)
+    // FEM 側の解析種別 (OpenFEM の analysis キー: "C L" / "R" / "F" 等)
+    QString femAnalysis = "C L";
+    double  femVoltage_V = 1.0;
 };
 
 // 新規プロジェクト / .ofdx 欠落時の既定 3 行。値は「初期値」であって
@@ -746,6 +781,7 @@ public:
     Tidy3dOpts         &tidy3d()      { return m_tidy3d; }
     QVector<RefineRegion> &refineRegions() { return m_refineRegions; }
     QVector<CircuitPortRow> &circuitPorts() { return m_circuitPorts; }
+    CircuitOpts &circuit() { return m_circuit; }
     QVector<PhotonicNetRow> &photonicNetlist() { return m_photonicNet; }
     QVector<MonitorRow>     &monitors()       { return m_monitors; }
     QVector<AnalysisGroupRow> &analysisGroups() { return m_analysisGroups; }
@@ -768,6 +804,7 @@ public:
     const Tidy3dOpts        &tidy3d()     const { return m_tidy3d; }
     const QVector<RefineRegion> &refineRegions() const { return m_refineRegions; }
     const QVector<CircuitPortRow> &circuitPorts() const { return m_circuitPorts; }
+    const CircuitOpts &circuit() const { return m_circuit; }
     const QVector<PhotonicNetRow> &photonicNetlist() const { return m_photonicNet; }
     const QVector<MonitorRow>     &monitors()       const { return m_monitors; }
     const QVector<AnalysisGroupRow> &analysisGroups() const { return m_analysisGroups; }
@@ -823,6 +860,7 @@ private:
     QVector<RefineRegion> m_refineRegions;   // 既定は空 (.ofdx へ書かない)
     // 既定行のままなら .ofdx へキーを書かない (旧ファイルとバイト一致)
     QVector<CircuitPortRow> m_circuitPorts = defaultCircuitPorts();
+    CircuitOpts m_circuit;
     QVector<PhotonicNetRow> m_photonicNet = defaultPhotonicNetlist();
     // モニター定義 / 解析グループも既定のままなら .ofdx へキーを書かない。
     // 既定は「新規プロジェクトのドメイン (EM)」のもので、ドメイン切替時に

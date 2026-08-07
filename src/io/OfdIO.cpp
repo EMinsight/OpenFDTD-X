@@ -859,15 +859,50 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
     {
         auto toJson = [](const QVector<CircuitPortRow> &ports) {
             QJsonArray a;
-            for (const CircuitPortRow &r : ports)
-                a.append(QJsonObject{
+            for (const CircuitPortRow &r : ports) {
+                QJsonObject o{
                     {"enabled", r.enabled}, {"name", r.name},
-                    {"kind", r.kind}, {"net", r.net}, {"ref", r.ref} });
+                    {"kind", r.kind}, {"net", r.net}, {"ref", r.ref} };
+                // 端点座標と基準抵抗は抽出ソルバ用の追加キー。
+                // 未設定 (両端が同じ) のときは書かない — 旧ファイルとバイト一致
+                if (r.hasEndpoints()) {
+                    o["p1_m"] = QJsonArray{ r.x1_m, r.y1_m, r.z1_m };
+                    o["p2_m"] = QJsonArray{ r.x2_m, r.y2_m, r.z2_m };
+                    o["z0_ohm"] = r.z0_ohm;
+                }
+                a.append(o);
+            }
             return a;
         };
         const QJsonArray cur = toJson(p.circuitPorts());
-        if (cur != toJson(defaultCircuitPorts()))
-            root["circuit"] = QJsonObject{ {"ports", cur} };
+        QJsonObject cj;
+        if (cur != toJson(defaultCircuitPorts())) cj["ports"] = cur;
+        {   // 抽出ソルバ設定 — 既定のままならキーを書かない
+            const CircuitOpts d, &c = p.circuit();
+            if (c.solver != d.solver || c.fmin_Hz != d.fmin_Hz
+                || c.fmax_Hz != d.fmax_Hz || c.fdiv != d.fdiv
+                || c.fLog != d.fLog
+                || c.peecCapacitance != d.peecCapacitance
+                || c.peecSkinEffect != d.peecSkinEffect
+                || c.peecRetardation != d.peecRetardation
+                || c.peecMesh_mm != d.peecMesh_mm
+                || c.peecSigma_Spm != d.peecSigma_Spm
+                || c.femAnalysis != d.femAnalysis
+                || c.femVoltage_V != d.femVoltage_V) {
+                cj["solver"] = QJsonObject{
+                    {"kind", c.solver},
+                    {"fmin_hz", c.fmin_Hz}, {"fmax_hz", c.fmax_Hz},
+                    {"fdiv", c.fdiv}, {"flog", c.fLog},
+                    {"peec_capacitance", c.peecCapacitance},
+                    {"peec_skineffect", c.peecSkinEffect},
+                    {"peec_retardation", c.peecRetardation},
+                    {"peec_mesh_mm", c.peecMesh_mm},
+                    {"peec_sigma_spm", c.peecSigma_Spm},
+                    {"fem_analysis", c.femAnalysis},
+                    {"fem_voltage_v", c.femVoltage_V} };
+            }
+        }
+        if (!cj.isEmpty()) root["circuit"] = cj;
     }
 
     // ── フォトニック回路のネットリスト (.ofdx "schematic") — 追加キーのみ ────
@@ -1385,6 +1420,22 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
     // 回路系電磁解析のポート定義 — キーが無い旧ファイルは既定 3 行のまま
     if (root.contains("circuit")) {
         const QJsonObject cj = root["circuit"].toObject();
+        if (cj.contains("solver")) {
+            const QJsonObject sj = cj["solver"].toObject();
+            CircuitOpts &c = p.circuit();
+            c.solver = sj.value("kind").toInt(c.solver);
+            c.fmin_Hz = sj.value("fmin_hz").toDouble(c.fmin_Hz);
+            c.fmax_Hz = sj.value("fmax_hz").toDouble(c.fmax_Hz);
+            c.fdiv = sj.value("fdiv").toInt(c.fdiv);
+            c.fLog = sj.value("flog").toBool(c.fLog);
+            c.peecCapacitance = sj.value("peec_capacitance").toBool(c.peecCapacitance);
+            c.peecSkinEffect = sj.value("peec_skineffect").toBool(c.peecSkinEffect);
+            c.peecRetardation = sj.value("peec_retardation").toBool(c.peecRetardation);
+            c.peecMesh_mm = sj.value("peec_mesh_mm").toDouble(c.peecMesh_mm);
+            c.peecSigma_Spm = sj.value("peec_sigma_spm").toDouble(c.peecSigma_Spm);
+            c.femAnalysis = sj.value("fem_analysis").toString(c.femAnalysis);
+            c.femVoltage_V = sj.value("fem_voltage_v").toDouble(c.femVoltage_V);
+        }
         if (cj.contains("ports")) {
             QVector<CircuitPortRow> &ports = p.circuitPorts();
             ports.clear();
@@ -1396,6 +1447,24 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 r.kind = qBound(0, o.value("kind").toInt(r.kind), 1);
                 r.net = o.value("net").toString();
                 r.ref = o.value("ref").toString();
+                // 端点座標・基準抵抗は追加キー。欠落時は既定 (未設定) のまま
+                if (o.contains("p1_m")) {
+                    const QJsonArray a1 = o["p1_m"].toArray();
+                    if (a1.size() == 3) {
+                        r.x1_m = a1[0].toDouble();
+                        r.y1_m = a1[1].toDouble();
+                        r.z1_m = a1[2].toDouble();
+                    }
+                }
+                if (o.contains("p2_m")) {
+                    const QJsonArray a2 = o["p2_m"].toArray();
+                    if (a2.size() == 3) {
+                        r.x2_m = a2[0].toDouble();
+                        r.y2_m = a2[1].toDouble();
+                        r.z2_m = a2[2].toDouble();
+                    }
+                }
+                r.z0_ohm = o.value("z0_ohm").toDouble(r.z0_ohm);
                 ports.push_back(r);
             }
         }

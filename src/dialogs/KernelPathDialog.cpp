@@ -36,6 +36,14 @@ const bool s_i18n = [] {
     ofd::I18n::reg("kp_rcwa",     "光 RCWA/FMM (orcwa)",    "Optical RCWA/FMM (orcwa)");
     ofd::I18n::reg("kp_bpm",      "光 BPM (obpm)",          "Optical BPM (obpm)");
     ofd::I18n::reg("kp_bellhop",  "水中音響 (bellhopcxx)",  "Underwater (bellhopcxx)");
+    ofd::I18n::reg("kp_peec",     "PEEC 抽出 (peec)",       "PEEC extraction (peec)");
+    ofd::I18n::reg("kp_fem",      "準静的 FEM 抽出 (ofe)",  "Quasi-static FEM (ofe)");
+    ofd::I18n::reg("kp_grp_circuit", "回路パラメータ抽出", "Circuit parameter extraction");
+    ofd::I18n::reg("kp_cir_note",
+                   "R/L/C 抽出は姉妹リポジトリ OpenPEEC / OpenFEM のバイナリを"
+                   "起動します (回路ソルバタブの「抽出実行」)。",
+                   "R/L/C extraction launches the OpenPEEC / OpenFEM binaries "
+                   "from the sibling repositories (Circuit solvers tab).");
     ofd::I18n::reg("kp_browse",   "参照…",                  "Browse…");
     ofd::I18n::reg("kp_found",    "✓ %1",                   "✓ %1");
     ofd::I18n::reg("kp_notfound", "未検出 (環境変数・PATH でも見つかりません)",
@@ -91,6 +99,8 @@ const char *rowLabelKey(Kernel k)
         case Kernel::RCWA:    return "kp_rcwa";
         case Kernel::BPM:     return "kp_bpm";
         case Kernel::Bellhop: return "kp_bellhop";
+        case Kernel::PEEC:    return "kp_peec";
+        case Kernel::FEM:     return "kp_fem";
     }
     return "kp_em";
 }
@@ -113,6 +123,9 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
         { nullptr,           "kp_opt_note", false, Kernel::BPM     },
         { "kp_grp_acoustic", nullptr,       true,  Kernel::FDTD    }, // kernel 未使用
         { "kp_grp_uw",       nullptr,       false, Kernel::Bellhop },
+        // 回路パラメータ抽出 (姉妹リポジトリ OpenPEEC / OpenFEM)
+        { "kp_grp_circuit",  nullptr,       false, Kernel::PEEC    },
+        { nullptr,           "kp_cir_note", false, Kernel::FEM     },
     };
     for (const auto &d : kDefs) {
         Row r;

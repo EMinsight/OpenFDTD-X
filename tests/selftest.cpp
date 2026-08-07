@@ -25,6 +25,8 @@
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
 #include "io/ArrReader.h"
+#include "io/CircuitIO.h"
+#include "optics/PhotonicCircuit.h"
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
@@ -4622,6 +4624,423 @@ static void testOceanPageScan()
 
 
 // BELLHOP の到達 (.arr) の読み取りと受信インパルス応答の合成
+
+// 回路パラメータ抽出 (OpenPEEC) の入力生成と .ofdx 往復
+
+// フォトニック回路 (S 行列) — リング共振器・MZI を解析解と照合する
+static void testPhotonicCircuit()
+{
+    using namespace ofd::optics;
+    g_file = "photonic";
+
+    // (a) 導波路: 損失と位相。1 cm で loss_dBcm ぶんちょうど減る
+    {
+        Waveguide wg;
+        wg.neff = 2.44; wg.ng = 0.0;      // 分散なし
+        wg.loss_dBcm = 3.0;
+        const cplx t = wg.transfer(1550.0, 10000.0);   // 10000 μm = 1 cm
+        const double dB = 10.0 * std::log10(std::norm(t));
+        check(std::fabs(dB + 3.0) < 1e-9, "wg: 1 cm of 3 dB/cm loses 3 dB");
+        // 位相 β L = 2π neff L / λ
+        const double beta = 2.0 * M_PI * 2.44 / 1.55;   // [1/μm]
+        const double expected = std::fmod(beta * 10000.0, 2.0 * M_PI);
+        double got = std::fmod(-std::arg(t) + 2.0 * M_PI, 2.0 * M_PI);
+        check(std::fabs(got - std::fmod(expected + 2.0 * M_PI, 2.0 * M_PI)) < 1e-6,
+              "wg: the accumulated phase is beta*L");
+        // 無損失なら |t| = 1
+        wg.loss_dBcm = 0.0;
+        check(std::fabs(std::abs(wg.transfer(1550.0, 1234.0)) - 1.0) < 1e-12,
+              "wg: lossless propagation is unitary");
+    }
+
+    // (b) 全域通過リング: 無損失なら |t| = 1 (全波長で)、共振で位相が回る
+    {
+        RingResonator ring;
+        ring.wg.loss_dBcm = 0.0;
+        ring.wg.ng = 0.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;
+        bool unit = true;
+        for (int i = 0; i <= 40; ++i) {
+            const double lam = 1540.0 + 20.0 * i / 40.0;
+            unit = unit && std::fabs(std::abs(ring.through(lam)) - 1.0) < 1e-9;
+        }
+        check(unit, "ring: a lossless all-pass ring is unitary at every wavelength");
+    }
+
+    // (c) 臨界結合: 往復損失と結合が釣り合うと through がゼロになる
+    //     全域通過リングは t1 = a のとき t_th = 0 (完全消光)
+    {
+        RingResonator ring;
+        ring.radius_um = 10.0;
+        ring.wg.neff = 2.4; ring.wg.ng = 0.0;
+        ring.wg.loss_dBcm = 5.0;
+        // 1 周の振幅透過 a を求め、t1 = a となる κ1 を選ぶ
+        const double L = ring.circumference_um();
+        const double a = std::abs(ring.wg.transfer(1550.0, L));
+        ring.kappa1 = std::sqrt(std::max(0.0, 1.0 - a * a));
+        // 共振は掃引の刻みに当たるとは限らないので、共振波長を **直接** 出す。
+        // 分散なし (ng = 0) なので neff·L / λ = m (整数) が共振条件。
+        const double m0 = std::round(ring.wg.neff * L / 1.550);   // λ [μm]
+        const double lamRes = ring.wg.neff * L / m0 * 1000.0;     // [nm]
+        const double dB = 10.0 * std::log10(std::norm(ring.through(lamRes)));
+        check(dB < -60.0,
+              "ring: critical coupling (t1 = a) extinguishes the through port");
+        // 共振から半値幅ぶん離れれば戻る (共振が鋭いことの確認)
+        const double fsr = analyticFsr_nm(lamRes, ring.wg.neff, L);
+        const double off = 10.0 * std::log10(std::norm(
+            ring.through(lamRes + 0.25 * fsr)));
+        check(off > -1.0, "ring: away from resonance the through port recovers");
+    }
+
+    // (d) FSR が解析解 λ²/(ng L) と一致する
+    {
+        RingResonator ring;
+        ring.radius_um = 20.0;
+        ring.wg.neff = 2.44;
+        ring.wg.ng = 4.2;
+        ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 2.0;
+        ring.kappa1 = 0.25;
+        const double L = ring.circumference_um();
+        const double fsrTheory = analyticFsr_nm(1550.0, 4.2, L);
+        const std::vector<SweepPoint> s =
+            sweepRing(ring, 1550.0 - 3 * fsrTheory, 1550.0 + 3 * fsrTheory, 40001);
+        const ResonatorMetrics m = analyseSweep(s);
+        check(m.valid, "ring: the sweep resolves the resonances");
+        check(std::fabs(m.fsr_nm - fsrTheory) / fsrTheory < 0.02,
+              "ring: FSR matches lambda^2/(ng L) within 2%");
+        // Q とフィネスの整合: F = FSR/FWHM, Q = lambda/FWHM
+        check(m.fwhm_nm > 0 && std::fabs(m.qFactor - m.resonance_nm / m.fwhm_nm) < 1e-6,
+              "ring: Q = lambda / FWHM");
+        check(std::fabs(m.finesse - m.fsr_nm / m.fwhm_nm) < 1e-6,
+              "ring: finesse = FSR / FWHM");
+        // 分散を無視すると FSR は λ²/(neff L) になり、ng 版とは食い違う
+        // (群屈折率を使う理由 — 誤って neff を使う実装への回帰よけ)
+        check(std::fabs(m.fsr_nm - analyticFsr_nm(1550.0, 2.44, L)) / m.fsr_nm > 0.5,
+              "ring: FSR follows the *group* index, not the effective index");
+    }
+
+    // (e) アド・ドロップ: 無損失なら |through|^2 + |drop|^2 = 1 (エネルギー保存)
+    {
+        RingResonator ring;
+        ring.radius_um = 8.0;
+        ring.wg.loss_dBcm = 0.0;
+        ring.wg.ng = 0.0;
+        ring.kappa1 = 0.35;
+        ring.kappa2 = 0.35;
+        bool conserved = true;
+        double worst = 0.0;
+        for (int i = 0; i <= 200; ++i) {
+            const double lam = 1549.0 + 2.0 * i / 200.0;
+            const double p = std::norm(ring.through(lam)) + std::norm(ring.drop(lam));
+            worst = std::max(worst, std::fabs(p - 1.0));
+            conserved = conserved && std::fabs(p - 1.0) < 1e-9;
+        }
+        check(conserved,
+              "ring: a lossless add-drop ring conserves through + drop power");
+    }
+
+    // (f) MZI: 50:50 の両端、無損失なら bar/cross の電力和が 1、
+    //     アーム長差 ΔL の FSR = λ²/(ng ΔL)
+    {
+        MachZehnder mzi;
+        mzi.wg.neff = 2.44; mzi.wg.ng = 4.2; mzi.wg.lambda0_nm = 1550.0;
+        mzi.wg.loss_dBcm = 0.0;
+        mzi.length1_um = 100.0;
+        mzi.length2_um = 200.0;          // ΔL = 100 μm
+        bool conserved = true;
+        for (int i = 0; i <= 100; ++i) {
+            const double lam = 1540.0 + 20.0 * i / 100.0;
+            const double p = std::norm(mzi.bar(lam)) + std::norm(mzi.cross(lam));
+            conserved = conserved && std::fabs(p - 1.0) < 1e-9;
+        }
+        check(conserved, "mzi: a lossless MZI conserves power");
+
+        const double fsrTheory = analyticFsr_nm(1550.0, 4.2, 100.0);
+        const std::vector<SweepPoint> s =
+            sweepMzi(mzi, 1550.0 - 2.5 * fsrTheory, 1550.0 + 2.5 * fsrTheory, 40001);
+        const ResonatorMetrics m = analyseSweep(s);
+        check(m.fsr_nm > 0 && std::fabs(m.fsr_nm - fsrTheory) / fsrTheory < 0.02,
+              "mzi: the interference FSR matches lambda^2/(ng dL) within 2%");
+        // 位相シフタ (熱光学) で π ずらすと bar と cross が入れ替わる
+        MachZehnder shifted = mzi;
+        shifted.phaseShift_rad = M_PI;
+        const double lam = 1550.0;
+        check(std::fabs(std::norm(shifted.bar(lam)) - std::norm(mzi.cross(lam))) < 1e-9
+                  && std::fabs(std::norm(shifted.cross(lam)) - std::norm(mzi.bar(lam))) < 1e-9,
+              "mzi: a pi phase shift swaps the bar and cross outputs");
+    }
+
+    // (g) 読めないときは valid=false + 理由 (数字をでっち上げない)
+    {
+        check(!analyseSweep({}).valid, "metrics: an empty sweep is invalid");
+        RingResonator flat;
+        flat.kappa1 = 0.0;    // 結合なし = 共振が出ない
+        flat.wg.ng = 0.0;
+        const ResonatorMetrics m = analyseSweep(sweepRing(flat, 1540, 1560, 501));
+        check(!m.valid && !m.note.empty(),
+              "metrics: no resonance -> invalid with a stated reason");
+        RingResonator one;
+        one.radius_um = 200.0;   // FSR が狭い → 掃引を狭くすると 1 本だけ
+        one.wg.ng = 4.2; one.kappa1 = 0.2; one.wg.loss_dBcm = 2.0;
+        const ResonatorMetrics m1 =
+            analyseSweep(sweepRing(one, 1549.95, 1550.05, 4001));
+        check(m1.fsr_nm == 0.0 && !m1.note.empty(),
+              "metrics: a single resonance yields no FSR (and says why)");
+    }
+}
+
+static void testCircuitExtraction()
+{
+    g_file = "circuit";
+
+    // (a) 既定のままなら .ofdx は従来とバイト一致 (後方互換)
+    {
+        Project q0, q1;
+        q1.circuit().fmin_Hz = 1e6;      // 既定値を明示代入
+        q1.circuitPorts()[0].z0_ohm = 50.0;
+        const QString j0 = btyTmpPath("cir0.ofdx"), j1 = btyTmpPath("cir1.ofdx");
+        OfdxIO::save(j0, q0); OfdxIO::save(j1, q1);
+        check(btyReadAll(j0) == btyReadAll(j1),
+              "circuit: default solver settings / port endpoints are not written");
+        check(!btyReadAll(j0).contains("p1_m"),
+              "circuit: no endpoint key while the ports have none");
+    }
+
+    // (b) 端点座標と抽出設定のラウンドトリップ
+    {
+        Project p;
+        CircuitPortRow &r0 = p.circuitPorts()[0];
+        r0.x1_m = 0.0; r0.y1_m = 0.0; r0.z1_m = 0.0;
+        r0.x2_m = 0.0; r0.y2_m = 0.0; r0.z2_m = 1.0;
+        r0.z0_ohm = 75.0;
+        CircuitOpts &c = p.circuit();
+        c.solver = 1;
+        c.fmin_Hz = 1e3; c.fmax_Hz = 1e8; c.fdiv = 20;
+        c.peecSkinEffect = false;
+        c.peecMesh_mm = 2.5;
+        const QString j = btyTmpPath("cir_rt.ofdx");
+        OfdxIO::save(j, p);
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "circuit: sidecar reload");
+        const CircuitPortRow &g0 = q.circuitPorts()[0];
+        check(qFuzzyCompare(g0.z2_m, 1.0) && qFuzzyCompare(g0.z0_ohm, 75.0)
+                  && g0.hasEndpoints(),
+              "circuit: port endpoints round-trip");
+        check(q.circuit().solver == 1 && q.circuit().fdiv == 20
+                  && !q.circuit().peecSkinEffect
+                  && qFuzzyCompare(q.circuit().peecMesh_mm, 2.5),
+              "circuit: solver settings round-trip");
+    }
+
+    // (c) .peec の生成 — OpenPEEC の解析解つき検証ケースと同じ入力になること。
+    //     角線 1 m x 10 mm x 1 mm / sigma 5.8e7 / 1 MHz は
+    //     data/sample/bar_single.peec と同一 (L = 1.141093e-6 H, R = 1.724138e-3)
+    {
+        Project p;
+        p.general().title = QStringLiteral("bar");
+        p.materials().clear();
+        Material cu;
+        cu.esgm = 5.8e7;
+        p.materials().push_back(cu);
+        Geometry g;
+        g.materialId = 2;
+        g.shape = 1;
+        g.g[0] = -5e-3;   g.g[1] = 5e-3;      // 幅 10 mm
+        g.g[2] = -0.5e-3; g.g[3] = 0.5e-3;    // 厚さ 1 mm
+        g.g[4] = 0.0;     g.g[5] = 1.0;       // 長さ 1 m
+        p.geometries().push_back(g);
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.kind = CircuitPortRow::Lumped;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        CircuitOpts &c = p.circuit();
+        c.fmin_Hz = 1e6; c.fmax_Hz = 1e6; c.fdiv = 0;
+        c.peecMesh_mm = 1000.0;
+        c.peecSkinEffect = false;
+        c.peecCapacitance = false;
+
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid() && in.conductors == 1 && in.ports == 1,
+              "peec: one conductor and one port");
+        check(in.text.startsWith(QLatin1String("OpenPEEC 1 0\n")),
+              "peec: header line");
+        check(in.text.contains(QLatin1String(
+                  "bar = 0 0 0 0 0 1 0.01 0.001 58000000 1")),
+              "peec: the bar line matches OpenPEEC's analytic sample");
+        check(in.text.contains(QLatin1String("node = 1 0 0 0\n"))
+                  && in.text.contains(QLatin1String("node = 2 0 0 1\n")),
+              "peec: conductor endpoints become nodes");
+        check(in.text.contains(QLatin1String("port = 1 2 50")),
+              "peec: the port references the endpoint nodes (no duplicates)");
+        check(in.text.contains(QLatin1String("frequency = 1000000 1000000 0")),
+              "peec: single-frequency sweep");
+        check(!in.text.contains(QLatin1String("skineffect"))
+                  && !in.text.contains(QLatin1String("capacitance")),
+              "peec: disabled options are not written (kernel default = off)");
+
+        // 任意機能は有効なときだけ書く
+        c.peecSkinEffect = true;
+        c.peecCapacitance = true;
+        c.peecRetardation = true;
+        const QString t2 = CircuitIO::peecText(p).text;
+        check(t2.contains(QLatin1String("skineffect = 1"))
+                  && t2.contains(QLatin1String("capacitance = 1"))
+                  && t2.contains(QLatin1String("retardation = 1")),
+              "peec: enabled options are written");
+    }
+
+    // (d) 作れないときは理由を返して text は空 (黙って壊れた入力を出さない)
+    {
+        Project p;                     // 導体形状なし
+        p.circuitPorts().clear();
+        const CircuitInput a = CircuitIO::peecText(p);
+        check(!a.isValid() && a.reason.contains(QStringLiteral("導体")),
+              "peec: no conductor -> refused with a reason");
+
+        Material cu; cu.esgm = 5.8e7;
+        p.materials().clear();
+        p.materials().push_back(cu);
+        Geometry g;
+        g.materialId = 2; g.shape = 1;
+        g.g[1] = 1e-3; g.g[3] = 1e-3; g.g[5] = 1.0;
+        p.geometries().push_back(g);
+        const CircuitInput b = CircuitIO::peecText(p);   // ポートなし
+        check(!b.isValid() && b.reason.contains(QStringLiteral("ポート")),
+              "peec: no port -> refused with a reason");
+
+        // 端点未設定のポートは除外され、理由が warnings に出る
+        CircuitPortRow bad;
+        bad.name = QStringLiteral("P?");
+        p.circuitPorts().push_back(bad);
+        const CircuitInput c2 = CircuitIO::peecText(p);
+        check(!c2.isValid()
+                  && c2.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("P?")),
+              "peec: a port without endpoints is dropped and reported");
+    }
+
+    // (e) 直方体でない形状・非導体は落として理由を積む
+    {
+        Project p;
+        Material cu; cu.esgm = 5.8e7;
+        Material die; die.epsr = 4.4;
+        p.materials().clear();
+        p.materials().push_back(cu);    // id 2
+        p.materials().push_back(die);   // id 3 (σ = 0 → 非導体)
+        Geometry bar;
+        bar.materialId = 2; bar.shape = 1;
+        bar.g[1] = 1e-3; bar.g[3] = 1e-3; bar.g[5] = 1.0;
+        Geometry sphere;
+        sphere.materialId = 2; sphere.shape = 11;   // 直方体でない
+        Geometry sub;
+        sub.materialId = 3; sub.shape = 1;          // 非導体
+        sub.g[1] = 1.0; sub.g[3] = 1.0; sub.g[5] = 1e-3;
+        p.geometries() = { bar, sphere, sub };
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid() && in.conductors == 1,
+              "peec: only the box conductor is used");
+        const QString w = in.warnings.join(QLatin1Char('\n'));
+        check(w.contains(QStringLiteral("直方体でない")) && w.contains(QStringLiteral("導体でない")),
+              "peec: both kinds of dropped geometry are reported");
+    }
+
+    // (f) PEC は有限導電率に置き換え、その旨を出す
+    {
+        Project p;
+        Geometry g;
+        g.materialId = 1;      // PEC
+        g.shape = 1;
+        g.g[1] = 1e-3; g.g[3] = 1e-3; g.g[5] = 1.0;
+        g.name = QStringLiteral("trace");
+        p.geometries().push_back(g);
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.z2_m = 1.0;
+        p.circuitPorts().push_back(port);
+        const CircuitInput in = CircuitIO::peecText(p);
+        check(in.isValid(), "peec: PEC geometry is usable");
+        check(in.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("trace")),
+              "peec: substituting a finite conductivity for PEC is reported");
+    }
+
+    // (f2) OpenFEM (.ofe) — マイクロストリップ断面
+    {
+        Project p;
+        p.mesh(0).nodes = { -4e-3, -1e-3, 1e-3, 4e-3 };
+        p.mesh(0).divs  = { 30, 80, 30 };
+        p.mesh(1).nodes = { 0, 0.4e-3, 0.435e-3, 4e-3 };
+        p.mesh(1).divs  = { 16, 2, 60 };
+        p.mesh(2).nodes = { 0, 1e-4 };
+        p.mesh(2).divs  = { 1 };                    // 分割 1 = 線路軸
+        p.materials().clear();
+        Material fr4;  fr4.epsr = 4.4;
+        Material metal; metal.esgm = 5.8e7;
+        p.materials().push_back(fr4);               // id 2
+        p.materials().push_back(metal);             // id 3
+        auto box = [&](int mat, double x1, double x2, double y1, double y2) {
+            Geometry g;
+            g.materialId = mat; g.shape = 1;
+            g.g[0] = x1; g.g[1] = x2; g.g[2] = y1; g.g[3] = y2;
+            g.g[4] = 0;  g.g[5] = 1e-4;
+            p.geometries().push_back(g);
+        };
+        box(2, -4e-3, 4e-3, 0, 0.4e-3);             // 基板
+        box(3, -4e-3, 4e-3, 0, 0);                  // 地導体
+        box(3, -0.375e-3, 0.375e-3, 0.4e-3, 0.435e-3);   // 信号線
+        p.circuitPorts().clear();
+        CircuitPortRow port;
+        port.x1_m = 0; port.y1_m = 0.4175e-3; port.z1_m = 0.5e-4;
+        port.x2_m = 0; port.y2_m = 0.0;       port.z2_m = 0.5e-4;   // 地導体の中
+        p.circuitPorts().push_back(port);
+
+        const CircuitInput in = CircuitIO::femText(p);
+        check(in.isValid() && in.conductors == 2,
+              "ofe: two conductors (ground + trace); the substrate is a dielectric");
+        check(in.text.contains(QLatin1String("xmesh = -0.004 30 -0.001 80 0.001 30 0.004")),
+              "ofe: mesh is written in the .ofd syntax");
+        check(in.text.contains(QLatin1String("conductor = 0 1 -0.004 0.004 0 0 0 0.0001")),
+              "ofe: the box containing terminal B becomes the reference (id 0)");
+        check(in.text.contains(QLatin1String("conductor = 1 1 -0.000375 0.000375")),
+              "ofe: the signal trace becomes conductor 1");
+        check(in.text.contains(QLatin1String("geometry = 2 1 -0.004 0.004")),
+              "ofe: the dielectric stays a geometry line");
+        // analysis = C L は tline を要求し、σ を読まない
+        check(in.text.contains(QLatin1String("tline = Z")),
+              "ofe: the line axis (the one with a single division) is emitted");
+        check(in.text.contains(QLatin1String("material = 1 0")),
+              "ofe: sigma is zeroed for an analysis that does not read it");
+        check(in.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("導電率")),
+              "ofe: zeroing sigma is reported");
+        // σ を読む解析ならそのまま出る
+        p.circuit().femAnalysis = QStringLiteral("R");
+        const CircuitInput r2 = CircuitIO::femText(p);
+        check(r2.text.contains(QLatin1String("material = 1 58000000"))
+                  && !r2.text.contains(QLatin1String("tline")),
+              "ofe: analysis R keeps sigma and needs no tline");
+        // 基準導体を決められないときは理由を出す
+        p.circuitPorts().clear();
+        const CircuitInput r3 = CircuitIO::femText(p);
+        check(r3.isValid()
+                  && r3.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("基準導体")),
+              "ofe: an undetermined reference conductor is reported");
+    }
+
+    // (g) カーネル解決 — 環境変数名とバイナリ名
+    {
+        check(qstrcmp(Runner::homeVarFor(Kernel::PEEC), "OPENPEEC_HOME") == 0,
+              "circuit: PEEC home var");
+        check(qstrcmp(Runner::homeVarFor(Kernel::FEM), "OPENFEM_HOME") == 0,
+              "circuit: FEM home var");
+    }
+}
+
 static void testArrivalIr()
 {
     g_file = "arrival-ir";
@@ -10048,6 +10467,8 @@ int main(int argc, char *argv[])
     testUnderwaterBathymetry();
     testOceanPageScan();
     testArrivalIr();
+    testCircuitExtraction();
+    testPhotonicCircuit();
     testH5Reader();
     testOfdIntegration(dir);
     testRunGating();

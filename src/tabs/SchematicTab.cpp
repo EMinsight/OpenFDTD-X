@@ -1,6 +1,11 @@
 // SchematicTab.cpp
 #include "SchematicTab.h"
 #include "../core/Project.h"
+#include "../optics/PhotonicCircuit.h"
+#include "../widgets/MiniPlot.h"
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QFormLayout>
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -30,9 +35,58 @@ const bool s_i18n = [] {
               "Photonic circuit simulation");
     I18n::reg("sch_sim_hint",
               "Ansys INTERCONNECT / Synopsys PhotonicCAD 風の回路エディタ。\n"
-              "(回路シミュレーションは未実装 — この画面は設計モックです)",
-              "Circuit editor in the style of Ansys INTERCONNECT / Synopsys PhotonicCAD.\n"
-              "(Circuit simulation is not implemented — this page is a design mock.)");
+              "回路図キャンバスからの自動生成は未実装ですが、下の「素子応答」で"
+              "リング共振器・MZI の波長応答を S 行列で計算できます。",
+              "Circuit editor in the style of Ansys INTERCONNECT / Synopsys "
+              "PhotonicCAD.\nBuilding the netlist from a canvas is not "
+              "implemented, but the element-response panel below computes the "
+              "wavelength response of a ring resonator / MZI from its S-matrix.");
+    // ── 素子応答 (optics/PhotonicCircuit) ──
+    I18n::reg("sch_pc_section", "素子応答 (S 行列)", "Element response (S-matrix)");
+    I18n::reg("sch_pc_hint",
+              "素子レベルの S パラメータ (FDTD / FDE / RCWA で求める) を"
+              "接続して回路応答にする層です。ここでは代表的な 2 素子を"
+              "解析形の S 行列で計算します。導波路パラメータ (neff / ng / 損失) は"
+              "モードソルバの結果を入れてください。",
+              "This is the circuit level: element S-parameters (from FDTD / FDE "
+              "/ RCWA) combined into a circuit response. Two canonical elements "
+              "are computed here from their closed-form S-matrices. Feed the "
+              "waveguide parameters (neff / ng / loss) from the mode solver.");
+    I18n::reg("sch_pc_device", "素子", "Element");
+    I18n::reg("sch_pc_ring_ap", "リング共振器 (全域通過)",
+              "Ring resonator (all-pass)");
+    I18n::reg("sch_pc_ring_ad", "リング共振器 (アド・ドロップ)",
+              "Ring resonator (add-drop)");
+    I18n::reg("sch_pc_mzi", "マッハツェンダ干渉計", "Mach-Zehnder interferometer");
+    I18n::reg("sch_pc_neff", "実効屈折率 neff", "Effective index neff");
+    I18n::reg("sch_pc_ng", "群屈折率 ng", "Group index ng");
+    I18n::reg("sch_pc_loss", "伝搬損失 [dB/cm]", "Propagation loss [dB/cm]");
+    I18n::reg("sch_pc_radius", "リング半径 [μm]", "Ring radius [um]");
+    I18n::reg("sch_pc_k1", "結合率 κ1", "Coupling kappa1");
+    I18n::reg("sch_pc_k2", "結合率 κ2 (ドロップ)", "Coupling kappa2 (drop)");
+    I18n::reg("sch_pc_dl", "アーム長差 ΔL [μm]", "Arm length difference dL [um]");
+    I18n::reg("sch_pc_shift", "位相シフト [rad]", "Phase shift [rad]");
+    I18n::reg("sch_pc_range", "波長範囲 [nm]", "Wavelength range [nm]");
+    I18n::reg("sch_pc_points", "点数", "Points");
+    I18n::reg("sch_pc_run", "▶ 波長応答を計算", "\u25b6 Compute the response");
+    I18n::reg("sch_pc_x", "波長 [nm]", "Wavelength [nm]");
+    I18n::reg("sch_pc_y", "透過率 [dB]", "Transmission [dB]");
+    I18n::reg("sch_pc_res",
+              "FSR %1 nm (解析値 λ²/(ng·L) = %2 nm)、FWHM %3 nm、Q = %4、"
+              "フィネス %5、消光比 %6 dB、共振 %7 nm",
+              "FSR %1 nm (analytic lambda^2/(ng L) = %2 nm), FWHM %3 nm, "
+              "Q = %4, finesse %5, extinction %6 dB, resonance %7 nm");
+    I18n::reg("sch_pc_partial",
+              "消光比 %1 dB。指標を出せませんでした: %2",
+              "Extinction %1 dB. Metrics unavailable: %2");
+    I18n::reg("sch_pc_note",
+              "▸ 素子は解析形の S 行列です。実素子の κ・neff は FDTD / FDE で"
+              "求めた値を入れてください。ネットリストからの自動接続と"
+              "熱光学シフトの自動適用は未実装です。",
+              "\u25b8 The elements use closed-form S-matrices. Take the real "
+              "kappa / neff from an FDTD / FDE run. Building the circuit from "
+              "the netlist and applying the thermo-optic shift automatically "
+              "are not implemented.");
     I18n::reg("sch_mode",       "シミュレーションモード", "Simulation mode");
     I18n::reg("sch_mode_freq",  "周波数領域",             "Frequency domain");
     I18n::reg("sch_mode_time",  "時間領域",               "Time domain");
@@ -217,6 +271,81 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     });
     connect(m_net, &QTableWidget::itemChanged, this, &SchematicTab::onNetItemChanged);
 
+    // ── 素子応答 (S 行列) ──────────────────────────────────────────────────
+    {
+        auto *sec = new SectionBox(I18n::tr("sch_pc_section"), body);
+        auto *hint = new QLabel(I18n::tr("sch_pc_hint"), sec);
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color:palette(mid);");
+        sec->vbox()->addWidget(hint);
+        auto *form = new QFormLayout();
+        form->setContentsMargins(0, 0, 0, 0);
+        form->setHorizontalSpacing(8);
+        form->setVerticalSpacing(4);
+        auto spin = [&](double lo, double hi, double v, int dec, double step) {
+            auto *w = new QDoubleSpinBox(sec);
+            w->setRange(lo, hi);
+            w->setDecimals(dec);
+            w->setSingleStep(step);
+            w->setValue(v);
+            w->setMaximumWidth(130);
+            return w;
+        };
+        m_device = new QComboBox(sec);
+        m_device->addItem(I18n::tr("sch_pc_ring_ap"));
+        m_device->addItem(I18n::tr("sch_pc_ring_ad"));
+        m_device->addItem(I18n::tr("sch_pc_mzi"));
+        form->addRow(I18n::tr("sch_pc_device"), m_device);
+        m_neff = spin(1.0, 5.0, 2.44, 4, 0.01);
+        m_ng   = spin(1.0, 8.0, 4.2, 4, 0.01);
+        m_loss = spin(0.0, 100.0, 2.0, 3, 0.1);
+        form->addRow(I18n::tr("sch_pc_neff"), m_neff);
+        form->addRow(I18n::tr("sch_pc_ng"), m_ng);
+        form->addRow(I18n::tr("sch_pc_loss"), m_loss);
+        m_radius = spin(0.5, 1000.0, 10.0, 3, 0.5);
+        m_k1 = spin(0.0, 1.0, 0.25, 4, 0.01);
+        m_k2 = spin(0.0, 1.0, 0.25, 4, 0.01);
+        form->addRow(I18n::tr("sch_pc_radius"), m_radius);
+        form->addRow(I18n::tr("sch_pc_k1"), m_k1);
+        form->addRow(I18n::tr("sch_pc_k2"), m_k2);
+        m_dL = spin(0.1, 100000.0, 100.0, 3, 1.0);
+        m_shift = spin(-100.0, 100.0, 0.0, 4, 0.1);
+        form->addRow(I18n::tr("sch_pc_dl"), m_dL);
+        form->addRow(I18n::tr("sch_pc_shift"), m_shift);
+        auto *range = new QHBoxLayout();
+        m_lam1 = spin(200.0, 20000.0, 1540.0, 3, 1.0);
+        m_lam2 = spin(200.0, 20000.0, 1560.0, 3, 1.0);
+        m_points = new QSpinBox(sec);
+        m_points->setRange(11, 200001);
+        m_points->setValue(4001);
+        m_points->setMaximumWidth(110);
+        range->addWidget(m_lam1);
+        range->addWidget(new QLabel(QStringLiteral("〜"), sec));
+        range->addWidget(m_lam2);
+        range->addSpacing(8);
+        range->addWidget(new QLabel(I18n::tr("sch_pc_points"), sec));
+        range->addWidget(m_points);
+        range->addStretch(1);
+        form->addRow(I18n::tr("sch_pc_range"), range);
+        sec->vbox()->addLayout(form);
+        auto *run = new QPushButton(I18n::tr("sch_pc_run"), sec);
+        connect(run, &QPushButton::clicked, this, &SchematicTab::runCircuitSim);
+        sec->vbox()->addWidget(run);
+        m_spectrum = new MiniPlot(sec);
+        m_spectrum->setLabels(I18n::tr("sch_pc_x"), I18n::tr("sch_pc_y"));
+        m_spectrum->setMinimumHeight(180);
+        sec->vbox()->addWidget(m_spectrum);
+        m_simResult = new QLabel(sec);
+        m_simResult->setWordWrap(true);
+        sec->vbox()->addWidget(m_simResult);
+        auto *note = new QLabel(I18n::tr("sch_pc_note"), sec);
+        note->setWordWrap(true);
+        note->setStyleSheet("font-size:11px; color:palette(mid);");
+        sec->vbox()->addWidget(note);
+        v->addWidget(sec);
+        runCircuitSim();   // 既定値の応答を最初から出す
+    }
+
     // ── ノイズ・温度効果 ───────────────────────────────────────────────────
     auto *sNo = new SectionBox(I18n::tr("sch_noise_section"), body);
     m_shot = new QCheckBox(I18n::tr("sch_shot"), sNo);
@@ -298,4 +427,72 @@ void SchematicTab::onNetItemChanged(QTableWidgetItem *item)
     default: return;
     }
     m_p->touch();
+}
+
+// 素子の S 行列 → 波長掃引 → 指標。数字が読めないときは理由を出す。
+void SchematicTab::runCircuitSim()
+{
+    using namespace ofd::optics;
+    if (!m_spectrum || !m_simResult) return;
+    const double l1 = m_lam1->value(), l2 = m_lam2->value();
+    const int n = m_points->value();
+    if (!(l2 > l1)) { m_simResult->setText(QStringLiteral("λ1 < λ2")); return; }
+
+    Waveguide wg;
+    wg.neff = m_neff->value();
+    wg.ng = m_ng->value();
+    wg.lambda0_nm = 0.5 * (l1 + l2);
+    wg.loss_dBcm = m_loss->value();
+
+    std::vector<SweepPoint> sweep;
+    double length_um = 0.0;
+    const int dev = m_device->currentIndex();
+    if (dev <= 1) {
+        RingResonator ring;
+        ring.wg = wg;
+        ring.radius_um = m_radius->value();
+        ring.kappa1 = m_k1->value();
+        ring.kappa2 = (dev == 1) ? m_k2->value() : 0.0;
+        length_um = ring.circumference_um();
+        sweep = sweepRing(ring, l1, l2, n);
+    } else {
+        MachZehnder mzi;
+        mzi.wg = wg;
+        mzi.length1_um = 100.0;
+        mzi.length2_um = 100.0 + m_dL->value();
+        mzi.phaseShift_rad = m_shift->value();
+        length_um = m_dL->value();
+        sweep = sweepMzi(mzi, l1, l2, n);
+    }
+
+    QVector<QPointF> thr, drp;
+    thr.reserve(int(sweep.size()));
+    for (const SweepPoint &p : sweep) {
+        thr.push_back(QPointF(p.lambda_nm, p.through_dB));
+        if (p.drop_dB > -299.0) drp.push_back(QPointF(p.lambda_nm, p.drop_dB));
+    }
+    QVector<MiniSeries> series;
+    MiniSeries a; a.pts = thr; a.color = QColor("#0078D4"); a.label = "through";
+    series.push_back(a);
+    if (!drp.isEmpty()) {
+        MiniSeries b; b.pts = drp; b.color = QColor("#E8A33D"); b.label = "drop";
+        series.push_back(b);
+    }
+    m_spectrum->setSeries(series);
+
+    const ResonatorMetrics m = analyseSweep(sweep);
+    const double fsrTheory = analyticFsr_nm(0.5 * (l1 + l2), wg.ng, length_um);
+    if (m.valid && m.fsr_nm > 0.0) {
+        m_simResult->setText(I18n::tr("sch_pc_res")
+            .arg(m.fsr_nm, 0, 'g', 5).arg(fsrTheory, 0, 'g', 5)
+            .arg(m.fwhm_nm, 0, 'g', 4)
+            .arg(m.qFactor, 0, 'f', 0)
+            .arg(m.finesse, 0, 'f', 1)
+            .arg(m.extinction_dB, 0, 'f', 2)
+            .arg(m.resonance_nm, 0, 'g', 7));
+    } else {
+        m_simResult->setText(I18n::tr("sch_pc_partial")
+            .arg(m.extinction_dB, 0, 'f', 2)
+            .arg(QString::fromStdString(m.note)));
+    }
 }
