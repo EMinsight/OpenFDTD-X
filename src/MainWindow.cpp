@@ -448,8 +448,11 @@ void MainWindow::buildToolbar()
 void MainWindow::syncTabRunConfig()
 {
     if (!m_engineBox || !m_threadsBox || !m_deviceBox) return;
+    const RunConfig cfg = currentRunConfig();
     if (auto *sct = qobject_cast<ScatteringTab *>(m_tabScattering))
-        sct->setRunConfig(currentRunConfig());
+        sct->setRunConfig(cfg);
+    if (auto *ver = qobject_cast<VerificationTab *>(m_tabVerification))
+        ver->setRunConfig(cfg);
 }
 
 // エンジン選択肢: 光ドメインのみ tidy3d Cloud を追加 (モック準拠)。
@@ -664,6 +667,10 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabFamily       = new FamilySolverTab(P);
     m_tabSolverSel    = new SolverSelectorTab(P);
     m_tabVerification = new VerificationTab(P);
+    // 自動収束テストも自前で Runner を回す — 進捗を計算コンソールへ
+    if (auto *ver = qobject_cast<VerificationTab *>(m_tabVerification))
+        connect(ver, &VerificationTab::sweepLog, this,
+                [this](const QString &line) { m_rightDock->appendLog(line); });
     m_tabOptimize     = new OptimizeTab(P);
     m_tabTolerance    = new ToleranceTab(P);
     m_tabScripts      = new ScriptsTab(P);

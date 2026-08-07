@@ -2,6 +2,7 @@
 #include "SweepRunner.h"
 #include "../core/Project.h"
 #include "../io/OfdIO.h"
+#include "../core/MeshAxis.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -21,6 +22,10 @@ SweepRunner::SweepRunner(QObject *parent) : QObject(parent)
 QVector<double> SweepRunner::plan(const SweepConfig &cfg)
 {
     QVector<double> v;
+    // 明示指定があればそれが正 (収束テストの不等間隔な倍率列など)。
+    // 1 点しか無い列はスイープとして成立しないので空にする。
+    if (!cfg.values.isEmpty())
+        return cfg.values.size() >= 2 ? cfg.values : v;
     // 1 点は通常実行と同じ。範囲が 0 幅なら全点が同じ値になり意味が無い。
     if (cfg.points < 2 || cfg.from == cfg.to) return v;
     v.reserve(cfg.points);
@@ -31,6 +36,18 @@ QVector<double> SweepRunner::plan(const SweepConfig &cfg)
 
 void SweepRunner::applyPoint(Project &p, SweepKind kind, double value)
 {
+    if (kind == SweepKind::MeshRefine) {
+        // 各区間の分割数を倍率で丸める。1 未満にはしない (0 分割は不正な
+        // メッシュになり、カーネルが読めない)。倍率が小さいと分割数が
+        // 1 で飽和する区間が出るが、それは「これ以上粗くできない」という
+        // 事実で、こちらで区間を統合したりはしない (形状が変わるため)。
+        for (int a = 0; a < 3; ++a) {
+            MeshAxis &m = p.mesh(a);
+            for (int i = 0; i < m.divs.size(); ++i)
+                m.divs[i] = qMax(1, int(std::lround(m.divs[i] * value)));
+        }
+        return;
+    }
     PlaneWave &pw = p.planewave();
     // スイープは平面波入射の解析。無効のままでは .ofd に planewave 行が
     // 出ず、全点が同じ (平面波なしの) 計算になってしまう。
@@ -46,10 +63,28 @@ QString SweepRunner::pointDirName(int index)
 
 QString SweepRunner::pointLabel(SweepKind kind, double value)
 {
+    if (kind == SweepKind::MeshRefine)
+        return QStringLiteral("×%1").arg(value, 0, 'f', 3);
     return QStringLiteral("%1 = %2°")
         .arg(kind == SweepKind::PlaneWaveTheta ? QStringLiteral("θ")
                                                : QStringLiteral("φ"))
         .arg(value, 0, 'g', 6);
+}
+
+bool SweepRunner::refDbNear(const QVector<FeedSweep> &feeds, double freqHz,
+                            double *refDb)
+{
+    const FeedSweepPoint *best = nullptr;
+    double bestDf = 0.0;
+    for (const FeedSweep &f : feeds) {
+        for (const FeedSweepPoint &pt : f.points) {
+            const double df = std::fabs(pt.freqHz - freqHz);
+            if (!best || df < bestDf) { best = &pt; bestDf = df; }
+        }
+    }
+    if (!best) return false;
+    if (refDb) *refDb = best->refDb;
+    return true;
 }
 
 SweepResult SweepRunner::collect(const QString &dir, Kernel kernel,
@@ -87,7 +122,8 @@ SweepResult SweepRunner::collect(const QString &dir, Kernel kernel,
 QString SweepRunner::toCsv(const QVector<SweepResult> &results)
 {
     // 代表値が無い点も行として残す (「走ったが遠方界が無い」ことが分かる)
-    QString s = QStringLiteral("angle_deg,label,status,peak_eabs_db,dir\n");
+    // 列名は「振った値」— 角度とは限らない (収束テストは倍率)
+    QString s = QStringLiteral("value,label,status,peak_eabs_db,dir\n");
     for (const SweepResult &r : results) {
         s += QStringLiteral("%1,%2,%3,%4,%5\n")
                  .arg(r.value, 0, 'g', 10)
@@ -152,11 +188,10 @@ bool SweepRunner::start(const Project &base, const SweepConfig &cfg)
     m_running = true;
     delete m_work;
     m_work = new Project(this);
-    emit logLine(QStringLiteral("sweep: %1 points, %2 → %3 deg, under %4")
+    emit logLine(QStringLiteral("sweep: %1 points, %2 → %3, under %4")
                      .arg(m_values.size())
-                     .arg(m_cfg.from, 0, 'g', 6)
-                     .arg(m_cfg.to, 0, 'g', 6)
-                     .arg(root));
+                     .arg(pointLabel(m_cfg.kind, m_values.first()),
+                          pointLabel(m_cfg.kind, m_values.last()), root));
     launchNext();
     return true;
 }

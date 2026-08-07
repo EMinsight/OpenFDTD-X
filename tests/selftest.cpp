@@ -1911,7 +1911,7 @@ static void testProjectTemplates()
         const QString csv = SweepRunner::toCsv(rs);
         const QStringList lines = csv.split('\n', Qt::SkipEmptyParts);
         check(lines.size() == 3, "sweep: csv has a header plus one row per point");
-        check(lines[0].startsWith("angle_deg,"), "sweep: csv header");
+        check(lines[0].startsWith("value,"), "sweep: csv header");
         check(lines[1].contains("ok") && lines[1].contains("-3.25")
               && lines[1].contains("sweep_000"), "sweep: csv ok row");
         check(lines[2].contains("failed"), "sweep: csv keeps failed points");
@@ -1950,6 +1950,71 @@ static void testProjectTemplates()
         Project old;
         check(!old.scattering().sweepEnabled && old.scattering().sweepPoints == 37,
               "sweep: missing key falls back to the defaults");
+
+        // ── メッシュ収束テスト (SweepKind::MeshRefine) ──────────────────
+        // 倍率は不等間隔 (×0.5 … ×2) なので values で直接与える経路を使う。
+        SweepConfig mc;
+        mc.values = { 0.5, 0.707106781, 1.0, 1.414213562, 2.0 };
+        const QVector<double> mv = SweepRunner::plan(mc);
+        check(mv == mc.values, "sweep: explicit values win over from/to/points");
+        SweepConfig oneVal;  oneVal.values = { 1.0 };
+        check(SweepRunner::plan(oneVal).isEmpty(),
+              "sweep: a single explicit value is not a sweep");
+
+        // 分割数が倍率どおりに丸められ、0 にならないこと
+        Project mp;
+        mp.mesh(0).nodes = { 0.0, 1.0, 2.0 };
+        mp.mesh(0).divs  = { 10, 3 };
+        mp.mesh(1).nodes = { 0.0, 1.0 };
+        mp.mesh(1).divs  = { 1 };          // これ以上粗くできない区間
+        mp.mesh(2).nodes = { 0.0, 1.0 };
+        mp.mesh(2).divs  = { 8 };
+        SweepRunner::applyPoint(mp, SweepKind::MeshRefine, 2.0);
+        check(mp.mesh(0).divs == (QVector<int>{ 20, 6 })
+              && mp.mesh(2).divs == (QVector<int>{ 16 }),
+              "sweep: mesh refine scales every interval");
+        check(mp.mesh(1).divs == (QVector<int>{ 2 }),
+              "sweep: refining a 1-division interval still scales it");
+
+        Project cp;
+        cp.mesh(0).nodes = { 0.0, 1.0 };
+        cp.mesh(0).divs  = { 1 };
+        cp.mesh(1).nodes = { 0.0, 1.0 };
+        cp.mesh(1).divs  = { 5 };
+        cp.mesh(2).nodes = { 0.0, 1.0 };
+        cp.mesh(2).divs  = { 5 };
+        SweepRunner::applyPoint(cp, SweepKind::MeshRefine, 0.5);
+        check(cp.mesh(0).divs == (QVector<int>{ 1 }),
+              "sweep: coarsening never produces 0 divisions "
+              "(the kernel cannot read that mesh)");
+        // 5 x 0.5 = 2.5 -> lround は 0 から遠い側へ丸めるので 3
+        check(cp.mesh(1).divs == (QVector<int>{ 3 }) && cp.mesh(0).isValid()
+              && cp.mesh(1).isValid(),
+              "sweep: the coarsened mesh stays valid");
+        // メッシュ倍率は平面波に触らない (別の掃引軸)
+        check(!cp.planewave().enabled,
+              "sweep: mesh refine does not enable the plane wave");
+
+        check(SweepRunner::pointLabel(SweepKind::MeshRefine, 1.414213562)
+                  == QStringLiteral("×1.414"),
+              "sweep: mesh refine labels are multipliers, not degrees");
+
+        // チェック量 = 指定周波数に最も近い給電点の Ref[dB]
+        QVector<FeedSweep> feeds;
+        FeedSweep fs;
+        fs.points.push_back({ 2.0e9, 30.0, -10.0, -6.0, 2.0 });
+        fs.points.push_back({ 2.45e9, 50.0, 0.0, -22.0, 1.2 });
+        fs.points.push_back({ 3.0e9, 40.0, 20.0, -3.0, 5.0 });
+        feeds.push_back(fs);
+        double ref = 0.0;
+        check(SweepRunner::refDbNear(feeds, 2.45e9, &ref) && ref == -22.0,
+              "sweep: picks the Ref[dB] at the requested frequency");
+        check(SweepRunner::refDbNear(feeds, 2.4e9, &ref) && ref == -22.0,
+              "sweep: picks the nearest frequency when there is no exact match");
+        check(SweepRunner::refDbNear(feeds, 1.0e9, &ref) && ref == -6.0,
+              "sweep: clamps to the lowest point below the range");
+        check(!SweepRunner::refDbNear({}, 2.45e9, &ref),
+              "sweep: no feed table means no quantity (do not invent one)");
     }
 
     // ── カーネルの作図出力 .ev2 のパーサ (io/EvReader) ──────────────────

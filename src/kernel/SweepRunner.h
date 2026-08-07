@@ -31,15 +31,20 @@ class Project;
 enum class SweepKind {
     PlaneWaveTheta,   // 平面波の入射角 θ [deg]
     PlaneWavePhi,     // 同 φ [deg]
+    MeshRefine,       // メッシュ分割数の倍率 (収束テスト。値は倍率そのもの)
 };
 
 struct SweepConfig {
     SweepKind kind = SweepKind::PlaneWaveTheta;
-    double    from = 0.0;      // 振る範囲 [deg]
+    double    from = 0.0;      // 振る範囲 [deg] (MeshRefine では倍率)
     double    to   = 180.0;
     int       points = 37;     // >= 2
     RunConfig run;             // 各実行の設定 (engine / threads / kernel)
     QString   baseDir;         // 実行用の親ディレクトリ (空 = Runner の既定)
+    // plan() の等間隔生成を使わず、振る値を直接与える (収束テストの
+    // ×0.5 / ×0.707 / ×1 / ×1.414 / ×2 のような不等間隔の列のため)。
+    // 空でなければ from/to/points より優先する。
+    QVector<double> values;
 };
 
 // 1 点の結果
@@ -80,6 +85,11 @@ public:
                                SweepKind kind, double value, bool ok);
     // 結果表 → CSV テキスト (先頭行はヘッダ)
     static QString toCsv(const QVector<SweepResult> &results);
+
+    // 給電点表から、指定周波数に最も近い点の反射係数 Ref [dB] を取る。
+    // 収束テストの「チェックする量」(S11) がこれ。表が無ければ false。
+    static bool refDbNear(const QVector<FeedSweep> &feeds, double freqHz,
+                          double *refDb);
 
     // ── 実行 ────────────────────────────────────────────────────────────
     bool isRunning() const { return m_running; }
