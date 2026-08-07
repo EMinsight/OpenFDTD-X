@@ -372,7 +372,10 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
         note->setStyleSheet("font-size:11px; color:palette(mid);");
         sec->vbox()->addWidget(note);
         v->addWidget(sec);
-        runCircuitSim();   // 既定値の応答を最初から出す
+        // runCircuitSim() はここでは呼ばない。熱光学シフトが「ノイズ・温度
+        // 効果」セクション (この下で組み立てる) の温度を読むため、ここで
+        // 呼ぶとまだ存在しないウィジェットを触ることになる。
+        // コンストラクタの最後にまとめて呼ぶ。
     }
 
     // ── ノイズ・温度効果 ───────────────────────────────────────────────────
@@ -410,6 +413,9 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     v->addWidget(sNo);
 
     v->addStretch(1);
+    // 全セクションを組み立ててから初回の応答を出す (熱光学シフト込み)
+    runCircuitSim();
+
     setWidget(body);
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);

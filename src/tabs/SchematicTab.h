@@ -44,10 +44,10 @@ private:
     bool          m_updating = false;   // refresh 中の itemChanged 再入ガード
 
     // シミュレーション設定 / Simulation
-    QComboBox    *m_mode;
+    QComboBox    *m_mode = nullptr;
 
     // ネットリスト / Connections
-    QTableWidget *m_net;
+    QTableWidget *m_net = nullptr;
     QFont         m_netFont;            // 波長列の等幅フォント
 
     // 回路シミュレーション (optics/PhotonicCircuit)
@@ -61,9 +61,14 @@ private:
     QLabel         *m_simResult = nullptr;
 
     // ノイズ・温度効果 / Noise & temperature
-    QCheckBox    *m_shot, *m_thermal, *m_rin, *m_phase, *m_toShift;
+    // **必ず nullptr で初期化する**: コンストラクタは上のセクションを組み立てる
+    // 途中で runCircuitSim() を呼ぶため、このセクションがまだ作られていない
+    // 時点でこれらを読む。未初期化のままだとゴミポインタを触って落ちる
+    // (CI の Linux GUI スモークが --domain optical で segfault した実例)。
+    QCheckBox    *m_shot = nullptr, *m_thermal = nullptr, *m_rin = nullptr;
+    QCheckBox    *m_phase = nullptr, *m_toShift = nullptr;
     QLabel       *m_netPath = nullptr;   // ネットリストから辿った経路
-    QLineEdit    *m_temp;
+    QLineEdit    *m_temp = nullptr;
 };
 
 } // namespace ofd
