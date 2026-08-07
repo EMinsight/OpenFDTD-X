@@ -156,7 +156,6 @@ set(CORE_SOURCES
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp
     src/io/KernelResultReader.h
-    src/io/EvReader.h
     src/io/StlImporter.cpp
     src/io/StlImporter.h
     # 取込メッシュの位相・幾何検査 (重複頂点 / 縮退三角形 / 境界・非多様体辺 /
@@ -167,8 +166,19 @@ set(CORE_SOURCES
     src/io/Voxelizer.cpp
     src/io/Voxelizer.h
 
+    # カーネルの作図出力 (.ev2) のパーサ + QPainter 描き直し。
+    # 形式は post/ev2d.c の出力そのまま — selftest が parse を直接検証する
+    src/io/EvReader.cpp
+    src/io/EvReader.h
+
     src/kernel/Runner.cpp
     src/kernel/Runner.h
+
+    # パラメータを振って同じカーネルを N 回まわす司会進行
+    # (入射角スイープ)。カーネルは 1 実行 1 planewave なので
+    # スイープは GUI 側の役目 — selftest が plan/collect を直接検証する
+    src/kernel/SweepRunner.cpp
+    src/kernel/SweepRunner.h
 
     # 光導波路の断面固有モード (FDE) ソルバ — Qt 非依存。
     # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる
@@ -248,6 +258,8 @@ set(GUI_SOURCES
     src/widgets/PlotPanel.h
     src/widgets/LogConsole.cpp
     src/widgets/LogConsole.h
+    src/widgets/EvCanvas.cpp
+    src/widgets/EvCanvas.h
     src/widgets/EvViewer.cpp
     src/widgets/EvViewer.h
     src/widgets/AudioWaveformView.cpp

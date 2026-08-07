@@ -1,86 +1,65 @@
-// EvReader.h — minimal parser for .ev2 / .ev3 (native rendering backend).
+// EvReader.h — カーネルの作図出力 .ev2 を読み、QPainter で描き直す。
 //
-// The format is undocumented — `ev2d_*` / `ev3d_*` are part of an "ev"
-// drawing library shipped with OpenFDTD. The library writes either:
-//   - HTML (type=0, text)
-//   - binary .ev2/.ev3 (type=1, binary=1)
-//   - text .ev2/.ev3   (type=1, binary=0)
+// 形式は OpenFDTD 同梱の "ev" 作図ライブラリ (post/ev2d.c) が書くもので、
+// **プレーンテキストの表示リスト**。ev2d_end_data() の fprintf がそのまま仕様:
 //
-// What we know from the public API (chap5/chap6 reference):
-//   ev3d_init() / ev3d_newPage() / drawing… / ev3d_output()
-// → page-oriented display list, OpenGL-style coordinate system.
+//   -1 <width> <height>            新規ページ (キャンバス寸法)
+//   -2 <r> <g> <b>                 以降の色 (0..255)
+//    2 x1 y1 x2 y2                 線
+//    3 x1 y1 x2 y2 x3 y3           三角形 (塗り)
+//    4 x1 y1 x2 y2 x3 y3 x4 y4     四角形 (塗り)
+//   21 x1 y1 x2 y2                 楕円 (外形)   ※2 点は外接矩形の対角
+//   22 x1 y1 x2 y2                 楕円 (塗り)
+//   -3 x y h                       文字列 — 次の 1 行が本文
+//      <text>
 //
-// This header sketches the data structures we'll fill once we reverse the
-// exact binary layout. The viewer code is structured so that adding new
-// drawing primitives is a matter of adding a case to the switch in render().
+// 座標系の原点は **左下** (HTML 出力側が y を Height - y と反転して描く)。
+// drawTriangle / drawQuadrangle / drawRectangle / drawPolyline は書き出し側で
+// 線 (idx=2) に分解されるので、読む側が知るべき図形はこれで全部。
 //
-// To complete this: read `Sirokujira/OpenFDTD` GitHub repo, files:
-//   include/ev2d_*.h, include/ev3d_*.h, post/ev2d_*.c, post/ev3d_*.c
+// 3D (.ev3) は別形式で未対応。
 #pragma once
+#include <QColor>
+#include <QPointF>
+#include <QRectF>
 #include <QString>
 #include <QVector>
-#include <QColor>
-#include <QVariant>
 
 class QPainter;
 
 namespace ofd {
 
-enum class EvCmd {
-    // Page lifecycle
-    BeginPage, EndPage,
-    // State
-    SetColor, SetWidth, SetFont,
-    // 2D primitives
-    Line2D, Polyline2D, Polygon2D, Text2D, Rect2D, Arc2D,
-    // 3D primitives
-    Line3D, Triangle3D, Polygon3D, Text3D,
-    // Color-mapped data
-    Contour2D, Vector2D, Surface3D,
-    // Camera (3D)
-    SetView, SetProjection
-};
-
+// 描画コマンド 1 個
 struct EvCommand {
-    EvCmd            kind;
+    enum Kind { Line, FillTriangle, FillQuad, Ellipse, FillEllipse, Text };
+    Kind             kind = Line;
     QColor           color = Qt::black;
-    double           width = 1.0;
-    QVector<double>  v;       // coords (length depends on kind)
-    QString          text;
-    QVariantMap      props;   // extra (font size, label, etc.)
+    QVector<QPointF> pts;     // ev 座標 (原点は左下)
+    QString          text;    // Text のみ
+    double           height = 0.0;   // Text の文字高 (ev 単位)
 };
 
+// 1 ページ = 1 枚の図
 struct EvPage {
-    QString          title;
+    double             width = 0.0, height = 0.0;   // キャンバス寸法 (ev 単位)
     QVector<EvCommand> commands;
 };
 
 struct EvDocument {
-    int              version = 0;
-    bool             is3D = false;
-    QVector<EvPage>  pages;
+    QVector<EvPage> pages;
+    bool isEmpty() const { return pages.isEmpty(); }
 };
 
-class EvReader {
-public:
-    // Auto-detects binary vs text from the first byte (binary starts with
-    // a magic number, text starts with an ASCII keyword).
-    static bool load(const QString &path, EvDocument &doc, QString *err = nullptr);
+namespace EvReader {
 
-private:
-    static bool loadBinary(const QString &path, EvDocument &doc, QString *err);
-    static bool loadText  (const QString &path, EvDocument &doc, QString *err);
-};
+// .ev2 を読む。読めた図形が 1 つも無ければ false + err。
+bool load(const QString &path, EvDocument &doc, QString *err = nullptr);
+// テキストから直接 (selftest 用 — ファイル I/O を挟まない)
+bool parse(const QString &text, EvDocument &doc, QString *err = nullptr);
 
-// EvRenderer — replay an EvDocument into a QPainter (2D) or OpenGL (3D).
-class EvRenderer {
-public:
-    // 2D: draw page n into a QPainter at the given pixel rect.
-    static void render2D(QPainter &p, const QRectF &rect, const EvPage &page);
+// ページを rect へ収めて描く。ev の左下原点 → 画面の左上原点へ反転し、
+// 縦横比を保ったまま最大化する (図が歪まない)。
+void render(QPainter &p, const QRectF &rect, const EvPage &page);
 
-    // 3D: replay as immediate-mode OpenGL commands. Called from a
-    // QOpenGLWidget::paintGL(). Camera params are read from SetView cmds.
-    static void render3D(const EvPage &page);
-};
-
+} // namespace EvReader
 } // namespace ofd

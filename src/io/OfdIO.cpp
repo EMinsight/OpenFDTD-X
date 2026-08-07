@@ -905,6 +905,24 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         if (!cj.isEmpty()) root["circuit"] = cj;
     }
 
+    // ── 散乱の入射角スイープ (.ofdx "scattering") — 追加キーのみ ─────────────
+    // 既定 (スイープ無効) のままならキー自体を書かない。スイープは GUI が
+    // カーネルを N 回まわす機能なので .ofd 側には何も出さない。
+    {
+        const ScatteringOpts d, &s = p.scattering();
+        if (s.sweepEnabled != d.sweepEnabled || s.sweepAxis != d.sweepAxis
+            || s.sweepFrom_deg != d.sweepFrom_deg
+            || s.sweepTo_deg != d.sweepTo_deg
+            || s.sweepPoints != d.sweepPoints) {
+            root["scattering"] = QJsonObject{
+                {"sweep_enabled", s.sweepEnabled},
+                {"sweep_axis", s.sweepAxis},
+                {"sweep_from_deg", s.sweepFrom_deg},
+                {"sweep_to_deg", s.sweepTo_deg},
+                {"sweep_points", s.sweepPoints} };
+        }
+    }
+
     // ── フォトニック回路のネットリスト (.ofdx "schematic") — 追加キーのみ ────
     // 同上: 既定 5 行のままならキー自体を書かない。
     {
@@ -1418,6 +1436,15 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         }
     }
     // 回路系電磁解析のポート定義 — キーが無い旧ファイルは既定 3 行のまま
+    if (root.contains("scattering")) {
+        const QJsonObject sj = root["scattering"].toObject();
+        ScatteringOpts &s = p.scattering();
+        s.sweepEnabled = sj.value("sweep_enabled").toBool(s.sweepEnabled);
+        s.sweepAxis = qBound(0, sj.value("sweep_axis").toInt(s.sweepAxis), 1);
+        s.sweepFrom_deg = sj.value("sweep_from_deg").toDouble(s.sweepFrom_deg);
+        s.sweepTo_deg = sj.value("sweep_to_deg").toDouble(s.sweepTo_deg);
+        s.sweepPoints = sj.value("sweep_points").toInt(s.sweepPoints);
+    }
     if (root.contains("circuit")) {
         const QJsonObject cj = root["circuit"].toObject();
         if (cj.contains("solver")) {

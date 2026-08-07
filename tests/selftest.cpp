@@ -34,6 +34,8 @@
 #include "io/OfdIO.h"
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
+#include "kernel/SweepRunner.h"
+#include "io/EvReader.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -93,6 +95,8 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTemporaryDir>
+#include <QImage>
+#include <QPainter>
 
 #ifdef OFD_USE_HDF5
 #include <hdf5.h>
@@ -1845,6 +1849,203 @@ static void testProjectTemplates()
         p.setModified(false);
         emit p.changed();
         check(p.isModified(), "modified: changed() always marks it dirty");
+    }
+
+    // ── 入射角スイープ (kernel/SweepRunner) の純関数部 ──────────────────
+    // カーネルは 1 実行 1 planewave なので、スイープは GUI が N 回まわす。
+    // 実行そのものはカーネルが要るが、値の並び・当て方・集計は純関数なので
+    // ここで固定する。
+    {
+        g_file = "sweep";
+        SweepConfig cfg;
+        cfg.from = 0.0; cfg.to = 180.0; cfg.points = 37;
+        const QVector<double> v = SweepRunner::plan(cfg);
+        check(v.size() == 37, "sweep: point count");
+        check(qFuzzyCompare(v.first(), 0.0) || v.first() == 0.0,
+              "sweep: starts at from");
+        check(qAbs(v.last() - 180.0) < 1e-12, "sweep: ends exactly at to");
+        check(qAbs(v[1] - 5.0) < 1e-12, "sweep: uniform 5-deg step");
+
+        // 逆向き (180 → 0) も同じ規則で並ぶ
+        SweepConfig back;
+        back.from = 180.0; back.to = 0.0; back.points = 5;
+        const QVector<double> bv = SweepRunner::plan(back);
+        check(bv.size() == 5 && qAbs(bv.first() - 180.0) < 1e-12
+              && qAbs(bv.last() - 0.0) < 1e-12, "sweep: descending range");
+
+        // 成立しない設定は空 (1 点は通常実行と同じ / 0 幅は全点同一)
+        SweepConfig one;  one.points = 1;
+        check(SweepRunner::plan(one).isEmpty(), "sweep: 1 point is not a sweep");
+        SweepConfig flat; flat.from = flat.to = 30.0; flat.points = 10;
+        check(SweepRunner::plan(flat).isEmpty(),
+              "sweep: zero-width range is not a sweep");
+
+        // applyPoint: 振った軸だけが変わり、平面波が有効になる
+        Project sp;
+        sp.planewave().enabled = false;
+        sp.planewave().theta = 11.0;
+        sp.planewave().phi = 22.0;
+        SweepRunner::applyPoint(sp, SweepKind::PlaneWaveTheta, 45.0);
+        check(sp.planewave().enabled,
+              "sweep: applyPoint enables the plane wave "
+              "(otherwise every point would run without one)");
+        check(sp.planewave().theta == 45.0 && sp.planewave().phi == 22.0,
+              "sweep: theta sweep leaves phi alone");
+        SweepRunner::applyPoint(sp, SweepKind::PlaneWavePhi, 60.0);
+        check(sp.planewave().theta == 45.0 && sp.planewave().phi == 60.0,
+              "sweep: phi sweep leaves theta alone");
+
+        // ディレクトリ名は 0 詰め 3 桁 (辞書順 = 実行順)
+        check(SweepRunner::pointDirName(0) == QLatin1String("sweep_000")
+              && SweepRunner::pointDirName(12) == QLatin1String("sweep_012")
+              && SweepRunner::pointDirName(345) == QLatin1String("sweep_345"),
+              "sweep: zero-padded dir names sort in run order");
+
+        // 失敗点も CSV に残る (「走ったが結果が無い」ことが読み取れる)
+        QVector<SweepResult> rs;
+        SweepResult a; a.value = 0; a.label = "θ = 0°"; a.ok = true;
+        a.peakEAbs_dB = -3.25; a.hasPeak = true; a.dir = "/tmp/x/sweep_000";
+        SweepResult b; b.value = 90; b.label = "θ = 90°"; b.ok = false;
+        b.dir = "/tmp/x/sweep_001";
+        rs << a << b;
+        const QString csv = SweepRunner::toCsv(rs);
+        const QStringList lines = csv.split('\n', Qt::SkipEmptyParts);
+        check(lines.size() == 3, "sweep: csv has a header plus one row per point");
+        check(lines[0].startsWith("angle_deg,"), "sweep: csv header");
+        check(lines[1].contains("ok") && lines[1].contains("-3.25")
+              && lines[1].contains("sweep_000"), "sweep: csv ok row");
+        check(lines[2].contains("failed"), "sweep: csv keeps failed points");
+
+        // .ofdx 往復 — 既定のままならキーを書かない (旧ファイルとバイト一致)
+        QTemporaryDir sd;
+        check(sd.isValid(), "sweep: temp dir");
+        const QString sPath = sd.filePath("sw.ofd");
+        Project def;
+        QString serr;
+        check(def.save(sPath, &serr), "sweep: default project saved");
+        const QString sidecar = sd.filePath("sw.ofdx");
+        const QByteArray defaultSidecar = [&] {
+            QFile f(sidecar);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }();
+        check(!defaultSidecar.contains("scattering"),
+              "sweep: defaults write no scattering key");
+
+        def.scattering().sweepEnabled = true;
+        def.scattering().sweepAxis = 1;
+        def.scattering().sweepFrom_deg = 10.0;
+        def.scattering().sweepTo_deg = 170.0;
+        def.scattering().sweepPoints = 9;
+        check(def.save(sPath, &serr), "sweep: project with a sweep saved");
+        Project rd;
+        check(rd.load(sPath, &serr), "sweep: reloaded");
+        check(rd.scattering().sweepEnabled && rd.scattering().sweepAxis == 1
+              && rd.scattering().sweepFrom_deg == 10.0
+              && rd.scattering().sweepTo_deg == 170.0
+              && rd.scattering().sweepPoints == 9,
+              "sweep: .ofdx round-trips the sweep settings");
+        check(rd.scattering().sweepValid(), "sweep: reloaded settings are valid");
+
+        // 旧ファイル (scattering キー無し) は既定値になる
+        Project old;
+        check(!old.scattering().sweepEnabled && old.scattering().sweepPoints == 37,
+              "sweep: missing key falls back to the defaults");
+    }
+
+    // ── カーネルの作図出力 .ev2 のパーサ (io/EvReader) ──────────────────
+    // 書式は OpenFDTD post/ev2d.c の ev2d_end_data() が書くものそのまま。
+    // 下の固定文字列はその fprintf の並びを転記したもの (GUI 側で書式を
+    // 決めない — カーネルが正)。
+    {
+        g_file = "ev2";
+        const QString text = QStringLiteral(
+            "-1 300 200\n"
+            "-2 0 0 0\n"
+            "2 10 20 110 120\n"           // 線
+            "-2 255 0 0\n"                 // 以降赤
+            "3 0 0 10 0 0 10\n"            // 塗り三角
+            "4 1 2 3 4 5 6 7 8\n"          // 塗り四角
+            "21 50 50 70 90\n"             // 楕円 (外形)
+            "22 50 50 70 90\n"             // 楕円 (塗り)
+            "-3 5 6 12\n"                  // 文字列 — 本文は次行
+            "Zin [ohm]\n"
+            "-1 300 200\n"                 // 2 ページ目
+            "-2 0 0 255\n"
+            "2 0 0 300 200\n");
+        EvDocument doc;
+        QString err;
+        check(EvReader::parse(text, doc, &err), "ev2: parses");
+        check(doc.pages.size() == 2, "ev2: -1 starts a new page");
+
+        const EvPage &p0 = doc.pages[0];
+        check(p0.width == 300.0 && p0.height == 200.0, "ev2: canvas size");
+        check(p0.commands.size() == 6, "ev2: six commands on page 1");
+
+        check(p0.commands[0].kind == EvCommand::Line
+              && p0.commands[0].color == QColor(0, 0, 0)
+              && p0.commands[0].pts.size() == 2
+              && p0.commands[0].pts[0] == QPointF(10, 20)
+              && p0.commands[0].pts[1] == QPointF(110, 120),
+              "ev2: line with the colour in force");
+        // -2 は「以降の色」— 直後のコマンドから適用される
+        check(p0.commands[1].kind == EvCommand::FillTriangle
+              && p0.commands[1].color == QColor(255, 0, 0)
+              && p0.commands[1].pts.size() == 3,
+              "ev2: colour applies to following commands");
+        check(p0.commands[2].kind == EvCommand::FillQuad
+              && p0.commands[2].pts.size() == 4
+              && p0.commands[2].pts[3] == QPointF(7, 8), "ev2: filled quad");
+        check(p0.commands[3].kind == EvCommand::Ellipse
+              && p0.commands[4].kind == EvCommand::FillEllipse,
+              "ev2: 21 = outline, 22 = filled ellipse");
+        check(p0.commands[5].kind == EvCommand::Text
+              && p0.commands[5].text == QLatin1String("Zin [ohm]")
+              && p0.commands[5].height == 12.0
+              && p0.commands[5].pts[0] == QPointF(5, 6),
+              "ev2: text takes its body from the next line");
+
+        // ページ頭で色は黒へ戻る (書き出し側と同じ)
+        check(doc.pages[1].commands.size() == 1
+              && doc.pages[1].commands[0].color == QColor(0, 0, 255),
+              "ev2: page 2 keeps its own colour state");
+
+        // 壊れた入力で落ちない / 図形ゼロは false
+        EvDocument junk;
+        check(!EvReader::parse(QStringLiteral("hello\nworld\n"), junk),
+              "ev2: non-ev text is rejected");
+        check(!EvReader::parse(QString(), junk), "ev2: empty text is rejected");
+        check(!EvReader::parse(QStringLiteral("-1 300 200\n"), junk),
+              "ev2: a page with no drawing is not a document");
+        // 座標が足りない行は捨てる (落ちない)
+        EvDocument partial;
+        check(EvReader::parse(QStringLiteral(
+                  "-1 10 10\n2 1 2\n2 1 2 3 4\n"), partial),
+              "ev2: short lines are skipped, good ones kept");
+        check(partial.pages.size() == 1 && partial.pages[0].commands.size() == 1,
+              "ev2: only the complete line survives");
+
+        // 描画が例外なく通り、実際に画素を塗ること (左下原点 → 上下反転)
+        QImage img(60, 40, QImage::Format_RGB32);
+        img.fill(Qt::white);
+        {
+            QPainter pr(&img);
+            EvPage one;
+            one.width = 60; one.height = 40;
+            EvCommand c;
+            c.kind = EvCommand::FillQuad;
+            c.color = QColor(255, 0, 0);
+            // ev 座標で下半分 (y = 0..20) を塗る
+            c.pts = { QPointF(0, 0), QPointF(60, 0), QPointF(60, 20),
+                      QPointF(0, 20) };
+            one.commands.push_back(c);
+            EvReader::render(pr, QRectF(0, 0, 60, 40), one);
+        }
+        // 反転しているので、塗られるのは画面の **下** 半分
+        check(img.pixelColor(30, 35).red() > 200
+              && img.pixelColor(30, 35).blue() < 80,
+              "ev2: render fills the bottom half (ev origin is bottom-left)");
+        check(img.pixelColor(30, 4) == QColor(Qt::white),
+              "ev2: the top stays untouched");
     }
 }
 
