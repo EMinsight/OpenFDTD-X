@@ -24,6 +24,11 @@ class MultiphysicsTab : public QScrollArea {
 public:
     explicit MultiphysicsTab(Project *project, QWidget *parent = nullptr);
 
+    // 実行完了時に MainWindow が呼ぶ。作業ディレクトリの <kernel>.log から
+    // 熱解析レイヤの診断行を読んで表へ入れる (この実行が出したものだけ)。
+    void loadThermalFrom(const QString &logPath);
+    void clearThermal();
+
 private slots:
     void rebuildDomain();     // ドメイン変更 → モジュール表と詳細セクション
     void refreshPlasma();     // プロジェクトの波長を読み直して Δn を再計算
@@ -35,6 +40,9 @@ private:
 
     QLabel       *m_hint;         // ドメイン名を含む説明文
     QTableWidget *m_modules;      // 連成モジュール一覧
+
+    QTableWidget *m_thermalTbl = nullptr;   // 熱解析レイヤの実測値
+    QLabel       *m_thermalStatus = nullptr;
 
     QComboBox    *m_scheme;       // 弱連成 / 強連成 / 双方向
     QLineEdit    *m_tol, *m_maxIter;
