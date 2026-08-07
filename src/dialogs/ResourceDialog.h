@@ -22,8 +22,18 @@ class ResourceDialog : public QDialog {
 public:
     explicit ResourceDialog(QWidget *parent = nullptr);
 
+    // 「適用」で保存した値 (QSettings run/threads, run/processes)。
+    // 実行時の RunConfig はここを見る — ダイアログが表示だけで終わらないように。
+    static int savedThreads();
+    static int savedProcesses();
+
+signals:
+    // 適用された値。MainWindow がツールバーのスレッド数へ反映する
+    void applied(int processes, int threads);
+
 private:
     void updateCores();      // プロセス×スレッド → 合計コア表示とバッジ
+    void applySettings();    // 適用 — QSettings へ保存して applied を出す
 
     int        m_machineCores = 1;   // 実機の論理コア数 (起動時に検出)
 

@@ -4547,6 +4547,53 @@ static void testRunGating()
         check(resolved.startsWith(kdir.path()),
               "bin: resolvedSolverPath honours binaryDir");
     }
+
+    // ── 実行環境の可用性 (Runner::checkAvailability) ────────────────────
+    // 「MPI が入っていないのに CPU+MPI を選べて、走らせて初めて失敗する」を
+    // 防ぐための検出。環境に依存しない不変条件だけを検証する:
+    //   ・mpi = (ランチャあり) かつ (_mpi バイナリあり) — 片方だけでは false
+    //   ・使えないときは必ず理由が入る (空の理由をツールチップに出さない)
+    //   ・使えるときは理由が空 (使えるのに理由が出ない)
+    {
+        for (const Kernel k : { Kernel::FDTD, Kernel::RCWA, Kernel::BPM }) {
+            const Runner::Availability a = Runner::checkAvailability(k);
+            RunConfig mc; mc.kernel = k; mc.engine = Engine::CPU_MPI;
+            RunConfig gc; gc.kernel = k; gc.engine = Engine::GPU;
+            const bool hasMpiBin = !Runner::resolvedSolverPath(mc).isEmpty();
+            const bool hasGpuBin = !Runner::resolvedSolverPath(gc).isEmpty();
+            check(a.mpi == (!a.mpiLauncher.isEmpty() && hasMpiBin),
+                  "avail: mpi requires both the launcher and the _mpi binary");
+            check(a.cuda == hasGpuBin,
+                  "avail: cuda tracks the _cuda binary");
+            check(a.mpi ? a.mpiReason.isEmpty() : !a.mpiReason.isEmpty(),
+                  "avail: mpi carries a reason exactly when unavailable");
+            check(a.cuda ? a.cudaReason.isEmpty() : !a.cudaReason.isEmpty(),
+                  "avail: cuda carries a reason exactly when unavailable");
+        }
+        // ランチャは見つかったなら実在する実行ファイルであること
+        const QString launcher = Runner::findMpiLauncher();
+        check(launcher.isEmpty() || QFileInfo(launcher).isExecutable(),
+              "avail: findMpiLauncher returns an executable or nothing");
+
+        // 並列変種そのものが存在しないカーネルは、バイナリの有無に依らず
+        // 常に不可 (mpiexec -n N で CPU 版を N 個起動させない)。
+        for (const Kernel k : { Kernel::PEEC, Kernel::FEM }) {
+            const Runner::Availability a = Runner::checkAvailability(k);
+            check(!a.mpi && !a.cuda,
+                  "avail: PEEC/FEM are CPU-only regardless of the environment");
+            check(!a.mpiReason.isEmpty() && !a.cudaReason.isEmpty(),
+                  "avail: PEEC/FEM say why");
+        }
+        const Runner::Availability bh = Runner::checkAvailability(Kernel::Bellhop);
+        check(!bh.mpi && !bh.mpiReason.isEmpty(),
+              "avail: bellhopcxx has no MPI build");
+        // GPU は bellhopcuda という別名。solverBinary の名前切替と一致すること
+        RunConfig bgc; bgc.kernel = Kernel::Bellhop; bgc.engine = Engine::GPU;
+        check(Runner::solverBinary(bgc).contains(QLatin1String("bellhopcuda")),
+              "avail: bellhop GPU maps to the bellhopcuda binary");
+        check(bh.cuda == !Runner::resolvedSolverPath(bgc).isEmpty(),
+              "avail: bellhop cuda tracks the bellhopcuda binary");
+    }
 }
 
 

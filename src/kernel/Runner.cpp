@@ -128,6 +128,61 @@ QString Runner::resolvedSolverPath(const RunConfig &cfg)
     return QString();
 }
 
+QString Runner::findMpiLauncher()
+{
+    for (const char *name : { "mpiexec", "mpirun" }) {
+        const QString p = QStandardPaths::findExecutable(QLatin1String(name));
+        if (!p.isEmpty()) return p;
+    }
+    return QString();
+}
+
+Runner::Availability Runner::checkAvailability(Kernel kernel)
+{
+    Availability a;
+    // 並列変種そのものが存在しないカーネル。バイナリを探すまでもなく不可。
+    //   PEEC / FEM : CPU 単一実装 (MPI 版も CUDA 版も無い)
+    //   Bellhop    : MPI 版は無い。GPU は bellhopcuda が別名で存在するので
+    //                下の CUDA 判定 (solverBinary が名前を切り替える) に任せる
+    if (kernel == Kernel::PEEC || kernel == Kernel::FEM) {
+        a.mpiReason = a.cudaReason =
+            QStringLiteral("%1 は CPU 単一実装です (MPI / CUDA 版がありません)")
+                .arg(kernelPrefix(kernel));
+        return a;
+    }
+    // ── MPI ──
+    if (kernel == Kernel::Bellhop) {
+        a.mpiReason = QStringLiteral("bellhopcxx に MPI 版はありません");
+    } else {
+        a.mpiLauncher = findMpiLauncher();
+        RunConfig mpiCfg;
+        mpiCfg.kernel = kernel;
+        mpiCfg.engine = Engine::CPU_MPI;
+        const QString mpiBin = resolvedSolverPath(mpiCfg);
+        if (a.mpiLauncher.isEmpty() && mpiBin.isEmpty())
+            a.mpiReason =
+                QStringLiteral("mpiexec と %1_mpi のどちらも見つかりません")
+                    .arg(kernelPrefix(kernel));
+        else if (a.mpiLauncher.isEmpty())
+            a.mpiReason = QStringLiteral("mpiexec / mpirun が PATH にありません");
+        else if (mpiBin.isEmpty())
+            a.mpiReason = QStringLiteral("%1_mpi のバイナリが見つかりません")
+                              .arg(kernelPrefix(kernel));
+        a.mpi = !a.mpiLauncher.isEmpty() && !mpiBin.isEmpty();
+    }
+
+    // ── CUDA ──
+    RunConfig gpuCfg;
+    gpuCfg.kernel = kernel;
+    gpuCfg.engine = Engine::GPU;
+    const QString gpuBin = resolvedSolverPath(gpuCfg);
+    a.cuda = !gpuBin.isEmpty();
+    if (!a.cuda)
+        a.cudaReason = QStringLiteral("%1 のバイナリが見つかりません")
+                           .arg(QFileInfo(solverBinary(gpuCfg)).fileName());
+    return a;
+}
+
 Kernel Runner::kernelForProject(const Project &project)
 {
     if (project.activeDomain() == Domain::Optical) {
@@ -258,8 +313,12 @@ void Runner::launch(bool solverPhase)
     } else if (solverPhase) {
         const QString bin = solverBinary(m_cfg);
         if (m_cfg.engine == Engine::CPU_MPI || m_cfg.engine == Engine::GPU_MPI) {
-            program = "mpiexec";
-            args << "-n" << QString::number(m_cfg.processes) << bin;
+            // mpiexec が無い環境 (MPICH ではなく OpenMPI だけ、等) では
+            // mpirun に倒す。どちらも無ければ mpiexec のまま起動を試みて
+            // FailedToStart のエラーメッセージを出す。
+            const QString launcher = findMpiLauncher();
+            program = launcher.isEmpty() ? QStringLiteral("mpiexec") : launcher;
+            args << "-n" << QString::number(qMax(1, m_cfg.processes)) << bin;
         } else {
             program = bin;
         }

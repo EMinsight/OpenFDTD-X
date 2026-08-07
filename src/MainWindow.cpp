@@ -268,8 +268,9 @@ void MainWindow::buildMenu()
         });
     }
 
-    mRun->addAction(I18n::tr("tb_calc"), QKeySequence(Qt::Key_F5),
-                    this, &MainWindow::runSimulation);
+    m_runMenuAction = mRun->addAction(I18n::tr("tb_calc"),
+                                      QKeySequence(Qt::Key_F5),
+                                      this, &MainWindow::runSimulation);
     mRun->addAction(I18n::tr("tb_stop"), QKeySequence(Qt::Key_Escape),
                     this, [this] { m_runner->stop(); });
 
@@ -292,7 +293,8 @@ void MainWindow::buildMenu()
     m_cloudMenuAction =
         mTools->addAction(I18n::tr("tb_cloud"), this,
                           &MainWindow::showCloudDialog);
-    mTools->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
+    m_resourceActions << mTools->addAction(I18n::tr("tb_resources"), this,
+                                           &MainWindow::showResources);
     // カーネルの場所を GUI から設定 (Finder / Dock 起動では環境変数が
     // 届かないため。QSettings に永続化 — kernel/Runner が探索時に参照)
     mTools->addAction(I18n::tr("m_kernel_paths"), this, [this] {
@@ -333,9 +335,10 @@ void MainWindow::buildToolbar()
                   this, &MainWindow::saveProject);
     tb->addSeparator();
 
-    auto *runAct = tb->addAction(icon(QStyle::SP_MediaPlay), I18n::tr("tb_calc"),
-                                 this, &MainWindow::runSimulation);
-    if (auto *btn = qobject_cast<QToolButton *>(tb->widgetForAction(runAct)))
+    m_runAction = tb->addAction(icon(QStyle::SP_MediaPlay), I18n::tr("tb_calc"),
+                                this, &MainWindow::runSimulation);
+    m_runAction->setToolTip(I18n::tr("tb_calc"));
+    if (auto *btn = qobject_cast<QToolButton *>(tb->widgetForAction(m_runAction)))
         btn->setObjectName("primaryAction");
     tb->addAction(icon(QStyle::SP_MediaSeekForward), I18n::tr("tb_post"),
                   this, &MainWindow::runPostProcess);
@@ -377,7 +380,8 @@ void MainWindow::buildToolbar()
     tb->addWidget(exportBtn);
 
     tb->addSeparator();
-    tb->addAction(I18n::tr("tb_resources"), this, &MainWindow::showResources);
+    m_resourceActions << tb->addAction(I18n::tr("tb_resources"), this,
+                                       &MainWindow::showResources);
     tb->addAction(I18n::tr("tb_gettingstarted"),
                   this, &MainWindow::showGettingStarted);
 
@@ -445,13 +449,80 @@ void MainWindow::updateEngineItems(Domain d)
 
     if (auto *model = qobject_cast<QStandardItemModel *>(m_engineBox->model())) {
         const bool cpuOnly = (d == Domain::Acoustic);
+        // 実機の可用性を見る — mpiexec も _mpi バイナリも無いのに
+        // 「CPU+MPI」を選べると、実行して初めて失敗する (絶対規則 5)。
+        const Runner::Availability av =
+            Runner::checkAvailability(Runner::kernelForProject(*m_project));
         for (int i = int(Engine::CPU_MPI); i <= int(Engine::GPU_MPI)
-                 && i < model->rowCount(); ++i)
-            if (auto *item = model->item(i))
-                item->setEnabled(!cpuOnly);
-        if (cpuOnly && m_engineBox->currentIndex() != int(Engine::CPU)
-                    && m_engineBox->currentIndex() < kTidy3dIndex)
-            m_engineBox->setCurrentIndex(int(Engine::CPU));
+                 && i < model->rowCount(); ++i) {
+            auto *item = model->item(i);
+            if (!item) continue;
+            const bool needsMpi = (i == int(Engine::CPU_MPI)
+                                   || i == int(Engine::GPU_MPI));
+            const bool needsCuda = (i == int(Engine::GPU)
+                                    || i == int(Engine::GPU_MPI));
+            bool ok = !cpuOnly;
+            QString why;
+            if (cpuOnly) {
+                why = I18n::tr("run_engine_cpu_only");
+            } else {
+                if (needsMpi && !av.mpi) { ok = false; why = av.mpiReason; }
+                if (ok && needsCuda && !av.cuda) { ok = false; why = av.cudaReason; }
+            }
+            item->setEnabled(ok);
+            item->setToolTip(ok ? QString()
+                                : I18n::tr("run_engine_na").arg(why));
+        }
+        // 現在の選択が使えなくなったら CPU へ落とす (使えない設定で走らせない)
+        const int cur = m_engineBox->currentIndex();
+        if (cur < kTidy3dIndex && cur > int(Engine::CPU)) {
+            auto *item = model->item(cur);
+            if (item && !item->isEnabled())
+                m_engineBox->setCurrentIndex(int(Engine::CPU));
+        }
+    }
+}
+
+// 実行中の実行設定ロック。
+// RunConfig は Runner::start の直前に 1 度だけ組み立てられ、以降は
+// m_cfg として固定される。したがって実行中にエンジンやスレッド数を
+// 変えても **走っているジョブには一切効かない** (次回の実行にだけ効く)。
+// 触れる UI を残すと「反映されている」と誤解させるので、実行中は無効化し
+// 理由をツールチップで出す (絶対規則 5)。
+void MainWindow::setRunUiEnabled(bool enabled)
+{
+    const QString why = enabled ? QString() : I18n::tr("run_locked_tip");
+    QWidget *const widgets[] = { m_engineBox, m_modeBox, m_threadsBox,
+                                 m_deviceBox };
+    for (QWidget *w : widgets) {
+        if (!w) continue;
+        w->setEnabled(enabled);
+        w->setToolTip(why);
+    }
+    for (QAction *a : m_resourceActions) {
+        if (!a) continue;
+        a->setEnabled(enabled);
+        a->setToolTip(why);
+    }
+    // ダイアログを開いたまま実行に入った場合も閉じる (開いていれば
+    // 適用ボタンから設定を変えられてしまうため)
+    if (!enabled && m_resourceDialog && m_resourceDialog->isVisible())
+        m_resourceDialog->reject();
+
+    // 「計算」ボタンは実行中は中止ボタンになる。同じ見た目のまま挙動だけ
+    // 変わると「2 回押すとキャンセルになるのが分からない」ので、
+    // ラベル・アイコン・ツールチップを実行中の意味に差し替える。
+    const QString label = enabled ? I18n::tr("tb_calc")
+                                  : I18n::tr("tb_calc_stop");
+    const QString tip = enabled ? I18n::tr("tb_calc")
+                                : I18n::tr("tb_calc_stop_tip");
+    const QIcon ic = style()->standardIcon(
+        enabled ? QStyle::SP_MediaPlay : QStyle::SP_MediaStop);
+    for (QAction *a : { m_runAction, m_runMenuAction }) {
+        if (!a) continue;
+        a->setText(label);
+        a->setToolTip(tip);
+        if (a == m_runAction) a->setIcon(ic);
     }
 }
 
@@ -1056,8 +1127,18 @@ void MainWindow::showGallery()
 
 void MainWindow::showResources()
 {
-    if (!m_resourceDialog)
+    if (!m_resourceDialog) {
         m_resourceDialog = new ResourceDialog(this);
+        // 適用された値をツールバーのスレッド数へ反映する
+        // (2 箇所で別の値を持たない — 実行に使うのは 1 つ)
+        connect(m_resourceDialog, &ResourceDialog::applied, this,
+                [this](int processes, int threads) {
+                    m_threadsBox->setValue(threads);
+                    m_rightDock->appendLog(
+                        I18n::tr("run_res_applied").arg(processes).arg(threads));
+                    updateEngineItems(m_project->activeDomain());
+                });
+    }
     m_resourceDialog->open();
 }
 
@@ -1102,6 +1183,10 @@ RunConfig MainWindow::currentRunConfig() const
              : (m_modeBox->currentIndex() == 2) ? RunMode::Post
                                                 : RunMode::Both;
     cfg.threads = m_threadsBox->value();
+    // MPI プロセス数は Resources ダイアログの設定を使う。
+    // 旧実装はここを設定しておらず、RunConfig の既定 2 が常に使われていた
+    // (画面で何を設定しても mpiexec -n 2 になっていた)。
+    cfg.processes = qMax(1, ResourceDialog::savedProcesses());
     cfg.device = m_deviceBox->value();
     QSettings().setValue("run/device", cfg.device);
     QSettings().setValue("run/threads", cfg.threads);
@@ -1115,7 +1200,18 @@ RunConfig MainWindow::currentRunConfig() const
 void MainWindow::runSimulation()
 {
     if (m_runner->isRunning()) {
-        m_runner->stop();
+        // 実行中の押下は「中止」。押した本人が意図しているとは限らない
+        // (連打・誤操作) ので必ず確認してから殺す。計算は数分〜数十分単位で、
+        // 中止すると結果は残らない。
+        QMessageBox box(QMessageBox::Question, I18n::tr("tb_calc_stop"),
+                        I18n::tr("run_stop_confirm"),
+                        QMessageBox::Yes | QMessageBox::No, this);
+        if (auto *yes = box.button(QMessageBox::Yes))
+            yes->setText(I18n::tr("tb_calc_stop"));
+        if (auto *no = box.button(QMessageBox::No))
+            no->setText(I18n::tr("run_stop_continue"));
+        box.setDefaultButton(QMessageBox::No);
+        if (box.exec() == QMessageBox::Yes) m_runner->stop();
         return;
     }
     // エンジンに tidy3d Cloud を選択中はクラウド送信ダイアログへ
@@ -1194,6 +1290,7 @@ void MainWindow::runSimulation()
     // cfg は上でスナップショット済み — 再計算せずそのまま渡す
     // (実行前クリーンアップ判定と同一の設定で走らせる)。
     m_runStartMs = QDateTime::currentMSecsSinceEpoch();
+    setRunUiEnabled(false);
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -1215,6 +1312,7 @@ void MainWindow::runPostProcess()
     m_expectActivation = false;
     m_sbState->setText("● " + I18n::tr("sb_running"));
     m_runStartMs = QDateTime::currentMSecsSinceEpoch();
+    setRunUiEnabled(false);
     m_runner->start(m_project, cfg);
     m_evViewer->setWorkdir(m_runner->workingDir());
 }
@@ -1390,6 +1488,8 @@ void MainWindow::onRunnerLog(const QString &line)
 
 void MainWindow::onRunnerFinished(bool ok)
 {
+    // 実行設定のロック解除 (FailedToStart 経由でもここへ来る)
+    setRunUiEnabled(true);
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
     // カーネルの HDF5 出力 (time_series_data.h5) を 2D 断面へ反映する。
