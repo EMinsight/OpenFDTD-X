@@ -34,6 +34,21 @@ enum class SweepKind {
     MeshRefine,       // メッシュ分割数の倍率 (収束テスト。値は倍率そのもの)
 };
 
+// モンテカルロ用: 1 サンプルで **複数のパラメータを同時に** 動かす。
+// SweepKind は 1 軸を振るためのもので、ばらつき解析には足りない。
+enum class SweepParam {
+    PlaneWaveTheta,      // θ [deg] (絶対値)
+    PlaneWavePhi,        // φ [deg] (絶対値)
+    MeshRefine,          // メッシュ分割数の倍率
+    MaterialEpsrDelta,   // 材料 index の比誘電率へ加算する差分
+};
+
+struct SweepColumn {
+    SweepParam param = SweepParam::MaterialEpsrDelta;
+    int        index = 1;      // MaterialEpsrDelta のとき材料番号
+    QString    label;          // 表示用 (「比誘電率 εr」等)
+};
+
 struct SweepConfig {
     SweepKind kind = SweepKind::PlaneWaveTheta;
     double    from = 0.0;      // 振る範囲 [deg] (MeshRefine では倍率)
@@ -45,6 +60,11 @@ struct SweepConfig {
     // ×0.5 / ×0.707 / ×1 / ×1.414 / ×2 のような不等間隔の列のため)。
     // 空でなければ from/to/points より優先する。
     QVector<double> values;
+
+    // モンテカルロ: 1 行 = 1 サンプル、列は columns と 1:1。
+    // 空でなければ kind / values / from-to-points より優先する。
+    QVector<SweepColumn>          columns;
+    QVector<QVector<double>>      samples;
 };
 
 // 1 点の結果
@@ -73,6 +93,10 @@ public:
     // 振る値の列。points < 2 または from == to なら空を返す
     // (1 点スイープは通常実行と同じなので、スイープとしては成立しない)。
     static QVector<double> plan(const SweepConfig &cfg);
+    // 1 サンプル (複数パラメータ同時) をプロジェクトへ当てる。
+    // 列と値の数が食い違う場合は短い方までしか当てない (黙って壊さない)。
+    static void applySample(Project &p, const QVector<SweepColumn> &columns,
+                            const QVector<double> &values);
     // 1 点ぶんの値をプロジェクトへ当てる。平面波が無効なら有効化する
     // (スイープは平面波入射の解析なので、無効のままでは意味が無い)。
     static void applyPoint(Project &p, SweepKind kind, double value);

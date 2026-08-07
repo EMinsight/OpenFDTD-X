@@ -15,6 +15,9 @@
 // (保存されない)。.ofdx への保存は未実装であることを画面に明示する。
 #pragma once
 #include <QScrollArea>
+#include <vector>
+
+#include "../kernel/SweepRunner.h"
 #include <QString>
 #include <QVector>
 
@@ -22,6 +25,7 @@
 
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QLineEdit;
 class QTableWidget;
 class QTableWidgetItem;
@@ -37,6 +41,12 @@ class ToleranceTab : public QScrollArea {
 public:
     explicit ToleranceTab(Project *project, QWidget *parent = nullptr);
 
+    // 実行設定 (エンジン / スレッド数) は MainWindow が持つので外から渡す
+    void setRunConfig(const RunConfig &cfg) { m_runCfg = cfg; }
+
+signals:
+    void sweepLog(const QString &line);
+
 private slots:
     void rebuildDomain();          // ドメイン変更 → 要因表・合格条件を作り直す
     void onSourceEdited(QTableWidgetItem *item);   // 中心 / σ の編集を取り込む
@@ -49,13 +59,25 @@ private:
         QString name;
         QString unit;
         tolstat::Variable var;     // 分布 / 中心 / σ・半幅
+        bool    applied = false;   // カーネル入力へ当てられるか (下記参照)
     };
 
+    void startMonteCarlo();        // 実サンプルでソルバーを N 回まわす
+    void finishMonteCarlo(bool ok);
+    void updateMcUi();
     void fillSourceTable();        // m_vars → 表
     void refreshVarChoices();      // 有効かつ連続な変数を選択コンボへ
 
     Project      *m_p;
     bool          m_updating = false;   // 表の再構築中は編集シグナルを無視する
+
+    // ── モンテカルロ実行 ──
+    SweepRunner  *m_mc = nullptr;
+    RunConfig     m_runCfg;
+    QPushButton  *m_mcRun = nullptr;
+    QLabel       *m_mcNote = nullptr;    // 何サンプル走るか / 何が当たるか
+    QLabel       *m_mcStatus = nullptr;
+    std::vector<double> m_fom;           // 各サンプルの FoM (失敗は NaN)
 
     SectionBox   *m_titleSec;
     QTableWidget *m_sources;      // ばらつき要因

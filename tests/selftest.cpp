@@ -36,6 +36,7 @@
 #include "kernel/Runner.h"
 #include "kernel/SweepRunner.h"
 #include "io/EvReader.h"
+#include "core/MonteCarlo.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -2015,6 +2016,172 @@ static void testProjectTemplates()
               "sweep: clamps to the lowest point below the range");
         check(!SweepRunner::refDbNear({}, 2.45e9, &ref),
               "sweep: no feed table means no quantity (do not invent one)");
+    }
+
+    // ── モンテカルロのサンプリングと結果統計 (core/MonteCarlo) ───────────
+    {
+        g_file = "montecarlo";
+        using namespace ofd::montecarlo;
+        using tolstat::Dist;
+        using tolstat::Variable;
+
+        // ① 分位関数を解析解と突き合わせる
+        Variable nv; nv.dist = Dist::Normal; nv.center = 5.0; nv.spread = 2.0;
+        check(std::fabs(quantile(nv, 0.5) - 5.0) < 1e-9,
+              "mc: normal median is the mean");
+        // Φ⁻¹(0.97725) = 2 → μ + 2σ = 9
+        check(std::fabs(quantile(nv, 0.977249868) - 9.0) < 1e-5,
+              "mc: normal quantile matches +2 sigma");
+        check(std::fabs(quantile(nv, 0.022750132) - 1.0) < 1e-5,
+              "mc: normal quantile matches -2 sigma");
+
+        Variable uv; uv.dist = Dist::Uniform; uv.center = 10.0; uv.spread = 4.0;
+        check(std::fabs(quantile(uv, 0.0) - 6.0) < 1e-6
+              && std::fabs(quantile(uv, 1.0) - 14.0) < 1e-6
+              && std::fabs(quantile(uv, 0.25) - 8.0) < 1e-9,
+              "mc: uniform quantile is linear over the support");
+
+        Variable rv; rv.dist = Dist::Rayleigh; rv.center = 0.0; rv.spread = 3.0;
+        // Q(1 − e^{−1/2}) = σ  (F(σ) = 1 − exp(−1/2))
+        check(std::fabs(quantile(rv, 1.0 - std::exp(-0.5)) - 3.0) < 1e-9,
+              "mc: rayleigh quantile inverts its CDF");
+
+        Variable dv; dv.dist = Dist::Discrete; dv.center = 7.0;
+        check(quantile(dv, 0.3) == 7.0,
+              "mc: a discrete variable does not vary");
+
+        // ② ラテン超方格の層化 — n 標本が n 層をちょうど 1 回ずつ覆う
+        const int n = 200;
+        std::vector<Variable> vars = { uv };     // 一様なら層 = 等幅区間
+        const std::vector<double> lhs = sample(vars, n, Method::Latin, 12345);
+        check(int(lhs.size()) == n, "mc: latin sample count");
+        std::vector<int> hits(size_t(n), 0);
+        for (const double x : lhs) {
+            const double p = (x - (uv.center - uv.spread)) / (2 * uv.spread);
+            int b = int(p * n);
+            b = std::min(std::max(b, 0), n - 1);
+            hits[size_t(b)]++;
+        }
+        bool everyStratumOnce = true;
+        for (const int h : hits) if (h != 1) everyStratumOnce = false;
+        check(everyStratumOnce,
+              "mc: latin hypercube puts exactly one sample in every stratum");
+
+        // 単純乱数は層化しない (これが LHS との違い) — 空の層が必ず出る
+        const std::vector<double> rnd = sample(vars, n, Method::Random, 12345);
+        std::vector<int> rhits(size_t(n), 0);
+        for (const double x : rnd) {
+            const double p = (x - (uv.center - uv.spread)) / (2 * uv.spread);
+            int b = int(p * n);
+            b = std::min(std::max(b, 0), n - 1);
+            rhits[size_t(b)]++;
+        }
+        int empty = 0;
+        for (const int h : rhits) if (h == 0) ++empty;
+        check(empty > 0, "mc: plain random sampling leaves strata empty");
+
+        // ③ 標本モーメントが解析値へ寄る (一様: μ = center, σ = a/√3)
+        const std::vector<double> big = sample(vars, 20000, Method::Latin, 7);
+        const Stats bs = summarize(big);
+        check(bs.valid && std::fabs(bs.mean - 10.0) < 0.05,
+              "mc: sample mean converges to the analytic mean");
+        check(std::fabs(bs.stdDev - 4.0 / std::sqrt(3.0)) < 0.05,
+              "mc: sample sigma converges to a/sqrt(3) (GUM 4.3.7)");
+
+        // ④ 決定論 — 同じ seed は同じ標本、違う seed は違う標本
+        check(sample(vars, 50, Method::Latin, 99)
+              == sample(vars, 50, Method::Latin, 99),
+              "mc: the same seed reproduces the sample set");
+        check(sample(vars, 50, Method::Latin, 99)
+              != sample(vars, 50, Method::Latin, 100),
+              "mc: a different seed gives a different sample set");
+
+        // ⑤ 多変数はサンプル行 × 変数列に並ぶ
+        std::vector<Variable> two = { uv, nv };
+        const std::vector<double> mat = sample(two, 10, Method::Latin, 3);
+        check(int(mat.size()) == 20, "mc: n x m matrix size");
+        bool inSupport = true;
+        for (int i = 0; i < 10; ++i)
+            if (mat[size_t(i) * 2] < 6.0 || mat[size_t(i) * 2] > 14.0)
+                inSupport = false;
+        check(inSupport, "mc: column 0 stays inside the uniform support");
+
+        // ⑥ 結果統計 — 失敗サンプル (NaN) は母数から外れる
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const std::vector<double> fom = { 1.0, 2.0, 3.0, 4.0, 5.0, nan };
+        const Stats st = summarize(fom);
+        check(st.valid && st.count == 5, "mc: NaN samples are excluded");
+        check(std::fabs(st.mean - 3.0) < 1e-12, "mc: mean of the finite values");
+        check(std::fabs(st.stdDev - std::sqrt(2.5)) < 1e-12,
+              "mc: unbiased sample sigma (n-1)");
+        check(st.min == 1.0 && st.max == 5.0 && st.median == 3.0,
+              "mc: min / max / median");
+        check(!summarize({ 1.0 }).valid,
+              "mc: a single sample has no sigma (not valid)");
+        check(!summarize({ nan, nan }).valid,
+              "mc: all-NaN is not valid");
+
+        // ⑦ 歩留まり — 判定の向きと母数
+        const Yield yl = yieldOf(fom, 3.0, Goal::LessOrEqual);
+        check(yl.count == 5 && yl.pass == 3 && std::fabs(yl.fraction - 0.6) < 1e-12,
+              "mc: yield counts samples at or below the threshold");
+        const Yield yg = yieldOf(fom, 3.0, Goal::GreaterOrEqual);
+        check(yg.count == 5 && yg.pass == 3, "mc: the other goal direction");
+        const Yield yn = yieldOf({ nan, nan }, 0.0, Goal::LessOrEqual);
+        check(yn.count == 0 && yn.pass == 0,
+              "mc: no finite samples means no denominator (not 0 % yield)");
+
+        // ⑧ ヒストグラム — 総数が保存され、上端が最後のビンへ入る
+        const std::vector<Bin> h = histogram(fom, 4);
+        check(h.size() == 4, "mc: histogram bin count");
+        double total = 0.0;
+        for (const Bin &b : h) total += b.count;
+        check(std::fabs(total - 5.0) < 1e-12,
+              "mc: every finite sample lands in exactly one bin");
+        check(h.back().count >= 1.0, "mc: the maximum lands in the last bin");
+        check(histogram({ 2.0, 2.0, 2.0 }, 8).size() == 1,
+              "mc: a zero-width range collapses to one bin");
+        check(histogram(fom, 0).empty(), "mc: bins < 1 gives nothing");
+        check(histogram({ nan }, 4).empty(), "mc: no finite samples, no bins");
+
+        // ⑨ 1 サンプルを Project へ当てる (複数パラメータ同時)
+        Project sp2;
+        sp2.materials().clear();
+        Material m0; m0.epsr = 1.0;   sp2.materials().push_back(m0);
+        Material m1; m1.epsr = 4.30;  sp2.materials().push_back(m1);
+        QVector<SweepColumn> cols;
+        cols.push_back({ SweepParam::MaterialEpsrDelta, 1, QStringLiteral("εr") });
+        cols.push_back({ SweepParam::PlaneWaveTheta, 0, QStringLiteral("θ") });
+        SweepRunner::applySample(sp2, cols, { 0.05, 45.0 });
+        check(std::fabs(sp2.materials()[1].epsr - 4.35) < 1e-12,
+              "mc: epsr delta is added to the target material");
+        check(std::fabs(sp2.materials()[0].epsr - 1.0) < 1e-12,
+              "mc: other materials are untouched");
+        check(sp2.planewave().theta == 45.0,
+              "mc: a sample can move several parameters at once");
+
+        // εr は 1 未満にしない (真空以下は物理的に扱えずカーネルが不安定)
+        SweepRunner::applySample(sp2, { cols[0] }, { -99.0 });
+        check(sp2.materials()[1].epsr == 1.0,
+              "mc: epsr is clamped at 1 (never below vacuum)");
+
+        // 範囲外の材料番号は何もしない (黙って別の材料を壊さない)
+        QVector<SweepColumn> bad;
+        bad.push_back({ SweepParam::MaterialEpsrDelta, 99, QString() });
+        const double before = sp2.materials()[1].epsr;
+        SweepRunner::applySample(sp2, bad, { 1.0 });
+        check(sp2.materials()[1].epsr == before,
+              "mc: an out-of-range material index changes nothing");
+
+        // 列と値の数が食い違っても短い方までしか当てない
+        Project sp3;
+        sp3.materials().clear();
+        sp3.materials().push_back(m0);
+        sp3.materials().push_back(m1);
+        SweepRunner::applySample(sp3, cols, { 0.10 });   // 値が 1 個だけ
+        check(std::fabs(sp3.materials()[1].epsr - 4.40) < 1e-12
+              && sp3.planewave().theta != 45.0,
+              "mc: a short value row applies only the columns it covers");
     }
 
     // ── カーネルの作図出力 .ev2 のパーサ (io/EvReader) ──────────────────

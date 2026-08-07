@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../io/OfdIO.h"
 #include "../core/MeshAxis.h"
+#include "../core/Material.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -54,6 +55,39 @@ void SweepRunner::applyPoint(Project &p, SweepKind kind, double value)
     pw.enabled = true;
     if (kind == SweepKind::PlaneWaveTheta) pw.theta = value;
     else                                   pw.phi   = value;
+}
+
+void SweepRunner::applySample(Project &p, const QVector<SweepColumn> &columns,
+                              const QVector<double> &values)
+{
+    const int n = qMin(columns.size(), values.size());
+    for (int c = 0; c < n; ++c) {
+        const SweepColumn &col = columns[c];
+        const double v = values[c];
+        switch (col.param) {
+        case SweepParam::PlaneWaveTheta:
+            applyPoint(p, SweepKind::PlaneWaveTheta, v);
+            break;
+        case SweepParam::PlaneWavePhi:
+            applyPoint(p, SweepKind::PlaneWavePhi, v);
+            break;
+        case SweepParam::MeshRefine:
+            applyPoint(p, SweepKind::MeshRefine, v);
+            break;
+        case SweepParam::MaterialEpsrDelta: {
+            // 材料番号は .ofd の material 行の順 (0 = 空気, 1 = PEC は
+            // 変えない)。範囲外は黙って無視せず、何もしないことを守る。
+            QVector<Material> &mats = p.materials();
+            const int i = col.index;
+            if (i >= 0 && i < mats.size()) {
+                // 比誘電率は 1 未満にしない (真空以下の誘電率は物理的に
+                // 扱えず、カーネルが不安定になる)
+                mats[i].epsr = qMax(1.0, mats[i].epsr + v);
+            }
+            break;
+        }
+        }
+    }
 }
 
 QString SweepRunner::pointDirName(int index)
@@ -140,7 +174,13 @@ bool SweepRunner::start(const Project &base, const SweepConfig &cfg)
 {
     if (m_running) return false;
     m_cfg = cfg;
-    m_values = plan(cfg);
+    // モンテカルロ (samples) が指定されていれば点数はその行数
+    if (!cfg.samples.isEmpty()) {
+        m_values.clear();
+        for (int i = 0; i < cfg.samples.size(); ++i) m_values.push_back(i);
+    } else {
+        m_values = plan(cfg);
+    }
     if (m_values.isEmpty()) {
         emit logLine(QStringLiteral(
             "sweep: need at least 2 points over a non-zero range"));
@@ -206,7 +246,9 @@ void SweepRunner::launchNext()
     }
 
     const double value = m_values[m_index];
-    const QString label = pointLabel(m_cfg.kind, value);
+    const QString label = m_cfg.samples.isEmpty()
+        ? pointLabel(m_cfg.kind, value)
+        : QStringLiteral("#%1").arg(m_index + 1);
     emit pointStarted(m_index, m_values.size(), label);
 
     // 元を読み直してから 1 値だけ差し替える
@@ -224,7 +266,12 @@ void SweepRunner::launchNext()
         emit finished(false);
         return;
     }
-    applyPoint(*m_work, m_cfg.kind, value);
+    if (!m_cfg.samples.isEmpty())
+        applySample(*m_work, m_cfg.columns,
+                    m_cfg.samples[qBound(0, int(value),
+                                         m_cfg.samples.size() - 1)]);
+    else
+        applyPoint(*m_work, m_cfg.kind, value);
 
     RunConfig rc = m_cfg.run;
     rc.workingDir = QDir(m_cfg.baseDir).filePath(pointDirName(m_index));
