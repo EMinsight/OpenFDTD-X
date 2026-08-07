@@ -409,6 +409,9 @@ void CenterPane::saveSnapshot()
 bool CenterPane::loadResultField(const QString &h5Path)
 {
     if (!H5Reader::available()) return false;
+    // 中身が HDF5 でなければここで止める。この後は同じファイルに対して
+    // データセットを最大 6 回試すので、判定しないと同じ失敗を繰り返す。
+    if (!H5Reader::isHdf5(h5Path)) return false;
 
     QVector<double> cells;
     int rows = 0, cols = 0;
@@ -507,6 +510,8 @@ bool CenterPane::applyResultSliceTo3D(const QString &h5Path, QString *why)
     };
     if (!H5Reader::available())
         return fail(QStringLiteral("HDF5 disabled (USE_HDF5=OFF)"));
+    if (!H5Reader::isHdf5(h5Path))
+        return fail(QStringLiteral("%1 is not an HDF5 file").arg(h5Path));
 
     // 2D 断面と同じ再構成 (z 中央断面の |E|)。正規化前の実値を使う
     // (Viewport3D 側が最大値で正規化し、その最大値を凡例に出す)。
