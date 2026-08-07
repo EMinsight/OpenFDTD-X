@@ -116,12 +116,18 @@ Grid buildGrid(const StackAtLambda &stack,
     return g;
 }
 
-// グリッド 1 点の対象量 (膜厚の相対摂動 scale を掛けて評価する)。
-// scale が空なら公称膜厚。
+// グリッド 1 点の対象量。膜厚は 2 通りに差し替えられる:
+//   scale ≠ 空 … 公称膜厚に相対摂動を掛ける (製造誤差モンテカルロ)
+//   absD  ≠ 0  … 絶対膜厚で置き換える     (膜厚最適化)
+// 両方省略なら公称膜厚。
 double gridQuantity(const Grid &g, size_t i, const std::vector<TargetBand> &t,
-                    double aoi_deg, const std::vector<double> &scale)
+                    double aoi_deg, const std::vector<double> &scale,
+                    const std::vector<double> *absD = nullptr)
 {
     StackSample s = g.sample[i];
+    if (absD && absD->size() == s.layers.size())
+        for (size_t j = 0; j < s.layers.size(); ++j)
+            s.layers[j].d_nm = (*absD)[j];
     if (!scale.empty() && scale.size() == s.layers.size())
         for (size_t j = 0; j < s.layers.size(); ++j)
             s.layers[j].d_nm *= scale[j];
@@ -136,13 +142,14 @@ double gridQuantity(const Grid &g, size_t i, const std::vector<TargetBand> &t,
 
 // 出典 [3] のメリット関数
 double meritOf(const Grid &g, const std::vector<TargetBand> &t, double aoi_deg,
-               const std::vector<double> &scale, bool *allInTol)
+               const std::vector<double> &scale, bool *allInTol,
+               const std::vector<double> *absD = nullptr)
 {
     double num = 0.0, den = 0.0;
     bool inTol = true;
     for (size_t i = 0; i < g.lambda.size(); ++i) {
         const TargetBand &tb = t[g.band[i]];
-        const double q = gridQuantity(g, i, t, aoi_deg, scale);
+        const double q = gridQuantity(g, i, t, aoi_deg, scale, absD);
         if (!(q == q)) { if (allInTol) *allInTol = false;
                          return std::numeric_limits<double>::quiet_NaN(); }
         const double e = (q - tb.goal) / tb.tol;
@@ -395,6 +402,114 @@ SensitivityResult thicknessSensitivity(const StackAtLambda &stack,
         if (out.dQ_pctPerNm[j] > out.dQ_pctPerNm[size_t(worst)]) worst = int(j);
     out.worst = out.dQ_pctPerNm.empty() ? -1 : worst;
     out.valid = !out.dQ_pctPerNm.empty();
+    return out;
+}
+
+// ── 膜厚最適化 (Nelder–Mead) ────────────────────────────────────────────────
+OptimizeResult optimizeThickness(const StackAtLambda &stack,
+                                 const std::vector<TargetBand> &targets,
+                                 double aoi_deg,
+                                 const std::vector<double> &d0_nm,
+                                 const OptimizeOptions &opt)
+{
+    OptimizeResult out;
+    if (!finiteAngle(aoi_deg) || d0_nm.empty()) return out;
+    if (!(opt.minThick_nm >= 0.0) || !(opt.maxThick_nm > opt.minThick_nm))
+        return out;
+    const Grid g = buildGrid(stack, targets);
+    if (!g.ok || g.nLayers <= 0 || size_t(g.nLayers) != d0_nm.size()) return out;
+
+    const size_t n = d0_nm.size();
+    auto clampD = [&](std::vector<double> &d) {
+        for (double &v : d) {
+            if (!(v == v)) v = opt.minThick_nm;                  // NaN 対策
+            v = std::min(std::max(v, opt.minThick_nm), opt.maxThick_nm);
+        }
+    };
+    auto f = [&](std::vector<double> d) {
+        clampD(d);
+        const double m = meritOf(g, targets, aoi_deg, std::vector<double>(),
+                                 nullptr, &d);
+        // 評価不能な点はシンプレックスから自然に排除されるよう大きな値にする
+        return (m == m) ? m : std::numeric_limits<double>::max();
+    };
+
+    std::vector<double> start = d0_nm;
+    clampD(start);
+    const double f0 = f(start);
+    if (!(f0 < std::numeric_limits<double>::max())) return out;
+
+    // 初期シンプレックス: 各軸を initStep の相対量 (下限に張り付く層は
+    // 絶対量) だけずらした n+1 頂点。乱数を使わないので再現する。
+    std::vector<std::vector<double>> simplex(n + 1, start);
+    std::vector<double> fv(n + 1, 0.0);
+    const double step = (opt.initStep > 0.0) ? opt.initStep : 0.10;
+    for (size_t j = 0; j < n; ++j) {
+        double h = std::fabs(start[j]) * step;
+        if (!(h > 0.0)) h = std::max(1.0, step * opt.minThick_nm);
+        // 上限に張り付いている軸は内側へずらす
+        if (start[j] + h > opt.maxThick_nm) h = -h;
+        simplex[j + 1][j] = start[j] + h;
+    }
+    for (size_t i = 0; i <= n; ++i) fv[i] = f(simplex[i]);
+
+    const double kRefl = 1.0, kExp = 2.0, kCon = 0.5, kShrink = 0.5;
+    int iter = 0;
+    for (; iter < opt.maxIter; ++iter) {
+        // 並べ替え (best = 0)
+        for (size_t i = 1; i <= n; ++i)
+            for (size_t k = i; k > 0 && fv[k] < fv[k - 1]; --k) {
+                std::swap(fv[k], fv[k - 1]);
+                simplex[k].swap(simplex[k - 1]);
+            }
+        if (fv[n] - fv[0] <= opt.tolMerit) { out.converged = true; break; }
+
+        // 最悪点を除く重心
+        std::vector<double> cen(n, 0.0);
+        for (size_t i = 0; i < n; ++i)
+            for (size_t j = 0; j < n; ++j) cen[j] += simplex[i][j] / double(n);
+
+        auto along = [&](double t) {
+            std::vector<double> p(n);
+            for (size_t j = 0; j < n; ++j)
+                p[j] = cen[j] + t * (cen[j] - simplex[n][j]);
+            return p;
+        };
+
+        std::vector<double> xr = along(kRefl);
+        const double fr = f(xr);
+        if (fr < fv[0]) {                              // 拡大
+            std::vector<double> xe = along(kExp);
+            const double fe = f(xe);
+            if (fe < fr) { simplex[n].swap(xe); fv[n] = fe; }
+            else         { simplex[n].swap(xr); fv[n] = fr; }
+        } else if (fr < fv[n - 1]) {                   // 反射を採用
+            simplex[n].swap(xr); fv[n] = fr;
+        } else {                                       // 縮小
+            std::vector<double> xc = along(fr < fv[n] ? kCon : -kCon);
+            const double fc = f(xc);
+            if (fc < std::min(fr, fv[n])) { simplex[n].swap(xc); fv[n] = fc; }
+            else {                                     // 全体収縮
+                for (size_t i = 1; i <= n; ++i) {
+                    for (size_t j = 0; j < n; ++j)
+                        simplex[i][j] = simplex[0][j]
+                                      + kShrink * (simplex[i][j] - simplex[0][j]);
+                    fv[i] = f(simplex[i]);
+                }
+            }
+        }
+    }
+
+    size_t best = 0;
+    for (size_t i = 1; i <= n; ++i) if (fv[i] < fv[best]) best = i;
+    if (!(fv[best] < std::numeric_limits<double>::max())) return out;
+
+    out.d_nm = simplex[best];
+    clampD(out.d_nm);
+    out.meritStart = f0;
+    out.meritEnd   = fv[best];
+    out.iterations = iter;
+    out.valid = true;
     return out;
 }
 
