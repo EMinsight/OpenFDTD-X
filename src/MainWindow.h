@@ -17,6 +17,7 @@
 // 左ナビは Workbench 風カテゴリ (Setup/Library/Solve/Post/ドメイン) 構成で、
 // 標準/エキスパート表示モードとドメインで項目をフィルタする (TabNavigator)。
 #pragma once
+#include <QList>
 #include <QMainWindow>
 #include "core/Domain.h"
 #include "kernel/Runner.h"
@@ -100,6 +101,11 @@ private:
     RunConfig currentRunConfig() const;
     void updateWindowTitle();
     void updateEngineItems(Domain d);
+    // 実行中は実行設定 (エンジン / モード / スレッド数 / デバイス /
+    // Resources) を触れなくする。RunConfig は起動時に 1 度スナップショット
+    // されるので、実行中に変えても走っているジョブには一切効かない —
+    // 効いているように見せない (絶対規則 5)。
+    void setRunUiEnabled(bool enabled);
     void applyTheme();               // QSS 再生成 (スタイル/テーマ/密度/ドメイン)
 
     Project *m_project = nullptr;
@@ -184,6 +190,13 @@ private:
     QAction   *m_deviceAction = nullptr;     // ラベル/スピンの表示制御用
     QAction   *m_deviceBoxAction = nullptr;
     QAction   *m_cloudAction = nullptr;
+    // 「計算」アクション。実行中は表示を「計算を中止」へ切り替える —
+    // 同じボタンをもう一度押すと中止になるのが分からない、という指摘への対応。
+    QAction   *m_runAction = nullptr;         // ツールバー側
+    QAction   *m_runMenuAction = nullptr;     // 実行メニュー側 (F5)
+    // Resources を開くアクション (ツールバーとツールメニューの 2 箇所)。
+    // 実行中は両方まとめて無効化する。
+    QList<QAction *> m_resourceActions;
     QAction   *m_cloudMenuAction = nullptr;   // ツールメニュー側 (同じ制約)
     // ドメインで意味を持たないエクスポートは無効化する (S2P = EM の
     // S パラメータ、tidy3d py = 光専用クラウドバックエンド)

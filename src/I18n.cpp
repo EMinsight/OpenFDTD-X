@@ -482,6 +482,27 @@ void I18n::loadTables() {
     add("run_solver_only", "計算のみ (-solver相当)", "Solver only");
     add("run_post_only", "ポストのみ", "Post only");
     add("run_both", "一括 (計算+ポスト)", "Solver + post");
+    add("run_res_applied",
+        "並列設定を適用しました: MPI プロセス %1 × OpenMP スレッド %2",
+        "Applied the parallel settings: %1 MPI process(es) x %2 OpenMP thread(s)");
+    add("run_engine_na", "この環境では使えません: %1",
+        "Not available in this environment: %1");
+    add("tb_calc_stop", "計算を中止", "Stop the run");
+    add("tb_calc_stop_tip",
+        "実行中のソルバーを中止します (結果は残りません)",
+        "Stops the running solver — no results are kept");
+    add("run_stop_confirm",
+        "実行中の計算を中止しますか？ここまでの計算結果は残りません。",
+        "Stop the running computation? Nothing computed so far is kept.");
+    add("run_stop_continue", "続行する", "Keep running");
+    add("run_locked_tip",
+        "計算中は変更できません (実行設定は開始時に確定するため、"
+        "途中で変えても実行中のジョブには反映されません)",
+        "Locked while a run is in progress — the run configuration is fixed "
+        "when the job starts, so changes would not affect it");
+    add("run_engine_cpu_only",
+        "室内音響ソルバーは CPU (OpenMP) のみ",
+        "The room-acoustics solver is CPU (OpenMP) only");
 
     add("uw_shd_ok", "%1 を生成しました (%2) — TL 音場 (SHDFIL 形式)",
         "Generated %1 (%2) — TL field (SHDFIL format)");

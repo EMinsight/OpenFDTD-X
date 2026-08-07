@@ -72,6 +72,24 @@ public:
     // カーネルパス設定ダイアログ) が使う。
     static QString resolvedSolverPath(const RunConfig &cfg);
 
+    // ── 実行環境の可用性 ────────────────────────────────────────────────
+    // 「選べるのに実行できない」を防ぐための実機検出。GUI はこれを見て
+    // エンジンの選択肢を無効化し、理由を出す (絶対規則 5)。
+    // MPI: mpiexec (または mpirun) が PATH にあり、かつ <kernel>_mpi の
+    //      バイナリが解決できること。両方そろって初めて実行できる。
+    // CUDA: <kernel>_cuda のバイナリが解決できること (GPU 実機の有無は
+    //      起動してみるまで分からないので、ここでは判定しない)。
+    struct Availability {
+        bool    mpi = false;       // mpiexec/mpirun + _mpi バイナリ
+        bool    cuda = false;      // _cuda バイナリ
+        QString mpiLauncher;       // 見つかった mpiexec のパス (空 = 無し)
+        QString mpiReason;         // 使えない理由 (利用者向け)
+        QString cudaReason;
+    };
+    static Availability checkAvailability(Kernel kernel);
+    // MPI ランチャ (mpiexec → mpirun の順で PATH を探す)。無ければ空。
+    static QString findMpiLauncher();
+
     // アクティブドメインとソルバー設定から実行カーネルを決める
     // (MainWindow の実行設定と selftest で共用)。
     //   光: RCWA → orcwa / BPM → obpm / FMM → orcwa (RCWA と同一手法の

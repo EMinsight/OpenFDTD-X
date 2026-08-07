@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QProcess>
 #include <QPushButton>
+#include <QSettings>
 #include <QSlider>
 #include <QThread>
 #include <QVBoxLayout>
@@ -304,7 +305,11 @@ ResourceDialog::ResourceDialog(QWidget *parent)
     v->addWidget(foot);
 
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
-    connect(apply, &QPushButton::clicked, this, &QDialog::accept);
+    // 「適用」は表示を閉じるだけでなく **実際に保存して実行設定へ渡す**
+    connect(apply, &QPushButton::clicked, this, [this] {
+        applySettings();
+        accept();
+    });
     connect(m_processes, &QSlider::valueChanged, this,
             [this] { updateCores(); });
     connect(m_threads, &QSlider::valueChanged, this,
@@ -312,7 +317,29 @@ ResourceDialog::ResourceDialog(QWidget *parent)
     // ベンチマークはカーネルに測定 API が無いため無効表示 (RunDialog の一時停止と同じ扱い)
     bench->setEnabled(false);
 
+    // 保存済みの値で開く (前回の設定が消えないように)
+    m_processes->setValue(savedProcesses());
+    m_threads->setValue(savedThreads());
     updateCores();
+}
+
+int ResourceDialog::savedThreads()
+{
+    return QSettings().value(QStringLiteral("run/threads"), 4).toInt();
+}
+
+int ResourceDialog::savedProcesses()
+{
+    return QSettings().value(QStringLiteral("run/processes"), 1).toInt();
+}
+
+void ResourceDialog::applySettings()
+{
+    const int p = m_processes->value(), t = m_threads->value();
+    QSettings s;
+    s.setValue(QStringLiteral("run/processes"), p);
+    s.setValue(QStringLiteral("run/threads"), t);
+    emit applied(p, t);
 }
 
 // プロセス×スレッド → 合計コア数の表示色とバッジ (mock の三項演算子を転記)
