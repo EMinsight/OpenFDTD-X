@@ -487,6 +487,9 @@ void I18n::loadTables() {
         "Applied the parallel settings: %1 MPI process(es) x %2 OpenMP thread(s)");
     add("run_engine_na", "この環境では使えません: %1",
         "Not available in this environment: %1");
+    add("save_ok", "保存しました: %1 (+ %2)", "Saved %1 (+ %2)");
+    add("save_ok_log", "保存: %1 (サイドカー %2 も更新)",
+        "Saved: %1 (sidecar %2 updated too)");
     add("tb_calc_stop", "計算を中止", "Stop the run");
     add("tb_calc_stop_tip",
         "実行中のソルバーを中止します (結果は残りません)",
@@ -1137,6 +1140,15 @@ void I18n::loadTables() {
         "既存の HDF5 結果を検出し H5アニメタブへセットしました: %1",
         "Found an existing HDF5 result and set it on the H5 Animation "
         "tab: %1");
+    add("log_noplotdata",
+        "結果プロットに出せるデータが %1 にありません "
+        "(周波数特性は波源 + frequency1 の給電点表、放射パターンは "
+        "far1d.log が要ります)。ポスト(1) のチェックは「図形表示2D」"
+        "(ev.ev2) と HTML 出力に効くもので、結果プロットは変わりません。",
+        "No data for the result plots in %1 (the frequency response needs a "
+        "feed + frequency1 in the feed table, the radiation pattern needs "
+        "far1d.log). The Post-Proc (1) checkboxes drive the 2-D view "
+        "(ev.ev2) and the HTML output, not the result plots.");
     add("log_h5_not_hdf5",
         "%1 は HDF5 ファイルではありません (中身が空か書きかけ) — "
         "読み込みませんでした",

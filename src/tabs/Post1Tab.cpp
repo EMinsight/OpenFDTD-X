@@ -27,6 +27,18 @@ const bool s_i18n = [] {
     I18n::reg("p1x_obs_wave", "観測点波形・スペクトル",
               "Probe waveform & spectrum");
     // 周波数特性(2D) の自動スケール (mock: pp_auto_scale)
+    I18n::reg("p1x_dest_note",
+              "ここの設定は ofd_post の作図に反映されます — 出力先は "
+              "「図形表示2D」(ev.ev2) と HTML 出力です。"
+              "中央の「結果プロット」タブは ofd.log の給電点表と far1d.log "
+              "から作るため、この設定では変わりません "
+              "(周波数特性は波源と frequency1 があれば自動で出ます)。",
+              "These settings drive ofd_post's plots — they land in "
+              "\"2-D view\" (ev.ev2) and the HTML output. The centre "
+              "\"Result plots\" tab is built from the feed table in ofd.log "
+              "and from far1d.log, so it does not change with these "
+              "(the frequency response appears automatically when a feed and "
+              "frequency1 exist).");
     I18n::reg("p1x_auto_scale", "自動スケール", "Auto-scale");
     I18n::reg("p1x_auto_hint", "→ OFF時に最小/最大/分割数を指定",
               "→ set min / max / div when off");
@@ -50,6 +62,15 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     // 収束状況 = plotiter (反復回数に対する残差)、給電点/観測点は波形+スペクトル。
     // mock はこのセクションを時間領域の 3 つに限っているので、スミスチャート・
     // 整合損・周波数目盛分割は下の周波数特性セクションへ置く。
+    // このタブの設定がどこへ出るのかを冒頭に明示する。
+    // ここのチェックは ofd_post の作図 (ev.ev2 / HTML) を選ぶもので、
+    // 中央の「結果プロット」は ofd.log と far1d.log から作るため、この設定
+    // では変わらない。区別が付かないと「チェックしても反映されない」に見える。
+    auto *dest = new QLabel(I18n::tr("p1x_dest_note"), body);
+    dest->setWordWrap(true);
+    dest->setStyleSheet("color:#888888; font-size:11px;");
+    v->addWidget(dest);
+
     auto *sw = new SectionBox(I18n::tr("p1x_time_2d"), body);
     m_iter  = new QCheckBox(I18n::tr("p1x_conv"), sw);
     m_feed  = new QCheckBox(I18n::tr("p1x_feed_wave"), sw);
