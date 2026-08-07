@@ -3,6 +3,7 @@
 #include "TabHelpers.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
+#include "../optics/FilmNotation.h"
 #include "../optics/MaterialDispersion.h"
 #include "../optics/ThinFilmStack.h"
 #include "../widgets/MiniPlot.h"
@@ -14,12 +15,15 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QStringList>
 #include <QTabWidget>
@@ -27,6 +31,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -43,11 +48,14 @@ const bool s_i18n = [] {
     I18n::reg("tfc_hint",
               "特性行列法 (Abeles 行列) で R/T/A・反射位相・群遅延を厳密計算する。"
               "層構成・波長・入射角の編集は即座に反映される。"
-              "最適化アルゴリズム (ニードル法ほか) は未実装。",
+              "膜厚の最適化はシンプレックス法で行える "
+              "(層数・材料を変えるニードル法ほかは未実装)。",
               "Reflectance, transmittance, absorptance, reflection phase and "
               "group delay are computed exactly with the characteristic-matrix "
               "(Abeles) method. Edits to the stack, wavelength and angle apply "
-              "immediately. The optimisation algorithms are not implemented.");
+              "immediately. Thicknesses can be optimised with the simplex "
+              "method; the needle method and other algorithms that change the "
+              "layer count or materials are not implemented.");
     I18n::reg("tfc_preset", "プリセット", "Preset");
     I18n::reg("tfc_layers_n", "%1 層", "%1 layers");
     I18n::reg("tfc_target_fmt", "目標: %1", "Target: %1");
@@ -211,13 +219,16 @@ const bool s_i18n = [] {
     I18n::reg("tfc_merit_note",
               "▸ Merit はターゲット表と現在の層構成から実計算した値 "
               "(F = √(Σw((Q−目標)/許容)²/Σw)、Furman & Tikhonravov 1992)。"
-              "F ≤ 1 が「平均して許容内」。最適化アルゴリズムは未実装のため、"
-              "手法・変数の選択は計算に影響しない。",
+              "F ≤ 1 が「平均して許容内」。「最適化実行」は膜厚だけを動かす"
+              "シンプレックス法 (Nelder-Mead 1965) で、改善したときだけ層構成に"
+              "書き戻す。層数・材料を変える needle / tunneling / GA は未実装。",
               "▸ The merit value is computed from the target table and the present "
               "stack (F = √(Σw((Q−goal)/tol)²/Σw), Furman & Tikhonravov 1992); "
-              "F ≤ 1 means \"within tolerance on average\". The optimisation "
-              "algorithms are not implemented, so the method and variable "
-              "selections do not affect any computation.");
+              "F ≤ 1 means \"within tolerance on average\". \"Run optimisation\" "
+              "uses the simplex method (Nelder-Mead 1965) on the layer "
+              "thicknesses only and writes the result back only when it "
+              "improves. The needle / tunneling / GA methods, which change the "
+              "layer count or the materials, are not implemented.");
     I18n::reg("tfc_q_r", "R", "R");
     I18n::reg("tfc_q_t", "T", "T");
     I18n::reg("tfc_pol_avg", "無偏光", "unpolarized");
@@ -275,6 +286,78 @@ const bool s_i18n = [] {
     I18n::reg("tfc_btn_recipe", "📄 成膜レシピ書出 (装置向け)",
               "📄 Export deposition recipe (for the coater)");
     I18n::reg("tfc_btn_sens", "📊 感度解析", "📊 Sensitivity analysis");
+
+    // 周期記法の展開
+    I18n::reg("tfc_expand_tip",
+              "周期記法を層構成へ展開します。記号への材料割当 (H=Si3N4 など) と、"
+              "λ₀ を変えるなら @ 波長 も書いてください。",
+              "Expands the shorthand into a layer stack. Give a material for "
+              "every symbol (e.g. H=Si3N4), and '@ <wavelength>' if λ₀ changes.");
+    I18n::reg("tfc_expand_title", "周期記法の展開", "Expand shorthand notation");
+    I18n::reg("tfc_expand_bad", "記法を解釈できません: %1",
+              "Cannot parse the notation: %1");
+    I18n::reg("tfc_expand_nomat",
+              "記号 '%1' に材料が割り当てられていません "
+              "(例: 末尾に「%1=SiO2」と書く)。層構成は変更していません。",
+              "No material is assigned to the symbol '%1' (add e.g. \"%1=SiO2\" "
+              "at the end). The stack was left unchanged.");
+    I18n::reg("tfc_expand_badmat",
+              "材料 '%1' の屈折率が %2 nm で得られません "
+              "(材料表に無いか、分散式の有効範囲外)。層構成は変更していません。",
+              "The refractive index of '%1' is not available at %2 nm (unknown "
+              "material, or outside the validity range of its dispersion "
+              "formula). The stack was left unchanged.");
+
+    // 膜厚最適化
+    I18n::reg("tfc_run_opt_tip",
+              "ターゲット表の Merit を最小化するように膜厚だけを動かします "
+              "(シンプレックス法)。改善したときだけ層構成へ書き戻します。",
+              "Minimises the merit value of the target table by moving the layer "
+              "thicknesses only (simplex method). The stack is updated only when "
+              "the merit improves.");
+    I18n::reg("tfc_opt_title", "膜厚最適化", "Thickness optimisation");
+    I18n::reg("tfc_opt_novar",
+              "「膜厚」にチェックを入れてください (動かせる変数がありません)。",
+              "Tick \"thickness\" — there is no variable to move.");
+    I18n::reg("tfc_opt_nolayer", "有効な層がありません。",
+              "There is no enabled layer.");
+    I18n::reg("tfc_opt_notarget", "ターゲットが 1 行もありません。",
+              "The target table is empty.");
+    I18n::reg("tfc_opt_fail",
+              "最適化できません (ターゲット帯域に計算可能な波長が無い)。",
+              "Cannot optimise: no computable wavelength in the target bands.");
+    I18n::reg("tfc_opt_noimprove",
+              "Merit = %1 から改善しませんでした。層構成は変更していません "
+              "(層数や材料を変える手法が要ります)。",
+              "No improvement over merit = %1, so the stack was left unchanged "
+              "(a method that changes the layer count or the materials would be "
+              "needed).");
+    I18n::reg("tfc_opt_done", "Merit %1 → %2 (%3 反復, %4)",
+              "Merit %1 → %2 (%3 iterations, %4)");
+    I18n::reg("tfc_opt_conv", "収束", "converged");
+    I18n::reg("tfc_opt_maxiter", "反復上限", "iteration limit reached");
+
+    // 成膜レシピ / 感度一覧
+    I18n::reg("tfc_recipe_title", "成膜レシピを保存", "Save the deposition recipe");
+    I18n::reg("tfc_recipe_filter", "CSV (*.csv);;すべてのファイル (*)",
+              "CSV (*.csv);;All files (*)");
+    I18n::reg("tfc_sens_title", "膜厚感度 (層別)", "Thickness sensitivity by layer");
+    I18n::reg("tfc_sens_head",
+              "各層の膜厚を ±0.5 nm 動かしたときの対象量の変化 "
+              "(ターゲット帯域の平均, 中心差分)。太字が最も敏感な層。",
+              "Change of the target quantity when each layer moves by ±0.5 nm "
+              "(mean over the target bands, central difference). The most "
+              "sensitive layer is shown in bold.");
+    I18n::reg("tfc_sens_note",
+              "▸ 無効にした層は最適化・感度・歩留まりのいずれにも含めていません。",
+              "▸ Disabled layers are excluded from the optimisation, the "
+              "sensitivity and the yield alike.");
+    I18n::reg("tfc_sens_fail",
+              "感度を評価できません (ターゲット帯域に計算可能な波長が無い)。",
+              "Cannot evaluate the sensitivity: no computable wavelength in the "
+              "target bands.");
+    I18n::reg("tfc_c_layer", "層", "Layer");
+    I18n::reg("tfc_c_sens", "感度 [%/nm]", "Sensitivity [%/nm]");
     return true;
 }();
 
@@ -734,15 +817,16 @@ QWidget *ThinFilmTab::buildStackPage()
     // 表より後ろの <Row> は独立フォームへ (順序をモックどおりに保つ)
     QFormLayout *f2 = appendForm(s);
 
-    // 周期記法 (展開は未実装。現在の層構成を表すものではないので、
-    // 記入例はプレースホルダとして示し、値としては持たせない)
+    // 周期記法 (Macleod 記法)。プレースホルダは記入例で、値としては持たない
+    // (現在の層構成を表すものではないため)。「展開」で層構成へ変換する。
     auto *perRow = new QHBoxLayout();
     m_periodic = numEdit(QString(), 0, s);
     m_periodic->setPlaceholderText(
         QStringLiteral("Air | (H L)^12 H | Sub    H=Si3N4 L=SiO2 @ 1550nm"));
     perRow->addWidget(m_periodic, 1);
     auto *expandBtn = new QPushButton(I18n::tr("tfc_expand"), s);
-    tabhelp::markNotImplemented(expandBtn);   // 周期記法の展開は未配線
+    expandBtn->setToolTip(I18n::tr("tfc_expand_tip"));
+    connect(expandBtn, &QPushButton::clicked, this, &ThinFilmTab::expandPeriodic);
     perRow->addWidget(expandBtn);
     f2->addRow(I18n::tr("tfc_periodic"), perRow);
 
@@ -887,19 +971,22 @@ QWidget *ThinFilmTab::buildDesignPage()
     mRow->setSpacing(4);
     m_method = segRow(mRow, { I18n::tr("tfc_m_simplex"), I18n::tr("tfc_m_needle"),
                               I18n::tr("tfc_m_tunnel"),  I18n::tr("tfc_m_ga") },
-                      1, s);                     // 既定 "needle"
-    // 最適化アルゴリズムは未実装 — 選んでも計算に影響しないので操作できなくする
-    for (QAbstractButton *b : m_method->buttons()) tabhelp::markNotImplemented(b);
+                      0, s);                     // 既定 "simplex" (唯一の実装)
+    // 実装しているのは膜厚のシンプレックス法だけ。層数や材料を変える
+    // needle / tunneling / GA は未実装なので選べないようにする。
+    for (QAbstractButton *b : m_method->buttons())
+        if (m_method->id(b) != 0) tabhelp::markNotImplemented(b);
     s->form()->addRow(I18n::tr("tfc_method"), mRow);
 
     auto *vRow = new QHBoxLayout();
     m_varThickness = makeCheck(I18n::tr("tfc_v_thick"), true,  s);
     m_varCount     = makeCheck(I18n::tr("tfc_v_count"), true,  s);
     m_varMaterial  = makeCheck(I18n::tr("tfc_v_mat"),   false, s);
-    for (QCheckBox *c : { m_varThickness, m_varCount, m_varMaterial }) {
-        tabhelp::markNotImplemented(c);
+    // 動かせるのは膜厚だけ (層数・材料の探索は未実装)
+    tabhelp::markNotImplemented(m_varCount);
+    tabhelp::markNotImplemented(m_varMaterial);
+    for (QCheckBox *c : { m_varThickness, m_varCount, m_varMaterial })
         vRow->addWidget(c);
-    }
     vRow->addStretch(1);
     s->form()->addRow(I18n::tr("tfc_vars"), vRow);
 
@@ -920,7 +1007,8 @@ QWidget *ThinFilmTab::buildDesignPage()
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("tfc_run_opt"), s);
     runBtn->setDefault(true);                    // q-btn primary
-    tabhelp::markNotImplemented(runBtn);         // 最適化アルゴリズムは未実装
+    runBtn->setToolTip(I18n::tr("tfc_run_opt_tip"));
+    connect(runBtn, &QPushButton::clicked, this, &ThinFilmTab::runOptimization);
     runRow->addWidget(runBtn);
     m_meritLabel = hintLabel(QString(), s);
     runRow->addWidget(m_meritLabel);
@@ -1003,8 +1091,8 @@ QWidget *ThinFilmTab::buildMfgPage()
     auto *btnRow = new QHBoxLayout();
     auto *recipeBtn = new QPushButton(I18n::tr("tfc_btn_recipe"), s);
     auto *sensBtn   = new QPushButton(I18n::tr("tfc_btn_sens"), s);
-    tabhelp::markNotImplemented(recipeBtn);      // レシピ書出は未配線
-    tabhelp::markNotImplemented(sensBtn);        // 感度の詳細表示は未実装
+    connect(recipeBtn, &QPushButton::clicked, this, &ThinFilmTab::exportRecipe);
+    connect(sensBtn,   &QPushButton::clicked, this, &ThinFilmTab::showSensitivity);
     btnRow->addWidget(recipeBtn);
     btnRow->addWidget(sensBtn);
     btnRow->addStretch(1);
@@ -1447,6 +1535,254 @@ void ThinFilmTab::updateDerivedCells()
         }
     }
     m_updating = wasUpdating;
+}
+
+// ── 周期記法の展開 ──────────────────────────────────────────────────────────
+// `Air | (H L)^12 H | Sub  H=Si3N4 L=SiO2 @ 1550nm` を層構成へ展開する。
+// 記号に材料が割り当てられていない / 材料が材料表に無い / その波長で屈折率が
+// 得られない場合は **何も変更せず** 理由を出す (誤った層構成を作らない)。
+void ThinFilmTab::expandPeriodic()
+{
+    const QString title = I18n::tr("tfc_expand_title");
+    const optics::NotationResult r =
+        optics::parseNotation(m_periodic->text().toStdString());
+    if (!r.ok) {
+        QMessageBox::warning(this, title,
+                             I18n::tr("tfc_expand_bad")
+                                 .arg(QString::fromStdString(r.error)));
+        return;
+    }
+
+    // 設計波長: 記法に `@ …` があればそれを使う (先に決める — 屈折率の解決に要る)
+    const double lam0 = (r.lambda0_nm > 0.0) ? r.lambda0_nm : lambda0();
+
+    // 記号 → 材料 id。割当が無い記号があれば失敗させる。
+    std::map<char, QString> mat;
+    for (const optics::NotationLayer &L : r.layers) {
+        if (mat.count(L.symbol)) continue;
+        const auto it = r.assign.find(L.symbol);
+        if (it == r.assign.end()) {
+            QMessageBox::warning(this, title,
+                                 I18n::tr("tfc_expand_nomat")
+                                     .arg(QChar(L.symbol)));
+            return;
+        }
+        const QString id = QString::fromStdString(it->second);
+        double n = 0.0;
+        if (!indexOf(id, lam0, n) || !(n > 0.0)) {
+            QMessageBox::warning(this, title,
+                                 I18n::tr("tfc_expand_badmat")
+                                     .arg(id)
+                                     .arg(QString::number(lam0, 'g', 6)));
+            return;
+        }
+        mat[L.symbol] = id;
+    }
+
+    // 入射媒質 / 基板: 記法にあれば combo を合わせる (合わなければ現状維持)
+    auto matchCombo = [](QComboBox *box, const char *const *ids, int count,
+                         const std::string &name) {
+        if (name.empty()) return;
+        const QString want = QString::fromStdString(name).trimmed();
+        for (int i = 0; i < count; ++i) {
+            const QString id = QString::fromUtf8(ids[i]);
+            if (id.compare(want, Qt::CaseInsensitive) == 0
+                || matLabel(id).compare(want, Qt::CaseInsensitive) == 0) {
+                box->setCurrentIndex(i);
+                return;
+            }
+        }
+    };
+
+    const bool wasUpdating = m_updating;
+    m_updating = true;
+    matchCombo(m_incident,  kIncidentIds,  2, r.incident);
+    matchCombo(m_substrate, kSubstrateIds, 5, r.substrate);
+    if (r.lambda0_nm > 0.0) m_lambda0->setText(QString::number(lam0, 'g', 6));
+
+    // 光学膜厚 (QWOT) → 物理膜厚 d = qwot·λ₀/(4·n(λ₀))
+    m_stack.clear();
+    for (const optics::NotationLayer &L : r.layers) {
+        StackLayer sl;
+        sl.mat = mat[L.symbol];
+        sl.k = 0.0;
+        double n = 0.0;
+        indexOf(sl.mat, lam0, n);
+        sl.d_nm = L.qwot * lam0 / (4.0 * n);
+        sl.enabled = true;
+        m_stack.push_back(sl);
+    }
+    m_updating = wasUpdating;
+
+    rebuildLayerTable();
+    recompute();
+}
+
+// ── 膜厚最適化 (シンプレックス法) ──────────────────────────────────────────
+// 層数・材料は固定し、有効な層の**物理膜厚だけ**を動かしてメリット関数を
+// 最小化する。needle / tunneling / GA (層数や材料を変える手法) は未実装で、
+// ボタン自体が無効化してある。
+void ThinFilmTab::runOptimization()
+{
+    const QString title = I18n::tr("tfc_opt_title");
+    if (!m_varThickness->isChecked()) {
+        QMessageBox::information(this, title, I18n::tr("tfc_opt_novar"));
+        return;
+    }
+    // 有効な層だけを最適化対象にする (makeStackFn が無効層を除くのと揃える)
+    std::vector<int> idx;
+    std::vector<double> d0;
+    for (int i = 0; i < m_stack.size(); ++i)
+        if (m_stack[i].enabled) { idx.push_back(i); d0.push_back(m_stack[i].d_nm); }
+    if (d0.empty()) {
+        QMessageBox::information(this, title, I18n::tr("tfc_opt_nolayer"));
+        return;
+    }
+    const std::vector<optics::TargetBand> tb = targetBands();
+    if (tb.empty()) {
+        QMessageBox::information(this, title, I18n::tr("tfc_opt_notarget"));
+        return;
+    }
+
+    optics::OptimizeOptions o;      // 既定 (600 反復・膜厚 1〜5000 nm)
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const optics::OptimizeResult res =
+        optics::optimizeThickness(makeStackFn(), tb, aoiDeg(), d0, o);
+    QApplication::restoreOverrideCursor();
+
+    if (!res.valid || res.d_nm.size() != idx.size()) {
+        QMessageBox::warning(this, title, I18n::tr("tfc_opt_fail"));
+        return;
+    }
+    // 改善しなかった場合も結果を書き戻さない (公称設計を壊さない)
+    if (!(res.meritEnd < res.meritStart)) {
+        QMessageBox::information(this, title,
+                                 I18n::tr("tfc_opt_noimprove")
+                                     .arg(QString::number(res.meritStart, 'g', 4)));
+        return;
+    }
+
+    const bool wasUpdating = m_updating;
+    m_updating = true;
+    for (size_t j = 0; j < idx.size(); ++j)
+        m_stack[idx[j]].d_nm = res.d_nm[j];
+    m_updating = wasUpdating;
+
+    rebuildLayerTable();
+    recompute();
+    QMessageBox::information(this, title,
+                             I18n::tr("tfc_opt_done")
+                                 .arg(QString::number(res.meritStart, 'g', 4))
+                                 .arg(QString::number(res.meritEnd, 'g', 4))
+                                 .arg(res.iterations)
+                                 .arg(I18n::tr(res.converged ? "tfc_opt_conv"
+                                                             : "tfc_opt_maxiter")));
+}
+
+// ── 成膜レシピの書き出し ────────────────────────────────────────────────────
+// 実際に成膜するときに要るもの (層順・材料・物理膜厚・光学膜厚) と、その値が
+// 何を前提にしているか (λ₀・入射角・分散/吸収の扱い) を 1 ファイルにまとめる。
+void ThinFilmTab::exportRecipe()
+{
+    const double lam0 = lambda0();
+    QString out;
+    out += QStringLiteral("# OpenFDTD-X thin-film recipe\n");
+    out += QStringLiteral("# lambda0[nm] = %1\n").arg(lam0, 0, 'g', 8);
+    out += QStringLiteral("# aoi[deg] = %1\n").arg(aoiDeg(), 0, 'g', 6);
+    out += QStringLiteral("# incident = %1\n")
+               .arg(matLabel(QString::fromUtf8(
+                   kIncidentIds[qBound(0, m_incident->currentIndex(), 1)])));
+    out += QStringLiteral("# substrate = %1\n")
+               .arg(matLabel(QString::fromUtf8(
+                   kSubstrateIds[qBound(0, m_substrate->currentIndex(), 4)])));
+    out += QStringLiteral("# dispersion = %1, absorption = %2\n")
+               .arg(m_useDispersion->isChecked() ? "on" : "off")
+               .arg(m_useAbsorption->isChecked() ? "on" : "off");
+    out += QStringLiteral("# thickness tolerance 1sigma[%] = %1%2\n")
+               .arg(m_thickErr->text().trimmed())
+               .arg(m_systematic->isChecked() ? " (+ systematic drift)" : "");
+    out += QStringLiteral("# deposition order: layer 1 is next to the incident "
+                          "medium (deposit from the substrate side upward)\n");
+    out += QStringLiteral("layer,material,n@lambda0,k,d_phys[nm],"
+                          "optical_thickness[nd/lambda0],enabled\n");
+
+    for (int i = 0; i < m_stack.size(); ++i) {
+        const StackLayer &L = m_stack[i];
+        double n = 0.0;
+        const bool haveN = indexOf(L.mat, lam0, n) && n > 0.0;
+        out += QStringLiteral("%1,%2,%3,%4,%5,%6,%7\n")
+                   .arg(i + 1)
+                   .arg(matLabel(L.mat))
+                   .arg(haveN ? QString::number(n, 'f', 5)
+                              : I18n::tr("tfc_na"))
+                   .arg(L.k, 0, 'f', 5)
+                   .arg(L.d_nm, 0, 'f', 3)
+                   .arg(haveN ? QString::number(n * L.d_nm / lam0, 'f', 5)
+                              : I18n::tr("tfc_na"))
+                   .arg(L.enabled ? 1 : 0);
+    }
+    tabhelp::saveTextFile(this, I18n::tr("tfc_recipe_title"),
+                          QStringLiteral("thinfilm_recipe.csv"),
+                          I18n::tr("tfc_recipe_filter"), out);
+}
+
+// ── 膜厚感度の一覧 ──────────────────────────────────────────────────────────
+// 「どの層をどれだけ精密に作る必要があるか」を層ごとに出す。まとめ行
+// (最悪層) はタブ本体に出ているので、ここは全層の内訳を見せる。
+void ThinFilmTab::showSensitivity()
+{
+    const QString title = I18n::tr("tfc_sens_title");
+    const optics::SensitivityResult s =
+        optics::thicknessSensitivity(makeStackFn(), targetBands(), aoiDeg(), 0.5);
+    if (!s.valid || s.dQ_pctPerNm.empty()) {
+        QMessageBox::warning(this, title, I18n::tr("tfc_sens_fail"));
+        return;
+    }
+    // 感度は「有効な層」だけに対して返るので、対応する層番号を作る
+    std::vector<int> idx;
+    for (int i = 0; i < m_stack.size(); ++i)
+        if (m_stack[i].enabled) idx.push_back(i);
+    if (idx.size() != s.dQ_pctPerNm.size()) {
+        QMessageBox::warning(this, title, I18n::tr("tfc_sens_fail"));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(title);
+    auto *v = new QVBoxLayout(&dlg);
+    v->addWidget(new QLabel(I18n::tr("tfc_sens_head"), &dlg));
+
+    auto *tbl = new QTableWidget(int(idx.size()), 4, &dlg);
+    tbl->setHorizontalHeaderLabels({ I18n::tr("tfc_c_layer"),
+                                     I18n::tr("tfc_c_mat"),
+                                     I18n::tr("tfc_c_dphys"),
+                                     I18n::tr("tfc_c_sens") });
+    tbl->verticalHeader()->setVisible(false);
+    tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    for (size_t r = 0; r < idx.size(); ++r) {
+        const StackLayer &L = m_stack[idx[r]];
+        tbl->setItem(int(r), 0, numItem(QString::number(idx[r] + 1)));
+        tbl->setItem(int(r), 1, textItem(matLabel(L.mat)));
+        tbl->setItem(int(r), 2, numItem(QString::number(L.d_nm, 'f', 2)));
+        tbl->setItem(int(r), 3,
+                     numItem(QString::number(s.dQ_pctPerNm[r], 'f', 4)));
+        if (int(r) == s.worst)
+            for (int c = 0; c < 4; ++c) {
+                QFont f = tbl->item(int(r), c)->font();
+                f.setBold(true);
+                tbl->item(int(r), c)->setFont(f);
+            }
+    }
+    tbl->setMinimumSize(460, 260);
+    v->addWidget(tbl);
+    v->addWidget(new QLabel(I18n::tr("tfc_sens_note"), &dlg));
+
+    auto *box = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    v->addWidget(box);
+    dlg.exec();
 }
 
 // ── 製造誤差モンテカルロ ────────────────────────────────────────────────────

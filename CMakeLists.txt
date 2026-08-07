@@ -102,6 +102,10 @@ set(CORE_SOURCES
     src/optics/ThinFilmStack.cpp
     src/optics/ThinFilmStack.h
 
+    # 多層膜の周期記法 (Macleod 記法 `(H L)^12 H`) のパーサ — Qt 非依存
+    src/optics/FilmNotation.cpp
+    src/optics/FilmNotation.h
+
     # 自由キャリア (Drude / Soref-Bennett) の Δn・Δα — Qt 非依存。
     # MultiphysicsTab のプラズマ効果節の計算実体 (selftest から極限値と照合)
     src/optics/PlasmaDispersion.cpp

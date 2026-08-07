@@ -44,6 +44,7 @@
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
+#include "optics/FilmNotation.h"
 #include "optics/ThinFilmStack.h"
 #include "core/RirAutoAssign.h"
 #include "core/RoomAcoustics.h"
@@ -4847,6 +4848,244 @@ static void testThinFilmStack()
                 check(r.R >= 0.0 && r.R <= 1.0 && r.T >= 0.0 && r.T <= 1.0,
                       "tmm: R, T in [0,1]");
             }
+    }
+
+    // ── (16) 膜厚最適化 (Nelder-Mead) ────────────────────────────────────
+    // 期待値は解析解: 単層無反射膜は n_f = √(n0·ns) のとき d = λ/(4·n_f) で
+    // R が厳密に 0 になる (Macleod §4.2)。ここでは n_f を固定して膜厚だけを
+    // 動かすので、最適解は必ずこの四分の一波長になる。
+    {
+        const double n0 = 1.0, ns = 2.25, lam = 550.0;
+        const double nf = std::sqrt(n0 * ns);           // = 1.5
+        const double dOpt = lam / (4.0 * nf);           // = 91.666… nm
+        const StackAtLambda ar = [=](double l, StackSample &s) {
+            (void)l;
+            s.n0 = n0; s.nsub = ns;
+            s.layers.push_back({ nf, 0.0, 0.0 });       // 膜厚は最適化側が入れる
+            return true;
+        };
+        std::vector<TargetBand> t(1);
+        t[0].lam0_nm = lam; t[0].lam1_nm = lam; t[0].samples = 1;
+        t[0].q = Quantity::R; t[0].goal = 0.0; t[0].tol = 0.005; t[0].weight = 1.0;
+
+        OptimizeOptions o;
+        const OptimizeResult r = optimizeThickness(ar, t, 0.0, { 60.0 }, o);
+        check(r.valid && r.d_nm.size() == 1, "tmm-opt: single layer valid");
+        if (r.d_nm.size() == 1) {
+            check(std::fabs(r.d_nm[0] - dOpt) < 0.05,
+                  "tmm-opt: converges to the quarter-wave thickness");
+            check(r.meritEnd < 1e-4, "tmm-opt: merit reaches ~0");
+            check(r.meritEnd < r.meritStart, "tmm-opt: merit improves");
+            check(r.converged, "tmm-opt: reports convergence");
+        }
+        // 反対側から始めても同じ最適解に落ちる
+        const OptimizeResult r2 = optimizeThickness(ar, t, 0.0, { 130.0 }, o);
+        check(r2.valid && std::fabs(r2.d_nm[0] - dOpt) < 0.05,
+              "tmm-opt: same optimum from the other side");
+        // 決定性 (乱数を使っていない)
+        const OptimizeResult r3 = optimizeThickness(ar, t, 0.0, { 60.0 }, o);
+        check(r3.valid && r3.d_nm[0] == r.d_nm[0] && r3.meritEnd == r.meritEnd,
+              "tmm-opt: deterministic");
+
+        // 上下限を守る
+        OptimizeOptions ob;
+        ob.minThick_nm = 100.0; ob.maxThick_nm = 120.0;
+        const OptimizeResult rb = optimizeThickness(ar, t, 0.0, { 110.0 }, ob);
+        check(rb.valid && rb.d_nm[0] >= 100.0 - 1e-9
+              && rb.d_nm[0] <= 120.0 + 1e-9, "tmm-opt: respects the bounds");
+        // 下限に張り付くはず (最適解 91.7nm は下限の外側)
+        check(rb.valid && std::fabs(rb.d_nm[0] - 100.0) < 1e-6,
+              "tmm-opt: clamps to the nearest feasible thickness");
+
+        // 多層でもメリットは悪化しない (単調改善)
+        const StackAtLambda multi = [](double l, StackSample &s) {
+            (void)l;
+            s.n0 = 1.0; s.nsub = 1.52;
+            for (int i = 0; i < 4; ++i) {
+                s.layers.push_back({ 2.35, 0.0, 0.0 });
+                s.layers.push_back({ 1.46, 0.0, 0.0 });
+            }
+            return true;
+        };
+        std::vector<TargetBand> tm(1);
+        tm[0].lam0_nm = 500; tm[0].lam1_nm = 600; tm[0].samples = 11;
+        tm[0].q = Quantity::R; tm[0].goal = 0.0; tm[0].tol = 0.005;
+        tm[0].weight = 1.0;
+        const std::vector<double> d0(8, 70.0);
+        const OptimizeResult rm = optimizeThickness(multi, tm, 0.0, d0, o);
+        check(rm.valid && rm.d_nm.size() == 8, "tmm-opt: multilayer valid");
+        check(rm.meritEnd <= rm.meritStart + 1e-12,
+              "tmm-opt: multilayer merit never worsens");
+
+        // 実設計での確認: 2 層 V コート (MgF2 1.38 / ZrO2 2.05 on BK7 1.5168)。
+        // 四分の一波長起点から 500-600 nm の R を下げられること。
+        // 期待値はテスト側で独立に平均反射率を積んで判定する。
+        {
+            const StackAtLambda vcoat = [](double, StackSample &s) {
+                s.n0 = 1.0; s.nsub = 1.5168;
+                s.layers.push_back({ 1.38, 0.0, 0.0 });   // 低屈折率が入射側
+                s.layers.push_back({ 2.05, 0.0, 0.0 });
+                return true;
+            };
+            std::vector<TargetBand> tv(1);
+            tv[0].lam0_nm = 500; tv[0].lam1_nm = 600; tv[0].samples = 21;
+            tv[0].q = Quantity::R; tv[0].goal = 0.0; tv[0].tol = 0.002;
+            tv[0].weight = 1.0;
+            const std::vector<double> dq{ 550.0 / (4 * 1.38), 550.0 / (4 * 2.05) };
+            const OptimizeResult rv = optimizeThickness(vcoat, tv, 0.0, dq, o);
+            check(rv.valid && rv.d_nm.size() == 2, "tmm-opt: V-coat valid");
+            auto meanR = [](const std::vector<double> &d) {
+                double acc = 0.0;
+                for (int i = 0; i < 21; ++i) {
+                    const double lam = 500.0 + 100.0 * i / 20.0;
+                    const std::vector<FilmLayer> ls{ { 1.38, 0.0, d[0] },
+                                                     { 2.05, 0.0, d[1] } };
+                    acc += filmResponse(1.0, ls, 1.5168, 0.0, lam, 0.0, Pol::S).R;
+                }
+                return acc / 21.0;
+            };
+            if (rv.valid && rv.d_nm.size() == 2) {
+                const double r0 = meanR(dq), r1 = meanR(rv.d_nm);
+                check(r0 > 0.03, "tmm-opt: quarter-wave start reflects > 3 %");
+                check(r1 < 0.005, "tmm-opt: optimised V-coat reflects < 0.5 %");
+                check(r1 < r0, "tmm-opt: V-coat reflectance improves");
+            }
+        }
+
+        // 不正入力
+        check(!optimizeThickness(ar, t, 0.0, {}, o).valid,
+              "tmm-opt: empty thickness vector rejected");
+        check(!optimizeThickness(ar, t, 0.0, { 60.0, 60.0 }, o).valid,
+              "tmm-opt: layer count mismatch rejected");
+        const StackAtLambda none = [](double, StackSample &) { return false; };
+        check(!optimizeThickness(none, t, 0.0, { 60.0 }, o).valid,
+              "tmm-opt: invalid when no λ usable");
+    }
+}
+
+// ── 多層膜の周期記法パーサ (src/optics/FilmNotation) ────────────────────────
+static void testFilmNotation()
+{
+    using namespace ofd::optics;
+    g_file = "film-notation";
+
+    // ── 基本形: 記号の連結と繰り返し ────────────────────────────────────
+    {
+        const NotationResult r = parseNotation("(H L)^3 H");
+        check(r.ok, "notation: basic parse");
+        check(r.layers.size() == 7, "notation: (HL)^3 H expands to 7 layers");
+        if (r.layers.size() == 7) {
+            const char want[7] = { 'H','L','H','L','H','L','H' };
+            bool okSym = true, okQ = true;
+            for (int i = 0; i < 7; ++i) {
+                if (r.layers[size_t(i)].symbol != want[i]) okSym = false;
+                if (r.layers[size_t(i)].qwot != 1.0) okQ = false;
+            }
+            check(okSym, "notation: symbol order preserved");
+            check(okQ, "notation: default coefficient is 1 QWOT");
+        }
+    }
+    // 空白なしの連結も同じ結果
+    {
+        const NotationResult a = parseNotation("(HL)^3H");
+        const NotationResult b = parseNotation("( H  L )^3  H");
+        check(a.ok && b.ok && a.layers.size() == b.layers.size(),
+              "notation: whitespace is not significant");
+    }
+
+    // ── 係数 (光学膜厚) ──────────────────────────────────────────────────
+    {
+        const NotationResult r = parseNotation("0.5H 2L 1.25M");
+        check(r.ok && r.layers.size() == 3, "notation: coefficients parse");
+        if (r.layers.size() == 3) {
+            check(r.layers[0].qwot == 0.5 && r.layers[0].symbol == 'H',
+                  "notation: 0.5H");
+            check(r.layers[1].qwot == 2.0 && r.layers[1].symbol == 'L',
+                  "notation: 2L (half-wave)");
+            check(r.layers[2].qwot == 1.25 && r.layers[2].symbol == 'M',
+                  "notation: 1.25M");
+        }
+    }
+
+    // ── 入れ子 ───────────────────────────────────────────────────────────
+    {
+        const NotationResult r = parseNotation("((H L)^2 M)^3");
+        check(r.ok && r.layers.size() == 15, "notation: nested groups");
+        if (r.layers.size() == 15)
+            check(r.layers[4].symbol == 'M' && r.layers[9].symbol == 'M'
+                  && r.layers[14].symbol == 'M', "notation: nested order");
+    }
+    // 角括弧も同じ
+    {
+        const NotationResult a = parseNotation("[H L]^2");
+        check(a.ok && a.layers.size() == 4, "notation: square brackets");
+    }
+
+    // ── 媒質 / 材料割当 / 設計波長 ───────────────────────────────────────
+    {
+        const NotationResult r =
+            parseNotation("Air | (H L)^12 H | Sub  H=Si3N4 L=SiO2 @ 1550nm");
+        check(r.ok, "notation: full form parses");
+        check(r.layers.size() == 25, "notation: (HL)^12 H = 25 layers");
+        check(r.incident == "Air", "notation: incident medium");
+        check(r.substrate == "Sub", "notation: substrate");
+        check(r.assign.size() == 2 && r.assign.at('H') == "Si3N4"
+              && r.assign.at('L') == "SiO2", "notation: material assignment");
+        check(std::fabs(r.lambda0_nm - 1550.0) < 1e-9, "notation: λ0 in nm");
+    }
+    // 波長の単位
+    {
+        check(std::fabs(parseNotation("H | H | S @1.55um").lambda0_nm - 1550.0)
+              < 1e-6, "notation: λ0 in µm");
+        check(std::fabs(parseNotation("H | H | S @ 550").lambda0_nm - 550.0)
+              < 1e-9, "notation: λ0 without a unit is nm");
+        check(parseNotation("(H L)^2").lambda0_nm == 0.0,
+              "notation: no λ0 given → 0");
+    }
+    // 大小の区別
+    {
+        const NotationResult r = parseNotation("H h");
+        check(r.ok && r.layers.size() == 2
+              && r.layers[0].symbol == 'H' && r.layers[1].symbol == 'h',
+              "notation: symbols are case sensitive");
+    }
+
+    // ── 壊れた入力は必ず false (部分解釈を返さない) ──────────────────────
+    {
+        struct Bad { const char *text; const char *why; };
+        const Bad bad[] = {
+            { "",              "notation: empty input rejected" },
+            { "   ",           "notation: blank input rejected" },
+            { "(H L)3",        "notation: missing '^' rejected" },
+            { "(H L)^",        "notation: missing repeat count rejected" },
+            { "(H L)^0",       "notation: zero repeat rejected" },
+            { "(H L)^2.5",     "notation: non-integer repeat rejected" },
+            { "(H L^2",        "notation: unbalanced bracket rejected" },
+            { "H L)^2",        "notation: stray ')' rejected" },
+            { "()^2",          "notation: empty group rejected" },
+            { "2",             "notation: coefficient without a symbol rejected" },
+            { "H | L",         "notation: a single '|' rejected" },
+            { "H|L|S|X",       "notation: three '|' rejected" },
+            { "H # L",         "notation: unknown character rejected" },
+            { "H | H | S @",   "notation: '@' without a wavelength rejected" },
+            { "H | H | S @0nm","notation: non-positive λ0 rejected" },
+            { "H | H | S HH=X","notation: bad assignment rejected" },
+            { "H | H | S A B", "notation: extra token rejected" },
+            { "0H",            "notation: zero coefficient rejected" },
+        };
+        for (const Bad &b : bad) {
+            const NotationResult r = parseNotation(b.text);
+            check(!r.ok && r.layers.empty() && !r.error.empty(), b.why);
+        }
+    }
+
+    // ── 展開の上限 (GUI が固まらないこと) ────────────────────────────────
+    {
+        check(!parseNotation("(H L)^100000").ok,
+              "notation: explosive repeat rejected");
+        const NotationResult r = parseNotation("(H L)^5", 10);
+        check(r.ok && r.layers.size() == 10, "notation: exactly at the cap");
+        check(!parseNotation("(H L)^6", 10).ok, "notation: one over the cap");
     }
 }
 
@@ -11582,6 +11821,7 @@ int main(int argc, char *argv[])
     testRcwaCore();
     testOpticsMaterials();
     testThinFilmStack();
+    testFilmNotation();
     testOpticalModeSettings();
     testBellhop();
     testUnderwaterBathymetry();

@@ -131,6 +131,41 @@ SensitivityResult thicknessSensitivity(const StackAtLambda &stack,
                                        const std::vector<TargetBand> &targets,
                                        double aoi_deg, double delta_nm);
 
+// ── 膜厚最適化 (Nelder–Mead シンプレックス) ─────────────────────────────────
+// 層数・材料は固定し、**物理膜厚だけ**を動かしてメリット関数を最小化する。
+// 手法は J. A. Nelder, R. Mead, Computer Journal 7, 308 (1965)。標準の
+// 係数 (反射 1 / 拡大 2 / 縮小 0.5 / 収縮 0.5) を使う。乱数を使わないので
+// 同じ入力からは常に同じ結果になる (selftest で決定性を検証)。
+//
+// needle / tunneling / GA といった層数を変える手法は実装していない
+// (層の挿入は材料選択と一体で、別の設計判断が要る)。
+struct OptimizeOptions {
+    int    maxIter     = 600;      // 反復上限
+    double tolMerit    = 1e-7;     // シンプレックスの merit 幅がこれ未満で収束
+    double minThick_nm = 1.0;      // 膜厚の下限 (これ未満には縮めない)
+    double maxThick_nm = 5000.0;   // 膜厚の上限
+    double initStep    = 0.10;     // 初期シンプレックスの相対ステップ (10%)
+};
+
+struct OptimizeResult {
+    bool   valid = false;
+    std::vector<double> d_nm;      // 最適化後の物理膜厚 (入力と同じ長さ)
+    double meritStart = 0.0;
+    double meritEnd   = 0.0;
+    int    iterations = 0;
+    bool   converged  = false;     // tolMerit に達したか (false = 反復上限)
+};
+
+// d0_nm は初期膜厚 (入射側 → 基板側)。stack が返す層数と一致していること。
+// stack が返す層の膜厚は最適化中に d で上書きされるので、呼び出し側は
+// 屈折率だけ正しく詰めればよい。ターゲットが空 / 層数不一致 / 初期メリットが
+// 評価できない場合は valid = false。
+OptimizeResult optimizeThickness(const StackAtLambda &stack,
+                                 const std::vector<TargetBand> &targets,
+                                 double aoi_deg,
+                                 const std::vector<double> &d0_nm,
+                                 const OptimizeOptions &opt);
+
 struct ToleranceOptions {
     int      trials     = 1000;
     double   sigmaRel   = 0.005;   // 膜厚のランダム誤差 1σ (相対値)
