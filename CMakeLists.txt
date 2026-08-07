@@ -88,6 +88,11 @@ set(CORE_SOURCES
     src/core/MonteCarlo.cpp
     src/core/MonteCarlo.h
 
+    # 音源の向き文字列 ("-Z 30°" 等) → 単位ベクトル。
+    # 3D シーンの法線矢印と音源タブが共用する
+    src/core/AimDirection.cpp
+    src/core/AimDirection.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h

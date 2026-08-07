@@ -845,6 +845,12 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     m_srcModelNote->setWordWrap(true);
     m_srcModelNote->setStyleSheet("font-size:11px; color:palette(mid);");
     s->vbox()->addWidget(m_srcModelNote);
+    // 有効な音源の数と、その数が解析にどう効くかを出す。
+    // 「音源が多くて大丈夫か」は数が見えないと判断できない。
+    m_srcCountNote = new QLabel(s);
+    m_srcCountNote->setWordWrap(true);
+    m_srcCountNote->setStyleSheet("font-size:11px;");
+    s->vbox()->addWidget(m_srcCountNote);
 
     auto *row = new QHBoxLayout();
     auto *addBtn = new QPushButton(I18n::tr("asrc_btn_addfile"), s);
@@ -1126,8 +1132,40 @@ void AcousticSourceTab::applySourceCell(int row, int col)
 }
 
 // 音源リスト (モデル) → 表。最終行は mock の「＋ 音源を追加…」行。
+// 有効な音源の数を出し、数に応じた注意を添える。
+// 室内音響の応答は音源ごとに独立に求めて重ね合わせるので、計算量は
+// 音源数に **比例** する (指数的に増えるわけではない)。ただし可聴化は
+// 音源ごとに IR 畳み込みが要るので、そこが実際の重さになる。
+void AcousticSourceTab::refreshSourceCount()
+{
+    if (!m_srcCountNote) return;
+    int enabled = 0;
+    for (const AcousticSourceRow &r : m_p->acoustic().sources)
+        if (r.enabled) ++enabled;
+
+    QString text = I18n::tr("asrc_count_fmt")
+                       .arg(enabled).arg(m_p->acoustic().sources.size());
+    const char *kind = "";
+    if (enabled == 0) {
+        text += QLatin1Char(' ') + I18n::tr("asrc_count_none");
+        kind = "background:#FFF4CE; color:#9D5D00;";
+    } else if (enabled > 16) {
+        text += QLatin1Char(' ') + I18n::tr("asrc_count_many").arg(enabled);
+        kind = "background:#FFF4CE; color:#9D5D00;";
+    } else {
+        text += QLatin1Char(' ') + I18n::tr("asrc_count_ok");
+    }
+    m_srcCountNote->setText(text);
+    m_srcCountNote->setStyleSheet(
+        QStringLiteral("font-size:11px; border-radius:3px; padding:2px 6px; %1")
+            .arg(QLatin1String(kind)));
+}
+
 void AcousticSourceTab::refreshSourceTable()
 {
+    // 表を作り直したら件数の注記も必ず更新する (呼び忘れを作らない)
+    struct CountSync { AcousticSourceTab *t; ~CountSync() {
+        t->refreshSourceCount(); } } sync{ this };
     const bool prevUpdating = m_updating;   // refresh() から入れ子で呼ばれる
     m_updating = true;
     const QVector<AcousticSourceRow> &list = sourceList();
