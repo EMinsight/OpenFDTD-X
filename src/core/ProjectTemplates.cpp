@@ -227,6 +227,94 @@ void emMri(Project &p)
     p.post().zin.enabled = true;
 }
 
+
+// ── 回路パラメータ抽出 (OpenPEEC / OpenFEM) の動作確認用テンプレート ────────
+// どちらも **解析解が分かっているケース** にしてある。抽出実行の結果を
+// 期待値と突き合わせれば、GUI 〜 カーネルの経路が正しいか一目で分かる。
+
+// PEEC: 角線 1 m × 10 mm × 1 mm (銅)。1 MHz で
+//   R = l/(σ w t) = 1.724138e-3 Ω
+//   L = (μ0 l/2π)[ln(2l/(w+t)) + 0.5 + 0.2235(w+t)/l] = 1.141093e-6 H (Grover)
+void cirPeecBar(Project &p)
+{
+    p.general().title = QStringLiteral(
+        "PEEC 検証: 角線の自己インダクタンス (L = 1.1411 uH, R = 1.7241 mOhm @1MHz)");
+    // 抽出は .ofd のメッシュを使わないが、3D ビューで見えるように領域を切る
+    axis(p, 0, -0.02, 0.02, 8);
+    axis(p, 1, -0.02, 0.02, 8);
+    axis(p, 2, -0.1, 1.1, 24);
+    // 材料 id 2 = 銅 (σ > 0 → 導体として抽出される)
+    p.materials().clear();
+    Material cu;
+    cu.epsr = 1.0;
+    cu.esgm = 5.8e7;
+    p.materials().push_back(cu);
+    box(p, 2, "角線 (銅)", -5e-3, 5e-3, -0.5e-3, 0.5e-3, 0.0, 1.0);
+    // ポート: 導体の両端 (PEEC は節点 2 点でポートを与える)
+    p.circuitPorts().clear();
+    CircuitPortRow port;
+    port.enabled = true;
+    port.name = QStringLiteral("P1");
+    port.kind = CircuitPortRow::Lumped;
+    port.net = QStringLiteral("bar");
+    port.ref = QStringLiteral("open");
+    port.x1_m = 0.0; port.y1_m = 0.0; port.z1_m = 0.0;
+    port.x2_m = 0.0; port.y2_m = 0.0; port.z2_m = 1.0;
+    port.z0_ohm = 50.0;
+    p.circuitPorts().push_back(port);
+    CircuitOpts &c = p.circuit();
+    c.solver = 0;                 // PEEC
+    c.fmin_Hz = 1e6; c.fmax_Hz = 1e6; c.fdiv = 0;
+    c.peecCapacitance = false;    // 自己インダクタンスだけを見る
+    c.peecSkinEffect = false;     // R が DC 値になるように切る
+    c.peecRetardation = false;
+    c.peecMesh_mm = 1000.0;       // 1 分割 (解析解と同条件)
+    c.peecSigma_Spm = 5.8e7;
+}
+
+// FEM: マイクロストリップ断面 (w = 0.75 mm, h = 0.4 mm, t = 35 um, εr = 4.4)。
+//   Hammerstad の目安で eps_eff ≈ 3.3、Z0 ≈ 47 Ω
+void cirFemMicrostrip(Project &p)
+{
+    p.general().title = QStringLiteral(
+        "FEM 検証: マイクロストリップ線路 (Z0 ~ 47 Ohm, eps_eff ~ 3.3)");
+    // 断面は x-y、線路軸は z (分割数 1 = 断面 2 次元モデル)
+    p.mesh(0).nodes = { -4e-3, -1e-3, 1e-3, 4e-3 };
+    p.mesh(0).divs  = { 30, 80, 30 };
+    p.mesh(1).nodes = { 0.0, 0.4e-3, 0.435e-3, 4e-3 };
+    p.mesh(1).divs  = { 16, 2, 60 };
+    p.mesh(2).nodes = { 0.0, 1e-4 };
+    p.mesh(2).divs  = { 1 };
+    p.materials().clear();
+    Material fr4;                 // id 2 : 基板
+    fr4.epsr = 4.4;
+    Material metal;               // id 3 : 導体 (σ > 0)
+    metal.epsr = 1.0;
+    metal.esgm = 5.8e7;
+    p.materials().push_back(fr4);
+    p.materials().push_back(metal);
+    box(p, 2, "基板 (FR-4)", -4e-3, 4e-3, 0.0, 0.4e-3, 0.0, 1e-4);
+    box(p, 3, "地導体", -4e-3, 4e-3, 0.0, 0.0, 0.0, 1e-4);
+    box(p, 3, "信号線", -0.375e-3, 0.375e-3, 0.4e-3, 0.435e-3,
+        0.0, 1e-4);
+    // 端子 B を地導体の内側に置くと、それが基準導体 (id 0) になる
+    p.circuitPorts().clear();
+    CircuitPortRow port;
+    port.enabled = true;
+    port.name = QStringLiteral("P1");
+    port.kind = CircuitPortRow::Lumped;
+    port.net = QStringLiteral("signal");
+    port.ref = QStringLiteral("ground");
+    port.x1_m = 0.0; port.y1_m = 0.4175e-3; port.z1_m = 0.5e-4;
+    port.x2_m = 0.0; port.y2_m = 0.0;       port.z2_m = 0.5e-4;
+    port.z0_ohm = 50.0;
+    p.circuitPorts().push_back(port);
+    CircuitOpts &c = p.circuit();
+    c.solver = 1;                 // 準静的 FEM
+    c.femAnalysis = QStringLiteral("C L");
+    c.femVoltage_V = 1.0;
+}
+
 void emWpt(Project &p)
 {
     // 6.78 MHz 共鳴結合 WPT — 送受 2 ループ (間隔 100 mm)
@@ -1225,6 +1313,10 @@ const Entry kEntries[] = {
     { "em", "em_wpt",       "ワイヤレス給電 (6.78MHz 共鳴結合)", emWpt },
     { "em", "em_sar",       "生体 SAR — ダイポール + 筋肉ファントム", emSar },
     { "em", "em_5g",        "5G ミリ波 — 28GHz パッチアンテナ", em5g },
+    // 回路パラメータ抽出の動作確認 (どちらも解析解つき)
+    { "em", "cir_peec_bar", "PEEC 検証 — 角線の R/L (解析解つき)", cirPeecBar },
+    { "em", "cir_fem_ms",   "FEM 検証 — マイクロストリップ Z0 (解析解つき)",
+      cirFemMicrostrip },
 
     { "optical", "opt_bpf",       "BPF — DBR + キャビティ (RCWA)", optBpf },
     { "optical", "opt_ring",      "リング共振器 (Si, r=5μm)", optRing },
