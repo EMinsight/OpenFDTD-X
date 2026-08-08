@@ -176,6 +176,10 @@ set(CORE_SOURCES
     src/io/MeshRepair.cpp
     src/io/MeshRepair.h
 
+    # 取込メッシュの主軸検出 (面積重み付き慣性主軸 + Jacobi 固有値分解)
+    src/io/MeshAxes.cpp
+    src/io/MeshAxes.h
+
     src/io/H5Reader.cpp
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp

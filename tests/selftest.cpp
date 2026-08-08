@@ -30,6 +30,7 @@
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
+#include "io/MeshAxes.h"
 #include "io/MeshRepair.h"
 #include "io/MovieExport.h"
 #include "io/KernelResultReader.h"
@@ -10486,6 +10487,161 @@ static void testMeshDiagnostics()
     }
 }
 
+// ── 主軸検出 (io/MeshAxes) ─────────────────────────────────────────────────
+// 期待値は「既知の回転で傾けた直方体を、検出した角度で戻すと軸に整列する」
+// という形で作る。主軸には符号・入れ替えの自由度があるので、角度そのものを
+// 比較せず **戻した結果の形** で判定する (これが利用者にとっての正しさ)。
+static void testMeshAxes()
+{
+    g_file = "mesh-axes";
+
+    // 辺長の異なる直方体 (2a × a × a/2) — 主軸が一意に決まる
+    auto makeBox = [](double lx, double ly, double lz) {
+        ImportedMesh m;
+        m.name = "box";
+        const double x = lx / 2, y = ly / 2, z = lz / 2;
+        double p[8][3] = {
+            {-x,-y,-z},{ x,-y,-z},{ x, y,-z},{-x, y,-z},
+            {-x,-y, z},{ x,-y, z},{ x, y, z},{-x, y, z} };
+        auto quad = [&](int i0, int i1, int i2, int i3) {
+            addTri(m, p[i0][0],p[i0][1],p[i0][2], p[i1][0],p[i1][1],p[i1][2],
+                      p[i2][0],p[i2][1],p[i2][2]);
+            addTri(m, p[i0][0],p[i0][1],p[i0][2], p[i2][0],p[i2][1],p[i2][2],
+                      p[i3][0],p[i3][1],p[i3][2]);
+        };
+        quad(0,3,2,1); quad(4,5,6,7); quad(0,1,5,4);
+        quad(3,7,6,2); quad(0,4,7,3); quad(1,2,6,5);
+        m.bbox[0] = -x; m.bbox[1] = -y; m.bbox[2] = -z;
+        m.bbox[3] =  x; m.bbox[4] =  y; m.bbox[5] =  z;
+        return m;
+    };
+    // X→Y→Z の順に回す (applyPlacement と同じ規約)
+    auto rotateMesh = [](ImportedMesh m, double rx, double ry, double rz) {
+        const double d2r = 3.14159265358979323846 / 180.0;
+        const double ang[3] = { rx * d2r, ry * d2r, rz * d2r };
+        for (int axis = 0; axis < 3; ++axis) {
+            const double c = std::cos(ang[axis]), s2 = std::sin(ang[axis]);
+            for (int i = 0; i < m.vertices.size(); i += 3) {
+                double v[3] = { m.vertices[i], m.vertices[i+1], m.vertices[i+2] };
+                double o[3] = { v[0], v[1], v[2] };
+                if (axis == 0) { o[1] = c*v[1] - s2*v[2]; o[2] = s2*v[1] + c*v[2]; }
+                if (axis == 1) { o[0] = c*v[0] + s2*v[2]; o[2] = -s2*v[0] + c*v[2]; }
+                if (axis == 2) { o[0] = c*v[0] - s2*v[1]; o[1] = s2*v[0] + c*v[1]; }
+                for (int a = 0; a < 3; ++a) m.vertices[i+a] = float(o[a]);
+            }
+        }
+        return m;
+    };
+    // 軸に整列した bbox の辺長 (昇順)
+    auto sortedExtent = [](const ImportedMesh &m) {
+        double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+        for (int i = 0; i < m.vertices.size(); i += 3)
+            for (int a = 0; a < 3; ++a) {
+                const double v = m.vertices[i + a];
+                if (v < lo[a]) lo[a] = v;
+                if (v > hi[a]) hi[a] = v;
+            }
+        double e[3] = { hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2] };
+        std::sort(e, e + 3);
+        return QVector<double>{ e[0], e[1], e[2] };
+    };
+
+    // 1) 軸に沿った直方体 → 主軸は座標軸そのもの、角度は 0
+    {
+        const ImportedMesh box = makeBox(0.04, 0.02, 0.01);
+        const PrincipalAxes pa = principalAxes(box);
+        check(pa.valid, "meshaxes: axis-aligned box analyzed");
+        check(!pa.degenerate, "meshaxes: distinct edge lengths are not degenerate");
+        // 重心は原点
+        for (int a = 0; a < 3; ++a)
+            check(std::fabs(pa.centroid[a]) < 1e-9, "meshaxes: centroid at origin");
+        // 第 1 主軸は最も長い X 方向
+        check(std::fabs(std::fabs(pa.axis[0][0]) - 1.0) < 1e-9,
+              "meshaxes: first axis is X (longest edge)");
+        check(pa.moment[0] > pa.moment[1] && pa.moment[1] > pa.moment[2],
+              "meshaxes: moments strictly decreasing");
+        for (int a = 0; a < 3; ++a)
+            check(std::fabs(pa.eulerXYZ_deg[a]) < 1e-6,
+                  "meshaxes: an aligned box needs no rotation");
+    }
+
+    // 2) 既知の角度で傾けた直方体 → 検出角度で戻すと軸に整列する (本題)
+    {
+        const ImportedMesh box = makeBox(0.04, 0.02, 0.01);
+        const QVector<double> want = sortedExtent(box);
+        const double cases[4][3] = {
+            {  30.0,   0.0,   0.0 },
+            {   0.0,  25.0,   0.0 },
+            {   0.0,   0.0, -40.0 },
+            {  20.0, -35.0,  55.0 } };
+        for (int k = 0; k < 4; ++k) {
+            const ImportedMesh tilted =
+                rotateMesh(box, cases[k][0], cases[k][1], cases[k][2]);
+            // 傾いていれば bbox は元より大きくなる (テストの前提確認)
+            const QVector<double> tiltedExtent = sortedExtent(tilted);
+            check(tiltedExtent[2] > want[2] - 1e-9,
+                  "meshaxes: the tilted box is not smaller than the original");
+
+            const PrincipalAxes pa = principalAxes(tilted);
+            check(pa.valid, "meshaxes: tilted box analyzed");
+            if (!pa.valid) continue;
+            // 検出した角度で戻す (X→Y→Z の順 — applyPlacement と同じ)
+            const ImportedMesh back =
+                rotateMesh(tilted, pa.eulerXYZ_deg[0], pa.eulerXYZ_deg[1],
+                           pa.eulerXYZ_deg[2]);
+            const QVector<double> got = sortedExtent(back);
+            const double tol = 1e-5 * want[2];
+            check(std::fabs(got[0] - want[0]) < tol
+                  && std::fabs(got[1] - want[1]) < tol
+                  && std::fabs(got[2] - want[2]) < tol,
+                  "meshaxes: undoing the detected rotation realigns the box");
+        }
+    }
+
+    // 3) 立方体は縮退 (どう回しても同じなので向きが一意に決まらない)
+    {
+        const ImportedMesh cube = makeBox(0.02, 0.02, 0.02);
+        const PrincipalAxes pa = principalAxes(cube);
+        check(pa.valid && pa.degenerate,
+              "meshaxes: a cube is flagged as degenerate");
+    }
+
+    // 4) 頂点密度に引きずられないこと — 1 面だけ細かく切っても主軸は変わらない。
+    //    (頂点 PCA だと細分した面へ寄ってしまう。面積重み付きなら変わらない)
+    {
+        const ImportedMesh box = makeBox(0.04, 0.02, 0.01);
+        const PrincipalAxes base = principalAxes(box);
+        ImportedMesh dense = box;
+        // x+ 面 (最後の 2 三角形) を 4 分割相当に細かく足す — 面積は変えず
+        // 同じ場所を細かい三角形で覆い直す代わりに、同じ面を重ねずに
+        // 「細かい三角形を追加した」状態を作ると面積が増えてしまうので、
+        // ここでは *面積 0 に近い* 微小三角形を多数足して頂点数だけ増やす
+        for (int i = 0; i < 200; ++i) {
+            const double y = -0.01 + 0.02 * i / 200.0;
+            addTri(dense, 0.02, y, 0.0, 0.02, y + 1e-9, 0.0, 0.02, y, 1e-9);
+        }
+        const PrincipalAxes pa = principalAxes(dense);
+        check(pa.valid, "meshaxes: dense mesh analyzed");
+        check(std::fabs(pa.axis[0][0] - base.axis[0][0]) < 1e-6
+              && std::fabs(pa.axis[0][1] - base.axis[0][1]) < 1e-6
+              && std::fabs(pa.axis[0][2] - base.axis[0][2]) < 1e-6,
+              "meshaxes: area weighting ignores extra vertices of negligible area");
+    }
+
+    // 5) 決定性と不正入力
+    {
+        const ImportedMesh box = makeBox(0.04, 0.02, 0.01);
+        const PrincipalAxes a = principalAxes(box), b = principalAxes(box);
+        bool same = true;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                if (a.axis[i][j] != b.axis[i][j]) same = false;
+        check(same, "meshaxes: deterministic");
+        check(!principalAxes(ImportedMesh()).valid,
+              "meshaxes: empty mesh rejected");
+    }
+}
+
 // ── EMC 規格の公表限度値と対策効果の古典式 (em/EmcStandards) ────────────────
 // 期待値はコードと独立な出所 (規格の表 / 手計算) から取る。
 static void testEmcStandards()
@@ -12434,6 +12590,7 @@ int main(int argc, char *argv[])
     testDispersionFit();
     testBendWaveguide();
     testMeshDiagnostics();
+    testMeshAxes();
     testRefineRegions();
     testEmcStandards();
     testLumpedRlc();

@@ -200,6 +200,27 @@ const Tr kTr[] = {
       "the GUI responsive)." },
     { "geoc_heal_tol", "▸ 頂点溶接の許容差: %1 m (bbox 対角 × 1e-6)",
       "▸ Vertex weld tolerance: %1 m (bbox diagonal × 1e-6)" },
+    { "geoc_autoaxis_tip",
+      "取込メッシュの面積重み付き慣性主軸を求め、それを X/Y/Z へ揃える回転角を"
+      "回転欄へ入れます (以後は手で微調整できます)。頂点の多い面に引きずられ"
+      "ないよう、頂点ではなく面積で重み付けします。",
+      "Finds the area-weighted principal axes of the imported mesh and fills the "
+      "rotation fields with the angles that align them to X/Y/Z (you can still "
+      "adjust them by hand). Weighting is by area, not by vertex count, so a "
+      "finely tessellated face does not drag the result." },
+    { "geoc_autoaxis_done",
+      "▸ 主軸を検出しました: 回転 %1° / %2° / %3° (X→Y→Z) を入れました。",
+      "▸ Principal axes found: rotation %1° / %2° / %3° (X→Y→Z) applied." },
+    { "geoc_autoaxis_degenerate",
+      "▸ 主軸が縮退しています (立方体・球のように回しても同じ形) — "
+      "向きが一意に決まらないので回転は入れませんでした。",
+      "▸ The principal axes are degenerate (the shape looks the same when "
+      "rotated, like a cube or a sphere) — no unique orientation exists, so no "
+      "rotation was applied." },
+    { "geoc_autoaxis_nomesh", "▸ メッシュを取り込むと主軸を検出します。",
+      "▸ Import a mesh to detect its principal axes." },
+    { "geoc_autoaxis_fail", "▸ 主軸を検出できません (面積が 0)。",
+      "▸ Cannot find the principal axes (zero surface area)." },
     { "geoc_heal_run", "🔧 自動修復実行", "🔧 Run auto-heal" },
     { "geoc_heal_tip",
       "頂点溶接・縮退三角形の除去・法線の統一を行い、検査をやり直します。"
@@ -1323,11 +1344,15 @@ QWidget *GeometryTab::buildPlacementSection()
     // 既定 OFF — ON にすると取込時に bbox 中心を原点へ移動する (実配線)
     m_placeCenter = makeCheck(I18n::tr("geoc_place_center"), false, s);
     m_placeAutoAxis = makeCheck(I18n::tr("geoc_place_autoaxis"), false, s);
-    tabhelp::markNotImplemented(m_placeAutoAxis);   // 主軸検出のみ未実装
+    m_placeAutoAxis->setToolTip(I18n::tr("geoc_autoaxis_tip"));
     cr->addWidget(m_placeCenter);
     cr->addWidget(m_placeAutoAxis);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
+    m_autoAxisNote = makeHint(QString(), s);
+    s->vbox()->addWidget(m_autoAxisNote);
+    connect(m_placeAutoAxis, &QCheckBox::toggled, this,
+            &GeometryTab::applyAutoAxis);
 
     // 設定変更 → 取込済みメッシュへ即時反映 (取込前は何もしない)
     connect(m_placeUnit, &QButtonGroup::idClicked, this,
@@ -1855,6 +1880,7 @@ void GeometryTab::importStl()
     refreshImportBadges();
     refreshAssemblyTree();
     refreshHealing();
+    applyAutoAxis();      // 主軸検出が ON なら新しいメッシュで求め直す
 }
 
 // ── 配置・変換 (placement) の適用 ──────────────────────────────────────────
@@ -2108,6 +2134,40 @@ void GeometryTab::refreshAssemblyTree()
 // ── ジオメトリ検査の表を実検出数で更新する ─────────────────────────────────
 // 6 行はすべて io/MeshDiagnostics が実メッシュから数えた値。取込前は「—」、
 // 三角形数の上限を超えて検査を省略した場合はその旨を出す (偽の OK は出さない)。
+// ── 主軸の自動検出 ─────────────────────────────────────────────────────────
+// 取込メッシュ (変換前) の面積重み付き慣性主軸を求め、それを X/Y/Z へ揃える
+// 回転角を回転欄へ入れる。回転欄は編集可能なままにする (自動検出は「良い
+// 初期値を入れる」機能で、以後は利用者が微調整できる)。
+void GeometryTab::applyAutoAxis()
+{
+    if (!m_placeAutoAxis || !m_autoAxisNote) return;
+    if (!m_placeAutoAxis->isChecked()) {
+        m_autoAxisNote->setText(QString());
+        return;                       // OFF は回転欄を触らない (勝手に戻さない)
+    }
+    if (!m_hasMesh) {
+        m_autoAxisNote->setText(I18n::tr("geoc_autoaxis_nomesh"));
+        return;
+    }
+    const PrincipalAxes pa = principalAxes(m_rawMesh);
+    if (!pa.valid) {
+        m_autoAxisNote->setText(I18n::tr("geoc_autoaxis_fail"));
+        return;
+    }
+    if (pa.degenerate) {
+        // 立方体・球のような形は向きが一意に決まらない。適当な回転を
+        // 入れると「検出できた」と誤解させるので、入れずに理由を出す。
+        m_autoAxisNote->setText(I18n::tr("geoc_autoaxis_degenerate"));
+        return;
+    }
+    for (int a = 0; a < 3; ++a)
+        if (m_placeRot[a]) m_placeRot[a]->setValue(pa.eulerXYZ_deg[a]);
+    m_autoAxisNote->setText(I18n::tr("geoc_autoaxis_done")
+        .arg(QString::number(pa.eulerXYZ_deg[0], 'f', 2),
+             QString::number(pa.eulerXYZ_deg[1], 'f', 2),
+             QString::number(pa.eulerXYZ_deg[2], 'f', 2)));
+}
+
 // ── 修復の実行 ─────────────────────────────────────────────────────────────
 // 取込メッシュ (変換前) を修復して置き換え、配置・変換をかけ直してから
 // 検査をやり直す。穴埋めは実装していないので、残った境界エッジは結果に出す。
