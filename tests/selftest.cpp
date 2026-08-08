@@ -160,11 +160,14 @@ static ImportedMesh boxMesh(double x0, double y0, double z0,
     double p[8][3] = {
         {x0,y0,z0},{x1,y0,z0},{x1,y1,z0},{x0,y1,z0},
         {x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1} };
-    quad(p[0],p[1],p[2],p[3]);   // z0
+    // 外から見て反時計回り (= 外向き法線) で首尾一貫させる。
+    // レイの偶奇は向きに依らないが、巻き数は向きが揃っていないと意味を
+    // 持たない (揃っていないと + と − が打ち消し合って 0 になる)。
+    quad(p[0],p[3],p[2],p[1]);   // z0
     quad(p[4],p[5],p[6],p[7]);   // z1
     quad(p[0],p[1],p[5],p[4]);   // y0
-    quad(p[3],p[2],p[6],p[7]);   // y1
-    quad(p[0],p[3],p[7],p[4]);   // x0
+    quad(p[3],p[7],p[6],p[2]);   // y1
+    quad(p[0],p[4],p[7],p[3]);   // x0
     quad(p[1],p[2],p[6],p[5]);   // x1
     m.bbox[0]=x0; m.bbox[1]=y0; m.bbox[2]=z0;
     m.bbox[3]=x1; m.bbox[4]=y1; m.bbox[5]=z1;
@@ -199,6 +202,85 @@ static void testVoxelizer()
             g.g[2] <= 0.0 && 0.0 <= g.g[3] &&
             g.g[4] <= 0.0 && 0.0 <= g.g[5]) { covers = true; break; }
     check(covers, "origin covered by a voxel brick");
+
+    // ── 一般化巻き数による内外判定 ────────────────────────────────────────
+    // 閉じた外向きメッシュの内側で w = 1、外側で 0 になる (定義)。
+    {
+        // 外向き (boxMesh の並びが外向きかは問わない — 符号は |w| で見る)
+        const double wIn  = Voxelizer::windingNumber(cube, 0.0, 0.0, 0.0);
+        const double wOut = Voxelizer::windingNumber(cube, 5.0, 0.0, 0.0);
+        check(std::fabs(std::fabs(wIn) - 1.0) < 1e-9,
+              "winding: |w| = 1 strictly inside");
+        check(std::fabs(wOut) < 1e-9, "winding: w = 0 outside");
+        // 内側のいろいろな点でも 1 (面の近くも含む)
+        for (double d : { 0.0, 0.3, 0.5, 0.54 })
+            check(std::fabs(std::fabs(Voxelizer::windingNumber(cube, d, d, d))
+                            - 1.0) < 1e-6,
+                  "winding: |w| = 1 everywhere inside");
+        // 外側 (面のすぐ外) でも 0
+        for (double d : { 0.56, 0.7, 2.0 })
+            check(std::fabs(Voxelizer::windingNumber(cube, d, 0.0, 0.0)) < 1e-6,
+                  "winding: w = 0 just outside too");
+
+        // 立体角の総和 = 4π (閉じた面) — 分割の仕方に依らない
+        const ImportedMesh big = boxMesh(-2.0, -2.0, -2.0, 2.0, 2.0, 2.0);
+        check(std::fabs(std::fabs(Voxelizer::windingNumber(big, 0.1, -0.2, 0.3))
+                        - 1.0) < 1e-9,
+              "winding: independent of box size");
+    }
+
+    // 巻き数版は閉じたメッシュでレイ版と同じ結果を出す (どちらも厳密)
+    {
+        VoxelOptions wo;
+        wo.inside = InsideTest::WindingNumber;
+        const VoxelResult w = Voxelizer::voxelize(cube, ax, ax, ax, 2,
+                                                  8'000'000, wo);
+        check(w.ok && w.occupied == 216 && w.bricks.size() == 36,
+              "voxel: winding number matches ray parity on a closed mesh");
+    }
+
+    // ── 穴あきメッシュ: レイ版は列単位で壊れるが巻き数版は耐える ──────────
+    // 期待値は「本来 216 セル」。三角形を 1 枚落として穴を開ける。
+    {
+        ImportedMesh holed = cube;
+        holed.vertices.resize(holed.vertices.size() - 9);
+        --holed.numTriangles;
+
+        VoxelOptions ro;  ro.inside = InsideTest::RayParity;
+        VoxelOptions wo;  wo.inside = InsideTest::WindingNumber;
+        const VoxelResult rr = Voxelizer::voxelize(holed, ax, ax, ax, 2,
+                                                   8'000'000, ro);
+        const VoxelResult wr = Voxelizer::voxelize(holed, ax, ax, ax, 2,
+                                                   8'000'000, wo);
+        check(rr.ok && wr.ok, "voxel: holed mesh voxelized both ways");
+        const long long dr = std::llabs((long long)rr.occupied - 216);
+        const long long dw = std::llabs((long long)wr.occupied - 216);
+        std::fprintf(stderr, "  (holed: ray %lld cells (err %lld), "
+                             "winding %lld cells (err %lld))\n",
+                     (long long)rr.occupied, dr, (long long)wr.occupied, dw);
+        // 実測: レイ版は 126 セル (誤差 90) まで崩れるのに対し、巻き数版は
+        // 216 ちょうど。穴の開いたメッシュに強いのが採用理由そのもの。
+        check(dw == 0, "voxel: winding number is exact even with a hole");
+        check(dr > 50, "voxel: ray parity really does break on the hole");
+        check(dw < dr, "voxel: winding number beats ray parity here");
+    }
+
+    // ── まとめない設定: 占有セル数は同じで直方体が 1 セル 1 個になる ──────
+    {
+        VoxelOptions no;
+        no.mergeRuns = false;
+        const VoxelResult n = Voxelizer::voxelize(cube, ax, ax, ax, 2,
+                                                  8'000'000, no);
+        check(n.ok && n.occupied == 216,
+              "voxel: unmerged keeps the same occupied count");
+        check(n.bricks.size() == 216,
+              "voxel: unmerged emits one brick per cell");
+        // どの直方体も 1 セルぶんの幅 (0.2) しかない
+        bool oneCell = true;
+        for (const Geometry &g : n.bricks)
+            if (std::fabs((g.g[1] - g.g[0]) - 0.2) > 1e-9) oneCell = false;
+        check(oneCell, "voxel: every unmerged brick spans exactly one cell");
+    }
 }
 
 static void compareProjects(const Project &a, const Project &b)

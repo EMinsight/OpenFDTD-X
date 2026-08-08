@@ -200,6 +200,28 @@ const Tr kTr[] = {
       "the GUI responsive)." },
     { "geoc_heal_tol", "▸ 頂点溶接の許容差: %1 m (bbox 対角 × 1e-6)",
       "▸ Vertex weld tolerance: %1 m (bbox diagonal × 1e-6)" },
+    { "geoc_vox_inout_hint",
+      "レイの偶奇は閉じたメッシュでは厳密で速い。巻き数は穴があっても崩れ"
+      "ませんが、法線の向きが揃っていることが前提です (揃っていなければ"
+      "「ジオメトリ修復」を先に実行してください)。",
+      "Ray parity is exact and fast on a closed mesh. The winding number "
+      "survives holes, but it requires consistently oriented normals — run "
+      "\"Repair geometry\" first if they are not." },
+    { "geoc_vox_wind_needs_normals",
+      "法線の向きが揃っていません (不一致な辺が %1 本)。一般化巻き数は"
+      "向きが揃っていることが前提で、このままでは全セルが「外」と判定されます。"
+      "「ジオメトリ修復」で法線を統一してから実行してください "
+      "(またはレイの偶奇を選んでください)。",
+      "The normals are not consistently oriented (%1 inconsistent edges). The "
+      "generalized winding number requires a consistent orientation; as it is, "
+      "every cell would be classified as outside. Run \"Repair geometry\" to "
+      "unify the normals first (or choose ray parity)." },
+    { "geoc_vox_engine_note",
+      "▸ 内外判定 (レイ/巻き数) と「連続セルをまとめる」は実際に効きます。"
+      "表面処理の共形・サブセル、部分体積率、八分木、GPU はエンジン未実装です。",
+      "▸ The inside test (ray / winding) and \"merge runs\" really take "
+      "effect. Conformal and sub-cell surface handling, the partial volume "
+      "fraction, the octree and GPU are not implemented in the engine." },
     { "geoc_autoaxis_tip",
       "取込メッシュの面積重み付き慣性主軸を求め、それを X/Y/Z へ揃える回転角を"
       "回転欄へ入れます (以後は手で微調整できます)。頂点の多い面に引きずられ"
@@ -1501,11 +1523,17 @@ QWidget *GeometryTab::buildVoxelSection()
                       valueRow(s, m_voxDelta, "mm",
                                I18n::tr("geoc_vox_delta_hint"),
                                &m_voxDeltaHint));
+    // 既定はレイの偶奇 (閉じたメッシュでは厳密で速い)。巻き数は穴に強いが
+    // 法線の向きが揃っていることが前提。SDF は未実装。
     s->form()->addRow(I18n::tr("geoc_vox_inout"),
                       segRow(s, &m_voxInside,
                              { I18n::tr("geoc_vox_ray"),
                                I18n::tr("geoc_vox_winding"),
-                               I18n::tr("geoc_vox_sdf") }, 1));
+                               I18n::tr("geoc_vox_sdf") }, 0));
+    if (m_voxInside)
+        for (QAbstractButton *b : m_voxInside->buttons())
+            if (m_voxInside->id(b) == 2) tabhelp::markNotImplemented(b);
+    s->form()->addRow(makeHint(I18n::tr("geoc_vox_inout_hint"), s));
     // 実装済みの表面処理は階段近似のみ (io/Voxelizer) なので既定もそれに合わせる
     s->form()->addRow(I18n::tr("geoc_vox_surface"),
                       segRow(s, &m_voxSurface,
@@ -1541,9 +1569,14 @@ QWidget *GeometryTab::buildVoxelSection()
     m_voxGpu = makeCheck(I18n::tr("geoc_vox_gpu"), true, s);
     s->form()->addRow(I18n::tr("geoc_vox_gpu_label"), m_voxGpu);
 
-    // 上のオプション群 (内外判定/表面処理/PVF/八分木/GPU) は Voxelizer が
-    // まだ読まない (staircase 固定)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    // 内外判定と「まとめる」は Voxelizer が読む。表面処理 (共形/サブセル)・
+    // PVF・八分木・GPU はエンジン側が未実装なので、それだけを明示する
+    for (QAbstractButton *b : m_voxSurface->buttons())
+        if (m_voxSurface->id(b) != 0) tabhelp::markNotImplemented(b);
+    tabhelp::markNotImplemented(m_voxPvf);
+    tabhelp::markNotImplemented(m_voxOctree);
+    tabhelp::markNotImplemented(m_voxGpu);
+    s->vbox()->addWidget(makeHint(I18n::tr("geoc_vox_engine_note"), s));
 
     // 実行行: ボクセル化 (実処理) + 材質番号 + 占有セルバッジ
     auto *runRow = new QHBoxLayout();
@@ -2007,9 +2040,26 @@ void GeometryTab::voxelizeImported()
 {
     if (!m_hasMesh) return;
 
+    VoxelOptions opt;
+    // 内外判定: 0 = レイの偶奇 / 1 = 一般化巻き数 (2 = SDF は未実装)
+    const int inTest = m_voxInside ? m_voxInside->checkedId() : 0;
+    opt.inside = (inTest == 1) ? InsideTest::WindingNumber
+                               : InsideTest::RayParity;
+    opt.mergeRuns = !m_voxMerge || m_voxMerge->isChecked();
+
+    // 巻き数は法線の向きが揃っていることが前提。揃っていないと + と − が
+    // 打ち消し合って全セルが「外」になるので、黙って走らせず修復へ誘導する。
+    if (opt.inside == InsideTest::WindingNumber && m_diag.valid
+        && m_diag.inconsistentEdges > 0) {
+        QMessageBox::warning(this, I18n::tr("ge_voxelize_btn"),
+                             I18n::tr("geoc_vox_wind_needs_normals")
+                                 .arg(m_diag.inconsistentEdges));
+        return;
+    }
+
     const VoxelResult res = Voxelizer::voxelize(
         m_lastMesh, m_p->mesh(0), m_p->mesh(1), m_p->mesh(2),
-        m_voxMat->value());
+        m_voxMat->value(), 8'000'000, opt);
     if (!res.ok) {
         m_importInfo->setText("voxelize error: " + res.error);
         return;

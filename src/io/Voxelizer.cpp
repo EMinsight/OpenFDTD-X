@@ -60,12 +60,48 @@ static bool rayHitsForward(double px, double py, double pz, const float *t)
     return dist > 1e-12;                                 // forward only
 }
 
+// 一般化巻き数 (generalized winding number)。
+// 各三角形が点 p に張る符号付き立体角 Ω を足して 4π で割る。
+// Ω は Van Oosterom & Strackee (1983) の閉形式:
+//   tan(Ω/2) = a·(b×c) / (|a||b||c| + (a·b)|c| + (a·c)|b| + (b·c)|a|)
+// (a,b,c は p から見た 3 頂点のベクトル)。atan2 を使うので分母の符号も
+// 込みで一意に決まり、p が面に近くても破綻しない。
+double Voxelizer::windingNumber(const ImportedMesh &mesh,
+                                double px, double py, double pz)
+{
+    const float *V = mesh.vertices.constData();
+    const int T = qMin(mesh.numTriangles, int(mesh.vertices.size() / 9));
+    double sum = 0.0;
+    for (int t = 0; t < T; ++t) {
+        const float *q = V + 9 * t;
+        const double a[3] = { q[0] - px, q[1] - py, q[2] - pz };
+        const double b[3] = { q[3] - px, q[4] - py, q[5] - pz };
+        const double c[3] = { q[6] - px, q[7] - py, q[8] - pz };
+        const double la = std::sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+        const double lb = std::sqrt(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
+        const double lc = std::sqrt(c[0]*c[0] + c[1]*c[1] + c[2]*c[2]);
+        if (la < 1e-300 || lb < 1e-300 || lc < 1e-300)
+            continue;                       // p が頂点そのもの — 寄与を飛ばす
+        const double cr[3] = { b[1]*c[2] - b[2]*c[1],
+                               b[2]*c[0] - b[0]*c[2],
+                               b[0]*c[1] - b[1]*c[0] };
+        const double num = a[0]*cr[0] + a[1]*cr[1] + a[2]*cr[2];
+        const double ab = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+        const double ac = a[0]*c[0] + a[1]*c[1] + a[2]*c[2];
+        const double bc = b[0]*c[0] + b[1]*c[1] + b[2]*c[2];
+        const double den = la*lb*lc + ab*lc + ac*lb + bc*la;
+        sum += 2.0 * std::atan2(num, den);
+    }
+    return sum / (4.0 * 3.14159265358979323846);
+}
+
 VoxelResult Voxelizer::voxelize(const ImportedMesh &mesh,
                                 const MeshAxis &mx,
                                 const MeshAxis &my,
                                 const MeshAxis &mz,
                                 int materialId,
-                                qint64 cellCap)
+                                qint64 cellCap,
+                                const VoxelOptions &opt)
 {
     VoxelResult r;
     if (mesh.numTriangles <= 0) { r.error = QObject::tr("empty mesh"); return r; }
@@ -106,11 +142,28 @@ VoxelResult Voxelizer::voxelize(const ImportedMesh &mesh,
                 bool inside = false;
                 const double px = xc[i];
                 if (px >= mesh.bbox[0] && px <= mesh.bbox[3]) {
-                    int crossings = 0;
-                    for (int t = 0; t < T; ++t)
-                        if (rayHitsForward(px, py, pz, V + 9 * t))
-                            ++crossings;
-                    inside = (crossings & 1) != 0;
+                    if (opt.inside == InsideTest::WindingNumber) {
+                        inside = windingNumber(mesh, px, py, pz) > 0.5;
+                    } else {
+                        int crossings = 0;
+                        for (int t = 0; t < T; ++t)
+                            if (rayHitsForward(px, py, pz, V + 9 * t))
+                                ++crossings;
+                        inside = (crossings & 1) != 0;
+                    }
+                }
+                // まとめない設定は 1 セル = 1 直方体 (区間を作らない)
+                if (!opt.mergeRuns) {
+                    if (!inside) continue;
+                    Geometry g;
+                    g.shape = 1;
+                    g.materialId = materialId;
+                    g.g[0] = xb[i];  g.g[1] = xb[i + 1];
+                    g.g[2] = yb[j];  g.g[3] = yb[j + 1];
+                    g.g[4] = zb[k];  g.g[5] = zb[k + 1];
+                    r.bricks.push_back(g);
+                    r.occupied += 1;
+                    continue;
                 }
                 if (inside && runStart < 0) {
                     runStart = i;
