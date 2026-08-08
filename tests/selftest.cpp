@@ -30,6 +30,7 @@
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
+#include "io/MovieExport.h"
 #include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
 #include "optics/FdeModeSolver.h"
@@ -5382,6 +5383,122 @@ static void testFilmNotation()
         const NotationResult r = parseNotation("(H L)^5", 10);
         check(r.ok && r.layers.size() == 10, "notation: exactly at the cap");
         check(!parseNotation("(H L)^6", 10).ok, "notation: one over the cap");
+    }
+}
+
+// ── 動画書き出しの純関数 (src/io/MovieExport) ──────────────────────────────
+static void testMovieExport()
+{
+    using namespace ofd::movie;
+    g_file = "movie-export";
+
+    // ── 時間範囲 → フレーム番号 ──────────────────────────────────────────
+    {
+        // 0, 1, 2, … 9 ns 相当 (等間隔でなくてもよい — 単調なら可)
+        QVector<double> t;
+        for (int i = 0; i < 10; ++i) t.push_back(i * 1e-9);
+
+        int f0 = -1, f1 = -1;
+        check(frameRangeForTimes(t, 2e-9, 5e-9, f0, f1) && f0 == 2 && f1 == 5,
+              "movie: inclusive frame range");
+        // 端はちょうどで含む
+        check(frameRangeForTimes(t, 0.0, 9e-9, f0, f1) && f0 == 0 && f1 == 9,
+              "movie: full range");
+        // 1 フレームだけ
+        check(frameRangeForTimes(t, 3e-9, 3e-9, f0, f1) && f0 == 3 && f1 == 3,
+              "movie: single frame");
+        // lo > hi は入れ替えて扱う
+        check(frameRangeForTimes(t, 5e-9, 2e-9, f0, f1) && f0 == 2 && f1 == 5,
+              "movie: reversed bounds are swapped");
+        // 範囲外 → false かつ出力は変更しない
+        f0 = 7; f1 = 8;
+        check(!frameRangeForTimes(t, 20e-9, 30e-9, f0, f1)
+              && f0 == 7 && f1 == 8,
+              "movie: an empty range returns false and leaves the outputs");
+        // 空の時刻列
+        check(!frameRangeForTimes(QVector<double>(), 0.0, 1.0, f0, f1),
+              "movie: empty times rejected");
+        // 全フレームより手前 / 後ろ
+        check(!frameRangeForTimes(t, -5e-9, -1e-9, f0, f1),
+              "movie: range before the first frame");
+        // 部分的に重なる範囲は重なった分だけ
+        check(frameRangeForTimes(t, -5e-9, 1.5e-9, f0, f1)
+              && f0 == 0 && f1 == 1,
+              "movie: partially overlapping range clips");
+    }
+
+    // ── ffmpeg 引数 ──────────────────────────────────────────────────────
+    {
+        const QString pat = QStringLiteral("/tmp/f/frame%05d.png");
+        const QString out = QStringLiteral("/tmp/out.mp4");
+
+        MovieOptions o;                     // 既定: 30fps, 元サイズ, H.264
+        const QStringList a = buildFfmpegArgs(pat, out, o);
+        check(a.value(0) == QLatin1String("-y"), "movie: overwrite flag first");
+        check(a.contains(QStringLiteral("-framerate"))
+              && a.value(a.indexOf(QStringLiteral("-framerate")) + 1) == "30",
+              "movie: framerate passed");
+        check(a.value(a.indexOf(QStringLiteral("-i")) + 1) == pat,
+              "movie: input pattern");
+        check(a.last() == out, "movie: output path last");
+        check(a.contains(QStringLiteral("libx264")), "movie: default codec");
+        check(a.contains(QStringLiteral("yuv420p")), "movie: pixel format");
+        // 既定 (元サイズ) では scale を付けない — 拡大でぼかさない
+        const int vf = a.indexOf(QStringLiteral("-vf"));
+        check(vf >= 0 && !a.value(vf + 1).contains(QStringLiteral("scale=")),
+              "movie: native resolution adds no scale filter");
+        check(a.value(vf + 1).contains(QStringLiteral("crop=")),
+              "movie: even-size crop is always applied for yuv420p");
+
+        // 解像度指定 → scale が crop より前に来る (順序が逆だと偶数化が壊れる)
+        MovieOptions r;
+        r.width = 1920; r.height = 1080;
+        const QStringList ar = buildFfmpegArgs(pat, out, r);
+        const QString f = ar.value(ar.indexOf(QStringLiteral("-vf")) + 1);
+        check(f.contains(QStringLiteral("scale=1920:1080")), "movie: scale filter");
+        check(f.indexOf(QStringLiteral("scale=")) <
+              f.indexOf(QStringLiteral("crop=")),
+              "movie: scale comes before the even-size crop");
+
+        // 片方だけ指定ならアスペクト比を保つ (-2 = 偶数へ丸めた自動)
+        MovieOptions w;
+        w.width = 1280;
+        const QStringList aw = buildFfmpegArgs(pat, out, w);
+        check(aw.value(aw.indexOf(QStringLiteral("-vf")) + 1)
+                  .contains(QStringLiteral("scale=1280:-2")),
+              "movie: one-sided scale keeps the aspect ratio");
+
+        // コーデック
+        MovieOptions h265; h265.codec = Codec::H265;
+        check(buildFfmpegArgs(pat, out, h265).contains(QStringLiteral("libx265")),
+              "movie: H.265 codec");
+        MovieOptions vp9; vp9.codec = Codec::VP9;
+        check(buildFfmpegArgs(pat, out, vp9).contains(
+                  QStringLiteral("libvpx-vp9")), "movie: VP9 codec");
+
+        // GIF はコーデック指定を持たず fps フィルタだけ
+        MovieOptions g;
+        g.gif = true;
+        g.fps = 12;
+        const QStringList ag = buildFfmpegArgs(pat, QStringLiteral("/tmp/o.gif"), g);
+        check(!ag.contains(QStringLiteral("-c:v")), "movie: gif has no -c:v");
+        check(!ag.contains(QStringLiteral("yuv420p")), "movie: gif has no pix_fmt");
+        check(ag.value(ag.indexOf(QStringLiteral("-vf")) + 1)
+                  == QStringLiteral("fps=12"), "movie: gif fps filter");
+        check(ag.value(ag.indexOf(QStringLiteral("-framerate")) + 1) == "12",
+              "movie: gif framerate");
+
+        // fps はクランプされる (0 や巨大値をそのまま渡さない)
+        MovieOptions z; z.fps = 0;
+        check(buildFfmpegArgs(pat, out, z)
+                  .value(buildFfmpegArgs(pat, out, z)
+                             .indexOf(QStringLiteral("-framerate")) + 1) == "1",
+              "movie: fps clamped up to 1");
+        MovieOptions big; big.fps = 10000;
+        check(buildFfmpegArgs(pat, out, big)
+                  .value(buildFfmpegArgs(pat, out, big)
+                             .indexOf(QStringLiteral("-framerate")) + 1) == "240",
+              "movie: fps clamped down to 240");
     }
 }
 
@@ -12107,6 +12224,7 @@ int main(int argc, char *argv[])
     testFieldMapReader();
     testThermalReader();
     testAudioEditEngine();
+    testMovieExport();
     testCalibrationOffsetGate();
     testResampler();
     testRirSampleRateNotes();

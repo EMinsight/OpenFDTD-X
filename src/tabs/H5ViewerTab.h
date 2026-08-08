@@ -7,6 +7,7 @@
 //   - 表示中フレームの min / max / 平均 の実計算表示
 // を行う。1D / 4D 以上のデータセットは表示未対応 (ofd の /data*/E 等)。
 #pragma once
+#include "../io/MovieExport.h"
 #include <QImage>
 #include <QScrollArea>
 #include <QVector>
@@ -88,6 +89,9 @@ public:
     // 実行完了時に MainWindow から実行出力の .h5 を渡して読み込む
     void openFile(const QString &path);
 
+private slots:
+    void applyTimeRange();   // 時間範囲 → 再生対象フレームの絞り込み
+
 private:
     void loadFile();                  // m_file のパスを列挙してツリー再構築
     void rebuildTree();               // m_dsets → パス階層ツリー
@@ -165,7 +169,19 @@ private:
     QComboBox   *m_speed;
     QTimer      *m_timer;
     int          m_frame = 0;
+    double timeUnitToSeconds() const;         // 表示単位 → 秒
+    movie::MovieOptions movieOptions(bool gif) const;  // 動画設定 → ffmpeg
+
     QLabel      *m_timeUnit = nullptr;        // 時間範囲の単位 (ドメイン別 ps/ms/s)
+    // 時間範囲での絞り込み (/timeseries/time が読めるときだけ有効)
+    QLineEdit   *m_rangeLo = nullptr, *m_rangeHi = nullptr;
+    QCheckBox   *m_rangeOnly = nullptr;
+    QLabel      *m_rangeNote = nullptr;
+    QVector<double> m_frameTimes;             // 各フレームの時刻 [s] (空 = 不明)
+    int          m_playFirst = 0, m_playLast = -1;   // 再生対象 [first, last]
+    // 動画設定 (ffmpeg へ渡す)
+    QLineEdit   *m_movieFps = nullptr;
+    QComboBox   *m_movieRes = nullptr, *m_movieCodec = nullptr;
 
     // 断面 (伝搬時系列でのみ有効 — 軸と位置を選ぶ)
     QComboBox   *m_planeBox = nullptr;

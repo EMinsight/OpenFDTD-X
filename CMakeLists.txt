@@ -166,6 +166,11 @@ set(CORE_SOURCES
     src/io/Tidy3dExporter.h
     src/io/H5Writer.cpp
     src/io/H5Writer.h
+    # 動画書き出しの純関数 (時間範囲→フレーム番号 / ffmpeg 引数の組み立て) —
+    # ffmpeg を起動せずに selftest から検証するため GUI から切り離してある
+    src/io/MovieExport.cpp
+    src/io/MovieExport.h
+
     src/io/H5Reader.cpp
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp

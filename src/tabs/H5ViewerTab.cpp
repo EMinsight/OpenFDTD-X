@@ -1,6 +1,7 @@
 // H5ViewerTab.cpp
 #include "H5ViewerTab.h"
 #include "../core/Project.h"
+#include "../io/MovieExport.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -168,6 +169,38 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_exp_pngseq", "🖼 PNG 連番 (全フレーム)",
                    "🖼 PNG sequence (all frames)");
     ofd::I18n::reg("h5_exp_csv", "📊 CSV (時系列)", "📊 CSV (time series)");
+    ofd::I18n::reg("h5_res_native", "元のまま", "Native");
+    ofd::I18n::reg("h5_range_all",
+                   "▸ 全 %1 〜 %2 %3 を再生します (範囲限定なし)。",
+                   "▸ Playing the whole %1 – %2 %3 (no range limit).");
+    ofd::I18n::reg("h5_range_applied",
+                   "▸ %1 フレーム (#%2〜#%3, %4 〜 %5 %6) だけを再生・書き出し"
+                   "します。",
+                   "▸ Playing and exporting only %1 frames (#%2–#%3, "
+                   "%4 – %5 %6).");
+    ofd::I18n::reg("h5_range_empty",
+                   "▸ その時間範囲に入るフレームがありません — 範囲限定を"
+                   "解除しました。",
+                   "▸ No frame falls in that time range — the range limit was "
+                   "switched off.");
+    ofd::I18n::reg("h5_range_notime",
+                   "▸ このファイルにはフレームの時刻 (/timeseries/time) が"
+                   "無いため、時間範囲では絞り込めません "
+                   "(フレーム番号を時刻とみなすようなことはしません)。",
+                   "▸ This file has no per-frame time (/timeseries/time), so "
+                   "the range cannot be resolved (frame numbers are not "
+                   "treated as times).");
+    ofd::I18n::reg("h5_range_noseries",
+                   "▸ 時系列データセットを選ぶと時間範囲を指定できます。",
+                   "▸ Select a time-series dataset to use the time range.");
+    ofd::I18n::reg("h5_movie_note",
+                   "▸ FPS・解像度・コーデックは ffmpeg へ渡ります "
+                   "(FPS 未入力なら再生速度から決まります)。解像度「元のまま」"
+                   "は拡大しません。図中への凡例・形状の焼き込みは未実装です。",
+                   "▸ The FPS, resolution and codec are passed to ffmpeg (an "
+                   "empty FPS falls back to the playback speed). \"Native\" "
+                   "resolution does not rescale. Burning the colour bar or the "
+                   "geometry into the frames is not implemented.");
     ofd::I18n::reg("h5_movie", "動画設定", "Movie settings");
     ofd::I18n::reg("h5_resolution", "解像度", "Resolution");
     ofd::I18n::reg("h5_codec", "コーデック", "Codec");
@@ -773,23 +806,30 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_speed->setCurrentIndex(2);
     sp->form()->addRow(I18n::tr("h5_speed"), m_speed);
     auto *tr0 = new QHBoxLayout();
-    auto *rangeLo = new QLineEdit("0", sp);
-    rangeLo->setMaximumWidth(60);
-    auto *rangeHi = new QLineEdit("1000", sp);
-    rangeHi->setMaximumWidth(60);
-    tr0->addWidget(rangeLo);
+    m_rangeLo = new QLineEdit("0", sp);
+    m_rangeLo->setMaximumWidth(60);
+    m_rangeHi = new QLineEdit("1000", sp);
+    m_rangeHi->setMaximumWidth(60);
+    tr0->addWidget(m_rangeLo);
     tr0->addWidget(new QLabel(QString::fromUtf8("〜"), sp));
-    tr0->addWidget(rangeHi);
+    tr0->addWidget(m_rangeHi);
     // 単位はドメイン別 (EM/光: ps、室内音響: ms、水中: s) — updateDomainVisibility
     m_timeUnit = new QLabel("ps", sp);
     tr0->addWidget(m_timeUnit);
-    auto *ckRangeOnly = new QCheckBox(I18n::tr("h5_range_only"), sp);
-    ofd::tabhelp::markNotImplemented(ckRangeOnly);
-    tr0->addWidget(ckRangeOnly);
+    m_rangeOnly = new QCheckBox(I18n::tr("h5_range_only"), sp);
+    tr0->addWidget(m_rangeOnly);
     tr0->addStretch(1);
     sp->form()->addRow(I18n::tr("h5_time_range"), tr0);
-    // 時間範囲の入力は再生に反映されない (未実装)
-    sp->form()->addRow(ofd::tabhelp::unwiredNote(sp));
+    // 絞り込みの結果 (対象フレーム / 使えない理由) を必ず出す
+    m_rangeNote = new QLabel(sp);
+    m_rangeNote->setWordWrap(true);
+    m_rangeNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sp->form()->addRow(m_rangeNote);
+    for (QLineEdit *e : { m_rangeLo, m_rangeHi })
+        connect(e, &QLineEdit::editingFinished, this,
+                &H5ViewerTab::applyTimeRange);
+    connect(m_rangeOnly, &QCheckBox::toggled, this,
+            &H5ViewerTab::applyTimeRange);
     v->addWidget(sp);
 
     // 時間断面 / Cross-sections (XY/XZ/YZ) — 伝搬時系列の表示断面を選ぶ
@@ -854,31 +894,38 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             [this] { exportFrames(true, QStringLiteral("gif")); });
     auto *mrow = new QHBoxLayout();
     mrow->addWidget(new QLabel("FPS", se));
-    auto *fps = new QLineEdit("30", se);
-    fps->setMaximumWidth(60);
-    mrow->addWidget(fps);
+    m_movieFps = new QLineEdit("30", se);
+    m_movieFps->setMaximumWidth(60);
+    mrow->addWidget(m_movieFps);
     mrow->addWidget(new QLabel(I18n::tr("h5_resolution"), se));
-    auto *resBox = new QComboBox(se);
-    resBox->addItems({ QString::fromUtf8("1920 × 1080"),
-                       QString::fromUtf8("3840 × 2160 (4K)"),
-                       QString::fromUtf8("1280 × 720") });
-    mrow->addWidget(resBox);
+    m_movieRes = new QComboBox(se);
+    // 先頭は「元の大きさのまま」(拡大でぼかさない) — 既定にする
+    m_movieRes->addItem(I18n::tr("h5_res_native"));
+    m_movieRes->addItems({ QString::fromUtf8("1920 × 1080"),
+                           QString::fromUtf8("3840 × 2160 (4K)"),
+                           QString::fromUtf8("1280 × 720") });
+    mrow->addWidget(m_movieRes);
     mrow->addWidget(new QLabel(I18n::tr("h5_codec"), se));
-    auto *codecBox = new QComboBox(se);
-    codecBox->addItems({ "H.264", "H.265", "VP9" });
-    mrow->addWidget(codecBox);
+    m_movieCodec = new QComboBox(se);
+    m_movieCodec->addItems({ "H.264", "H.265", "VP9" });
+    mrow->addWidget(m_movieCodec);
     mrow->addStretch(1);
     se->form()->addRow(I18n::tr("h5_movie"), mrow);
     auto *echecks = new QHBoxLayout();
+    // 図中への凡例・形状の焼き込みはレンダリング側の未実装 (ffmpeg では
+    // どうにもならない) — 明示して無効化する
     auto *ckEmbed = new QCheckBox(I18n::tr("h5_embed_bar"), se);
-    ckEmbed->setChecked(true);
+    auto *ckGeom = new QCheckBox(I18n::tr("h5_embed_geom"), se);
+    ofd::tabhelp::markNotImplemented(ckEmbed);
+    ofd::tabhelp::markNotImplemented(ckGeom);
     echecks->addWidget(ckEmbed);
-    echecks->addWidget(new QCheckBox(I18n::tr("h5_embed_geom"), se));
+    echecks->addWidget(ckGeom);
     echecks->addStretch(1);
     se->form()->addRow(echecks);
-    // 動画設定 (FPS/解像度/コーデック) と埋込オプションは ffmpeg 呼び出しに
-    // 反映されない (fps は速度コンボから決まる) — 未配線として明示する
-    se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
+    auto *movieNote = new QLabel(I18n::tr("h5_movie_note"), se);
+    movieNote->setWordWrap(true);
+    movieNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    se->vbox()->addWidget(movieNote);
     v->addWidget(se);
 
     // 統計・派生量 / Statistics & derived — 表示中フレームの実計算値
@@ -945,18 +992,24 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     connect(m_timer, &QTimer::timeout, this, [this] {
         if (m_nframes <= 1) return;
         const bool loop = m_loopBtn->isChecked();
+        // 時間範囲で絞り込んでいるときはその区間だけを再生する
+        const int first = qBound(0, m_playFirst, m_nframes - 1);
+        const int last = (m_playLast < 0) ? m_nframes - 1
+                                          : qBound(first, m_playLast,
+                                                   m_nframes - 1);
         int next = m_frame + 1;
-        if (next >= m_nframes) {
+        if (m_frame < first) next = first;
+        if (next > last) {
             if (!loop) {
                 // 念のため (末尾到達時に停止済みのはずだが二重に守る)
                 m_timer->stop();
                 m_playBtn->setText(I18n::tr("h5_play"));
                 return;
             }
-            next = 0;                                 // ループ再生
+            next = first;                             // ループ再生
         }
         setFrame(next);
-        if (!loop && next == m_nframes - 1) {
+        if (!loop && next == last) {
             // ループ OFF: 末尾フレーム到達で停止 (ボタン表示も再生へ戻す)
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
@@ -967,9 +1020,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
         } else if (m_nframes > 1) {
-            // ループ OFF で末尾に居るときは先頭から再生し直す
-            if (!m_loopBtn->isChecked() && m_frame >= m_nframes - 1)
-                setFrame(0);
+            const int first = qBound(0, m_playFirst, m_nframes - 1);
+            const int last = (m_playLast < 0) ? m_nframes - 1
+                                              : qBound(first, m_playLast,
+                                                       m_nframes - 1);
+            // ループ OFF で末尾に居るときは (範囲の) 先頭から再生し直す
+            if (!m_loopBtn->isChecked() && m_frame >= last) setFrame(first);
+            else if (m_frame < first) setFrame(first);
             m_timer->start();
             m_playBtn->setText(I18n::tr("h5_pause"));
         }
@@ -1228,6 +1285,13 @@ void H5ViewerTab::selectDataset(int idx)
             m_seriesComp = sm.captured(1);
             m_seriesInfo = info;
             m_nframes = info.frames;
+            // 時間範囲での絞り込みに使う時刻列 (旧形式には無い)
+            m_frameTimes.clear();
+            H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp,
+                                         m_frameTimes);
+            if (m_frameTimes.size() != m_nframes) m_frameTimes.clear();
+            m_playFirst = 0;
+            m_playLast = m_nframes - 1;
             // 断面位置は各軸とも未設定 (= 中央) から始める
             m_secPos[0] = m_secPos[1] = m_secPos[2] = -1;
             loadSliceCoords();
@@ -1238,11 +1302,16 @@ void H5ViewerTab::selectDataset(int idx)
             updateSliceControls();
             m_frame = 0;
             setFrame(0);
+            applyTimeRange();
             return;
         }
     }
     m_seriesMode = false;
+    m_frameTimes.clear();
+    m_playFirst = 0;
+    m_playLast = -1;
     updateSliceControls();
+    applyTimeRange();
 
     const int nd = ds.dims.size();
     if (nd == 2) {
@@ -1718,6 +1787,91 @@ QImage H5ViewerTab::frameImage(int frame, double lo, double hi, bool *ok)
     return m_canvas->renderImage(d, rows, cols, cellPx, lo, hi);
 }
 
+// ── 時間範囲 → 再生対象フレーム ────────────────────────────────────────────
+// 時刻は /timeseries/time (H は time_H) から読む。旧 /data%06d 形式には
+// 時刻が無いので絞り込みはできない — チェックを無効化して理由を出す
+// (フレーム番号を時刻とみなす、といった推測はしない)。
+void H5ViewerTab::applyTimeRange()
+{
+    if (!m_rangeOnly) return;
+    m_playFirst = 0;
+    m_playLast = m_nframes - 1;
+
+    const bool haveTimes = !m_frameTimes.isEmpty()
+                           && m_frameTimes.size() == m_nframes;
+    m_rangeOnly->setEnabled(haveTimes);
+    m_rangeLo->setEnabled(haveTimes);
+    m_rangeHi->setEnabled(haveTimes);
+    if (!haveTimes) {
+        m_rangeOnly->setChecked(false);
+        m_rangeNote->setText(m_seriesMode ? I18n::tr("h5_range_notime")
+                                          : I18n::tr("h5_range_noseries"));
+        return;
+    }
+    // 表示単位 → 秒 (ドメイン別: ps / ms / s)
+    const double scale = timeUnitToSeconds();
+    if (!m_rangeOnly->isChecked()) {
+        m_rangeNote->setText(I18n::tr("h5_range_all")
+            .arg(QString::number(m_frameTimes.first() / scale, 'g', 4),
+                 QString::number(m_frameTimes.last() / scale, 'g', 4),
+                 m_timeUnit->text()));
+        return;
+    }
+    bool a = false, b = false;
+    const double lo = m_rangeLo->text().trimmed().toDouble(&a) * scale;
+    const double hi = m_rangeHi->text().trimmed().toDouble(&b) * scale;
+    int f0 = 0, f1 = m_nframes - 1;
+    if (!a || !b || !movie::frameRangeForTimes(m_frameTimes, lo, hi, f0, f1)) {
+        // 1 フレームも入らない範囲を黙って適用しない (全フレームのまま)
+        m_rangeNote->setText(I18n::tr("h5_range_empty"));
+        m_rangeOnly->setChecked(false);
+        return;
+    }
+    m_playFirst = f0;
+    m_playLast = f1;
+    m_rangeNote->setText(I18n::tr("h5_range_applied")
+        .arg(f1 - f0 + 1)
+        .arg(f0).arg(f1)
+        .arg(QString::number(m_frameTimes[f0] / scale, 'g', 4),
+             QString::number(m_frameTimes[f1] / scale, 'g', 4),
+             m_timeUnit->text()));
+    if (m_frame < m_playFirst || m_frame > m_playLast) setFrame(m_playFirst);
+}
+
+// 表示単位 (ps / ms / s) → 秒への換算係数
+double H5ViewerTab::timeUnitToSeconds() const
+{
+    const QString u = m_timeUnit ? m_timeUnit->text() : QStringLiteral("s");
+    if (u == QLatin1String("ps")) return 1e-12;
+    if (u == QLatin1String("ms")) return 1e-3;
+    return 1.0;
+}
+
+// 動画設定 (FPS / 解像度 / コーデック) → ffmpeg のオプション
+movie::MovieOptions H5ViewerTab::movieOptions(bool gif) const
+{
+    movie::MovieOptions o;
+    o.gif = gif;
+    bool ok = false;
+    const int fps = m_movieFps ? m_movieFps->text().trimmed().toInt(&ok) : 0;
+    // 未入力・不正値のときは再生速度コンボから決める (従来の挙動)
+    static const int kFps[] = { 3, 5, 10, 20, 30 };
+    o.fps = (ok && fps > 0) ? fps
+                            : kFps[qBound(0, m_speed->currentIndex(), 4)];
+    switch (m_movieRes ? m_movieRes->currentIndex() : 0) {
+        case 1: o.width = 1920; o.height = 1080; break;
+        case 2: o.width = 3840; o.height = 2160; break;
+        case 3: o.width = 1280; o.height = 720;  break;
+        default: break;                          // 0 = 元の大きさのまま
+    }
+    switch (m_movieCodec ? m_movieCodec->currentIndex() : 0) {
+        case 1:  o.codec = movie::Codec::H265; break;
+        case 2:  o.codec = movie::Codec::VP9;  break;
+        default: o.codec = movie::Codec::H264; break;
+    }
+    return o;
+}
+
 // 全フレームを PNG 連番へ描き出す。video=true なら ffmpeg で動画化
 void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
 {
@@ -1745,18 +1899,26 @@ void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
 
     m_exporting = true;
 
+    // 時間範囲で絞り込んでいるときは、その区間だけを書き出す
+    // (画面で見ている範囲と書き出しがずれないように)
+    const int expFirst = qBound(0, m_playFirst, m_nframes - 1);
+    const int expLast = (m_playLast < 0)
+                            ? m_nframes - 1
+                            : qBound(expFirst, m_playLast, m_nframes - 1);
+    const int expCount = expLast - expFirst + 1;
+
     // スケールは全フレーム共通 (自動: 全フレーム走査 / 手動: 入力値)。
     // フレームごとの自動スケールはアニメがちらつくため使わない
     double lo = 0.0, hi = 1.0;
     QProgressDialog prog(I18n::tr("h5_export"), I18n::tr("gal_cancel"),
-                         0, m_nframes * (m_autoScale->isChecked() ? 2 : 1),
+                         0, expCount * (m_autoScale->isChecked() ? 2 : 1),
                          this);
     prog.setWindowModality(Qt::WindowModal);
     prog.setMinimumDuration(200);
     int step = 0;
     if (m_autoScale->isChecked()) {
         bool first = true;
-        for (int f = 0; f < m_nframes; ++f) {
+        for (int f = expFirst; f <= expLast; ++f) {
             // 3 面ビュー時は 3 面すべてを走査する (共通スケールのため)
             QVector<double> d;
             const bool okF = scanFrameValues(f, d);
@@ -1784,12 +1946,16 @@ void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
     auto tmp = std::make_shared<QTemporaryDir>();
     const QString dir = video ? tmp->path() : framesDir;
     int written = 0;
-    for (int f = 0; f < m_nframes; ++f) {
+    for (int f = expFirst; f <= expLast; ++f) {
         bool okF = false;
         const QImage img = frameImage(f, lo, hi, &okF);
         if (okF && !img.isNull()) {
+            // 動画化する場合は 0 から連番にする (ffmpeg の %05d は既定で
+            // 0 始まり)。PNG 連番として出す場合は元のフレーム番号を残す
+            // (どのフレームか分かるほうが役に立つ)。
+            const int idx = video ? written : f;
             img.save(QStringLiteral("%1/frame%2.png").arg(dir)
-                         .arg(f, 5, 10, QLatin1Char('0')));
+                         .arg(idx, 5, 10, QLatin1Char('0')));
             ++written;
         }
         prog.setValue(++step);
@@ -1808,24 +1974,10 @@ void H5ViewerTab::exportFrames(bool video, const QString &videoExt)
 
     // ffmpeg でエンコード (非同期 — 終了はシグナルで受ける)
     m_expStatus->setText(I18n::tr("h5_exp_encoding"));
-    static const int kFps[] = { 3, 5, 10, 20, 30 };
-    const int fps = kFps[qBound(0, m_speed->currentIndex(), 4)];
-    QStringList args;
-    args << QStringLiteral("-y")
-         << QStringLiteral("-framerate") << QString::number(fps)
-         << QStringLiteral("-i")
-         << QStringLiteral("%1/frame%05d.png").arg(dir);
-    if (videoExt == QLatin1String("gif")) {
-        args << QStringLiteral("-vf")
-             << QStringLiteral("fps=%1").arg(fps);
-    } else {
-        // yuv420p は偶数サイズが必要 — 奇数なら 1px 切り詰める
-        args << QStringLiteral("-c:v") << QStringLiteral("libx264")
-             << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
-             << QStringLiteral("-vf")
-             << QStringLiteral("crop=trunc(iw/2)*2:trunc(ih/2)*2");
-    }
-    args << outPath;
+    // 引数の組み立ては io/MovieExport の純関数 (selftest から検証している)
+    const QStringList args = movie::buildFfmpegArgs(
+        QStringLiteral("%1/frame%05d.png").arg(dir), outPath,
+        movieOptions(videoExt == QLatin1String("gif")));
     auto *proc = new QProcess(this);
     connect(proc,
             qOverload<int, QProcess::ExitStatus>(&QProcess::finished),

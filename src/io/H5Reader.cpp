@@ -521,6 +521,43 @@ bool H5Reader::readOfdMidSlice(const QString &path, QVector<double> &cells,
     return true;
 }
 
+bool H5Reader::readOfdSeriesTimes(const QString &path, const QString &comp,
+                                  QVector<double> &out, QString *err)
+{
+    out.clear();
+    Ids id;
+    id.file = openRead(path, err);
+    if (id.file < 0) return false;
+    // E は /timeseries/time、H は半ステップずれるので /timeseries/time_H
+    const QByteArray ds = (comp == QLatin1String("H"))
+                              ? QByteArrayLiteral("/timeseries/time_H")
+                              : QByteArrayLiteral("/timeseries/time");
+    if (H5Lexists(id.file, "/timeseries", H5P_DEFAULT) <= 0 ||
+        H5Lexists(id.file, ds.constData(), H5P_DEFAULT) <= 0) {
+        setErr(err, QStringLiteral("no time dataset for %1").arg(comp));
+        return false;
+    }
+    id.dset = H5Dopen2(id.file, ds.constData(), H5P_DEFAULT);
+    if (id.dset < 0) { setErr(err, QStringLiteral("cannot open the time dataset"));
+                       return false; }
+    id.space = H5Dget_space(id.dset);
+    hsize_t d[1];
+    if (H5Sget_simple_extent_ndims(id.space) != 1 ||
+        H5Sget_simple_extent_dims(id.space, d, nullptr) != 1 || d[0] == 0) {
+        setErr(err, QStringLiteral("the time dataset is not a 1-D array"));
+        return false;
+    }
+    std::vector<double> buf(std::size_t(d[0]), 0.0);
+    if (H5Dread(id.dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                buf.data()) < 0) {
+        setErr(err, QStringLiteral("cannot read the time dataset"));
+        return false;
+    }
+    out.reserve(int(buf.size()));
+    for (std::size_t i = 0; i < buf.size(); ++i) out.push_back(buf[i]);
+    return true;
+}
+
 bool H5Reader::ofdSeriesInfo(const QString &path, const QString &comp,
                              H5OfdSeriesInfo &out, QString *err)
 {
@@ -795,6 +832,13 @@ bool H5Reader::readAll(const QString &, const QString &, QVector<double> &,
 
 bool H5Reader::readOfdMidSlice(const QString &, QVector<double> &,
                                int &, int &, QString *, QString *err)
+{
+    if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
+    return false;
+}
+
+bool H5Reader::readOfdSeriesTimes(const QString &, const QString &,
+                                  QVector<double> &, QString *err)
 {
     if (err) *err = QStringLiteral("built without HDF5 (USE_HDF5=OFF)");
     return false;
