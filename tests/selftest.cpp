@@ -30,6 +30,7 @@
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
 #include "io/H5Reader.h"
+#include "io/MeshRepair.h"
 #include "io/MovieExport.h"
 #include "io/KernelResultReader.h"
 #include "io/OfdIO.h"
@@ -10314,6 +10315,174 @@ static void testMeshDiagnostics()
         check(!s.valid && s.skippedTooLarge && s.triangles == 12,
               "meshdiag: oversized mesh is skipped, not silently OK");
         check(!s.watertight(), "meshdiag: skipped mesh never reports watertight");
+    }
+
+    // ── 修復 (io/MeshRepair) ─────────────────────────────────────────────
+    // 検出済みの欠陥を実際に直せること。期待値は構成した欠陥から決まる。
+    g_file = "mesh-repair";
+
+    // 7) 健全な立方体: 溶接だけが効き、位相と体積は変わらない
+    {
+        const ImportedMesh cube = orientedCube(0.02);
+        ImportedMesh fixed;
+        RepairReport rep;
+        check(repairMesh(cube, RepairOptions(), fixed, rep),
+              "meshfix: cube repaired");
+        check(rep.valid && rep.weldedVertices == 28,
+              "meshfix: cube welds 28 duplicate vertices");
+        check(rep.removedTriangles == 0 && rep.flippedTriangles == 0,
+              "meshfix: a healthy cube needs no removal or flip");
+        check(fixed.numTriangles == 12, "meshfix: triangle count preserved");
+        check(rep.after.watertight() && rep.after.inconsistentEdges == 0,
+              "meshfix: cube stays watertight and coherent");
+        check(rep.after.uniqueVertices == 8, "meshfix: 8 unique vertices");
+        // 表面積は 6a² = 6·0.02² = 0.0024 m² (形を変えていないこと)
+        check(std::fabs(fixed.surfaceArea - 6.0 * 0.02 * 0.02) < 1e-9,
+              "meshfix: surface area unchanged (6a^2)");
+        // bbox も変わらない
+        check(std::fabs(fixed.bbox[0] + 0.01) < 1e-9
+              && std::fabs(fixed.bbox[3] - 0.01) < 1e-9,
+              "meshfix: bounding box unchanged");
+    }
+
+    // 8) 裏返った面を直す — 修復後は向きの不一致が 0 になる
+    {
+        ImportedMesh flip = orientedCube(0.02);
+        for (int k = 0; k < 3; ++k)
+            std::swap(flip.vertices[3 + k], flip.vertices[6 + k]);
+        check(analyzeMesh(flip).inconsistentEdges == 3,
+              "meshfix: the flipped input really is inconsistent");
+
+        ImportedMesh fixed;
+        RepairReport rep;
+        check(repairMesh(flip, RepairOptions(), fixed, rep),
+              "meshfix: flipped cube repaired");
+        check(rep.after.inconsistentEdges == 0,
+              "meshfix: normals unified (no inconsistent edges left)");
+        check(rep.flippedTriangles > 0, "meshfix: at least one face flipped");
+        check(rep.after.watertight(), "meshfix: still watertight after unifying");
+        check(fixed.numTriangles == 12, "meshfix: no triangle lost");
+    }
+
+    // 9) 全面が内向きの立方体 → 閉じているので外向きへ揃え直す。
+    //    判定は符号付き体積: 外向きなら Σ (v0 · (v1 × v2)) > 0 で 6V になる。
+    {
+        ImportedMesh inward = orientedCube(0.02);
+        for (int t = 0; t < inward.numTriangles; ++t)
+            for (int k = 0; k < 3; ++k)
+                std::swap(inward.vertices[t * 9 + 3 + k],
+                          inward.vertices[t * 9 + 6 + k]);
+        // 全面反転しても「向きは一致している」ので検出には引っかからない
+        check(analyzeMesh(inward).inconsistentEdges == 0,
+              "meshfix: an all-inward cube looks coherent to the detector");
+
+        ImportedMesh fixed;
+        RepairReport rep;
+        check(repairMesh(inward, RepairOptions(), fixed, rep),
+              "meshfix: inward cube repaired");
+        check(rep.componentsFlipped == 1,
+              "meshfix: the closed component was flipped outward");
+        auto vol6 = [](const ImportedMesh &m) {
+            double v = 0.0;
+            for (int t = 0; t < m.numTriangles; ++t) {
+                const float *p = m.vertices.constData() + t * 9;
+                v += double(p[0]) * (double(p[4]) * p[8] - double(p[5]) * p[7])
+                   - double(p[1]) * (double(p[3]) * p[8] - double(p[5]) * p[6])
+                   + double(p[2]) * (double(p[3]) * p[7] - double(p[4]) * p[6]);
+            }
+            return v;
+        };
+        check(vol6(inward) < 0.0, "meshfix: inward cube has negative volume");
+        // 反転は符号を変えるだけ (座標は動かない) — 厳密に符号反転になる
+        check(vol6(fixed) == -vol6(inward),
+              "meshfix: flipping negates the signed volume exactly");
+        check(vol6(fixed) > 0.0, "meshfix: repaired cube is outward");
+        // 大きさは 6V = 6·a³ = 4.8e-5。頂点が float なので相対 1e-6 で判定する
+        // (0.01 は float で厳密に表せない — 実測差 3.2e-12)
+        check(std::fabs(vol6(fixed) - 6.0 * 0.02 * 0.02 * 0.02)
+                  < 1e-6 * 6.0 * 0.02 * 0.02 * 0.02,
+              "meshfix: repaired cube encloses +6V");
+    }
+
+    // 10) 縮退三角形は捨てられる (位相はそのまま)
+    {
+        ImportedMesh deg = orientedCube(0.02);
+        addTri(deg, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001,
+                    0.001, 0.001, 0.001);
+        ImportedMesh fixed;
+        RepairReport rep;
+        check(repairMesh(deg, RepairOptions(), fixed, rep),
+              "meshfix: mesh with a degenerate repaired");
+        check(rep.removedTriangles == 1, "meshfix: the degenerate was removed");
+        check(fixed.numTriangles == 12, "meshfix: only the degenerate was lost");
+        check(rep.after.degenerateTriangles == 0,
+              "meshfix: no degenerate remains");
+        check(rep.after.watertight(), "meshfix: topology still closed");
+
+        // 除去を切ると残る (オプションが効いていること)
+        RepairOptions keep;
+        keep.dropDegenerate = false;
+        ImportedMesh kept;
+        RepairReport rep2;
+        check(repairMesh(deg, keep, kept, rep2) && kept.numTriangles == 13,
+              "meshfix: dropDegenerate = false keeps the triangle");
+        check(rep2.removedTriangles == 0, "meshfix: nothing removed when off");
+    }
+
+    // 11) 穴は塞がない (形を勝手に変えない) — 残ったことを報告する
+    {
+        ImportedMesh holed = orientedCube(0.02);
+        holed.vertices.resize(holed.vertices.size() - 9);
+        --holed.numTriangles;
+        ImportedMesh fixed;
+        RepairReport rep;
+        check(repairMesh(holed, RepairOptions(), fixed, rep),
+              "meshfix: holed mesh repaired");
+        check(rep.boundaryEdgesLeft == 3,
+              "meshfix: the hole is reported, not silently filled");
+        check(!rep.after.watertight(),
+              "meshfix: a holed mesh does not become watertight");
+        check(fixed.numTriangles == 11, "meshfix: no triangle added");
+    }
+
+    // 12) 修復しない入力 (空 / 上限超過) は false を返す
+    {
+        ImportedMesh out;
+        RepairReport rep;
+        check(!repairMesh(ImportedMesh(), RepairOptions(), out, rep),
+              "meshfix: empty mesh is not repaired");
+        const ImportedMesh cube = orientedCube(0.02);
+        check(!repairMesh(cube, RepairOptions(), out, rep, 4)
+              && rep.skippedTooLarge,
+              "meshfix: oversized mesh is skipped, not partially touched");
+    }
+
+    // 13) 決定性 (同じ入力 → 同じ出力)
+    {
+        ImportedMesh flip = orientedCube(0.02);
+        for (int k = 0; k < 3; ++k)
+            std::swap(flip.vertices[3 + k], flip.vertices[6 + k]);
+        ImportedMesh a, b;
+        RepairReport ra, rb;
+        check(repairMesh(flip, RepairOptions(), a, ra)
+              && repairMesh(flip, RepairOptions(), b, rb),
+              "meshfix: repeated repair succeeds");
+        check(a.vertices == b.vertices && a.numTriangles == b.numTriangles,
+              "meshfix: repair is deterministic");
+        // 直したものをもう一度直しても何も変わらない (冪等)。
+        // ただし ImportedMesh は常に三角形スープ (頂点を共有しない形式) なので、
+        // 溶接の「消えた頂点数」は 2 回目も 28 のままになる — これは正常。
+        ImportedMesh again;
+        RepairReport r2;
+        check(repairMesh(a, RepairOptions(), again, r2),
+              "meshfix: re-repair succeeds");
+        check(r2.flippedTriangles == 0 && r2.removedTriangles == 0
+              && r2.componentsFlipped == 0,
+              "meshfix: a clean mesh needs no flip or removal");
+        check(r2.weldedVertices == 28,
+              "meshfix: the soup format still reports welded duplicates");
+        check(again.vertices == a.vertices, "meshfix: idempotent geometry");
+        check(again.numTriangles == a.numTriangles, "meshfix: idempotent count");
     }
 }
 

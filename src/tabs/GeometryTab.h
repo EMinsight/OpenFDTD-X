@@ -20,6 +20,7 @@
 #include <QScrollArea>
 #include "../core/Geometry.h"
 #include "../io/MeshDiagnostics.h"
+#include "../io/MeshRepair.h"
 #include "../io/StlImporter.h"
 
 class QButtonGroup;
@@ -47,6 +48,7 @@ public:
     explicit GeometryTab(Project *project, QWidget *parent = nullptr);
 
 private slots:
+    void runHealing();          // 取込メッシュを修復して検査し直す
     void refresh();
     void importStl();
     void voxelizeImported();
@@ -141,6 +143,8 @@ private:
     QCheckBox      *m_placeCenter = nullptr;
     QCheckBox      *m_placeAutoAxis = nullptr;
     // ジオメトリ検査 (検出のみ — 修復は未実装)
+    QPushButton    *m_healBtn = nullptr;    // 「▶ 修復を実行」
+    QLabel         *m_healResult = nullptr; // 修復結果 (実行後のみ)
     QTableWidget   *m_healTable = nullptr;
     QLabel         *m_healNone = nullptr;   // 未取込 / 検査省略の説明
     // 物性値割当

@@ -201,6 +201,32 @@ const Tr kTr[] = {
     { "geoc_heal_tol", "▸ 頂点溶接の許容差: %1 m (bbox 対角 × 1e-6)",
       "▸ Vertex weld tolerance: %1 m (bbox diagonal × 1e-6)" },
     { "geoc_heal_run", "🔧 自動修復実行", "🔧 Run auto-heal" },
+    { "geoc_heal_tip",
+      "頂点溶接・縮退三角形の除去・法線の統一を行い、検査をやり直します。"
+      "穴埋め (境界エッジの解消) は行いません — 塞ぎ方が一意でなく、"
+      "形状を変えてしまうためです。",
+      "Welds vertices, drops degenerate triangles and unifies the normals, "
+      "then re-runs the checks. Holes are NOT filled — there is no unique way "
+      "to close them and doing so would change the shape." },
+    { "geoc_heal_done",
+      "▸ 修復しました: 頂点溶接 %1、縮退三角形の除去 %2、法線の反転 %3。",
+      "▸ Repaired: %1 vertices welded, %2 degenerate triangles removed, "
+      "%3 faces flipped." },
+    { "geoc_heal_outward",
+      "閉じた成分 %1 個を外向きへ揃えました。",
+      "%1 closed component(s) were flipped to face outward." },
+    { "geoc_heal_holes",
+      "境界エッジが %1 本残っています (穴埋めは未実装 — "
+      "元の CAD で塞いでください)。",
+      "%1 boundary edge(s) remain (hole filling is not implemented — close "
+      "them in the original CAD)." },
+    { "geoc_heal_watertight", "水密になりました。", "The mesh is now watertight." },
+    { "geoc_heal_toolarge",
+      "三角形が多すぎるため修復していません (検査の上限を超えています)。",
+      "Not repaired — the mesh exceeds the triangle limit for the checks." },
+    { "geoc_heal_failed",
+      "修復できませんでした (三角形が残りません)。",
+      "Could not repair (no triangle would be left)." },
     { "geoc_heal_next", "後処理: ボクセル化へ", "Next: voxelization" },
 
     // ── 物性値割当 / Material mapping ───────────────────────────────────────
@@ -1344,12 +1370,16 @@ QWidget *GeometryTab::buildHealingSection()
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_heal_note"), s));
 
     auto *br = new QHBoxLayout();
-    auto *healBtn = new QPushButton(I18n::tr("geoc_heal_run"), s);
-    tabhelp::markNotImplemented(healBtn);   // 自動修復は未実装 (検出のみ)
-    br->addWidget(healBtn);
+    m_healBtn = new QPushButton(I18n::tr("geoc_heal_run"), s);
+    m_healBtn->setToolTip(I18n::tr("geoc_heal_tip"));
+    m_healBtn->setEnabled(false);           // 取込・検査が済むまで押せない
+    connect(m_healBtn, &QPushButton::clicked, this, &GeometryTab::runHealing);
+    br->addWidget(m_healBtn);
     br->addStretch(1);
     br->addWidget(makeHint(I18n::tr("geoc_heal_next"), s));
     s->vbox()->addLayout(br);
+    m_healResult = makeHint(QString(), s);  // 修復の結果 (実行後のみ)
+    s->vbox()->addWidget(m_healResult);
     return s;
 }
 
@@ -2078,8 +2108,45 @@ void GeometryTab::refreshAssemblyTree()
 // ── ジオメトリ検査の表を実検出数で更新する ─────────────────────────────────
 // 6 行はすべて io/MeshDiagnostics が実メッシュから数えた値。取込前は「—」、
 // 三角形数の上限を超えて検査を省略した場合はその旨を出す (偽の OK は出さない)。
+// ── 修復の実行 ─────────────────────────────────────────────────────────────
+// 取込メッシュ (変換前) を修復して置き換え、配置・変換をかけ直してから
+// 検査をやり直す。穴埋めは実装していないので、残った境界エッジは結果に出す。
+void GeometryTab::runHealing()
+{
+    if (!m_hasMesh || !m_diag.valid) return;
+    ImportedMesh fixed;
+    RepairReport rep;
+    if (!repairMesh(m_rawMesh, RepairOptions(), fixed, rep)) {
+        m_healResult->setText(rep.skippedTooLarge
+                                  ? I18n::tr("geoc_heal_toolarge")
+                                  : I18n::tr("geoc_heal_failed"));
+        return;
+    }
+    m_rawMesh = fixed;
+    m_lastMesh = applyPlacement(fixed);
+    m_diag = rep.after;
+
+    QStringList parts;
+    parts << I18n::tr("geoc_heal_done")
+                 .arg(rep.weldedVertices)
+                 .arg(rep.removedTriangles)
+                 .arg(rep.flippedTriangles);
+    if (rep.componentsFlipped > 0)
+        parts << I18n::tr("geoc_heal_outward").arg(rep.componentsFlipped);
+    if (rep.boundaryEdgesLeft > 0)
+        parts << I18n::tr("geoc_heal_holes").arg(rep.boundaryEdgesLeft);
+    else if (rep.after.watertight())
+        parts << I18n::tr("geoc_heal_watertight");
+    m_healResult->setText(parts.join(QStringLiteral(" ")));
+
+    refreshImportBadges();
+    refreshAssemblyTree();
+    refreshHealing();
+}
+
 void GeometryTab::refreshHealing()
 {
+    if (m_healBtn) m_healBtn->setEnabled(m_diag.valid);
     if (!m_healTable) return;
 
     // 取込前 / 検査省略: 数値を出さずに理由を示す
