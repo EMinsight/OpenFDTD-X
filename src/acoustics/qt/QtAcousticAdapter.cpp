@@ -117,11 +117,25 @@ QtAcousticAdapter::analyze(const std::vector<double> &samples,
     return analyzer.analyze(ArrayView<const double>(samples), sampleRateHz);
 }
 
+SweepSpec QtAcousticAdapter::sweepSpec(const OperaAcousticSettings &settings,
+                                       double sampleRateHz)
+{
+    SweepSpec sp;
+    sp.startHz = settings.sweepStartHz;
+    sp.endHz = settings.sweepEndHz;
+    sp.durationSec = settings.sweepSec;
+    sp.sampleRateHz = sampleRateHz;
+    return sp;
+}
+
 AcousticResult<RirAnalysisResult>
 QtAcousticAdapter::analyzeFile(const OperaAcousticSettings &settings,
                                std::vector<double> *outSamples,
-                               double *outSampleRate)
+                               double *outSampleRate,
+                               SweepDeconvolutionResult *outSweep,
+                               QString *outSweepError)
 {
+    if (outSweepError) outSweepError->clear();
     const AcousticResult<AudioBuffer> wav = readWav(settings.rirPath);
     if (!wav.success())
         return AcousticResult<RirAnalysisResult>::error(wav.errorCode(),
@@ -129,6 +143,26 @@ QtAcousticAdapter::analyzeFile(const OperaAcousticSettings &settings,
     std::vector<double> samples =
         selectChannel(wav.value(), settings.channelMode);
     const double fs = wav.value().sampleRateHz;
+
+    // ESS 逆畳み込み: 録音を線形インパルス応答へ変換してから分析する。
+    // 失敗したら**そのまま IR として分析し直したりしない** — 掃引のつもりの
+    // 録音を IR として解析すると、意味のない指標が出てしまう。
+    if (settings.sweepDeconvolve) {
+        const SweepSpec sp = sweepSpec(settings, fs);
+        const AcousticResult<SweepDeconvolutionResult> d =
+            deconvolveSweep(ArrayView<const double>(samples.data(),
+                                                    samples.size()),
+                            sp, settings.sweepHarmonics ? 5 : 0);
+        if (!d.success()) {
+            if (outSweepError)
+                *outSweepError = QString::fromStdString(d.message());
+            return AcousticResult<RirAnalysisResult>::error(d.errorCode(),
+                                                            d.message());
+        }
+        if (outSweep) *outSweep = d.value();
+        samples = d.value().linear;
+    }
+
     if (outSamples) *outSamples = samples;
     if (outSampleRate) *outSampleRate = fs;
     return analyze(samples, fs, settings);

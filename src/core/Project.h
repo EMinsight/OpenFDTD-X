@@ -454,6 +454,17 @@ struct OperaAcousticSettings {
     double  minimumDynamicRangeDb = 35.0;
     int     channelMode = 2;      // 0=L 1=R 2=平均モノ
 
+    // ── ESS (指数掃引正弦波) 逆畳み込み (.ofdx "opera_analysis.sweep" —
+    //    追加キー。既定のままならキー自体を書かない) ──
+    // 有効にすると rirPath を「掃引を再生して収録した録音」として扱い、
+    // 逆畳み込みで線形インパルス応答を取り出してから分析する
+    // (src/acoustics/core/SweepDeconvolution, Farina 2000)。
+    bool    sweepDeconvolve = false;
+    double  sweepStartHz = 20.0;      // 掃引の開始周波数 f1
+    double  sweepEndHz   = 20000.0;   // 同 終了周波数 f2
+    double  sweepSec     = 5.0;       // 掃引長 T
+    bool    sweepHarmonics = false;   // 高調波分離 (THD・次数別レベル) の表示
+
     // 可聴化 (AuralizationTab, .ofdx "opera_analysis/auralization")
     QString auralizationDryFile;      // ドライ (無響/近接) 歌唱 WAV
     QString auralizationOutputFile;   // ウェット出力 WAV

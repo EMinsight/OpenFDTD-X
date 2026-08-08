@@ -785,6 +785,23 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                 {"executable", oa.solverExecutable},
                 {"threads", oa.solverThreads},
                 {"processes", oa.solverProcesses} }} };
+        {   // ESS 逆畳み込み — 既定のままならキー自体を書かない
+            const OperaAcousticSettings d;
+            if (oa.sweepDeconvolve != d.sweepDeconvolve
+                || oa.sweepStartHz != d.sweepStartHz
+                || oa.sweepEndHz != d.sweepEndHz
+                || oa.sweepSec != d.sweepSec
+                || oa.sweepHarmonics != d.sweepHarmonics) {
+                QJsonObject oaObj = ac["opera_analysis"].toObject();
+                oaObj["sweep"] = QJsonObject{
+                    {"deconvolve", oa.sweepDeconvolve},
+                    {"start_hz", oa.sweepStartHz},
+                    {"end_hz", oa.sweepEndHz},
+                    {"duration_s", oa.sweepSec},
+                    {"harmonics", oa.sweepHarmonics} };
+                ac["opera_analysis"] = oaObj;
+            }
+        }
         root["acoustic"] = ac;
     }
     {
@@ -1343,6 +1360,16 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 oa.value("calibration_state").toInt(s.calibrationState);
             s.calibrationOffsetDb =
                 oa.value("calibration_offset_db").toDouble(s.calibrationOffsetDb);
+            if (oa.contains("sweep")) {      // ESS 逆畳み込み — 追加キー
+                const QJsonObject sw = oa["sweep"].toObject();
+                s.sweepDeconvolve =
+                    sw.value("deconvolve").toBool(s.sweepDeconvolve);
+                s.sweepStartHz = sw.value("start_hz").toDouble(s.sweepStartHz);
+                s.sweepEndHz   = sw.value("end_hz").toDouble(s.sweepEndHz);
+                s.sweepSec     = sw.value("duration_s").toDouble(s.sweepSec);
+                s.sweepHarmonics =
+                    sw.value("harmonics").toBool(s.sweepHarmonics);
+            }
             s.directSoundMethod =
                 oa.value("direct_sound_method").toInt(s.directSoundMethod);
             s.bandMode = oa.value("band_mode").toInt(s.bandMode);

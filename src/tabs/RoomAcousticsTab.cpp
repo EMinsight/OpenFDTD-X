@@ -124,6 +124,50 @@ const bool s_i18n = [] {
     I18n::reg("rah_schroeder_section", "Schroeder 減衰曲線",
               "Schroeder decay curve");
     I18n::reg("rah_col_metric", "指標", "Metric");
+    I18n::reg("rah_ess_tip",
+              "上のファイルを「掃引正弦波を再生して収録した録音」として扱い、"
+              "逆畳み込みで線形インパルス応答を取り出してから分析します "
+              "(Farina, AES 108th Convention 2000)。測定に使った掃引と同じ "
+              "開始/終了周波数と長さを指定してください — 違うと意味のある"
+              "結果になりません。",
+              "Treats the file above as a recording of a played sine sweep and "
+              "extracts the linear impulse response by deconvolution before "
+              "analysing it (Farina, AES 108th Convention, 2000). Enter the "
+              "same start/end frequency and length as the sweep you used — "
+              "anything else gives meaningless results.");
+    I18n::reg("rah_harm_tip",
+              "逆畳み込みでは N 次高調波が線形応答より T·ln(N)/ln(f2/f1) だけ"
+              "前に現れます。その区間を切り出して次数別レベルと THD を出します。",
+              "In the deconvolved response the N-th harmonic appears "
+              "T·ln(N)/ln(f2/f1) ahead of the linear response. Those slots are "
+              "extracted to report per-order levels and the THD.");
+    I18n::reg("rah_sweep_params", "掃引 (f1〜f2 / 長さ)",
+              "Sweep (f1 – f2 / length)");
+    I18n::reg("rah_sweep_off",
+              "▸ ESS 逆畳み込みは無効 — ファイルはインパルス応答そのものとして"
+              "読み込みます。",
+              "▸ ESS deconvolution is off — the file is read as an impulse "
+              "response itself.");
+    I18n::reg("rah_sweep_pending",
+              "▸ ESS 逆畳み込みは有効。「実行」を押すと録音を逆畳み込みしてから"
+              "分析します (未実行)。",
+              "▸ ESS deconvolution is on. Press \"Run\" to deconvolve the "
+              "recording before analysing it (not run yet).");
+    I18n::reg("rah_sweep_done",
+              "▸ ESS 逆畳み込み済み (%1〜%2 Hz, %3 s)。得られる指標は "
+              "**掃引の帯域に制限された**インパルス応答に対する値です "
+              "(帯域外は録音に含まれないため復元できません)。",
+              "▸ Deconvolved from an ESS (%1–%2 Hz, %3 s). The metrics are "
+              "those of an impulse response **band-limited to the sweep "
+              "range** — anything outside it is not in the recording and "
+              "cannot be recovered.");
+    I18n::reg("rah_sweep_thd", "▸ 高調波歪み THD = %1 % (%2)",
+              "▸ Harmonic distortion THD = %1 % (%2)");
+    I18n::reg("rah_sweep_nothd",
+              "▸ 高調波を切り出せませんでした (掃引が短いか帯域が狭く、"
+              "次数どうしが重なっています)。",
+              "▸ No harmonic slot could be separated (the sweep is too short "
+              "or its range too narrow, so the orders overlap).");
     I18n::reg("rah_inr_check", "帯域内 INR (Impulse-to-Noise Ratio) を表示",
               "Show the per-band INR (impulse-to-noise ratio)");
     I18n::reg("rah_inr_tip",
@@ -1311,16 +1355,42 @@ QWidget *RoomAcousticsTab::buildIRPage()
     m_irStatus = makeHint(QString(), s);
     s->vbox()->addWidget(m_irStatus);
 
+    // ── ESS (指数掃引正弦波) 逆畳み込み ──
+    // 有効にすると上のファイルを「掃引を再生して収録した録音」として扱い、
+    // 逆畳み込みで線形 IR を取り出してから分析する (Farina 2000)。
+    const OperaAcousticSettings &oa0 = m_p->operaAcoustic();
     auto *invRow = new QHBoxLayout();
-    // ESS 逆畳み込み / 高調波分離は未実装 (取り込むのは IR そのもの)
-    auto *essCheck = makeCheck(I18n::tr("rah_ess"), false, s);
-    auto *harmCheck = makeCheck(I18n::tr("rah_harm_sep"), false, s);
-    tabhelp::markNotImplemented(essCheck);
-    tabhelp::markNotImplemented(harmCheck);
-    invRow->addWidget(essCheck);
-    invRow->addWidget(harmCheck);
+    m_essCheck = makeCheck(I18n::tr("rah_ess"), oa0.sweepDeconvolve, s);
+    m_essCheck->setToolTip(I18n::tr("rah_ess_tip"));
+    m_harmCheck = makeCheck(I18n::tr("rah_harm_sep"), oa0.sweepHarmonics, s);
+    m_harmCheck->setToolTip(I18n::tr("rah_harm_tip"));
+    invRow->addWidget(m_essCheck);
+    invRow->addWidget(m_harmCheck);
     invRow->addStretch(1);
     s->form()->addRow(I18n::tr("rah_inv_filter"), invRow);
+
+    auto *swRow = new QHBoxLayout();
+    m_sweepF1 = new QLineEdit(QString::number(oa0.sweepStartHz, 'g', 6), s);
+    m_sweepF2 = new QLineEdit(QString::number(oa0.sweepEndHz, 'g', 6), s);
+    m_sweepT  = new QLineEdit(QString::number(oa0.sweepSec, 'g', 6), s);
+    for (QLineEdit *e : { m_sweepF1, m_sweepF2, m_sweepT }) e->setMaximumWidth(70);
+    swRow->addWidget(m_sweepF1);
+    swRow->addWidget(new QLabel(QString::fromUtf8("〜"), s));
+    swRow->addWidget(m_sweepF2);
+    swRow->addWidget(new QLabel("Hz  /", s));
+    swRow->addWidget(m_sweepT);
+    swRow->addWidget(new QLabel("s", s));
+    swRow->addStretch(1);
+    s->form()->addRow(I18n::tr("rah_sweep_params"), swRow);
+    m_sweepNote = makeHint(QString(), s);
+    s->vbox()->addWidget(m_sweepNote);
+    for (QLineEdit *e : { m_sweepF1, m_sweepF2, m_sweepT })
+        connect(e, &QLineEdit::editingFinished, this,
+                &RoomAcousticsTab::applySweepSettings);
+    connect(m_essCheck, &QCheckBox::toggled, this,
+            &RoomAcousticsTab::applySweepSettings);
+    connect(m_harmCheck, &QCheckBox::toggled, this,
+            &RoomAcousticsTab::applySweepSettings);
     v->addWidget(s);
 
     auto *sd = new SectionBox(I18n::tr("rah_schroeder_section"), page);
@@ -2325,6 +2395,28 @@ void RoomAcousticsTab::refreshIrPage()
         }
     }
 
+    // ── ESS 逆畳み込みの状態 (プロジェクト読込にも追従させる)
+    if (m_sweepNote) {
+        const OperaAcousticSettings &oa = m_p->operaAcoustic();
+        if (m_essCheck && !m_updating) {
+            const bool prev = m_updating;
+            m_updating = true;
+            m_essCheck->setChecked(oa.sweepDeconvolve);
+            m_harmCheck->setChecked(oa.sweepHarmonics);
+            m_harmCheck->setEnabled(oa.sweepDeconvolve);
+            m_sweepF1->setText(QString::number(oa.sweepStartHz, 'g', 6));
+            m_sweepF2->setText(QString::number(oa.sweepEndHz, 'g', 6));
+            m_sweepT->setText(QString::number(oa.sweepSec, 'g', 6));
+            m_sweepF1->setEnabled(oa.sweepDeconvolve);
+            m_sweepF2->setEnabled(oa.sweepDeconvolve);
+            m_sweepT->setEnabled(oa.sweepDeconvolve);
+            m_updating = prev;
+        }
+        if (!m_sweepResult.isEmpty())      m_sweepNote->setText(m_sweepResult);
+        else if (oa.sweepDeconvolve)       m_sweepNote->setText(I18n::tr("rah_sweep_pending"));
+        else                               m_sweepNote->setText(I18n::tr("rah_sweep_off"));
+    }
+
     // ── 算出方法の明示
     if (wantMeas && !measOk) {
         m_irMethodNote->setText(I18n::tr("rah_ir_notloaded"));
@@ -2654,10 +2746,38 @@ void RoomAcousticsTab::refreshReinforcePage()
 // ── 実測 IR (WAV) の解析 ────────────────────────────────────────────────────
 // 実測RIR分析タブと同じ OperaAcousticSettings を使って RirAnalyzer を回す。
 // ボタン起動の単発処理 (自動実行はしない — GUI スレッドを長く占有しない)。
+// ESS 設定 widgets → model (実行はボタン起動のまま — 自動で走らせない)
+void RoomAcousticsTab::applySweepSettings()
+{
+    if (m_updating || !m_essCheck) return;
+    OperaAcousticSettings &s = m_p->operaAcoustic();
+    const OperaAcousticSettings d;
+    auto num = [](QLineEdit *e, double fallback) {
+        bool ok = false;
+        const double v = e->text().trimmed().toDouble(&ok);
+        return (ok && v > 0.0) ? v : fallback;
+    };
+    const bool was = s.sweepDeconvolve;
+    s.sweepDeconvolve = m_essCheck->isChecked();
+    s.sweepHarmonics  = m_harmCheck->isChecked();
+    s.sweepStartHz    = num(m_sweepF1, d.sweepStartHz);
+    s.sweepEndHz      = num(m_sweepF2, d.sweepEndHz);
+    s.sweepSec        = num(m_sweepT, d.sweepSec);
+    m_p->touch();
+    // 設定が変われば前回の逆畳み込み結果は無効 (実行結果でないものを残さない)
+    if (was != s.sweepDeconvolve || !s.sweepDeconvolve) m_sweepResult.clear();
+    m_sweepF1->setEnabled(s.sweepDeconvolve);
+    m_sweepF2->setEnabled(s.sweepDeconvolve);
+    m_sweepT->setEnabled(s.sweepDeconvolve);
+    m_harmCheck->setEnabled(s.sweepDeconvolve);
+    refreshIrPage();
+}
+
 void RoomAcousticsTab::runMeasuredIr()
 {
     m_measIr = MeasuredIrBands();
     m_measDecay.clear();
+    m_sweepResult.clear();
     const OperaAcousticSettings &s = m_p->operaAcoustic();
     if (s.rirPath.trimmed().isEmpty()) {
         m_measIr.status = I18n::tr("rah_ir_status_none");
@@ -2666,8 +2786,10 @@ void RoomAcousticsTab::runMeasuredIr()
     }
     std::vector<double> samples;
     double fs = 0.0;
+    acoustics::SweepDeconvolutionResult sweep;
+    QString sweepErr;
     const acoustics::AcousticResult<acoustics::RirAnalysisResult> res =
-        QtAcousticAdapter::analyzeFile(s, &samples, &fs);
+        QtAcousticAdapter::analyzeFile(s, &samples, &fs, &sweep, &sweepErr);
     if (!res.success()) {
         m_measIr.status = I18n::tr("rah_ir_status_err")
             .arg(QString::fromStdString(res.message()));
@@ -2697,6 +2819,34 @@ void RoomAcousticsTab::runMeasuredIr()
     m_measIr.loaded = n > 0;
     m_measIr.status = I18n::tr("rah_ir_status_ok")
         .arg(QFileInfo(s.rirPath).fileName());
+
+    // 逆畳み込みを行ったなら、その事実と帯域制限・歪みを必ず出す
+    // (掃引録音を IR として扱ったのか、逆畳み込みしたのかが分からないと
+    //  指標の意味が変わる)
+    if (s.sweepDeconvolve && sweep.valid) {
+        QStringList parts;
+        parts << I18n::tr("rah_sweep_done")
+                     .arg(QString::number(s.sweepStartHz, 'g', 4),
+                          QString::number(s.sweepEndHz, 'g', 4),
+                          QString::number(s.sweepSec, 'g', 4));
+        if (s.sweepHarmonics) {
+            if (sweep.thdValid) {
+                QStringList lv;
+                for (const acoustics::HarmonicComponent &h : sweep.harmonics) {
+                    if (!h.separable) continue;
+                    lv << QStringLiteral("%1次 %2 dBc")
+                              .arg(h.order)
+                              .arg(QString::number(h.levelDbc, 'f', 1));
+                }
+                parts << I18n::tr("rah_sweep_thd")
+                             .arg(QString::number(sweep.thdPercent, 'f', 2),
+                                  lv.join(QStringLiteral(" / ")));
+            } else {
+                parts << I18n::tr("rah_sweep_nothd");
+            }
+        }
+        m_sweepResult = parts.join(QStringLiteral("\n"));
+    }
 
     // 広帯域 Schroeder 減衰カーブ (プロット用, 秒スケール)
     const acoustics::SchroederResult decay =

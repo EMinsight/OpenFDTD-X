@@ -3066,6 +3066,59 @@ static void testAudioEditEngine()
         check(readSidecar() == baseline,
               "prep: reverting to the defaults restores byte-identical output");
 
+        // ── ESS 逆畳み込み設定 (.ofdx opera_analysis.sweep) ──
+        // 同じく追加キー: 既定ならキーを書かず、戻せばバイト一致に戻る
+        {
+            ofd::Project sp;
+            QString e2;
+            const QString p2 = dir.filePath("sweep.ofd");
+            const QString sc2 = dir.filePath("sweep.ofdx");
+            auto bytes2 = [&] {
+                QFile f(sc2);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(sp.save(p2, &e2), "sweep-ofdx: default saved");
+            const QByteArray base2 = bytes2();
+            check(!base2.contains("\"sweep\""),
+                  "sweep-ofdx: defaults write no sweep key");
+
+            sp.operaAcoustic().sweepDeconvolve = true;
+            sp.operaAcoustic().sweepStartHz = 50.0;
+            sp.operaAcoustic().sweepEndHz = 16000.0;
+            sp.operaAcoustic().sweepSec = 3.5;
+            sp.operaAcoustic().sweepHarmonics = true;
+            check(sp.save(p2, &e2), "sweep-ofdx: enabled saved");
+            check(bytes2().contains("\"sweep\""),
+                  "sweep-ofdx: non-default settings write the key");
+
+            ofd::Project rd2;
+            check(rd2.load(p2, &e2), "sweep-ofdx: reloaded");
+            check(rd2.operaAcoustic().sweepDeconvolve
+                  && rd2.operaAcoustic().sweepStartHz == 50.0
+                  && rd2.operaAcoustic().sweepEndHz == 16000.0
+                  && rd2.operaAcoustic().sweepSec == 3.5
+                  && rd2.operaAcoustic().sweepHarmonics,
+                  "sweep-ofdx: round-trips the sweep settings");
+
+            const ofd::OperaAcousticSettings d2;
+            rd2.operaAcoustic().sweepDeconvolve = d2.sweepDeconvolve;
+            rd2.operaAcoustic().sweepStartHz = d2.sweepStartHz;
+            rd2.operaAcoustic().sweepEndHz = d2.sweepEndHz;
+            rd2.operaAcoustic().sweepSec = d2.sweepSec;
+            rd2.operaAcoustic().sweepHarmonics = d2.sweepHarmonics;
+            check(rd2.save(p2, &e2), "sweep-ofdx: reverted saved");
+            check(bytes2() == base2,
+                  "sweep-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o2;
+            check(!o2.operaAcoustic().sweepDeconvolve
+                  && o2.operaAcoustic().sweepStartHz == 20.0
+                  && o2.operaAcoustic().sweepEndHz == 20000.0
+                  && o2.operaAcoustic().sweepSec == 5.0
+                  && !o2.operaAcoustic().sweepHarmonics,
+                  "sweep-ofdx: missing key falls back to the defaults");
+        }
+
         // 旧ファイル (source_wav 無し) は既定値のまま
         ofd::Project old;
         check(old.acoustic().wavTrimStart_s == 0.0
