@@ -6,6 +6,12 @@
 // (ray casting parity test)。占有セルは X 方向に連続する区間ごとに直方体
 // (geometry shape=1) へまとめ、Project に追加できる形で返す。
 //
+// 出力は必ず Yee セル単位の直方体 (.ofd の geometry) である。部分体積率
+// (VoxelOptions::pvf) は **セルを部分的に埋める表現ではなく**、占有/非占有の
+// 判定をセル中心 1 点から N³ 点の体積率へ置き換えるもの。併せて形状の体積を
+// 精度よく見積もり、階段近似の形状誤差を実測できるようにする
+// (材質の内挿 = 共形/サブセル FDTD はカーネル側の機能で、ここでは扱わない)。
+//
 // libigl ビルド (-DUSE_LIBIGL=ON) では fast_winding_number による
 // より正確な内外判定・共形メッシュへ差し替え可能 (将来拡張)。
 #pragma once
@@ -44,6 +50,20 @@ struct VoxelOptions {
     // 切ると 1 セル = 1 直方体になり、.ofd の geometry 行数が跳ね上がる
     // (代わりにセルとの対応が 1:1 になる)。
     bool mergeRuns = true;
+
+    // ── 部分体積率 (PVF: partial volume fraction) ─────────────────────────
+    // 三角形が横切るセル (境界セル) だけを pvfSamples³ 点で再標本化し、
+    // セル内の材質の占有率 f を求める。占有判定は f >= pvfThreshold。
+    // 境界セル以外は面が通らないので中心 1 点で厳密に決まる (再標本化しない)。
+    //
+    // pvfSamples = 1 は中心 1 点そのものなので、**PVF 無効時と完全に同じ結果**
+    // になる (従来判定は N=1 の特別な場合)。
+    bool   pvf = false;
+    int    pvfSamples = 4;          // 1..8 へクランプ
+    double pvfThreshold = 0.5;      // (0, 1] へクランプ
+    // 再標本化の作業量 (境界セル数 × 標本数 × 三角形数) の上限。
+    // 超えたら黙って粗くせずエラーにする (何を計算したか分からなくしない)。
+    qint64 pvfWorkCap = 200'000'000;
 };
 
 struct VoxelResult {
@@ -52,6 +72,12 @@ struct VoxelResult {
     int     nx = 0, ny = 0, nz = 0;     // mesh cell counts used
     qint64  occupied = 0;               // number of occupied Yee cells
     QVector<Geometry> bricks;           // staircase geometry (X-runs merged)
+
+    // 占有セルの総体積 [m³] (= 階段近似した形状の体積)。常に算出する。
+    double  stairVolume = 0.0;
+    // ↓ PVF 有効時のみ意味を持つ (無効時は 0)
+    qint64  boundaryCells = 0;          // 三角形が横切るセル = 再標本化した数
+    double  pvfVolume = 0.0;            // Σ f·セル体積 [m³] (体積の推定値)
 };
 
 class Voxelizer {

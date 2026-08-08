@@ -217,11 +217,11 @@ const Tr kTr[] = {
       "every cell would be classified as outside. Run \"Repair geometry\" to "
       "unify the normals first (or choose ray parity)." },
     { "geoc_vox_engine_note",
-      "▸ 内外判定 (レイ/巻き数) と「連続セルをまとめる」は実際に効きます。"
-      "表面処理の共形・サブセル、部分体積率、八分木、GPU はエンジン未実装です。",
-      "▸ The inside test (ray / winding) and \"merge runs\" really take "
-      "effect. Conformal and sub-cell surface handling, the partial volume "
-      "fraction, the octree and GPU are not implemented in the engine." },
+      "▸ 内外判定 (レイ/巻き数)・部分体積率・「連続セルをまとめる」は実際に"
+      "効きます。表面処理の共形・サブセル、八分木、GPU はエンジン未実装です。",
+      "▸ The inside test (ray / winding), the partial volume fraction and "
+      "\"merge runs\" really take effect. Conformal and sub-cell surface "
+      "handling, the octree and GPU are not implemented in the engine." },
     { "geoc_autoaxis_tip",
       "取込メッシュの面積重み付き慣性主軸を求め、それを X/Y/Z へ揃える回転角を"
       "回転欄へ入れます (以後は手で微調整できます)。頂点の多い面に引きずられ"
@@ -387,8 +387,14 @@ const Tr kTr[] = {
     { "geoc_vox_pvf_label", "部分容積判定", "Partial volume" },
     { "geoc_vox_pvf", "PVF (Partial Volume Fraction)",
       "PVF (partial volume fraction)" },
-    { "geoc_vox_pvf_hint", "境界セルの占有率で物性値を内挿",
-      "Interpolates the material from the boundary-cell occupancy" },
+    // 実装は「材質の内挿」ではなく「占有判定を体積率で行う」。
+    // .ofd の geometry は直方体単位なので、セルを部分的に埋める表現は持てない。
+    { "geoc_vox_pvf_hint",
+      "面が横切るセルだけを 4³=64 点で再標本化し、体積率 50% 以上を占有とする "
+      "(切るとセル中心 1 点判定)。形状誤差の実測にも使う",
+      "Re-samples only the cells the surface crosses with 4^3 = 64 points and "
+      "marks a cell occupied when at least 50% of it is material (off = a "
+      "single centre sample). Also gives the measured shape error" },
     { "geoc_vox_multi", "マルチマテリアル", "Multi-material" },
     { "geoc_vox_merge", "優先度順マージ", "Merge by priority" },
     { "geoc_vox_merge_hint", "後置オブジェクトが優先 (OpenFDTD仕様準拠)",
@@ -418,8 +424,14 @@ const Tr kTr[] = {
     { "geoc_stat_ok", "許容", "acceptable" },
     { "geoc_stat_conf", "共形セル比率", "Conformal cell ratio" },
     { "geoc_stat_conf_val", "62.3%", "62.3%" },
+    { "geoc_stat_bnd_fmt", "%1 (1 セルあたり %2 点で再標本化)",
+      "%1 (re-sampled with %2 points per cell)" },
+    { "geoc_stat_err_fmt", "階段 %1% / PVF %2% (メッシュ体積との差)",
+      "staircase %1% / PVF %2% (vs. the mesh volume)" },
+    { "geoc_stat_novol", "— (メッシュの体積が取れない)",
+      "— (the mesh has no usable volume)" },
     { "geoc_stat_stair", "0.0% (階段近似)", "0.0% (staircase)" },
-    { "geoc_stat_na", "— (階段近似 / PVF 無効)", "— (staircase, PVF off)" },
+    { "geoc_stat_na", "— (PVF 無効)", "— (PVF off)" },
     { "geoc_stat_notrun", "— (未実行)", "— (not run yet)" },
 
     // ── メッシュ細分化 / Mesh refinement ────────────────────────────────────
@@ -1573,7 +1585,6 @@ QWidget *GeometryTab::buildVoxelSection()
     // PVF・八分木・GPU はエンジン側が未実装なので、それだけを明示する
     for (QAbstractButton *b : m_voxSurface->buttons())
         if (m_voxSurface->id(b) != 0) tabhelp::markNotImplemented(b);
-    tabhelp::markNotImplemented(m_voxPvf);
     tabhelp::markNotImplemented(m_voxOctree);
     tabhelp::markNotImplemented(m_voxGpu);
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_vox_engine_note"), s));
@@ -2046,6 +2057,10 @@ void GeometryTab::voxelizeImported()
     opt.inside = (inTest == 1) ? InsideTest::WindingNumber
                                : InsideTest::RayParity;
     opt.mergeRuns = !m_voxMerge || m_voxMerge->isChecked();
+    // 部分体積率: 境界セルだけを 4³ = 64 点で再標本化し、体積率 50% 以上を
+    // 占有とする (切ると従来どおりセル中心 1 点の判定)
+    opt.pvf = m_voxPvf && m_voxPvf->isChecked();
+    opt.pvfSamples = 4;
 
     // 巻き数は法線の向きが揃っていることが前提。揃っていないと + と − が
     // 打ち消し合って全セルが「外」になるので、黙って走らせず修復へ誘導する。
@@ -2080,6 +2095,12 @@ void GeometryTab::voxelizeImported()
     m_voxOccupied = res.occupied;
     m_voxTotal    = qint64(res.nx) * res.ny * res.nz;
     m_hasVox      = true;
+    m_voxHasPvf   = opt.pvf;
+    m_voxBoundary = res.boundaryCells;
+    m_voxPvfN     = opt.pvfSamples;
+    m_voxStairVol = res.stairVolume;
+    m_voxPvfVol   = res.pvfVolume;
+    m_voxMeshVol  = meshVolume(m_lastMesh);
     refreshVoxelStats();
 }
 
@@ -2310,9 +2331,10 @@ void GeometryTab::refreshHealing()
                                                      'g', 3)));
 }
 
-// ボクセル統計を実際の staircase ボクセル化結果で置き換える。
-// 境界セル数 / 形状誤差 / 共形セル比率 は libigl 版 (PVF・共形) の担当なので
-// staircase では未算出であることを明示する (docs/libigl-integration.md)。
+// ボクセル統計を実際のボクセル化結果で置き換える。
+// 境界セル数と形状誤差は部分体積率 (PVF) を有効にしたときだけ算出できる
+// (境界セルの体積率を数えるのが PVF そのものなので)。共形セル比率は
+// 共形 FDTD 用の量で、こちらは未実装 (docs/libigl-integration.md)。
 void GeometryTab::refreshVoxelStats()
 {
     if (!m_hasVox || !m_statOcc) return;
@@ -2322,8 +2344,27 @@ void GeometryTab::refreshVoxelStats()
     m_statOcc->setText(I18n::tr("geoc_stat_occ_fmt")
                            .arg(groupNum(m_voxOccupied), groupNum(m_voxTotal),
                                 QString::number(pct, 'f', 1)));
-    m_statBnd->setText(I18n::tr("geoc_stat_na"));
-    m_statErr->setText(QString::fromUtf8("—"));
+    if (m_voxHasPvf) {
+        m_statBnd->setText(I18n::tr("geoc_stat_bnd_fmt")
+                               .arg(groupNum(m_voxBoundary))
+                               .arg(m_voxPvfN * m_voxPvfN * m_voxPvfN));
+        // 形状誤差はメッシュ本来の体積を基準にした階段近似 / PVF の体積差。
+        // 体積が取れないメッシュ (開いている等) では比を出さない。
+        if (m_voxMeshVol > 0.0)
+            m_statErr->setText(
+                I18n::tr("geoc_stat_err_fmt")
+                    .arg(QString::number(
+                             100.0 * (m_voxStairVol - m_voxMeshVol) / m_voxMeshVol,
+                             'f', 1),
+                         QString::number(
+                             100.0 * (m_voxPvfVol - m_voxMeshVol) / m_voxMeshVol,
+                             'f', 2)));
+        else
+            m_statErr->setText(I18n::tr("geoc_stat_novol"));
+    } else {
+        m_statBnd->setText(I18n::tr("geoc_stat_na"));
+        m_statErr->setText(I18n::tr("geoc_stat_na"));
+    }
     m_statConf->setText(I18n::tr("geoc_stat_stair"));
 
     if (m_voxBadge) {

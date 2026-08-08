@@ -201,6 +201,13 @@ private:
     qint64          m_voxOccupied = 0;
     qint64          m_voxTotal = 0;
     bool            m_hasVox = false;
+    // 部分体積率 (PVF) を有効にして実行したときだけ意味を持つ統計
+    bool            m_voxHasPvf = false;
+    qint64          m_voxBoundary = 0;   // 面が横切ったセル数
+    int             m_voxPvfN = 0;       // 1 セルあたりの再標本数 (軸方向)
+    double          m_voxStairVol = 0.0; // 占有セルの総体積 [m³]
+    double          m_voxPvfVol = 0.0;   // PVF の体積推定 [m³]
+    double          m_voxMeshVol = 0.0;  // 取込メッシュの体積 [m³] (基準)
 };
 
 } // namespace ofd
