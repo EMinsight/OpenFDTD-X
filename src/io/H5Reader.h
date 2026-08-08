@@ -103,6 +103,12 @@ public:
     // を行列で返す (行 0 は上側 = 第 2 軸の +側)
     static bool ofdSeriesInfo(const QString &path, const QString &comp,
                               H5OfdSeriesInfo &out, QString *err = nullptr);
+    // 伝搬時系列の各フレームの時刻 [s] を読む (/timeseries/time、H 成分は
+    // time_H)。旧 /data%06d 形式には時刻データセットが無いので false を
+    // 返す — その場合、時間範囲での絞り込みはできない (推測しない)。
+    static bool readOfdSeriesTimes(const QString &path, const QString &comp,
+                                   QVector<double> &out, QString *err = nullptr);
+
     static bool readOfdSeriesFrame(const QString &path, const QString &comp,
                                    int frame, int axis, int index,
                                    QVector<double> &cells,
