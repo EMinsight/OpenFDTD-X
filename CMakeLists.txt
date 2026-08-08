@@ -171,6 +171,11 @@ set(CORE_SOURCES
     src/io/MovieExport.cpp
     src/io/MovieExport.h
 
+    # 取込メッシュの修復 (頂点溶接 / 縮退三角形除去 / 法線統一) —
+    # MeshDiagnostics の検出に対する修復側。selftest から直接検証する
+    src/io/MeshRepair.cpp
+    src/io/MeshRepair.h
+
     src/io/H5Reader.cpp
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp
