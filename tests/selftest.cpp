@@ -174,6 +174,51 @@ static ImportedMesh boxMesh(double x0, double y0, double z0,
     return m;
 }
 
+// 外向きに首尾一貫した UV 球 (極の縮退三角形は出さない)。
+static ImportedMesh sphereMesh(double cx, double cy, double cz, double R,
+                               int nu, int nv)
+{
+    ImportedMesh m;
+    m.name = "sphere";
+    const double pi = 3.14159265358979323846;
+    auto pt = [&](int i, int j, double *o) {
+        const double th = pi * double(j) / nv;
+        const double ph = 2.0 * pi * double(i % nu) / nu;
+        o[0] = cx + R * std::sin(th) * std::cos(ph);
+        o[1] = cy + R * std::sin(th) * std::sin(ph);
+        o[2] = cz + R * std::cos(th);
+    };
+    for (int j = 0; j < nv; ++j)
+        for (int i = 0; i < nu; ++i) {
+            double a[3], b[3], c[3], d[3];
+            pt(i, j, a); pt(i, j + 1, b); pt(i + 1, j + 1, c); pt(i + 1, j, d);
+            if (j != nv - 1)   // 南極では a,b,c の b と c が同一点になる
+                addTri(m, a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+            if (j != 0)        // 北極では a と d が同一点になる
+                addTri(m, a[0],a[1],a[2], c[0],c[1],c[2], d[0],d[1],d[2]);
+        }
+    m.bbox[0] = cx - R; m.bbox[1] = cy - R; m.bbox[2] = cz - R;
+    m.bbox[3] = cx + R; m.bbox[4] = cy + R; m.bbox[5] = cz + R;
+    return m;
+}
+
+// 閉じたメッシュの符号付き体積 (発散定理: Σ a·(b×c)/6)
+static double meshSignedVolume(const ImportedMesh &m)
+{
+    double v6 = 0.0;
+    const int T = std::min(m.numTriangles, int(m.vertices.size() / 9));
+    for (int t = 0; t < T; ++t) {
+        const float *q = m.vertices.constData() + 9 * t;
+        const double a[3] = { q[0], q[1], q[2] };
+        const double b[3] = { q[3], q[4], q[5] };
+        const double c[3] = { q[6], q[7], q[8] };
+        v6 += a[0] * (b[1] * c[2] - b[2] * c[1])
+            - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+    }
+    return v6 / 6.0;
+}
+
 // Voxelize a cube on a known uniform grid and check the occupancy is exact.
 static void testVoxelizer()
 {
@@ -280,6 +325,107 @@ static void testVoxelizer()
         for (const Geometry &g : n.bricks)
             if (std::fabs((g.g[1] - g.g[0]) - 0.2) > 1e-9) oneCell = false;
         check(oneCell, "voxel: every unmerged brick spans exactly one cell");
+    }
+
+    // ── 部分体積率 (PVF) ──────────────────────────────────────────────────
+    // 立方体は解析的に全部決まるので、実測ではなく閉形式と突き合わせる。
+    {
+        // 標本数 1 は「セル中心 1 点」そのもの = PVF 無効時と完全一致する
+        VoxelOptions p1;
+        p1.pvf = true;
+        p1.pvfSamples = 1;
+        const VoxelResult a = Voxelizer::voxelize(cube, ax, ax, ax, 2,
+                                                  8'000'000, p1);
+        check(a.ok && a.occupied == r.occupied
+                   && a.bricks.size() == r.bricks.size(),
+              "pvf: N=1 reproduces the centre-sample result exactly");
+        check(std::fabs(a.pvfVolume - a.stairVolume) < 1e-15 * 1.8,
+              "pvf: N=1 volume estimate equals the staircase volume");
+        check(a.boundaryCells > 0 && a.boundaryCells <= 1000,
+              "pvf: boundary cells found and bounded by the grid");
+
+        // 立方体 [-0.55,0.55]³ (厳密体積 1.331 m³) を 0.2 m 格子に載せる。
+        // 標本は 1 セルあたり 8³ = 512 点、軸方向の標本間隔は 0.025 m。
+        // 軸ごとの標本点は x = −0.9875 + 0.025 m (m = 0..79) なので、
+        // [−0.55, 0.55] に入るのは m = 18..61 の 44 点 = 長さ 1.100 ちょうど。
+        // よって PVF の体積推定は 1.1³ = 1.331 と **厳密に一致**する。
+        VoxelOptions p8;
+        p8.pvf = true;
+        p8.pvfSamples = 8;
+        const VoxelResult b = Voxelizer::voxelize(cube, ax, ax, ax, 2,
+                                                  8'000'000, p8);
+        const double exact = 1.1 * 1.1 * 1.1;
+        check(b.ok, "pvf: N=8 voxelize ok");
+        std::fprintf(stderr,
+                     "  (cube: exact %.6f, staircase(centre) %.6f, "
+                     "pvf %.6f, occupied %lld)\n",
+                     exact, r.stairVolume, b.pvfVolume, (long long)b.occupied);
+        check(std::fabs(b.pvfVolume - exact) < 1e-9 * exact,
+              "pvf: volume estimate is exact for the aligned cube (1.331 m^3)");
+        // 中心 1 点判定は 216 セル = 1.728 m³ で +29.8% も過大に出る
+        check(std::fabs(r.stairVolume - 216 * 0.008) < 1e-9,
+              "pvf: centre sampling gives 216 cells = 1.728 m^3");
+        check(std::fabs(r.stairVolume - exact) / exact > 0.25,
+              "pvf: centre sampling really is ~30% too large here");
+        // 体積率 0.5 の閾値は角のセル (f = 0.75³ = 0.422) を落とす。
+        // 軸ごとの占有率は [0,0,.75,1,1,1,1,.75,0,0] なので
+        //   1·1·1 → 4³ = 64、1·1·.75 → 3·32 = 96、1·.75·.75 → 3·16 = 48
+        // の計 208 セル (.75³ の 8 セルだけが閾値未満)。
+        check(b.occupied == 208,
+              "pvf: threshold 0.5 drops exactly the 8 corner cells (208)");
+        check(std::fabs(b.stairVolume - exact)
+                  < std::fabs(r.stairVolume - exact),
+              "pvf: thresholded occupancy is closer to the true volume");
+
+        // 上限を超える再標本化はエラーにする (黙って粗くしない)
+        VoxelOptions cap = p8;
+        cap.pvfWorkCap = 1;
+        const VoxelResult e = Voxelizer::voxelize(cube, ax, ax, ax, 2,
+                                                  8'000'000, cap);
+        check(!e.ok && !e.error.isEmpty(),
+              "pvf: work cap refuses instead of silently degrading");
+    }
+
+    // 曲面 (球) — 格子に載らない形でも PVF が階段近似より真値に近いこと
+    {
+        const ImportedMesh sph = sphereMesh(0, 0, 0, 0.5, 32, 16);
+        const double exact = meshSignedVolume(sph);   // 多面体の厳密体積
+        VoxelOptions off;
+        const VoxelResult s0 = Voxelizer::voxelize(sph, ax, ax, ax, 2,
+                                                   8'000'000, off);
+        const double e0 = std::fabs(s0.stairVolume - exact) / exact;
+        // 標本数を増やすと誤差が下がる。ただし対象は球ではなく **多面体** なので
+        // 誤差は単調には減らない (面の位置と標本格子の噛み合わせで上下する)。
+        // 単調性ではなく「N ≥ 4 で 1% 未満」を判定条件にする。
+        double e1 = 1.0;
+        VoxelResult s1;
+        for (int ns : { 2, 4, 8 }) {
+            VoxelOptions on;
+            on.pvf = true;
+            on.pvfSamples = ns;
+            const VoxelResult s = Voxelizer::voxelize(sph, ax, ax, ax, 2,
+                                                      8'000'000, on);
+            const double e = std::fabs(s.pvfVolume - exact) / exact;
+            std::fprintf(stderr, "  (sphere N=%d: pvf %.6f (%.2f%%))\n",
+                         ns, s.pvfVolume, 100 * e);
+            check(e < (ns >= 4 ? 0.01 : 0.05),
+                  "pvf: sub-cell sampling tracks the true volume");
+            e1 = e;
+            s1 = s;
+        }
+        check(s0.ok && s1.ok, "pvf: sphere voxelized both ways");
+        std::fprintf(stderr,
+                     "  (sphere: exact %.6f, staircase %.6f (%.1f%%), "
+                     "pvf(N=8) %.6f (%.2f%%), boundary %lld/%d cells)\n",
+                     exact, s0.stairVolume, 100 * e0, s1.pvfVolume, 100 * e1,
+                     (long long)s1.boundaryCells, 10 * 10 * 10);
+        // 直径がわずか 5 セルの粗い格子なので階段近似は 10% 以上ずれる
+        check(e0 > 0.10, "pvf: staircase is >10% off on a 5-cell sphere");
+        check(e1 < 0.01, "pvf: sub-cell sampling recovers the volume to <1%");
+        check(e1 < e0 / 5.0, "pvf: at least 5x more accurate than staircase");
+        // 球の表面が通るのは殻のセルだけ (全セルの一部)
+        check(s1.boundaryCells > 0 && s1.boundaryCells < 10 * 10 * 10,
+              "pvf: only the shell cells are re-sampled");
     }
 }
 

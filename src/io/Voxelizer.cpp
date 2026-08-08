@@ -4,7 +4,9 @@
 #include "../core/MeshAxis.h"
 
 #include <QObject>
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 using namespace ofd;
 
@@ -124,34 +126,109 @@ VoxelResult Voxelizer::voxelize(const ImportedMesh &mesh,
         return r;
     }
 
-    // Skip cells entirely outside the mesh bounding box (fast reject).
     const float *V = mesh.vertices.constData();
     const int T = mesh.numTriangles;
 
+    // 1 点の内外判定。メッシュ bbox の外は自明に外 (高速棄却)。
+    auto insideAt = [&](double px, double py, double pz) -> bool {
+        if (px < mesh.bbox[0] || px > mesh.bbox[3]) return false;
+        if (py < mesh.bbox[1] || py > mesh.bbox[4]) return false;
+        if (pz < mesh.bbox[2] || pz > mesh.bbox[5]) return false;
+        if (opt.inside == InsideTest::WindingNumber)
+            return windingNumber(mesh, px, py, pz) > 0.5;
+        int crossings = 0;
+        for (int t = 0; t < T; ++t)
+            if (rayHitsForward(px, py, pz, V + 9 * t)) ++crossings;
+        return (crossings & 1) != 0;
+    };
+
+    const int    ns  = qBound(1, opt.pvfSamples, 8);
+    const double thr = qBound(1e-9, opt.pvfThreshold, 1.0);
+
+    // ── 境界セル (三角形が横切るセル) の抽出 ──────────────────────────────
+    // 三角形の AABB が重なるセルを立てる。厳密な三角形-直方体交差ではなく
+    // AABB なので **必ず超集合** になる (取りこぼしが無い)。立たなかった
+    // セルには面が通らないので、中心 1 点で内外が厳密に決まる。
+    std::vector<unsigned char> bnd;
+    if (opt.pvf) {
+        bnd.assign(std::size_t(cells), 0);
+        auto cellOf = [](const QVector<double> &b, double v, int n) {
+            const int i =
+                int(std::upper_bound(b.begin(), b.end(), v) - b.begin()) - 1;
+            return qBound(0, i, n - 1);
+        };
+        for (int t = 0; t < T; ++t) {
+            const float *q = V + 9 * t;
+            double lo[3], hi[3];
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = hi[a] = q[a];
+                for (int c = 1; c < 3; ++c) {
+                    const double v = q[3 * c + a];
+                    if (v < lo[a]) lo[a] = v;
+                    if (v > hi[a]) hi[a] = v;
+                }
+            }
+            const int i0 = cellOf(xb, lo[0], r.nx), i1 = cellOf(xb, hi[0], r.nx);
+            const int j0 = cellOf(yb, lo[1], r.ny), j1 = cellOf(yb, hi[1], r.ny);
+            const int k0 = cellOf(zb, lo[2], r.nz), k1 = cellOf(zb, hi[2], r.nz);
+            for (int k = k0; k <= k1; ++k)
+                for (int j = j0; j <= j1; ++j) {
+                    unsigned char *row =
+                        &bnd[(std::size_t(k) * r.ny + j) * r.nx];
+                    for (int i = i0; i <= i1; ++i) row[i] = 1;
+                }
+        }
+        for (unsigned char c : bnd) if (c) ++r.boundaryCells;
+
+        const qint64 work = r.boundaryCells * qint64(ns) * ns * ns * qint64(T);
+        if (opt.pvfWorkCap > 0 && work > opt.pvfWorkCap) {
+            r.error = QObject::tr(
+                "partial volume fraction needs %1 triangle tests "
+                "(%2 boundary cells x %3 samples x %4 triangles) which exceeds "
+                "the cap %5; turn the partial volume fraction off, use a "
+                "coarser grid, or simplify the mesh")
+                .arg(work).arg(r.boundaryCells).arg(qint64(ns) * ns * ns)
+                .arg(T).arg(opt.pvfWorkCap);
+            return r;
+        }
+    }
+
     for (int k = 0; k < r.nz; ++k) {
-        const double pz = zc[k];
-        if (pz < mesh.bbox[2] || pz > mesh.bbox[5]) continue;
+        // セル全体が bbox の外なら飛ばす (中心ではなくセル範囲で見る —
+        // PVF ではセルの一部だけが中に入る場合があるため)
+        if (zb[k + 1] < mesh.bbox[2] || zb[k] > mesh.bbox[5]) continue;
+        const double dz = zb[k + 1] - zb[k];
         for (int j = 0; j < r.ny; ++j) {
-            const double py = yc[j];
-            if (py < mesh.bbox[1] || py > mesh.bbox[4]) continue;
+            if (yb[j + 1] < mesh.bbox[1] || yb[j] > mesh.bbox[4]) continue;
+            const double dy = yb[j + 1] - yb[j];
 
             // Count forward crossings once per (j,k) ray is not possible
             // because parity depends on x; instead test each cell's center.
             int runStart = -1;
             for (int i = 0; i < r.nx; ++i) {
-                bool inside = false;
-                const double px = xc[i];
-                if (px >= mesh.bbox[0] && px <= mesh.bbox[3]) {
-                    if (opt.inside == InsideTest::WindingNumber) {
-                        inside = windingNumber(mesh, px, py, pz) > 0.5;
-                    } else {
-                        int crossings = 0;
-                        for (int t = 0; t < T; ++t)
-                            if (rayHitsForward(px, py, pz, V + 9 * t))
-                                ++crossings;
-                        inside = (crossings & 1) != 0;
+                const double cellVol = (xb[i + 1] - xb[i]) * dy * dz;
+                double frac;
+                if (opt.pvf && bnd[(std::size_t(k) * r.ny + j) * r.nx + i]) {
+                    int hit = 0;
+                    for (int kk = 0; kk < ns; ++kk) {
+                        const double pz = zb[k] + dz * (kk + 0.5) / ns;
+                        for (int jj = 0; jj < ns; ++jj) {
+                            const double py = yb[j] + dy * (jj + 0.5) / ns;
+                            for (int ii = 0; ii < ns; ++ii) {
+                                const double px = xb[i]
+                                    + (xb[i + 1] - xb[i]) * (ii + 0.5) / ns;
+                                if (insideAt(px, py, pz)) ++hit;
+                            }
+                        }
                     }
+                    frac = double(hit) / (double(ns) * ns * ns);
+                } else {
+                    frac = insideAt(xc[i], yc[j], zc[k]) ? 1.0 : 0.0;
                 }
+                if (opt.pvf) r.pvfVolume += frac * cellVol;
+                const bool inside = (frac >= thr);
+                if (inside) r.stairVolume += cellVol;
+
                 // まとめない設定は 1 セル = 1 直方体 (区間を作らない)
                 if (!opt.mergeRuns) {
                     if (!inside) continue;
