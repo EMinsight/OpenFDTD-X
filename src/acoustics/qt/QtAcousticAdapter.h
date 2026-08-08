@@ -14,6 +14,7 @@
 #include "../core/RirAnalyzer.h"
 #include "../core/SchroederDecay.h"
 #include "../core/VocalAnalyzer.h"
+#include "../core/SweepDeconvolution.h"
 #include "../io/WavReader.h"
 #include "../../core/Project.h"
 
@@ -45,9 +46,20 @@ public:
     // outSamples / outSampleRate が非 null なら分析に使った信号を返す
     // (波形・減衰カーブのプロット用)。
     static acoustics::AcousticResult<acoustics::RirAnalysisResult>
+    // settings.sweepDeconvolve が有効なときは rirPath を **掃引録音** として
+    // 扱い、ESS 逆畳み込みで線形インパルス応答を取り出してから分析する
+    // (outSamples には逆畳み込み後の線形 IR が入る)。outSweep に逆畳み込みの
+    // 詳細 (高調波・THD) を受け取れる。無効なときは従来どおり WAV を IR と
+    // みなすので、出力は 1 サンプルも変わらない。
     analyzeFile(const OperaAcousticSettings &settings,
                 std::vector<double> *outSamples = nullptr,
-                double *outSampleRate = nullptr);
+                double *outSampleRate = nullptr,
+                acoustics::SweepDeconvolutionResult *outSweep = nullptr,
+                QString *outSweepError = nullptr);
+
+    // settings から掃引仕様を作る (fs は録音から決まるので引数で渡す)
+    static acoustics::SweepSpec sweepSpec(const OperaAcousticSettings &settings,
+                                          double sampleRateHz);
 
     // 広帯域 Schroeder 減衰カーブ (プロット用)
     static acoustics::SchroederResult

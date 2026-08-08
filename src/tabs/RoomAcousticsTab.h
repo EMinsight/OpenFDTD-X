@@ -113,6 +113,7 @@ signals:
     void runSolverRequested();
 
 private slots:
+    void applySweepSettings();   // ESS 設定 widgets → model
     void refresh();          // model → widgets
     void recomputeAll();     // 派生値 (RT/エコーグラム/NC/障害) を再計算
     void exportReport();
@@ -179,6 +180,11 @@ private:
     QLabel       *m_irMethodNote, *m_irStatus, *m_irValNote, *m_irT2030Note;
     QCheckBox    *m_inrCheck = nullptr;   // 帯域内 INR 行の表示 (ISO 3382-2)
     QLabel       *m_inrNote = nullptr;    // INR の判定まとめ
+    // ESS 逆畳み込み (.ofdx opera_analysis.sweep の View)
+    QCheckBox    *m_essCheck = nullptr, *m_harmCheck = nullptr;
+    QLineEdit    *m_sweepF1 = nullptr, *m_sweepF2 = nullptr, *m_sweepT = nullptr;
+    QLabel       *m_sweepNote = nullptr;  // 逆畳み込みの結果 (帯域・THD・高調波)
+    QString       m_sweepResult;          // 直近の逆畳み込みの要約 (実行結果のみ)
     MeasuredIrBands m_measIr;      // 実測解析の結果 (未解析なら loaded=false)
     QVector<QPointF> m_measDecay;  // 実測 Schroeder 減衰曲線 (x=秒, y=dB)
 
