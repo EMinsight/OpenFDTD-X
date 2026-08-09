@@ -66,6 +66,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("bc_bloch", "ブロッホ", "Bloch");
     ofd::I18n::reg("bc_symmetric", "対称", "Symmetric");
     ofd::I18n::reg("bc_antisym", "反対称", "Anti-symmetric");
+    I18n::reg("pfb_uw_face", "面別の境界条件コンボと対称 / 周期のチェック",
+              "the per-face boundary-condition combo boxes and the symmetry / periodic check boxes");
+    I18n::reg("pfb_uw_pml", "PML の詳細チェック",
+              "the detailed PML check boxes");
     return true;
 }();
 
@@ -120,7 +124,7 @@ PerFaceBCTab::PerFaceBCTab(Project *project, QWidget *parent)
     s->vbox()->addLayout(checks);
     // 面別 BC コンボ・対称/周期チェックはどこにも反映されない
     // (未実装の明示 — 絶対規則 5)
-    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s, I18n::tr("pfb_uw_face")));
     v->addWidget(s);
 
     // ── PML設定 / PML parameters ────────────────────────────────────────────
@@ -166,7 +170,7 @@ PerFaceBCTab::PerFaceBCTab(Project *project, QWidget *parent)
     appliedNote->setWordWrap(true);
     appliedNote->setStyleSheet("font-size:11px; color:palette(mid);");
     sp->vbox()->addWidget(appliedNote);
-    sp->vbox()->addWidget(ofd::tabhelp::unwiredNote(sp));
+    sp->vbox()->addWidget(ofd::tabhelp::unwiredNote(sp, I18n::tr("pfb_uw_pml")));
     v->addWidget(sp);
 
     v->addStretch(1);

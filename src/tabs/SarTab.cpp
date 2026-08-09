@@ -186,6 +186,10 @@ const bool s_i18n = [] {
               "distribution from the ofd kernel plus the IEC 62704-1 spatial "
               "averaging — neither is implemented yet.");
     I18n::reg("sar_col_avg", "平均化", "Averaging");
+    I18n::reg("sar_uw_dev", "機器の選択と送信電力",
+              "the device selection and the transmit power");
+    I18n::reg("sar_uw_opt", "BioHeat・不確かさ・ゾーニングのチェック",
+              "the BioHeat, uncertainty and zoning check boxes");
     return true;
 }();
 
@@ -385,7 +389,7 @@ SarTab::SarTab(Project *project, QWidget *parent)
     m_category->addItems({ I18n::tr("sar_cat_gp"), I18n::tr("sar_cat_occ") });
     ss->form()->addRow(I18n::tr("sar_category"), m_category);
     // 機器・送信電力はどこにも読まれない (未実装の明示 — 絶対規則 5)
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("sar_uw_dev")));
     v->addWidget(ss);
 
     // ── 点 SAR 換算 (定義式による実計算) ────────────────────────────────────
@@ -415,7 +419,7 @@ SarTab::SarTab(Project *project, QWidget *parent)
     sme->vbox()->addLayout(checkRow({ m_bioHeat }));
     sme->vbox()->addLayout(checkRow({ m_uncertainty, m_zoning }));
     // BioHeat/不確かさ/ゾーニングのチェックはどこにも読まれない (絶対規則 5)
-    sme->vbox()->addWidget(tabhelp::unwiredNote(sme));
+    sme->vbox()->addWidget(tabhelp::unwiredNote(sme, I18n::tr("sar_uw_opt")));
     v->addWidget(sme);
 
     // ── 出力 / Output ───────────────────────────────────────────────────────

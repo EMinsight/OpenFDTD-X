@@ -102,6 +102,16 @@ const bool s_i18nOptRay = [] {
               "微細構造はFDTDで精密解析、遠方伝搬はRayで高速化",
               "Fine structures are solved by FDTD; far-field propagation is "
               "accelerated by ray tracing");
+    I18n::reg("optm_uw_method", "解法 (波動 / 幾何) の選択",
+              "the choice of method (wave / geometrical)");
+    I18n::reg("optm_uw_ray", "レイトレースの設定 (レイトレーサ本体が未実装のため)",
+              "the ray-trace settings (the ray tracer itself is not implemented)");
+    I18n::reg("optm_uw_surf", "面データと収差解析のチェック (面データは固定の設計例です)",
+              "the surface data and aberration check boxes (the surface data is a fixed worked example)");
+    I18n::reg("optm_uw_hybrid", "波動 / 幾何のハイブリッド連携の設定",
+              "the wave / geometrical hybrid settings");
+    I18n::reg("optm_uw_out", "この節の設定",
+              "the settings in this section");
     return true;
 }();
 
@@ -356,7 +366,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_geoHint = mutedLabel(I18n::tr("optm_geo_hint_fdtd"), ss);
     ss->vbox()->addWidget(m_geoHint);
     // 解法 (波動/幾何) の選択はローカル state のみで計算へは渡らない
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("optm_uw_method")));
 
     // per-method parameter pages
     m_solverStack = new QStackedWidget(ss);
@@ -746,7 +756,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     gpuRow->addStretch(1);
     sray->vbox()->addLayout(gpuRow);
     // レイトレーサ本体が未実装のため、この節はローカル state のみ
-    sray->vbox()->addWidget(tabhelp::unwiredNote(sray));
+    sray->vbox()->addWidget(tabhelp::unwiredNote(sray, I18n::tr("optm_uw_ray")));
     v->addWidget(sray);
 
     // ── 光学系定義 / Optical system ────────────────────────────────────────
@@ -783,7 +793,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     ssys->vbox()->addLayout(
         hrow({ m_optSeidel, m_optSpot, m_optMtf, m_optRayAberr }));
     // 面データは固定の設計例で、収差解析チェックもローカル state のみ
-    ssys->vbox()->addWidget(tabhelp::unwiredNote(ssys));
+    ssys->vbox()->addWidget(tabhelp::unwiredNote(ssys, I18n::tr("optm_uw_surf")));
     v->addWidget(ssys);
 
     // ── ハイブリッド連携 / FDTD↔Ray bridge ─────────────────────────────────
@@ -801,7 +811,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     shyb->form()->addRow(I18n::tr("optray_hyb_prop"), m_hybPropModel);
     shyb->vbox()->addWidget(mutedLabel(I18n::tr("optray_hyb_hint"), shyb));
     // ハイブリッド連携は未実装 — この節はローカル state のみ
-    shyb->vbox()->addWidget(tabhelp::unwiredNote(shyb));
+    shyb->vbox()->addWidget(tabhelp::unwiredNote(shyb, I18n::tr("optm_uw_hybrid")));
     v->addWidget(shyb);
 
     // ── 分散モデル / Dispersion model (mock 末尾の <Section>) ───────────────
@@ -813,7 +823,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_dispModel->setCurrentIndex(1);             // mock 既定 = Lorentz
     sdisp->vbox()->addWidget(m_dispModel);
     // この節はローカル state のみ
-    sdisp->vbox()->addWidget(tabhelp::unwiredNote(sdisp));
+    sdisp->vbox()->addWidget(tabhelp::unwiredNote(sdisp, I18n::tr("optm_uw_out")));
     v->addWidget(sdisp);
 
     // ── ONN 活性化カーブ結果 (obpm 実行後に activation_curve.csv を表示) ──

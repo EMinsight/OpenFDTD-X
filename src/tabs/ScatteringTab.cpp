@@ -120,6 +120,12 @@ const bool s_i18n = [] {
               "Extinction cross-section σ_ext (optical scattering)");
     I18n::reg("sct_m_mie", "効率係数 Q_sca, Q_abs (Mie)",
               "Efficiency factors Q_sca, Q_abs (Mie)");
+    I18n::reg("sct_uw_rcs", "RCS の出力形式 (モノ / バイ・単位・散乱行列) の選択",
+              "the RCS output options (monostatic / bistatic, unit, scattering matrix)");
+    I18n::reg("sct_uw_ntff", "近傍界→遠方界変換の設定 (抽出面・広角オプション)",
+              "the near-to-far-field settings (extraction surface, wide-angle option)");
+    I18n::reg("sct_uw_misc", "その他散乱量 (SE・FSS・吸収率・消光・Mie) のチェック",
+              "the other-quantity check boxes (SE, FSS, absorptance, extinction, Mie)");
     return true;
 }();
 
@@ -250,7 +256,7 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sRcs->form()->addRow(I18n::tr("sct_unit"), m_rcsUnit);
     m_rcsMatrix = new QCheckBox(I18n::tr("sct_rcs_matrix"), sRcs);
     sRcs->form()->addRow(m_rcsMatrix);
-    sRcs->form()->addRow(tabhelp::unwiredNote(sRcs));
+    sRcs->form()->addRow(tabhelp::unwiredNote(sRcs, I18n::tr("sct_uw_rcs")));
     v->addWidget(sRcs);
 
     // ── 近傍/遠方界変換 / NTFF ─────────────────────────────────────────────
@@ -265,14 +271,15 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sNtff->form()->addRow(I18n::tr("sct_ntff_surface"), m_ntffSurface);
     m_ntffWide = new QCheckBox(I18n::tr("sct_ntff_wide"), sNtff);
     sNtff->form()->addRow(m_ntffWide);
-    sNtff->form()->addRow(tabhelp::unwiredNote(sNtff));
+    sNtff->form()->addRow(
+        tabhelp::unwiredNote(sNtff, I18n::tr("sct_uw_ntff")));
     v->addWidget(sNtff);
 
     // ── その他散乱量 ──────────────────────────────────────────────────────
     auto *sMisc = checkSection(body, "sct_misc", kMiscKeys, kMiscOn,
                                int(sizeof(kMiscKeys) / sizeof(kMiscKeys[0])),
                                &m_misc);
-    sMisc->vbox()->addWidget(tabhelp::unwiredNote(sMisc));
+    sMisc->vbox()->addWidget(tabhelp::unwiredNote(sMisc, I18n::tr("sct_uw_misc")));
     v->addWidget(sMisc);
 
     v->addStretch(1);

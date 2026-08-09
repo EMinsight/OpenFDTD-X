@@ -519,6 +519,12 @@ const Tr kTr[] = {
     { "geoc_xf_rot_unsupported",
       "⚠ この形状は %1 軸回転に未対応 (三角柱/角錐台/円錐台は自軸のみ)",
       "⚠ This shape cannot rotate about %1 (prisms/frusta: own axis only)" },
+    { "geoc_uw_tess", "テセレーション設定 (偏差・角度・品質・並列 / 曲率適応)",
+      "the tessellation settings (deviation, angle, quality, parallel / curvature adaptation)" },
+    { "geoc_uw_map", "材料マッピングの方式と既定材料の選択",
+      "the material-mapping method and the default material" },
+    { "geoc_uw_refine", "細分化の設定 (細分化エンジンが未実装のため)",
+      "the refinement settings (the refinement engine is not implemented)" },
 };
 
 const bool s_i18n = [] {
@@ -1288,7 +1294,7 @@ QWidget *GeometryTab::buildTessellationSection()
     cr->addWidget(m_tessCurvature);
     cr->addStretch(1);
     s->vbox()->addLayout(cr);
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // テセレーション自体が未実装
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("geoc_uw_tess")));   // テセレーション自体が未実装
     return s;
 }
 
@@ -1457,7 +1463,7 @@ QWidget *GeometryTab::buildMaterialMapSection()
     m_mapDefault->addItem(I18n::tr("geoc_map_m1"));
     m_mapDefault->addItem(I18n::tr("geoc_map_m3"));
     s->form()->addRow(I18n::tr("geoc_map_default"), m_mapDefault);
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));   // 取込材質は m_voxMat のみ有効
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("geoc_uw_map")));   // 取込材質は m_voxMat のみ有効
     return s;
 }
 
@@ -1677,7 +1683,7 @@ QWidget *GeometryTab::buildRefineSection()
     s->vbox()->addLayout(cr);
 
     // 細分化はエンジン未実装 — 設定はどこにも反映されない
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("geoc_uw_refine")));
 
     auto *rr = new QHBoxLayout();
     auto *refineBtn = new QPushButton(I18n::tr("geoc_ref_run"), s);

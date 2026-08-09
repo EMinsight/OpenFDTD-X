@@ -155,6 +155,14 @@ const bool s_i18n = [] {
     I18n::reg("t3x_cmp_diff", "結果差分の自動チェック",
               "Auto-check result differences");
     I18n::reg("t3x_cmp_notify", "完了時に通知", "Notify when finished");
+    I18n::reg("t3x_uw_sub", "サブピクセル平均化と DFT 記録の設定",
+              "the subpixel-averaging and DFT-recording settings");
+    I18n::reg("t3x_uw_sub_ok", "自動 PML (エクスポートに反映されます)",
+              "the automatic PML setting (applied to the export)");
+    I18n::reg("t3x_uw_prio", "優先度の設定 (スクリプト生成にも反映されません)",
+              "the priority setting (it does not reach the generated script either)");
+    I18n::reg("t3x_uw_cmp", "ローカル計算との比較機能",
+              "the comparison against the local computation");
     return true;
 }();
 
@@ -365,7 +373,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     se->vbox()->addWidget(m_dft);
     // サブピクセル平均化・DFT 記録はまだエクスポートに反映されない
     // (autoPml のみ apply() → Tidy3dExporter で使用)
-    se->vbox()->addWidget(tabhelp::unwiredNote(se));
+    se->vbox()->addWidget(tabhelp::unwiredNote(se, I18n::tr("t3x_uw_sub"), I18n::tr("t3x_uw_sub_ok")));
 
     // mock: "📤 {t3_export} (.py)" (primary) + "プレビュー (.json)"
     auto *exportBtn = new QPushButton("📤 " + I18n::tr("t3x_export") + " (.py)", se);
@@ -396,7 +404,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
                            I18n::tr("t3x_prio_high") });
     sj->form()->addRow(I18n::tr("t3x_priority"), m_priority);
     // 優先度はどこにも読まれない (スクリプト生成にも未反映)
-    sj->form()->addRow(tabhelp::unwiredNote(sj));
+    sj->form()->addRow(tabhelp::unwiredNote(sj, I18n::tr("t3x_uw_prio")));
     // ジョブ状態: GUI から直接送信はしないので既定は「待機中」
     auto *stateRow = new QHBoxLayout();
     stateRow->addWidget(makeBadge(I18n::tr("t3_pending"), "warn", sj));
@@ -449,7 +457,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     cmpRow->addStretch(1);
     sp->vbox()->addLayout(cmpRow);
     // 比較機能はどこにも配線されていない
-    sp->vbox()->addWidget(tabhelp::unwiredNote(sp));
+    sp->vbox()->addWidget(tabhelp::unwiredNote(sp, I18n::tr("t3x_uw_cmp")));
     v->addWidget(sp);
 
     v->addStretch(1);

@@ -206,6 +206,10 @@ const bool s_i18n = [] {
               "tab — editing α here feeds straight into the reverberation "
               "time (Sabine/Eyring/Fitzroy). Area, α at 250/500/2 kHz, the "
               "air absorption A and the surface role are edited on that tab.");
+    I18n::reg("ac2_uw_ism", "鏡像法の反射次数・可視判定とハイブリッド切替周波数",
+              "the image-source reflection order, the visibility test and the hybrid crossover");
+    I18n::reg("ac2_uw_aural", "可聴化の音源選択と出力形式 (モノ / バイノーラル等)",
+              "the auralization source and output format (mono / binaural / …)");
     return true;
 }();
 
@@ -527,7 +531,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     m_hybridSplit = makeSpin(m_hybridPanel, 20, 20000, 500, QStringLiteral(" Hz"));
     hybForm->addRow(I18n::tr("ac2_hybrid_split"), m_hybridSplit);
     sv->vbox()->addWidget(m_hybridPanel);
-    sv->vbox()->addWidget(tabhelp::unwiredNote(sv));
+    sv->vbox()->addWidget(tabhelp::unwiredNote(sv, I18n::tr("ac2_uw_ism")));
     v->addWidget(sv);
 
     // 室内音響 / Room acoustics — 解析タイプ (AcousticOpts::analysisType)
@@ -581,7 +585,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
         outRow->addWidget(c);
     outRow->addStretch(1);
     au->form()->addRow(I18n::tr("ac2_out_format"), outRow);
-    au->vbox()->addWidget(tabhelp::unwiredNote(au));
+    au->vbox()->addWidget(tabhelp::unwiredNote(au, I18n::tr("ac2_uw_aural")));
     v->addWidget(au);
 
     // 材質設定 / Surface materials — 吸音率表 (125Hz / 1kHz / 4kHz)。

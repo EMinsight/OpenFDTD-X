@@ -191,6 +191,10 @@ const bool s_i18n = [] {
               "照明設計ソフト向け (書出は未実装)。",
               "▸ IES LM-63 / EULUMDAT (.ldt) export targets lighting design tools "
               "such as DIALux and AGi32 (export is not implemented).");
+    I18n::reg("ilm_uw_optics", "面の反射モデルの選択 (レイトレーサ本体が未実装のため)",
+              "the surface reflection model (the ray tracer itself is not implemented)");
+    I18n::reg("ilm_uw_optics_ok", "光学系の構成そのもの (プロジェクトに保存されます)",
+              "the optical layout itself (saved with the project)");
     return true;
 }();
 
@@ -520,7 +524,7 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
                                 I18n::tr("ilm_sf_abg") }, sOpt);
     sOpt->form()->addRow(I18n::tr("ilm_surface"), sfRow);
     // 光学系の構成は保存されるがレイトレースは未実装 (配光量は表で「—」)
-    sOpt->vbox()->addWidget(tabhelp::unwiredNote(sOpt));
+    sOpt->vbox()->addWidget(tabhelp::unwiredNote(sOpt, I18n::tr("ilm_uw_optics"), I18n::tr("ilm_uw_optics_ok")));
     v->addWidget(sOpt);
 
     // ── 測光・測色 / Photometry & color ─────────────────────────────────────

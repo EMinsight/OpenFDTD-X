@@ -169,6 +169,18 @@ const bool s_i18nUnderwater = [] {
               " ※ WAV はピークで正規化しています (絶対音圧ではありません)",
               " Note: the WAV is peak-normalised (it is not an absolute "
               "pressure level)");
+    I18n::reg("uwx_uw_solver", "ソルバーの選択と BELLHOP / PE のパラメータ",
+              "the solver selection and the BELLHOP / PE parameters");
+    I18n::reg("uwx_uw_surface", "海面の設定",
+              "the sea-surface settings");
+    I18n::reg("uwx_uw_beam", "直上の指向性とビーム幅",
+              "the directivity and beam width just above");
+    I18n::reg("uwx_uw_beam_ok", "周波数・音源レベル・距離",
+              "the frequency, source level and range");
+    I18n::reg("uwx_uw_loss", "損失項の選択と距離の下限",
+              "the loss-term selection and the lower range bound");
+    I18n::reg("uwx_uw_loss_ok", "距離の上限 (「最大距離」と同期します)",
+              "the upper range bound (kept in sync with the maximum range)");
     return true;
 }();
 
@@ -490,7 +502,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     sv->vbox()->addWidget(m_pePanel);
     // ソルバー選択と Bellhop/PE パラメータはローカル状態のみで、
     // 計算にも .ofdx にも反映されない (apply() 非対象)
-    sv->vbox()->addWidget(tabhelp::unwiredNote(sv));
+    sv->vbox()->addWidget(tabhelp::unwiredNote(sv, I18n::tr("uwx_uw_solver")));
     v->addWidget(sv);
 
     // environment
@@ -576,7 +588,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     surfRow->addStretch(1);
     ssf->vbox()->addLayout(surfRow);
     // 海面の設定はすべてローカル状態 (apply() 非対象)
-    ssf->vbox()->addWidget(tabhelp::unwiredNote(ssf));
+    ssf->vbox()->addWidget(tabhelp::unwiredNote(ssf, I18n::tr("uwx_uw_surface")));
     v->addWidget(ssf);
 
     // sonar
@@ -595,7 +607,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_beamWidth = makeSpin(ss, 1.0, 180.0, 15.0, 0);
     ss->form()->addRow(I18n::tr("uwx_beam_width"), m_beamWidth);
     // 直上の指向性・ビーム幅のみローカル状態 (周波数・SL・距離は apply() 済み)
-    ss->form()->addRow(tabhelp::unwiredNote(ss));
+    ss->form()->addRow(tabhelp::unwiredNote(ss, I18n::tr("uwx_uw_beam"), I18n::tr("uwx_uw_beam_ok")));
     ss->form()->addRow(I18n::tr("uw_sl"), m_sonarSL);
     ss->form()->addRow(I18n::tr("uw_range"), m_rangeMax);
     v->addWidget(ss);
@@ -618,7 +630,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     loss2->addStretch(1);
     st->vbox()->addLayout(loss2);
     // 損失項の選択と距離下限はローカル状態 (距離上限のみ「最大距離」と同期)
-    st->vbox()->addWidget(tabhelp::unwiredNote(st));
+    st->vbox()->addWidget(tabhelp::unwiredNote(st, I18n::tr("uwx_uw_loss"), I18n::tr("uwx_uw_loss_ok")));
     // 上限は既存の m_rangeMax と同じ刻み (decimals) にして値ズレを防ぐ
     m_tlRangeMin = makeSpin(st, 0.0, 10000.0, 0.0, 2);
     m_tlRangeMax = makeSpin(st, 0.1, 10000.0, 50.0, 2);

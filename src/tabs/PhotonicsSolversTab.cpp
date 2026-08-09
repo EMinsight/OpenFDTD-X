@@ -245,6 +245,18 @@ const bool s_i18n = [] {
     I18n::reg("psol_hy_wg_role", "モード進化", "Mode evolution");
     I18n::reg("psol_hy_res", "共振器 / 微細構造", "Resonator / fine structure");
     I18n::reg("psol_hy_res_role", "完全波動解析", "Full-wave analysis");
+    I18n::reg("psol_uw_rerun", "再実行のチェック群",
+              "the re-run check boxes");
+    I18n::reg("psol_uw_fdtd", "FDTD ページの入力 (シミュレーション時間・シャットオフ・サブピクセル・共形メッシュ等)",
+              "the FDTD page inputs (simulation time, shutoff, subpixel averaging, conformal mesh, …)");
+    I18n::reg("psol_uw_rcwa", "Truncation 法・入射角 (θ, φ, ψ)・TE/TM・出力のチェック",
+              "the truncation scheme, the incidence angles (theta, phi, psi), TE/TM and the output check boxes");
+    I18n::reg("psol_uw_rcwa_ok", "周期・次数・層分割・波長範囲 (.ofdx へ保存されます)",
+              "the period, orders, layer slicing and wavelength range (saved to .ofdx)");
+    I18n::reg("psol_uw_bpm", "伝搬方向・伝搬距離・境界条件・双方向 / ベクトル / 出力のチェック",
+              "the propagation direction and distance, the boundary condition and the bidirectional / vector / output check boxes");
+    I18n::reg("psol_uw_bpm_ok", "アルゴリズム・Δz・n_ref・入射モード",
+              "the algorithm, dz, n_ref and the launch mode");
     return true;
 }();
 
@@ -437,7 +449,7 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
     runRow->addStretch(1);
     sCross->vbox()->addLayout(runRow);
     // 再実行チェック群はどこにも読まれない (未実装の明示 — 絶対規則 5)
-    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross));
+    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross, I18n::tr("psol_uw_rerun")));
     v->addWidget(sCross);
 
     // ── ハイブリッド解析 ───────────────────────────────────────────────────
@@ -565,7 +577,7 @@ QWidget *PhotonicsSolversTab::buildFdtdPage()
 
     // FDTD ページの入力 (シミュ時間/シャットオフ/サブピクセル/共形メッシュ等)
     // は apply() が読まない (未実装の明示 — 絶対規則 5)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("psol_uw_fdtd")));
     return s;
 }
 
@@ -651,7 +663,7 @@ QWidget *PhotonicsSolversTab::buildRcwaPage()
     s->form()->addRow(etaRow);
     // Truncation 法・入射角 (θ, φ, ψ)・TE/TM/出力チェックは apply() が読まない
     // (周期/次数/層分割/波長範囲のみ .ofdx へ反映 — 絶対規則 5)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok")));
     return s;
 }
 
@@ -708,7 +720,7 @@ QWidget *PhotonicsSolversTab::buildBpmPage()
     s->form()->addRow(etaRow);
     // 伝搬方向・伝搬距離・境界条件・双方向/ベクトル/出力チェックは
     // apply() が読まない (アルゴリズム/Δz/n_ref/入射モードのみ反映 — 絶対規則 5)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("psol_uw_bpm"), I18n::tr("psol_uw_bpm_ok")));
     return s;
 }
 

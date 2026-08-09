@@ -196,6 +196,14 @@ const bool s_i18n = [] {
     I18n::reg("us_btn_anim", "🎬 伝搬アニメーション (H5)",
               "🎬 Propagation animation (H5)");
     I18n::reg("us_btn_report", "📄 レポート", "📄 Report");
+    I18n::reg("us_uw_xdcr", "トランスデューサの設定",
+              "the transducer settings");
+    I18n::reg("us_uw_chk", "チェック状態",
+              "the check boxes");
+    I18n::reg("us_uw_bf", "ビームフォーミングの設定",
+              "the beamforming settings");
+    I18n::reg("us_uw_out", "出力のチェック",
+              "the output check boxes");
     return true;
 }();
 
@@ -339,7 +347,7 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_transStack->addWidget(buildSonarTrans());     // 3 sonar
     st->vbox()->addWidget(m_transStack);
     // トランスデューサ設定はどこにも読まれない (Project 書込ゼロ)
-    st->vbox()->addWidget(tabhelp::unwiredNote(st));
+    st->vbox()->addWidget(tabhelp::unwiredNote(st, I18n::tr("us_uw_xdcr")));
     v->addWidget(st);
 
     // ── 焦点音場 (HIFU のみ / 実計算) ───────────────────────────────────────
@@ -374,7 +382,7 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_nonlinear = makeCheck(I18n::tr("us_nonlinear"), false, sd);
     sd->vbox()->addLayout(checkRow({ m_powerLaw, m_nonlinear }));
     // チェック状態はどこにも読まれない
-    sd->vbox()->addWidget(tabhelp::unwiredNote(sd));
+    sd->vbox()->addWidget(tabhelp::unwiredNote(sd, I18n::tr("us_uw_chk")));
     v->addWidget(sd);
 
     // ── ビームフォーミング ──────────────────────────────────────────────────
@@ -389,7 +397,7 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     sb->form()->addRow(I18n::tr("us_steer"),
                        unitRow(m_steerAngle, QString::fromUtf8("±45°"), sb));
     // ビームフォーミング設定はどこにも読まれない
-    sb->form()->addRow(tabhelp::unwiredNote(sb));
+    sb->form()->addRow(tabhelp::unwiredNote(sb, I18n::tr("us_uw_bf")));
     v->addWidget(sb);
 
     // ── 評価・出力 (用途ごとに切替 + 共通ボタン) ────────────────────────────
@@ -412,7 +420,7 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     hb->addStretch(1);
     so->vbox()->addLayout(hb);
     // 出力チェックはどこにも読まれない
-    so->vbox()->addWidget(tabhelp::unwiredNote(so));
+    so->vbox()->addWidget(tabhelp::unwiredNote(so, I18n::tr("us_uw_out")));
     v->addWidget(so);
 
     v->addStretch(1);

@@ -184,6 +184,10 @@ const bool s_i18n = [] {
               "delay spread, angular spread) require a ray-tracing or FDTD run "
               "and are shown as “not computed”. The environment and method "
               "selections above do not enter the calculation.");
+    I18n::reg("chn_uw_env", "環境モデルの選択とそのパラメータ",
+              "the environment model and its parameters");
+    I18n::reg("chn_uw_txrx", "送受信機の設定",
+              "the transmitter / receiver settings");
     return true;
 }();
 
@@ -368,7 +372,7 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     mr->addStretch(1);
     se->vbox()->addLayout(formRow(I18n::tr("chn_material"), mr));
     // 環境モデルのフォームはどこにも読まれていない (未実装)
-    se->vbox()->addWidget(tabhelp::unwiredNote(se));
+    se->vbox()->addWidget(tabhelp::unwiredNote(se, I18n::tr("chn_uw_env")));
     v->addWidget(se);
 
     // ── 送受信 / TX-RX ──────────────────────────────────────────────────────
@@ -389,7 +393,7 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
                                                I18n::tr("chn_rx_route"),
                                                I18n::tr("chn_rx_points") }, 0));
     // 送受信フォームはどこにも読まれていない (未実装)
-    sx->vbox()->addWidget(tabhelp::unwiredNote(sx));
+    sx->vbox()->addWidget(tabhelp::unwiredNote(sx, I18n::tr("chn_uw_txrx")));
     v->addWidget(sx);
 
     // ── リンク条件 / Link budget inputs (チャネル特性の計算入力) ────────────

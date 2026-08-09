@@ -270,6 +270,8 @@ const bool s_i18n = [] {
     I18n::reg("ver_speed_em", "真空中の光速", "speed of light in vacuum");
     I18n::reg("ver_speed_air", "空気中の音速 20℃", "speed of sound in air at 20℃");
     I18n::reg("ver_speed_sea", "海水中の代表音速", "typical speed of sound in sea water");
+    I18n::reg("ver_uw_cross", "比較ソルバの選択",
+              "the cross-check solver selection");
     return true;
 }();
 
@@ -635,7 +637,7 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     m_crossBox = new QComboBox(sCross);
     sCross->form()->addRow(I18n::tr("ver_cross_solver"), m_crossBox);
     // 比較ソルバの選択はどこにも読まれない
-    sCross->form()->addRow(tabhelp::unwiredNote(sCross));
+    sCross->form()->addRow(tabhelp::unwiredNote(sCross, I18n::tr("ver_uw_cross")));
     auto *crossRow = new QHBoxLayout();
     auto *crossRunBtn = new QPushButton(I18n::tr("ver_cross_run"), sCross);
     tabhelp::markNotImplemented(crossRunBtn);   // クロスバリデーションは未実装

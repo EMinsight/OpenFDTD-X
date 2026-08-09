@@ -47,6 +47,8 @@ const bool s_i18nGeneral = [] {
     I18n::reg("g_opt_match", "整合損を含む", "Include matching loss");
     I18n::reg("g_opt_pol", "偏波回転", "Polarization rotation");
     I18n::reg("g_opt_iter_skip", "イテレーション飛ばし", "Iteration skip");
+    I18n::reg("g_uw_opt", "整合損失・偏波・反復スキップの 3 チェック (.ofd に対応キーがありません)",
+              "the matching-loss / polarisation / iteration-skip check boxes (there is no corresponding .ofd key)");
     return true;
 }();
 }
@@ -197,7 +199,7 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
     for (auto *c : { m_optMatch, m_optPol, m_optIterSkip })
         sOpt->vbox()->addWidget(c);
     // 3 チェックとも apply() で読まれない (保存・計算に未反映)
-    sOpt->vbox()->addWidget(ofd::tabhelp::unwiredNote(sOpt));
+    sOpt->vbox()->addWidget(ofd::tabhelp::unwiredNote(sOpt, I18n::tr("g_uw_opt")));
     v->addWidget(sOpt);
 
     v->addStretch(1);

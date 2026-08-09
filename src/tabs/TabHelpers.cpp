@@ -21,6 +21,15 @@ const bool s_i18n = [] {
         "▸ この設定は現在計算へ反映されません (未実装)",
         "▸ These settings are not applied to any computation yet "
         "(not implemented)");
+    // 主語 (%1) は名詞句なので、助詞を続けると「…チェック群 は」のように
+    // 不自然になる。ダッシュで受けて助詞を避ける (英語も同じ構文にする)
+    ofd::I18n::reg("th_unwired_what",
+        "▸ %1 — 現在計算へ反映されません (未実装)",
+        "▸ %1 — not applied to any computation yet (not implemented)");
+    ofd::I18n::reg("th_unwired_mixed",
+        "▸ %1 — 現在計算へ反映されません (未実装)。反映されるもの: %2",
+        "▸ %1 — not applied to any computation yet (not implemented). "
+        "Applied: %2");
     return true;
 }();
 } // namespace
@@ -117,6 +126,17 @@ QLabel *sampleNote(QWidget *parent)
 QLabel *unwiredNote(QWidget *parent)
 {
     auto *l = new QLabel(I18n::tr("th_unwired"), parent);
+    l->setWordWrap(true);
+    l->setStyleSheet("font-size:11px; color:palette(mid);");
+    return l;
+}
+
+QLabel *unwiredNote(QWidget *parent, const QString &what, const QString &wired)
+{
+    const QString text =
+        wired.isEmpty() ? I18n::tr("th_unwired_what").arg(what)
+                        : I18n::tr("th_unwired_mixed").arg(what, wired);
+    auto *l = new QLabel(text, parent);
     l->setWordWrap(true);
     l->setStyleSheet("font-size:11px; color:palette(mid);");
     return l;

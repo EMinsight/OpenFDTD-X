@@ -12713,6 +12713,63 @@ static void testI18nKeysRegistered()
               "i18n: the acoustic source-count keys are registered");
 }
 
+// ── 未反映注記は必ず主語を持つ (docs/unwired-inventory.md) ──────────────────
+// 「▸ この設定は現在計算へ反映されません (未実装)」という主語なしの注記は、
+// 節の中に反映される入力と反映されない入力が混在していると「節ごと死んで
+// いる」と読まれる (実際にそう報告された)。主語のある版
+// unwiredNote(parent, what[, wired]) だけを使う。
+// 引数なしの版は既存互換で残してあるが、呼び出しは 0 件でなければならない。
+static void testUnwiredNotesHaveSubject()
+{
+    g_file = "unwired-subject";
+    const QString base = QCoreApplication::applicationDirPath();
+    QString srcDir;
+    for (const QString &c : { base + "/../src", base + "/../../src",
+                              QStringLiteral("src") }) {
+        if (QDir(c).exists()) { srcDir = c; break; }
+    }
+    if (srcDir.isEmpty()) {
+        std::printf("  (unwired-note scan skipped: src/ not found)\n");
+        return;
+    }
+    // unwiredNote(x) — 引数 1 個だけの呼び出し
+    static const QRegularExpression bare(
+        QStringLiteral("unwiredNote\\(\\s*[A-Za-z_]\\w*\\s*\\)"));
+    static const QRegularExpression any(QStringLiteral("unwiredNote\\("));
+
+    QStringList offenders;
+    int total = 0, withSubject = 0;
+    QDirIterator it(srcDir, { QStringLiteral("*.cpp") }, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        // 定義そのもの (TabHelpers.cpp) は対象外
+        if (QFileInfo(path).fileName() == QLatin1String("TabHelpers.cpp"))
+            continue;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QStringList lines =
+            QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+        for (int i = 0; i < lines.size(); ++i) {
+            if (!any.match(lines[i]).hasMatch()) continue;
+            ++total;
+            if (bare.match(lines[i]).hasMatch())
+                offenders << (QFileInfo(path).fileName()
+                              + QStringLiteral(":") + QString::number(i + 1));
+            else
+                ++withSubject;
+        }
+    }
+    if (!offenders.isEmpty())
+        std::printf("  unwiredNote() without a subject: %s\n",
+                    qPrintable(offenders.join(QStringLiteral(", "))));
+    check(total > 50, "unwired: scanned the tab sources");
+    check(offenders.isEmpty(),
+          "unwired: every unwiredNote() names what is not applied "
+          "(the subject-less overload must not be used in new code)");
+    check(withSubject == total, "unwired: all notes carry a subject");
+}
+
 static void testNavSourceAcLabel()
 {
     g_file = "nav-source-ac";
@@ -13404,6 +13461,7 @@ int main(int argc, char *argv[])
     testParaxialTrace();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
+    testUnwiredNotesHaveSubject();
     testNavSourceAcLabel();
     testNavCategories();
     testRoomAcRunButtonLabels();

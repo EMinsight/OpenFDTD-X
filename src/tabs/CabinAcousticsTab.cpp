@@ -218,6 +218,12 @@ const bool s_i18n = [] {
     I18n::reg("cab_meas_total_none",
               "選択中 %1 件 / 重量の入力がないため合計は未計算",
               "%1 selected / no weight entered, so no total");
+    I18n::reg("cab_uw_noise", "騒音源のチェック",
+              "the noise-source check boxes");
+    I18n::reg("cab_uw_cad", "CAD ファイルの指定と吸音内装のチェック",
+              "the CAD file and the absorbing-trim check boxes");
+    I18n::reg("cab_uw_cad_ok", "下の音響モード計算 (寸法入力から算出しています)",
+              "the modal calculation below (computed from the dimensions)");
     return true;
 }();
 
@@ -346,7 +352,7 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     m_srcStack->addWidget(buildAircraftSources());  // 3 aircraft
     ss->vbox()->addWidget(m_srcStack);
     // 騒音源チェックはローカル状態のみ (どこにも読まれない)
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss));
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("cab_uw_noise")));
     v->addWidget(ss);
 
     // ── 解析手法 (帯域別) ───────────────────────────────────────────────────
@@ -386,7 +392,7 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
                                   m_absSeat }));
     // CAD ファイル・吸音内装のチェックはまだどこにも読まれない
     // (下の音響モード計算は寸法入力のみを使う)
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("cab_uw_cad"), I18n::tr("cab_uw_cad_ok")));
     v->addWidget(sc);
 
     // ── 車室音響モード (直方体近似の厳密解) ────────────────────────────────

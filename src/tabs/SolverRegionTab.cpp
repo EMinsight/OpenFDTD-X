@@ -117,6 +117,12 @@ const bool s_i18n = [] {
         "PML 層数以外の設定は現在計算へ反映されません (未実装)",
         "Settings other than PML layers are not applied to the solver yet "
         "(not implemented)");
+    I18n::reg("sreg_uw_region", "解析領域の指定 (Project / .ofd へまだ配線されていません)",
+              "the analysis-region settings (not wired to the Project or the .ofd yet)");
+    I18n::reg("sreg_uw_mesh", "メッシュ細分化・サブピクセル・自動上書きの設定",
+              "the mesh-refinement, subpixel and auto-override settings");
+    I18n::reg("sreg_uw_dt", "Δt と CFL 係数の設定",
+              "the time step and CFL factor");
     return true;
 }();
 
@@ -167,7 +173,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     sr->form()->addRow(I18n::tr("sreg_zrange"),
                        rangeRow(m_zMin, m_zMax, "0.000", "0.030", false));
     // 領域指定はまだ Project / .ofd へ配線されていない (絶対規則 5)
-    sr->form()->addRow(tabhelp::unwiredNote(sr));
+    sr->form()->addRow(tabhelp::unwiredNote(sr, I18n::tr("sreg_uw_region")));
     v->addWidget(sr);
 
     // ── メッシュ設定 / Mesh ─────────────────────────────────────────────────
@@ -232,7 +238,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_autoOverride = new QCheckBox(I18n::tr("sreg_auto_override"), sm);
     m_autoOverride->setChecked(true);
     sm->form()->addRow(m_autoOverride);
-    sm->form()->addRow(tabhelp::unwiredNote(sm));
+    sm->form()->addRow(tabhelp::unwiredNote(sm, I18n::tr("sreg_uw_mesh")));
     v->addWidget(sm);
 
     // ── シミュレーション時間 / Simulation time ──────────────────────────────
@@ -276,7 +282,7 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
     m_cflRow->addStretch(1);
     ss->form()->addRow(I18n::tr("sreg_cfl"), m_cflRow);
-    ss->form()->addRow(tabhelp::unwiredNote(ss));
+    ss->form()->addRow(tabhelp::unwiredNote(ss, I18n::tr("sreg_uw_dt")));
     v->addWidget(ss);
 
     // ── 境界条件 / Boundary conditions ──────────────────────────────────────
