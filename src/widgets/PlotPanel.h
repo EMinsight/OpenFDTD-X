@@ -43,6 +43,7 @@ public slots:
     void showWaveform();
     void showConvergence();
     void showFreqChar();
+    void showSmith();
     void showFarPattern();
     void clearConvergence();
     void addConvergencePoint(int step, double e, double h);
@@ -59,7 +60,7 @@ protected:
 
 private:
     // Pattern は構造体 FarPattern との名前衝突を避けた列挙名
-    enum Mode { Waveform, Convergence, FreqChar, Pattern };
+    enum Mode { Waveform, Convergence, FreqChar, Smith, Pattern };
 
     void setMode(Mode m);
     bool modeAllowed(Mode m) const;   // 現在のドメインで意味を持つモードか
@@ -68,6 +69,7 @@ private:
     void saveCsvDialog();   // 右上 CSV ボタン → exportCsv
     void savePngDialog();   // 右上 PNG ボタン → grab() (ボタンは一時非表示)
     void paintFreqChar(QPainter &p, const QRectF &plot, const QColor &accent);
+    void paintSmith(QPainter &p, const QRectF &plot, const QColor &accent);
     void paintFarPattern(QPainter &p, const QRectF &plot,
                          const QColor &accent);
 
@@ -78,7 +80,8 @@ private:
     QToolButton *m_csvBtn = nullptr;
     QToolButton *m_pngBtn = nullptr;
     QToolButton *m_btnWave = nullptr, *m_btnConv = nullptr,
-                *m_btnFreq = nullptr, *m_btnFar = nullptr;
+                *m_btnFreq = nullptr, *m_btnSmith = nullptr,
+                *m_btnFar = nullptr;
 
     QVector<int>    m_steps;
     QVector<double> m_eAvg, m_hAvg;

@@ -133,6 +133,11 @@ set(CORE_SOURCES
     src/em/LumpedRlc.cpp
     src/em/LumpedRlc.h
 
+    # 反射係数 Γ / S11 / VSWR とスミスチャートの目盛円 — Qt 非依存。
+    # PlotPanel のスミスチャート表示の計算実体
+    src/em/Reflection.cpp
+    src/em/Reflection.h
+
     # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
     # Qt 非依存。SolverSelectorTab の数値の計算実体
     src/core/SolverSelection.cpp
