@@ -76,6 +76,7 @@
 #include "em/EmcStandards.h"
 #include "em/LumpedRlc.h"
 #include "em/Reflection.h"
+#include "em/RadiatedEmission.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
@@ -7866,6 +7867,65 @@ static void testOfdIntegration(const QString &sampleDir)
     }
 #endif
 
+    // ── 遠方界の絶対レベル: far1d.log は「利得 [dBi]」である ────────────────
+    // EMC の放射エミッション予測 (em/RadiatedEmission) は
+    // 「far1d.log の E-abs[dB] = 利得 [dBi]」という前提の上に立っている。
+    // この前提を **教科書値** で確かめる: dipole.ofd の線導体は
+    // z = −0.025 … +0.025 m の全長 50 mm、周波数 3 GHz (λ = 99.93 mm) なので
+    // ちょうど半波長ダイポールで、指向性利得は **2.15 dBi** (D = 1.64)。
+    // これがずれたら換算式ごと間違っているので、EMC 予測を出してはいけない。
+    {
+        g_file = "ofd_far1d_gain";
+        const QFileInfo bi(bin);
+        QString postBin = bi.dir().filePath(QStringLiteral("ofd_post"));
+#ifdef Q_OS_WIN
+        if (!QFileInfo::exists(postBin)) postBin += QStringLiteral(".exe");
+#endif
+        if (!QFileInfo::exists(postBin)) {
+            std::printf("  (far1d gain check skipped: ofd_post not next to "
+                        "OFDX_OFD_BIN)\n");
+        } else {
+            QProcess pp;
+            pp.setWorkingDirectory(dir.path());
+            pp.start(postBin, { QStringLiteral("-n"), QStringLiteral("2"),
+                                QStringLiteral("dipole.ofd") });
+            check(pp.waitForFinished(300000), "far1d: ofd_post finished");
+            check(pp.exitStatus() == QProcess::NormalExit &&
+                  pp.exitCode() == 0, "far1d: ofd_post exit code 0");
+            const QVector<FarPattern> cuts =
+                KernelResultReader::readFar1d(dir.filePath("far1d.log"));
+            check(!cuts.isEmpty(), "far1d: pattern parsed from real output");
+            double peak = -1e300, peakDeg = 0;
+            double freq = 0;
+            for (const FarPattern &c : cuts) {
+                freq = c.freqHz;
+                for (int i = 0; i < c.eAbsDb.size(); ++i)
+                    if (c.eAbsDb[i] > peak)
+                        { peak = c.eAbsDb[i]; peakDeg = c.deg[i]; }
+            }
+            check(std::fabs(freq - 3.0e9) < 1e6,
+                  "far1d: frequency2 of dipole.ofd is 3 GHz");
+            // 半波長ダイポールの利得 2.15 dBi。離散化の差を見て ±0.3 dB。
+            check(std::fabs(peak - 2.15) < 0.3,
+                  "far1d: the peak of a half-wave dipole is 2.15 dBi "
+                  "(E-abs[dB] really is the gain in dBi)");
+            // 最大放射は素子に直交する方向 (θ = 90°)
+            check(std::fabs(peakDeg - 90.0) < 6.0 ||
+                  std::fabs(peakDeg - 270.0) < 6.0,
+                  "far1d: the peak is broadside to the wire");
+            // その利得を電界強度へ通したとき、独立に立てた E = √(30GP)/d と
+            // 一致すること (EMC 予測の経路そのものの検算)
+            const double pW = 1.0, dM = 3.0;
+            const em::FieldStrength fs = em::fieldStrength(peak, pW, dM);
+            check(fs.valid, "far1d: field strength from the measured gain");
+            const double gLin = std::pow(10.0, peak / 10.0);
+            check(std::fabs(fs.vPerM - std::sqrt(30.0 * gLin * pW) / dM)
+                      < 1e-12,
+                  "far1d: the predicted field matches sqrt(30 G P)/d");
+        }
+        g_file = "ofd_integration";
+    }
+
     // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
     // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)
     {
@@ -11227,6 +11287,115 @@ static void testReflection()
     }
 }
 
+// ── 遠方界 → 放射妨害波レベル (em/RadiatedEmission) ─────────────────────────
+// 判定値は EIRP からの標準式 E = √(30·G·P)/d を手計算したもの。
+static void testRadiatedEmission()
+{
+    using namespace ofd::em;
+    g_file = "radiated-emission";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 定数項 20log10(√30 × 10⁶) = 134.7712 dB
+    check(approx(eirpToFieldConstantDb(), 134.7712125, 1e-6),
+          "radem: the EIRP-to-field constant is 20log10(sqrt(30)*1e6)");
+
+    // 1 W・0 dBi・1 m → E = √30 = 5.4772 V/m = 134.771 dBμV/m
+    {
+        const FieldStrength f = fieldStrength(0.0, 1.0, 1.0);
+        check(f.valid, "radem: 1 W at 1 m is valid");
+        check(approx(f.vPerM, std::sqrt(30.0), 1e-12),
+              "radem: E = sqrt(30 G P)/d");
+        check(approx(f.dBuVm, 134.7712125, 1e-6),
+              "radem: 1 W isotropic at 1 m is 134.77 dBuV/m");
+        check(approx(f.eirpDbm, 30.0, 1e-12),
+              "radem: 1 W at 0 dBi is 30 dBm EIRP");
+        // dB 表現と V/m 表現が一致すること (別経路で計算しているので独立)
+        check(approx(f.dBuVm, 20.0 * std::log10(f.vPerM * 1e6), 1e-9),
+              "radem: the dB and V/m results agree");
+    }
+    // 3 m へ移すと −20log10(3) = −9.542 dB
+    {
+        const FieldStrength f = fieldStrength(0.0, 1.0, 3.0);
+        // 定数項そのものは上で検証済みなので、ここは距離依存だけを見る
+        check(approx(f.dBuVm,
+                     eirpToFieldConstantDb() - 20.0 * std::log10(3.0), 1e-12),
+              "radem: distance follows the inverse-distance law");
+        check(approx(f.vPerM, std::sqrt(30.0) / 3.0, 1e-12),
+              "radem: E falls as 1/d");
+    }
+    // 電力 4 倍で +6.02 dB、利得 +10 dBi で +10 dB
+    {
+        const double a = fieldStrength(0.0, 1.0, 3.0).dBuVm;
+        check(approx(fieldStrength(0.0, 4.0, 3.0).dBuVm - a,
+                     20.0 * std::log10(2.0), 1e-9),
+              "radem: four times the power is +6.02 dB");
+        check(approx(fieldStrength(10.0, 1.0, 3.0).dBuVm - a, 10.0, 1e-9),
+              "radem: +10 dBi of gain is +10 dB of field");
+        check(approx(fieldStrength(0.0, 1.0, 6.0).dBuVm - a,
+                     -20.0 * std::log10(2.0), 1e-9),
+              "radem: twice the distance is -6.02 dB");
+    }
+    // 不正入力
+    {
+        check(!fieldStrength(0.0, 0.0, 3.0).valid,
+              "radem: zero power is not valid");
+        check(!fieldStrength(0.0, 1.0, 0.0).valid,
+              "radem: zero distance is not valid");
+    }
+    // グランド反射の上限は 20log10(2)
+    check(approx(groundReflectionMaxDb(), 6.0205999, 1e-6),
+          "radem: the ground-reflection ceiling is 6.02 dB");
+
+    // 遠方界距離 2D²/λ と波長
+    {
+        check(approx(wavelengthM(2.99792458e8), 1.0, 1e-12),
+              "radem: lambda = c/f");
+        check(wavelengthM(0.0) == 0.0, "radem: f <= 0 has no wavelength");
+        // D = 0.5 m, lambda = 1 m -> 2*0.25/1 = 0.5 m
+        check(approx(fraunhoferDistanceM(0.5, 1.0), 0.5, 1e-12),
+              "radem: the Fraunhofer distance is 2 D^2 / lambda");
+        check(fraunhoferDistanceM(0.0, 1.0) == 0.0 &&
+              fraunhoferDistanceM(0.5, 0.0) == 0.0,
+              "radem: a missing dimension or wavelength gives no distance");
+    }
+    // マージンは限度値 − レベル (正 = 余裕)
+    {
+        check(approx(marginDb(30.0, 40.0), 10.0, 1e-12),
+              "radem: margin is positive below the limit");
+        check(approx(marginDb(45.0, 40.0), -5.0, 1e-12),
+              "radem: margin is negative above the limit");
+    }
+    // 規格の限度値と突き合わせた現実味の確認:
+    // CISPR 32 Class B は 30–230 MHz で 30 dBμV/m @10 m。10 m で 30 dBμV/m を
+    // 出すのに必要な EIRP を逆算すると
+    //   30 = 134.7712 + 10log10(P·G) − 20log10(10) → P·G = 10^((30−114.771)/10)
+    //      = 3.33e-9 W ≈ 3.3 nW
+    // 放射妨害波の限度値がナノワット級の EIRP に相当することの再確認。
+    {
+        emc::LimitSegment seg[emc::kMaxLimitSegments];
+        const int n = emc::radiatedLimits(emc::Standard::Cispr32,
+                                          emc::EmClass::B, seg,
+                                          emc::kMaxLimitSegments);
+        check(n > 0, "radem: the CISPR 32 Class B table is available");
+        if (n > 0) {
+            const double limit = seg[0].limit_dBuVm;
+            const double dref = seg[0].refDist_m;
+            // 限度値ちょうどになる EIRP を求め、それを入れ直すと限度値に戻る
+            const double eirpW =
+                std::pow(10.0, (limit - eirpToFieldConstantDb()
+                                + 20.0 * std::log10(dref)) / 10.0);
+            check(eirpW > 0 && eirpW < 1e-6,
+                  "radem: the CISPR 32 Class B limit is a sub-microwatt EIRP");
+            const FieldStrength back = fieldStrength(0.0, eirpW, dref);
+            check(approx(back.dBuVm, limit, 1e-9),
+                  "radem: feeding that EIRP back reproduces the limit exactly");
+        }
+    }
+}
+
 // ── 回路ポート定義 (.ofdx "circuit.ports") ──────────────────────────────────
 static void testCircuitPorts()
 {
@@ -13225,6 +13394,7 @@ int main(int argc, char *argv[])
     testEmcStandards();
     testLumpedRlc();
     testReflection();
+    testRadiatedEmission();
     testCircuitPorts();
     testPhotonicNetlist();
     testMonitorList();
