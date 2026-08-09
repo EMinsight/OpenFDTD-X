@@ -75,6 +75,7 @@
 #include "em/RadioPropagation.h"
 #include "em/EmcStandards.h"
 #include "em/LumpedRlc.h"
+#include "em/Reflection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
@@ -11097,6 +11098,135 @@ static void testLumpedRlc()
     }
 }
 
+// ── 反射係数とスミスチャートの幾何 (em/Reflection) ──────────────────────────
+// 判定値は教科書の閉形式 (Pozar §2.3/§2.4) を手計算したもの。
+static void testReflection()
+{
+    using namespace ofd::em;
+    g_file = "reflection";
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 整合 Z = Z0 → Γ = 0、VSWR = 1、S11 = −∞
+    {
+        const Reflection r = reflectionFromZ(50.0, 0.0, 50.0);
+        check(r.valid, "reflection: a matched load is valid");
+        check(approx(r.magnitude, 0.0, 1e-15), "reflection: |Γ| = 0 when Z = Z0");
+        check(approx(r.vswr, 1.0, 1e-12), "reflection: VSWR = 1 when matched");
+        check(std::isinf(r.s11Db) && r.s11Db < 0,
+              "reflection: S11 is -inf when matched (not rounded to a finite dB)");
+        check(std::isinf(r.returnLossDb) && r.returnLossDb > 0,
+              "reflection: return loss is +inf when matched");
+    }
+    // 開放 (R→∞ の代用として R = 1e12) → Γ ≈ +1、短絡 → Γ = −1
+    {
+        const Reflection open = reflectionFromZ(1e12, 0.0, 50.0);
+        check(approx(open.gammaRe, 1.0, 1e-9) && approx(open.gammaIm, 0.0, 1e-9),
+              "reflection: an open circuit gives Γ = +1");
+        const Reflection sh = reflectionFromZ(0.0, 0.0, 50.0);
+        check(approx(sh.gammaRe, -1.0, 1e-15) && approx(sh.gammaIm, 0.0, 1e-15),
+              "reflection: a short circuit gives Γ = -1");
+        check(std::isinf(sh.vswr), "reflection: |Γ| = 1 gives an infinite VSWR");
+        check(approx(sh.phaseDeg, 180.0, 1e-9),
+              "reflection: a short has a phase of 180 deg");
+    }
+    // Z = 100 Ω / Z0 = 50 Ω → Γ = 1/3、VSWR = 2、S11 = -9.542 dB
+    {
+        const Reflection r = reflectionFromZ(100.0, 0.0, 50.0);
+        check(approx(r.gammaRe, 1.0 / 3.0, 1e-12) &&
+              approx(r.gammaIm, 0.0, 1e-15),
+              "reflection: Z = 2 Z0 gives Γ = 1/3");
+        check(approx(r.vswr, 2.0, 1e-12), "reflection: Z = 2 Z0 gives VSWR = 2");
+        check(approx(r.s11Db, -9.54243, 1e-4),
+              "reflection: S11 = 20 log10|Γ|");
+        check(approx(r.returnLossDb, -r.s11Db, 1e-12),
+              "reflection: return loss = -S11");
+    }
+    // 複素負荷 Z = 25 + j50 → Γ = (−25+j50)/(75+j50)
+    //   = (−25+j50)(75−j50)/8125 = (625 + j5000)/8125 = 1/13 + j8/13
+    //   |Γ|² = |Z−Z0|²/|Z+Z0|² = 3125/8125 = 5/13
+    {
+        const Reflection r = reflectionFromZ(25.0, 50.0, 50.0);
+        check(approx(r.gammaRe, 1.0 / 13.0, 1e-12) &&
+              approx(r.gammaIm, 8.0 / 13.0, 1e-12),
+              "reflection: Γ of a complex load");
+        check(approx(r.magnitude, std::sqrt(5.0 / 13.0), 1e-12),
+              "reflection: |Γ| of a complex load");
+        // 逆変換で元に戻る
+        double rr = 0, xx = 0;
+        check(impedanceFromGamma(r.gammaRe, r.gammaIm, 50.0, &rr, &xx),
+              "reflection: Γ -> Z is defined away from Γ = 1");
+        check(approx(rr, 25.0, 1e-9) && approx(xx, 50.0, 1e-9),
+              "reflection: z = (1+Γ)/(1-Γ) inverts (Z-Z0)/(Z+Z0)");
+    }
+    // 受動負荷 (R ≥ 0) は必ず単位円の内側
+    {
+        for (double R : { 0.0, 1.0, 50.0, 1000.0 })
+            for (double X : { -500.0, -50.0, 0.0, 50.0, 500.0 })
+                check(reflectionFromZ(R, X, 50.0).magnitude <= 1.0 + 1e-12,
+                      "reflection: a passive load stays inside |Γ| = 1");
+    }
+    // 不正入力
+    {
+        check(!reflectionFromZ(50.0, 0.0, 0.0).valid,
+              "reflection: Z0 <= 0 is not valid");
+        check(!impedanceFromGamma(1.0, 0.0, 50.0, nullptr, nullptr),
+              "reflection: Γ = 1 has no finite impedance");
+    }
+    // スミスチャートの目盛円 (Pozar §2.4)
+    {
+        // r = 0 は単位円そのもの (中心 0、半径 1)
+        const SmithCircle r0 = constantResistanceCircle(0.0);
+        check(r0.valid && approx(r0.cx, 0.0, 1e-15) &&
+              approx(r0.radius, 1.0, 1e-15),
+              "smith: the r = 0 circle is the unit circle");
+        // r = 1 は中心 (0.5, 0)、半径 0.5 — 必ず Γ = 0 を通る
+        const SmithCircle r1 = constantResistanceCircle(1.0);
+        check(r1.valid && approx(r1.cx, 0.5, 1e-15) &&
+              approx(r1.radius, 0.5, 1e-15),
+              "smith: the r = 1 circle passes through the centre");
+        check(!constantResistanceCircle(-1.0).valid,
+              "smith: a negative resistance has no circle");
+        // x = 1 は中心 (1, 1)、半径 1
+        const SmithCircle x1 = constantReactanceCircle(1.0);
+        check(x1.valid && approx(x1.cx, 1.0, 1e-15) &&
+              approx(x1.cy, 1.0, 1e-15) && approx(x1.radius, 1.0, 1e-15),
+              "smith: the x = 1 circle is centred at (1, 1) with radius 1");
+        // x = −1 は実軸に対して鏡像
+        const SmithCircle xm = constantReactanceCircle(-1.0);
+        check(xm.valid && approx(xm.cy, -1.0, 1e-15) &&
+              approx(xm.radius, 1.0, 1e-15),
+              "smith: the x = -1 circle mirrors x = +1");
+        check(!constantReactanceCircle(0.0).valid,
+              "smith: x = 0 is the real axis, not a circle");
+        // 円の上の点が本当に等 r / 等 x になっているか (逆変換で検算)
+        for (double rn : { 0.2, 1.0, 5.0 }) {
+            const SmithCircle g = constantResistanceCircle(rn);
+            for (double th : { 0.0, 1.0, 2.5, 4.0 }) {
+                const double gr = g.cx + g.radius * std::cos(th);
+                const double gi = g.cy + g.radius * std::sin(th);
+                double R = 0, X = 0;
+                if (!impedanceFromGamma(gr, gi, 1.0, &R, &X)) continue;
+                check(approx(R, rn, 1e-9),
+                      "smith: every point of a constant-r circle has that r");
+            }
+        }
+        for (double xn : { 0.5, 2.0, -0.5 }) {
+            const SmithCircle g = constantReactanceCircle(xn);
+            for (double th : { 0.6, 1.8, 3.4 }) {
+                const double gr = g.cx + g.radius * std::cos(th);
+                const double gi = g.cy + g.radius * std::sin(th);
+                double R = 0, X = 0;
+                if (!impedanceFromGamma(gr, gi, 1.0, &R, &X)) continue;
+                check(approx(X, xn, 1e-9),
+                      "smith: every point of a constant-x circle has that x");
+            }
+        }
+    }
+}
+
 // ── 回路ポート定義 (.ofdx "circuit.ports") ──────────────────────────────────
 static void testCircuitPorts()
 {
@@ -13094,6 +13224,7 @@ int main(int argc, char *argv[])
     testRefineRegions();
     testEmcStandards();
     testLumpedRlc();
+    testReflection();
     testCircuitPorts();
     testPhotonicNetlist();
     testMonitorList();

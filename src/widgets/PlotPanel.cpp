@@ -1,6 +1,7 @@
 // PlotPanel.cpp
 #include "PlotPanel.h"
 #include "../core/Project.h"
+#include "../em/Reflection.h"
 #include "../I18n.h"
 
 #include <QFile>
@@ -25,7 +26,32 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ppb_mode_wave", "波形", "Waveform");
     ofd::I18n::reg("ppb_mode_conv", "収束", "Convergence");
     ofd::I18n::reg("ppb_mode_freq", "周波数特性", "Frequency");
+    ofd::I18n::reg("ppb_mode_smith", "スミスチャート", "Smith chart");
     ofd::I18n::reg("ppb_mode_far", "放射パターン", "Pattern");
+    ofd::I18n::reg("ppb_smith_none_tip",
+        "計算を実行すると <kernel>.log の給電点表から Γ = (Z−Z0)/(Z+Z0) を"
+        "描きます",
+        "Run the solver to plot Γ = (Z−Z0)/(Z+Z0) from the feed table in "
+        "<kernel>.log");
+    ofd::I18n::reg("pp_smith",
+                   "スミスチャート / S11 (実行結果 <kernel>.log)",
+                   "Smith chart / S11 (run result <kernel>.log)");
+    // 1 給電点 = 1 ポートなので S11 = Γ。多ポートの S21 等はカーネルが
+    // 出さない (ofd は給電点ごとの Zin しか書かない) — 誤解を招かないよう明示
+    ofd::I18n::reg("pp_smith_note",
+        "※ 給電点 1 個 = 1 ポートのため S11 = Γ です。S21 等の伝達項は "
+        "<kernel>.log に含まれません",
+        "* One feed = one port, so S11 = Γ. Transfer terms such as S21 are "
+        "not present in <kernel>.log");
+    ofd::I18n::reg("pp_smith_range", "f: %1 … %2 Hz  (%3 点)",
+                   "f: %1 … %2 Hz  (%3 points)");
+    ofd::I18n::reg("pp_smith_best", "最良整合 f = %1 Hz",
+                   "Best match at f = %1 Hz");
+    ofd::I18n::reg("pp_smith_perfect", "−∞ (完全整合)",
+                   "−∞ (perfect match)");
+    ofd::I18n::reg("pp_smith_total", "∞ (全反射)", "∞ (total reflection)");
+    ofd::I18n::reg("pp_smith_marks", "○ = f 最小 / ● = f 最大",
+                   "○ = lowest f / ● = highest f");
     ofd::I18n::reg("ppb_freq_none_tip",
         "計算を実行すると <kernel>.log の給電点表がここに表示されます",
         "Run the solver to show the feed table from <kernel>.log here");
@@ -76,11 +102,13 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     };
     m_btnWave = modeBtn("ppb_mode_wave");
     m_btnConv = modeBtn("ppb_mode_conv");
-    m_btnFreq = modeBtn("ppb_mode_freq");
-    m_btnFar  = modeBtn("ppb_mode_far");
+    m_btnFreq  = modeBtn("ppb_mode_freq");
+    m_btnSmith = modeBtn("ppb_mode_smith");
+    m_btnFar   = modeBtn("ppb_mode_far");
     btnRow->addWidget(m_btnWave);
     btnRow->addWidget(m_btnConv);
     btnRow->addWidget(m_btnFreq);
+    btnRow->addWidget(m_btnSmith);
     btnRow->addWidget(m_btnFar);
     btnRow->addStretch(1);
     m_csvBtn = new QToolButton(this);
@@ -98,6 +126,7 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     connect(m_btnConv, &QToolButton::clicked, this,
             &PlotPanel::showConvergence);
     connect(m_btnFreq, &QToolButton::clicked, this, &PlotPanel::showFreqChar);
+    connect(m_btnSmith, &QToolButton::clicked, this, &PlotPanel::showSmith);
     connect(m_btnFar, &QToolButton::clicked, this, &PlotPanel::showFarPattern);
     connect(m_csvBtn, &QToolButton::clicked, this, &PlotPanel::saveCsvDialog);
     connect(m_pngBtn, &QToolButton::clicked, this, &PlotPanel::savePngDialog);
@@ -125,7 +154,8 @@ bool PlotPanel::modeAllowed(Mode m) const
         // 時間波形励振が無い
         return m_domain != Domain::Underwater;
     case FreqChar:
-        // 給電点 Rin/Xin/Ref — EM 専用
+    case Smith:
+        // 給電点 Rin/Xin/Ref と、そこから作る Γ — EM 専用
         return m_domain == Domain::EM;
     case Pattern:
         // far1d.log の放射パターン — 音響/水中には無い
@@ -142,6 +172,7 @@ void PlotPanel::updateDomainVisibility()
 {
     m_btnWave->setVisible(modeAllowed(Waveform));
     m_btnFreq->setVisible(modeAllowed(FreqChar));
+    m_btnSmith->setVisible(modeAllowed(Smith));
     m_btnFar->setVisible(modeAllowed(Pattern));
     // 隠したモードが選択中だった場合は表示可能なモードへフォールバック
     if (!modeAllowed(m_mode))
@@ -165,6 +196,12 @@ void PlotPanel::showFreqChar()
     else updateModeButtons();
 }
 
+void PlotPanel::showSmith()
+{
+    if (hasFreqChar()) setMode(Smith);
+    else updateModeButtons();
+}
+
 void PlotPanel::showFarPattern()
 {
     if (hasFarPattern()) setMode(Pattern);
@@ -176,11 +213,15 @@ void PlotPanel::updateModeButtons()
     m_btnWave->setChecked(m_mode == Waveform);
     m_btnConv->setChecked(m_mode == Convergence);
     m_btnFreq->setChecked(m_mode == FreqChar);
+    m_btnSmith->setChecked(m_mode == Smith);
     m_btnFar->setChecked(m_mode == Pattern);
     // 結果系モードはデータが届くまで無効 (未実装ではなく「まだ結果が無い」)
     m_btnFreq->setEnabled(hasFreqChar());
     m_btnFreq->setToolTip(hasFreqChar() ? QString()
                                         : I18n::tr("ppb_freq_none_tip"));
+    m_btnSmith->setEnabled(hasFreqChar());   // 素データは給電点表と同じ
+    m_btnSmith->setToolTip(hasFreqChar() ? QString()
+                                         : I18n::tr("ppb_smith_none_tip"));
     m_btnFar->setEnabled(hasFarPattern());
     m_btnFar->setToolTip(hasFarPattern() ? QString()
                                          : I18n::tr("ppb_far_none_tip"));
@@ -203,7 +244,7 @@ void PlotPanel::clearRunResults()
 {
     m_sweeps.clear();
     m_patterns.clear();
-    if (m_mode == FreqChar || m_mode == Pattern)
+    if (m_mode == FreqChar || m_mode == Smith || m_mode == Pattern)
         m_mode = Convergence;    // 実行中は収束を見せる
     updateModeButtons();
     update();
@@ -213,6 +254,7 @@ void PlotPanel::saveCsvDialog()
 {
     const char *suggest =
         m_mode == FreqChar ? "feed_response.csv" :
+        m_mode == Smith ? "reflection.csv" :
         m_mode == Pattern ? "far_pattern.csv" : "convergence.csv";
     const QString path = QFileDialog::getSaveFileName(
         this, I18n::tr("ppb_csv_tip"), QString::fromLatin1(suggest),
@@ -227,15 +269,16 @@ void PlotPanel::savePngDialog()
     if (path.isEmpty()) return;
     // ボタンを写し込まないため一時的に隠して grab する
     // (モードボタンはドメインで出し分けているので元の可視状態へ戻す)
-    QToolButton *btns[] = { m_csvBtn, m_pngBtn,
-                            m_btnWave, m_btnConv, m_btnFreq, m_btnFar };
-    bool vis[6];
-    for (int i = 0; i < 6; ++i) {
+    QToolButton *btns[] = { m_csvBtn, m_pngBtn, m_btnWave, m_btnConv,
+                            m_btnFreq, m_btnSmith, m_btnFar };
+    const int n = int(sizeof(btns) / sizeof(btns[0]));
+    QVector<bool> vis(n);
+    for (int i = 0; i < n; ++i) {
         vis[i] = btns[i]->isVisible();
         btns[i]->setVisible(false);
     }
     grab().save(path);
-    for (int i = 0; i < 6; ++i) btns[i]->setVisible(vis[i]);
+    for (int i = 0; i < n; ++i) btns[i]->setVisible(vis[i]);
 }
 
 void PlotPanel::clearConvergence()
@@ -263,6 +306,27 @@ bool PlotPanel::exportCsv(const QString &path) const
             for (const FeedSweepPoint &pt : s.points)
                 out << s.feedIndex << ',' << pt.freqHz << ',' << pt.rin << ','
                     << pt.xin << ',' << pt.refDb << ',' << pt.vswr << '\n';
+    } else if (m_mode == Smith && !m_sweeps.isEmpty()) {
+        // Γ は Rin/Xin/Z0 から求めた値 (em/Reflection)。∞ になる列
+        // (完全整合の S11[dB]、全反射の VSWR) は空欄にする — 丸めた有限値を
+        // 書くと「整合していないのに整合して見える」ため
+        out << "feed,frequency_Hz,Rin_ohm,Xin_ohm,Z0_ohm,"
+               "Gamma_re,Gamma_im,Gamma_abs,Gamma_deg,S11_dB,VSWR\n";
+        for (const FeedSweep &s : m_sweeps) {
+            for (const FeedSweepPoint &pt : s.points) {
+                const em::Reflection r =
+                    em::reflectionFromZ(pt.rin, pt.xin, s.z0);
+                if (!r.valid) continue;
+                out << s.feedIndex << ',' << pt.freqHz << ',' << pt.rin << ','
+                    << pt.xin << ',' << s.z0 << ',' << r.gammaRe << ','
+                    << r.gammaIm << ',' << r.magnitude << ',' << r.phaseDeg
+                    << ',';
+                if (std::isfinite(r.s11Db)) out << r.s11Db;
+                out << ',';
+                if (std::isfinite(r.vswr)) out << r.vswr;
+                out << '\n';
+            }
+        }
     } else if (m_mode == Pattern && !m_patterns.isEmpty()) {
         out << "plane,frequency_Hz,deg,Eabs_dB\n";
         for (const FarPattern &pat : m_patterns)
@@ -342,6 +406,138 @@ void PlotPanel::paintFreqChar(QPainter &p, const QRectF &plot,
             .arg(s.z0));
 }
 
+// ── スミスチャート (Γ = (Z−Z0)/(Z+Z0) の軌跡) ──────────────────────────────
+// 素データは給電点特性と同じ <kernel>.log の給電点表。Γ・S11・VSWR の式と
+// 目盛円の幾何は src/em/Reflection (Qt 非依存・selftest 済み) にある。
+void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
+                           const QColor &accent)
+{
+    p.drawText(QPointF(plot.left(), plot.top() - 8), I18n::tr("pp_smith"));
+    const FeedSweep &s = m_sweeps.first();
+    const QVector<FeedSweepPoint> &pts = s.points;
+    if (pts.isEmpty()) return;
+
+    // 右側は読み取り値の欄に使い、左側の正方形にチャートを描く
+    const qreal readout = qMin<qreal>(260.0, plot.width() * 0.42);
+    const qreal side = qMin(plot.width() - readout - 12.0, plot.height()) - 8.0;
+    if (side < 40.0) return;                  // 小さすぎるときは描かない
+    const QPointF c(plot.left() + 6.0 + side / 2.0,
+                    plot.top() + (plot.height() - side) / 2.0 + side / 2.0);
+    const qreal R = side / 2.0;
+    auto at = [&](double gre, double gim) {   // Γ → 画面座標 (虚部は上向き)
+        return QPointF(c.x() + gre * R, c.y() - gim * R);
+    };
+    const QRectF unit(c.x() - R, c.y() - R, 2 * R, 2 * R);
+
+    // 目盛 (単位円の内側だけ) — 円弧のはみ出しはクリップで落とす
+    QPainterPath clip;
+    clip.addEllipse(unit);
+    p.save();
+    p.setClipPath(clip);
+    p.setPen(QPen(palette().midlight().color(), 1));
+    for (double r : { 0.2, 0.5, 1.0, 2.0, 5.0 }) {
+        const em::SmithCircle g = em::constantResistanceCircle(r);
+        if (!g.valid) continue;
+        p.drawEllipse(QPointF(c.x() + g.cx * R, c.y() - g.cy * R),
+                      g.radius * R, g.radius * R);
+    }
+    for (double x : { 0.2, 0.5, 1.0, 2.0, 5.0 }) {
+        for (double sgn : { 1.0, -1.0 }) {
+            const em::SmithCircle g = em::constantReactanceCircle(sgn * x);
+            if (!g.valid) continue;
+            p.drawEllipse(QPointF(c.x() + g.cx * R, c.y() - g.cy * R),
+                          g.radius * R, g.radius * R);
+        }
+    }
+    p.drawLine(at(-1.0, 0.0), at(1.0, 0.0));  // 実軸 (x = 0)
+    p.restore();
+
+    // 単位円 (|Γ| = 1) と中心 (整合点 Z = Z0)
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawEllipse(unit);
+    p.drawLine(QPointF(c.x() - 3, c.y()), QPointF(c.x() + 3, c.y()));
+    p.drawLine(QPointF(c.x(), c.y() - 3), QPointF(c.x(), c.y() + 3));
+
+    // Γ の軌跡 (周波数の昇順)。最良整合点 (|Γ| 最小) を控えておく
+    QPainterPath locus;
+    bool started = false;
+    int best = -1;
+    double bestMag = 1e300;
+    QPointF firstPt, lastPt;
+    for (int i = 0; i < pts.size(); ++i) {
+        const em::Reflection r = em::reflectionFromZ(pts[i].rin, pts[i].xin,
+                                                     s.z0);
+        if (!r.valid) continue;
+        const QPointF q = at(r.gammaRe, r.gammaIm);
+        if (!started) { locus.moveTo(q); firstPt = q; started = true; }
+        else locus.lineTo(q);
+        lastPt = q;
+        if (r.magnitude < bestMag) { bestMag = r.magnitude; best = i; }
+    }
+    if (!started) return;
+    p.setPen(QPen(accent, 2));
+    p.drawPath(locus);
+    // 始点 (○) と終点 (●) — 掃引の向きが分かるように区別する
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(firstPt, 4.0, 4.0);
+    p.setBrush(accent);
+    p.drawEllipse(lastPt, 3.5, 3.5);
+    p.setBrush(Qt::NoBrush);
+
+    // 読み取り値
+    const qreal tx = plot.right() - readout + 6.0;
+    qreal ty = plot.top() + 14.0;
+    auto line = [&](const QString &t) {
+        p.drawText(QPointF(tx, ty), t);
+        ty += 16.0;
+    };
+    p.setPen(palette().text().color());
+    line(QStringLiteral("feed #%1   Z0 = %2 Ω").arg(s.feedIndex)
+             .arg(QString::number(s.z0, 'g', 4)));
+    line(I18n::tr("pp_smith_range")
+             .arg(QString::number(pts.first().freqHz, 'g', 4),
+                  QString::number(pts.last().freqHz, 'g', 4))
+             .arg(pts.size()));
+    ty += 4.0;
+    if (best >= 0) {
+        const em::Reflection r =
+            em::reflectionFromZ(pts[best].rin, pts[best].xin, s.z0);
+        p.setPen(accent);
+        line(I18n::tr("pp_smith_best")
+                 .arg(QString::number(pts[best].freqHz, 'g', 5)));
+        p.setPen(palette().text().color());
+        line(QStringLiteral("  Z = %1 %2 j%3 Ω")
+                 .arg(QString::number(pts[best].rin, 'f', 2),
+                      pts[best].xin < 0 ? QStringLiteral("−")
+                                        : QStringLiteral("+"),
+                      QString::number(std::fabs(pts[best].xin), 'f', 2)));
+        line(QStringLiteral("  |Γ| = %1  ∠%2°")
+                 .arg(QString::number(r.magnitude, 'f', 4),
+                      QString::number(r.phaseDeg, 'f', 1)));
+        // ∞ は数値にせずそのまま出す (丸めた有限値を出さない)
+        line(QStringLiteral("  S11 = %1 dB")
+                 .arg(std::isfinite(r.s11Db)
+                          ? QString::number(r.s11Db, 'f', 2)
+                          : I18n::tr("pp_smith_perfect")));
+        line(QStringLiteral("  VSWR = %1")
+                 .arg(std::isfinite(r.vswr) ? QString::number(r.vswr, 'f', 3)
+                                            : I18n::tr("pp_smith_total")));
+    }
+    ty += 4.0;
+    p.setPen(palette().mid().color());
+    line(I18n::tr("pp_smith_marks"));
+
+    // 1 給電点 = 1 ポートである旨 (S21 が無いことの説明)
+    QFont f = p.font();
+    const QFont keep = f;
+    f.setPointSizeF(qMax(6.0, f.pointSizeF() - 1.0));
+    p.setFont(f);
+    p.setPen(palette().mid().color());
+    p.drawText(QRectF(plot.left(), plot.bottom() + 2, plot.width(), 30),
+               Qt::AlignLeft | Qt::TextWordWrap, I18n::tr("pp_smith_note"));
+    p.setFont(keep);
+}
+
 // ── 遠方界パターン (面ごとの E-abs[dB]) ─────────────────────────────────────
 void PlotPanel::paintFarPattern(QPainter &p, const QRectF &plot,
                                 const QColor &accent)
@@ -400,21 +596,28 @@ void PlotPanel::paintEvent(QPaintEvent *)
     p.setPen(QPen(palette().mid().color(), 1));
     p.drawRect(plot);
 
-    // grid
-    p.setPen(QPen(palette().midlight().color(), 1, Qt::DotLine));
-    for (int i = 1; i < 10; ++i) {
-        const double x = plot.left() + plot.width() * i / 10.0;
-        p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
-    }
-    for (int i = 1; i < 5; ++i) {
-        const double y = plot.top() + plot.height() * i / 5.0;
-        p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+    // grid — スミスチャートは自前の円目盛を持つので直交格子は描かない
+    const bool smith = (m_mode == Smith && hasFreqChar());
+    if (!smith) {
+        p.setPen(QPen(palette().midlight().color(), 1, Qt::DotLine));
+        for (int i = 1; i < 10; ++i) {
+            const double x = plot.left() + plot.width() * i / 10.0;
+            p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+        }
+        for (int i = 1; i < 5; ++i) {
+            const double y = plot.top() + plot.height() * i / 5.0;
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+        }
     }
 
     p.setPen(palette().text().color());
 
     if (m_mode == FreqChar && hasFreqChar()) {
         paintFreqChar(p, plot, accent);
+        return;
+    }
+    if (smith) {
+        paintSmith(p, plot, accent);
         return;
     }
     if (m_mode == Pattern && hasFarPattern()) {

@@ -109,13 +109,13 @@ const bool s_i18n = [] {
     I18n::reg("cir_port_del", "− 選択行を削除", "− Delete selected row");
     I18n::reg("cir_port_hint",
               "ポートは編集でき、プロジェクト (.ofdx) に保存されます。"
-              "チェックを外した行は無効なポートとして保存されます。"
-              "抽出エンジン (PEEC/FEM) の起動は未実装のため、この表は"
-              "ポート定義の記録であり計算には渡されません。",
+              "チェックを外した行は無効なポートとして保存され、抽出には"
+              "渡されません。有効な行は上の「抽出実行」で OpenPEEC の port / "
+              "OpenFEM の端子として書き出されます。",
               "Ports are editable and saved with the project (.ofdx); unchecked "
-              "rows are stored as disabled. Launching the extraction engine "
-              "(PEEC/FEM) is not implemented, so this table only records the port "
-              "definitions and is not passed to any computation.");
+              "rows are stored as disabled and are not passed to the extraction. "
+              "Enabled rows are written as OpenPEEC ports / OpenFEM terminals by "
+              "Run extraction above.");
 
     // 抽出設定
     I18n::reg("cir_extract", "抽出設定", "Extraction");
@@ -223,17 +223,16 @@ const bool s_i18n = [] {
               "Results / |Z| of the lumped model");
     I18n::reg("cir_col_item", "項目", "Item");
     I18n::reg("cir_res_note",
-              "▸ PEEC/FEM による寄生抽出は未実装のため、抽出された R/L/C・"
-              "S パラメータはまだありません (表示できる実測値・解析値なし)。"
-              "ここに出るのは下で入力した集中定数 RLC の解析式 "
+              "▸ ここに出るのは下で入力した集中定数 RLC の解析式 "
               "Z = R + jωL + 1/(jωC) (直列) / Y = 1/R + 1/(jωL) + jωC (並列) "
-              "による値です。抽出を実行すると、この表と曲線は抽出結果で置き換わります。",
-              "▸ Parasitic extraction by PEEC/FEM is not implemented, so no "
-              "extracted R/L/C or S-parameters exist yet (there is no measured or "
-              "computed value to show). What follows is evaluated from the lumped "
-              "RLC entered below via Z = R + jωL + 1/(jωC) (series) / "
-              "Y = 1/R + 1/(jωL) + jωC (parallel). Once extraction runs, this "
-              "table and curve are replaced by the extracted values.");
+              "による値で、抽出結果ではありません。実際の寄生値は上の"
+              "「抽出実行」で OpenPEEC / OpenFEM を走らせると、"
+              "その上の表 (Zin / RLGC) に出ます。",
+              "▸ What follows is evaluated from the lumped RLC entered below via "
+              "Z = R + jωL + 1/(jωC) (series) / Y = 1/R + 1/(jωL) + jωC "
+              "(parallel); it is not an extraction result. Run extraction above "
+              "to launch OpenPEEC / OpenFEM — the extracted values appear in the "
+              "Zin / RLGC table there.");
     I18n::reg("cir_model", "集中定数モデル (入力)", "Lumped model (input)");
     I18n::reg("cir_topology", "構成", "Topology");
     I18n::reg("cir_topo_series", "直列 RLC", "Series RLC");
