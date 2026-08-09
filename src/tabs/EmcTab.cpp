@@ -5,12 +5,17 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../em/EmcStandards.h"
+#include "../em/RadiatedEmission.h"
+#include "../io/KernelResultReader.h"
 #include "../I18n.h"
 #include "../Theme.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -111,17 +116,95 @@ const bool s_i18n = [] {
               "▸ 「規格限度」列と下の曲線は規格の公表値です "
               "(CISPR 32:2015 Table A.3/A.4 = 準尖頭値 10 m、"
               "FCC 47 CFR §15.109)。"
-              "「実測相当値」「マージン」「判定」は、実測またはFDTD解析で得た"
-              "エミッションレベルがまだ無いため「—」です — "
-              "放射エミッションの解析・測定値の取り込みは未実装です。"
-              "値が得られれば同じ表・曲線に重ねて判定します。",
+              "「実測相当値」「マージン」「判定」は、上の「FDTD 結果からの予測」"
+              "で予測値が求まった周波数についてだけ埋まります "
+              "(実測値の取り込みは未実装)。",
               "▸ The “Limit” column and the curve below are the published values of "
               "the standard (CISPR 32:2015 Tables A.3/A.4, quasi-peak at 10 m; "
               "FCC 47 CFR §15.109). “Measured equivalent”, “Margin” and “Verdict” "
-              "are “—” because no emission level from measurement or FDTD exists "
-              "yet — computing/importing radiated emission is not implemented. "
-              "Once a level is available it is overlaid on this same table and "
-              "curve and the verdict is evaluated.");
+              "are filled in only for the frequencies predicted in “Prediction "
+              "from the FDTD result” above (importing measured levels is not "
+              "implemented).");
+    // ── FDTD 結果からの予測 (em/RadiatedEmission) ──────────────────────────
+    I18n::reg("emc_pred_section", "FDTD 結果からの予測 / Prediction from FDTD",
+              "Prediction from the FDTD result");
+    I18n::reg("emc_pred_hint",
+              "ポスト処理で `plotfar1d` を有効にすると出る far1d.log を読み、"
+              "各周波数の**最大利得**を測定距離での電界強度に換算して限度値と"
+              "比べます。far1d.log の E-abs[dB] は給電電力で正規化された利得 "
+              "[dBi] なので (OpenFDTD sol/farfield.c の farfactor)、"
+              "E[dBμV/m] = 134.771 + 10log10(P_t[W]) + G[dBi] − 20log10(d[m]) "
+              "で絶対値になります。",
+              "Reads far1d.log (produced when `plotfar1d` is enabled in post "
+              "processing), converts the peak gain at each frequency into a field "
+              "strength at the measurement distance and compares it with the "
+              "limit. E-abs[dB] in far1d.log is the gain in dBi normalised by the "
+              "feed power (farfactor in OpenFDTD sol/farfield.c), so "
+              "E[dBuV/m] = 134.771 + 10log10(P_t[W]) + G[dBi] - 20log10(d[m]) "
+              "gives an absolute level.");
+    I18n::reg("emc_pred_file", "far1d.log", "far1d.log");
+    I18n::reg("emc_pred_browse", "📁 参照…", "📁 Browse…");
+    I18n::reg("emc_pred_power", "放射電力 P_t", "Radiated power P_t");
+    I18n::reg("emc_pred_power_unit", "W", "W");
+    I18n::reg("emc_pred_maxdim", "放射体の最大寸法 D", "Largest dimension D");
+    I18n::reg("emc_pred_maxdim_unit", "m", "m");
+    I18n::reg("emc_pred_ground", "グランド反射 +6 dB を加算 (OATS / 半電波暗室)",
+              "Add +6 dB for ground reflection (OATS / semi-anechoic)");
+    I18n::reg("emc_pred_col_freq", "周波数", "Frequency");
+    I18n::reg("emc_pred_col_gain", "最大利得", "Peak gain");
+    I18n::reg("emc_pred_col_level", "予測電界", "Predicted field");
+    I18n::reg("emc_pred_col_limit", "規格限度", "Limit");
+    I18n::reg("emc_pred_col_margin", "マージン", "Margin");
+    I18n::reg("emc_pred_col_verdict", "予測判定", "Predicted verdict");
+    I18n::reg("emc_pred_pass", "余裕あり", "within limit");
+    I18n::reg("emc_pred_fail", "超過", "over limit");
+    I18n::reg("emc_pred_nolimit", "限度値表の範囲外", "outside the limit table");
+    I18n::reg("emc_pred_nofile",
+              "▸ far1d.log が見つかりません。ポスト処理で "
+              "「遠方界 1D (plotfar1d)」を有効にして実行すると、.ofd と同じ"
+              "ディレクトリに出力されます。",
+              "▸ far1d.log not found. Enable “far field 1D (plotfar1d)” in post "
+              "processing and run — it is written next to the .ofd.");
+    I18n::reg("emc_pred_empty",
+              "▸ %1 に遠方界パターンがありませんでした (書式が想定と違うか、"
+              "空のファイルです)。",
+              "▸ No far-field pattern was found in %1 (unexpected format, or the "
+              "file is empty).");
+    I18n::reg("emc_pred_nopower",
+              "▸ 読み込み済み: %1 (%2 周波数)。**放射電力 P_t を入れると"
+              "電界強度に換算します。** .ofd の給電振幅は規格化された任意値なので、"
+              "実機の放射電力は GUI からは分かりません — 絶対値を出すには "
+              "P_t が要ります。",
+              "▸ Loaded: %1 (%2 frequencies). **Enter the radiated power P_t to "
+              "convert to field strength.** The feed amplitude in the .ofd is an "
+              "arbitrary normalised value, so the GUI cannot know the real "
+              "radiated power — P_t is required for an absolute level.");
+    I18n::reg("emc_pred_ok",
+              "▸ %1 (%2 周波数) · P_t = %3 W · d = %4 m%5",
+              "▸ %1 (%2 frequencies) · P_t = %3 W · d = %4 m%5");
+    I18n::reg("emc_pred_ground_on", " · グランド反射 +6.0 dB 込み",
+              " · includes +6.0 dB ground reflection");
+    I18n::reg("emc_pred_caveat",
+              "▸ 適用限界: (1) この換算は**給電のある問題**専用です — "
+              "planewave 入射の far1d は RCS 系の量なので使えません。"
+              "(2) far1d.log に含まれる切断面の中の最大値であって、全球の最大"
+              "放射方向とは限りません (全球が要るなら far2d)。"
+              "(3) 自由空間の式です — 実サイトの測定はグランド反射で最大 "
+              "+6 dB 高く出ます。(4) 予測であって実測ではありません。",
+              "▸ Limits of applicability: (1) this conversion applies only to "
+              "fed problems — for plane-wave incidence far1d is an RCS-like "
+              "quantity. (2) It is the peak over the cut planes present in "
+              "far1d.log, not necessarily the global peak direction (use far2d "
+              "for that). (3) It is a free-space formula — real sites read up to "
+              "+6 dB higher because of ground reflection. (4) It is a prediction, "
+              "not a measurement.");
+    I18n::reg("emc_pred_nearfield",
+              "▸ 注意: %1 MHz では遠方界距離 2D²/λ = %2 m で、測定距離 %3 m は"
+              "これを下回ります。遠方界の式が成り立たないので、この行の値は"
+              "目安にもなりません。",
+              "▸ Warning: at %1 MHz the far-field distance 2D²/λ is %2 m, which "
+              "exceeds the measurement distance of %3 m. The far-field formula "
+              "does not hold, so this row is not even indicative.");
     I18n::reg("emc_limit_none",
               "▸ 選択した規格の放射妨害波限度値表はこのビルドに収載していません。"
               "推定値を表示することはしません (収載: CISPR 32 / FCC Part 15)。",
@@ -533,6 +616,12 @@ void EmcTab::refresh()
     if (auto *b = m_mode->button(m_modeIdx)) b->setChecked(true);
     m_updating = false;
     onModeChanged();
+    // far1d.log の欄が空なら、プロジェクトの隣にあるものを既定として入れる
+    // (利用者が明示的に選んだパスは上書きしない)
+    if (m_predFile && m_predFile->text().trimmed().isEmpty()) {
+        const QString g = guessFar1dPath();
+        if (!g.isEmpty()) m_predFile->setText(g);   // → reloadFar1d
+    }
     // 限度値・対策・イミュニティの表示はプロジェクト (解析周波数) にも依存する
     updateCompliance();
     updateMitigation();
@@ -593,8 +682,11 @@ QWidget *EmcTab::buildEmissionPage()
     se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
     v->addWidget(se);
 
+    // FDTD 結果からの予測 (far1d.log + 放射電力 → 電界強度)
+    v->addWidget(buildPredictionSection(page));
+
     // 判定結果 / Compliance check
-    //   限度値 = 規格の公表値 (実データ)、被測定値 = 未取得 → 「—」。
+    //   限度値 = 規格の公表値 (実データ)、被測定値 = 予測が出たときだけ。
     //   両者を混同させないよう注記で分けて説明する (絶対規則 5)。
     auto *sc = new SectionBox(I18n::tr("emc_check_section"), page);
     m_class = new QComboBox(sc);
@@ -708,7 +800,193 @@ QWidget *EmcTab::buildEmissionPage()
     return page;
 }
 
-// ── 判定結果: 限度値 (実データ) を表と曲線に、被測定値は「—」 ───────────────
+// ── FDTD 結果からの予測 (far1d.log の利得 → 測定距離の電界強度) ─────────────
+QWidget *EmcTab::buildPredictionSection(QWidget *page)
+{
+    auto *sp = new SectionBox(I18n::tr("emc_pred_section"), page);
+    sp->vbox()->addWidget(makeHint(I18n::tr("emc_pred_hint"), sp));
+
+    auto *fileRow = new QHBoxLayout();
+    m_predFile = new QLineEdit(sp);
+    m_predFile->setPlaceholderText(QStringLiteral("far1d.log"));
+    auto *browse = new QPushButton(I18n::tr("emc_pred_browse"), sp);
+    fileRow->addWidget(m_predFile, 1);
+    fileRow->addWidget(browse);
+    sp->form()->addRow(I18n::tr("emc_pred_file"), fileRow);
+
+    m_predPower = numEdit(QString(), sp);
+    m_predPower->setPlaceholderText(QStringLiteral("1.0"));
+    sp->form()->addRow(I18n::tr("emc_pred_power"),
+                       unitRow(m_predPower, I18n::tr("emc_pred_power_unit"), sp));
+    m_predMaxDim = numEdit(QString(), sp);
+    m_predMaxDim->setPlaceholderText(QStringLiteral("0.1"));
+    sp->form()->addRow(I18n::tr("emc_pred_maxdim"),
+                       unitRow(m_predMaxDim,
+                               I18n::tr("emc_pred_maxdim_unit"), sp));
+
+    m_predGround = makeCheck(I18n::tr("emc_pred_ground"), false, sp);
+    sp->vbox()->addLayout(checkRow({ m_predGround }));
+
+    m_predStatus = makeHint(QString(), sp);
+    sp->vbox()->addWidget(m_predStatus);
+    m_predTable = makeTable({ I18n::tr("emc_pred_col_freq"),
+                              I18n::tr("emc_pred_col_gain"),
+                              I18n::tr("emc_pred_col_level"),
+                              I18n::tr("emc_pred_col_limit"),
+                              I18n::tr("emc_pred_col_margin"),
+                              I18n::tr("emc_pred_col_verdict") }, 0, sp, 140);
+    sp->vbox()->addWidget(m_predTable);
+    sp->vbox()->addWidget(makeHint(I18n::tr("emc_pred_caveat"), sp));
+
+    connect(browse, &QPushButton::clicked, this, &EmcTab::browseFar1d);
+    connect(m_predFile, &QLineEdit::textChanged, this, &EmcTab::reloadFar1d);
+    connect(m_predPower, &QLineEdit::textChanged,
+            this, &EmcTab::updateCompliance);
+    connect(m_predMaxDim, &QLineEdit::textChanged,
+            this, &EmcTab::updateCompliance);
+    connect(m_predGround, &QCheckBox::toggled, this, &EmcTab::updateCompliance);
+    return sp;
+}
+
+QString EmcTab::guessFar1dPath() const
+{
+    if (m_p->filePath().isEmpty()) return QString();
+    const QString cand = QFileInfo(m_p->filePath()).path()
+                         + QStringLiteral("/far1d.log");
+    return QFileInfo::exists(cand) ? cand : QString();
+}
+
+void EmcTab::browseFar1d()
+{
+    const QString start = m_p->filePath().isEmpty()
+                              ? QString()
+                              : QFileInfo(m_p->filePath()).path();
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("emc_pred_file"), start,
+        QStringLiteral("far1d.log (far1d.log);;Log (*.log);;All files (*)"));
+    if (!path.isEmpty()) m_predFile->setText(path);   // → reloadFar1d
+}
+
+void EmcTab::reloadFar1d()
+{
+    const QString path = m_predFile->text().trimmed();
+    if (path != m_far1dLoaded) {
+        m_far1d = path.isEmpty() ? QVector<FarPattern>()
+                                 : KernelResultReader::readFar1d(path);
+        m_far1dLoaded = path;
+    }
+    updateCompliance();
+}
+
+// far1d.log の各周波数について、切断面全体の最大 E-abs[dB] (= 最大利得 [dBi])
+// を求め、放射電力と測定距離から電界強度へ換算して表と m_predPoints を作る。
+// 換算できない条件 (ファイル無し / P_t 未入力 / 距離不正) では **表を空にして
+// 理由を出す** — 埋められない列を埋めない (絶対規則 5)。
+void EmcTab::rebuildPrediction(const em::emc::LimitSegment *seg, int n,
+                               double distM)
+{
+    using namespace ofd::em;
+    m_predPoints.clear();
+    m_predTable->setRowCount(0);
+
+    if (m_far1dLoaded.isEmpty()) {
+        m_predStatus->setText(I18n::tr("emc_pred_nofile"));
+        return;
+    }
+    if (m_far1d.isEmpty()) {
+        m_predStatus->setText(I18n::tr("emc_pred_empty")
+                                  .arg(QDir::toNativeSeparators(m_far1dLoaded)));
+        return;
+    }
+
+    // 周波数ごとに切断面をまたいだ最大利得を集める (出現順を保つ)
+    QVector<double> freqs;
+    QVector<double> peak;
+    for (const FarPattern &pat : m_far1d) {
+        double m = -1e300;
+        for (double v : pat.eAbsDb) m = std::max(m, v);
+        if (m < -1e299) continue;
+        int at = -1;
+        for (int i = 0; i < freqs.size(); ++i)
+            if (std::fabs(freqs[i] - pat.freqHz) <= 1e-6 * std::max(1.0, pat.freqHz))
+                { at = i; break; }
+        if (at < 0) { freqs.push_back(pat.freqHz); peak.push_back(m); }
+        else        { peak[at] = std::max(peak[at], m); }
+    }
+    // 周波数の昇順に並べ替える (far1d.log は面ごとにブロックが並ぶ)
+    QVector<int> order;
+    for (int i = 0; i < freqs.size(); ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return freqs[a] < freqs[b]; });
+
+    const QString file = QDir::toNativeSeparators(m_far1dLoaded);
+    bool okP = false;
+    const double pw = m_predPower->text().trimmed().toDouble(&okP);
+    if (!okP || !(pw > 0) || !(distM > 0)) {
+        m_predStatus->setText(I18n::tr("emc_pred_nopower")
+                                  .arg(file).arg(freqs.size()));
+        return;
+    }
+    const double gnd = m_predGround->isChecked() ? groundReflectionMaxDb() : 0.0;
+    bool okD = false;
+    const double maxDim = m_predMaxDim->text().trimmed().toDouble(&okD);
+
+    QString warn;
+    for (int k = 0; k < order.size(); ++k) {
+        const int i = order[k];
+        const double fMHz = freqs[i] * 1e-6;
+        const double gain = peak[i];
+        const FieldStrength fs = fieldStrength(gain, pw, distM);
+        if (!fs.valid) continue;
+        const double level = fs.dBuVm + gnd;
+
+        const int si = (n > 0) ? emc::limitSegmentIndex(seg, n, fMHz) : -1;
+        const bool hasLimit = (si >= 0);
+        const double lim = hasLimit ? emc::limitAtDistance(seg[si], distM) : 0.0;
+
+        const int r = m_predTable->rowCount();
+        m_predTable->insertRow(r);
+        m_predTable->setItem(r, 0, monoItem(
+            QStringLiteral("%1 MHz").arg(fMHz, 0, 'g', 6)));
+        m_predTable->setItem(r, 1, numItem(
+            QStringLiteral("%1 dBi").arg(gain, 0, 'f', 2)));
+        m_predTable->setItem(r, 2, numItem(
+            QStringLiteral("%1 dBμV/m").arg(level, 0, 'f', 1)));
+        if (hasLimit) {
+            const double mg = marginDb(level, lim);
+            m_predTable->setItem(r, 3, numItem(
+                QStringLiteral("%1 dBμV/m").arg(lim, 0, 'f', 1)));
+            m_predTable->setItem(r, 4, numItem(
+                QStringLiteral("%1 dB").arg(mg, 0, 'f', 1)));
+            m_predTable->setItem(r, 5, textItem(
+                I18n::tr(mg >= 0 ? "emc_pred_pass" : "emc_pred_fail")));
+        } else {
+            m_predTable->setItem(r, 3, dashItem());
+            m_predTable->setItem(r, 4, dashItem());
+            m_predTable->setItem(r, 5, textItem(I18n::tr("emc_pred_nolimit")));
+        }
+        m_predPoints.push_back(QPointF(fMHz, level));
+
+        // 遠方界条件 2D²/λ を割っていないか (最初に見つかった 1 件だけ出す)
+        if (warn.isEmpty() && okD && maxDim > 0) {
+            const double dff = fraunhoferDistanceM(maxDim,
+                                                   wavelengthM(freqs[i]));
+            if (dff > distM)
+                warn = QStringLiteral("\n") + I18n::tr("emc_pred_nearfield")
+                           .arg(fMHz, 0, 'g', 5).arg(dff, 0, 'g', 3)
+                           .arg(distM, 0, 'g', 3);
+        }
+    }
+
+    m_predStatus->setText(I18n::tr("emc_pred_ok")
+                              .arg(file).arg(freqs.size())
+                              .arg(pw, 0, 'g', 4).arg(distM, 0, 'g', 4)
+                              .arg(gnd > 0 ? I18n::tr("emc_pred_ground_on")
+                                           : QString())
+                          + warn);
+}
+
+// ── 判定結果: 限度値 (実データ) を表と曲線に、被測定値は予測が出たときだけ ───
 void EmcTab::updateCompliance()
 {
     using namespace ofd::em;
@@ -724,17 +1002,35 @@ void EmcTab::updateCompliance()
     const double dist = m_distance->text().toDouble(&okDist);
     const double d = (okDist && dist > 0) ? dist : 0.0;
 
+    // far1d.log からの予測を先に求める (判定表と曲線の両方が使う)
+    rebuildPrediction(seg, n, d);
+
     m_compTable->setRowCount(n);
     for (int i = 0; i < n; ++i) {
         const double lim = emc::limitAtDistance(seg[i], d);
         m_compTable->setItem(i, 0, monoItem(
             QStringLiteral("%1–%2 MHz").arg(seg[i].f1_MHz, 0, 'g', 4)
                                        .arg(seg[i].f2_MHz, 0, 'g', 4)));
-        m_compTable->setItem(i, 1, dashItem());          // 実測相当値: 未取得
+        // 区間内に予測値があればその **最大** (帯域内最悪値) を入れる
+        double worst = -1e300;
+        for (const QPointF &p : m_predPoints)
+            if (p.x() > seg[i].f1_MHz && p.x() <= seg[i].f2_MHz)
+                worst = std::max(worst, p.y());
         m_compTable->setItem(i, 2, numItem(
             QStringLiteral("%1 dBμV/m").arg(lim, 0, 'f', 1)));
-        m_compTable->setItem(i, 3, dashItem());          // マージン: 算出不可
-        m_compTable->setItem(i, 4, dashItem());          // 判定: 出さない
+        if (worst > -1e299) {
+            const double mg = em::marginDb(worst, lim);
+            m_compTable->setItem(i, 1, numItem(
+                QStringLiteral("%1 dBμV/m").arg(worst, 0, 'f', 1)));
+            m_compTable->setItem(i, 3, numItem(
+                QStringLiteral("%1 dB").arg(mg, 0, 'f', 1)));
+            m_compTable->setItem(i, 4, textItem(
+                I18n::tr(mg >= 0 ? "emc_pred_pass" : "emc_pred_fail")));
+        } else {
+            m_compTable->setItem(i, 1, dashItem());  // 予測なし
+            m_compTable->setItem(i, 3, dashItem());
+            m_compTable->setItem(i, 4, dashItem());
+        }
     }
 
     if (n == 0) {
@@ -762,7 +1058,16 @@ void EmcTab::updateCompliance()
         lim.pts.push_back({ seg[i].f1_MHz, y });
         lim.pts.push_back({ seg[i].f2_MHz, y });
     }
-    m_spectrum->setSeries({ lim });
+    QVector<MiniSeries> series { lim };
+    if (!m_predPoints.isEmpty()) {
+        MiniSeries pred;
+        pred.color = QColor(kAcc);
+        pred.label = I18n::tr("emc_pred_col_level");
+        pred.markers = true;
+        pred.pts = m_predPoints;
+        series.push_back(pred);
+    }
+    m_spectrum->setSeries(series);
     m_spectrum->setLabels("f [MHz]",
                           (d > 0) ? QStringLiteral("dBμV/m @%1m")
                                         .arg(d, 0, 'g', 3)

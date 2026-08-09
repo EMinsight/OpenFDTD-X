@@ -138,6 +138,11 @@ set(CORE_SOURCES
     src/em/Reflection.cpp
     src/em/Reflection.h
 
+    # 遠方界 (利得) → 測定距離での電界強度 [dBμV/m] の換算 — Qt 非依存。
+    # EmcTab の放射エミッション予測の計算実体
+    src/em/RadiatedEmission.cpp
+    src/em/RadiatedEmission.h
+
     # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
     # Qt 非依存。SolverSelectorTab の数値の計算実体
     src/core/SolverSelection.cpp
