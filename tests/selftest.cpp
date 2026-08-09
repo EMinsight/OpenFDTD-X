@@ -44,6 +44,7 @@
 #include "core/AimDirection.h"
 #include "io/MeshDiagnostics.h"
 #include "io/StlImporter.h"
+#include "io/Touchstone.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
@@ -12714,6 +12715,277 @@ static void testComponentDomains()
     }
 }
 
+
+// ── Touchstone (S パラメータ) の読み書き ─────────────────────────────────────
+// 準拠ファイル (全行列) とカーネル出力 (test.snp = 第 1 列のみ) の両方を
+// 正しく読み分けること、2 ポートの列転置、位相の連続化と群遅延を検証する。
+static void testTouchstone()
+{
+    g_file = "touchstone";
+    QTemporaryDir dir;
+    check(dir.isValid(), "touchstone tempdir");
+    if (!dir.isValid()) return;
+    const QDir td(dir.path());
+
+    // ── 2 ポート全行列のラウンドトリップ + 列順 (S11 S21 S12 S22) ──
+    {
+        TouchstoneData d;
+        d.ports = 2;
+        d.z0 = 50.0;
+        for (int i = 0; i < 3; ++i) {
+            const double f = 1.0e9 * (i + 1);
+            d.freqHz.push_back(f);
+            QVector<std::complex<double>> m(4);
+            m[0] = { 0.10 + i, 0.01 };        // S11
+            m[1] = { 0.20 + i, 0.02 };        // S12
+            m[2] = { 0.30 + i, 0.03 };        // S21
+            m[3] = { 0.40 + i, 0.04 };        // S22
+            d.s.push_back(m);
+        }
+        const QString path = td.filePath("full.s2p");
+        QString err;
+        check(Touchstone::writeSnp(path, d, &err), "writeSnp 2-port ok");
+
+        // 生テキストで列順を確認 (2 ポートだけ S11 S21 S12 S22 の転置)
+        QFile f(path);
+        check(f.open(QIODevice::ReadOnly | QIODevice::Text), "open written s2p");
+        const QStringList lines = QString::fromUtf8(f.readAll()).split('\n');
+        f.close();
+        QString firstData;
+        for (const QString &l : lines)
+            if (!l.startsWith('!') && !l.startsWith('#') && !l.trimmed().isEmpty()) {
+                firstData = l.trimmed();
+                break;
+            }
+        const QStringList tok = firstData.split(' ', Qt::SkipEmptyParts);
+        check(tok.size() == 9, "2-port record has 9 numbers");
+        if (tok.size() == 9) {
+            check(nearlyEq(tok[1].toDouble(), 0.10), "column 1 is S11 (re)");
+            check(nearlyEq(tok[3].toDouble(), 0.30), "column 2 is S21 (re)");
+            check(nearlyEq(tok[5].toDouble(), 0.20), "column 3 is S12 (re)");
+            check(nearlyEq(tok[7].toDouble(), 0.40), "column 4 is S22 (re)");
+        }
+
+        TouchstoneData r;
+        check(Touchstone::read(path, &r, &err), "read 2-port ok");
+        check(r.ports == 2, "read 2-port port count");
+        check(!r.column1Only, "full matrix is not column1Only");
+        check(r.freqHz.size() == 3, "read 2-port freq count");
+        check(nearlyEq(r.freqHz[1], 2.0e9), "read 2-port frequency (Hz)");
+        bool same = true;
+        for (int i = 0; i < 3 && same; ++i)
+            for (int rr = 1; rr <= 2; ++rr)
+                for (int cc = 1; cc <= 2; ++cc)
+                    same = same
+                        && nearlyEq(r.at(i, rr, cc).real(),
+                                    d.at(i, rr, cc).real())
+                        && nearlyEq(r.at(i, rr, cc).imag(),
+                                    d.at(i, rr, cc).imag());
+        check(same, "2-port round-trip preserves every element");
+
+        // 部分行列 — 全要素が既知なので 1 ポート / 2 ポートとも取り出せる
+        const TouchstoneData s1 = Touchstone::subset(r, { 2 });
+        check(s1.ports == 1 && !s1.isEmpty(), "subset {2} is a 1-port");
+        check(nearlyEq(s1.at(0, 1, 1).real(), 0.40), "subset {2} picks S22");
+        const TouchstoneData s2 = Touchstone::subset(r, { 2, 1 });
+        check(s2.ports == 2, "subset {2,1} is a 2-port");
+        check(nearlyEq(s2.at(0, 1, 2).real(), 0.30),
+              "subset {2,1} maps S21 to element (1,2)");
+        check(Touchstone::subset(r, { 3 }).isEmpty(),
+              "subset with an out-of-range port is empty");
+    }
+
+    // ── カーネル出力 (test.snp): "# Hz S MA R 50" + 第 1 列だけ ──
+    {
+        const QString path = td.filePath("test.snp");
+        QFile f(path);
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "write test.snp");
+        {
+            QTextStream o(&f);
+            o << "# Hz S MA R 50\n";
+            // S11 = 0.5∠0°, S21 = 0.25∠90° (周波数で変えない)
+            for (int i = 0; i < 4; ++i)
+                o << QString::number(1.0e9 * (i + 1), 'e', 5)
+                  << " 5.0e-01 0.0 2.5e-01 9.0e+01\n";
+        }
+        f.close();
+
+        TouchstoneData r;
+        QString err;
+        check(Touchstone::read(path, &r, &err, 2), "read kernel test.snp");
+        check(r.ports == 2, "kernel test.snp is 2 ports");
+        check(r.column1Only, "kernel test.snp is column-1 only");
+        check(r.freqHz.size() == 4, "kernel test.snp freq count");
+        check(nearlyEq(r.at(0, 1, 1).real(), 0.5)
+                  && std::fabs(r.at(0, 1, 1).imag()) < 1e-9,
+              "MA 0.5∠0° → 0.5 + 0j");
+        check(std::fabs(r.at(0, 2, 1).real()) < 1e-9
+                  && nearlyEq(r.at(0, 2, 1).imag(), 0.25),
+              "MA 0.25∠90° → 0 + 0.25j");
+        check(r.isKnown(1, 1) && r.isKnown(2, 1), "column 1 is known");
+        check(!r.isKnown(1, 2) && !r.isKnown(2, 2),
+              "column 2 is unknown (never computed)");
+        check(r.series(2, 1).size() == 4, "series of a known element");
+        check(r.series(2, 2).isEmpty(), "series of an unknown element is empty");
+        check(Touchstone::subset(r, { 1, 2 }).isEmpty(),
+              "2-port subset from column-1 data is refused");
+        const TouchstoneData s1 = Touchstone::subset(r, { 1 });
+        check(s1.ports == 1 && nearlyEq(s1.at(0, 1, 1).real(), 0.5),
+              "1-port subset (S11) from column-1 data is allowed");
+    }
+
+    // ── 周波数単位 (GHZ) と DB 形式 ──
+    {
+        const QString path = td.filePath("db.s1p");
+        QFile f(path);
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "write db.s1p");
+        {
+            QTextStream o(&f);
+            o << "! comment\n# GHZ S DB R 75\n";
+            o << "1.0 -20.0 90.0\n";
+            o << "2.0 -40.0 -90.0\n";
+        }
+        f.close();
+        TouchstoneData r;
+        QString err;
+        check(Touchstone::read(path, &r, &err), "read DB/GHZ file");
+        check(r.ports == 1, "DB/GHZ file is 1 port");
+        check(nearlyEq(r.z0, 75.0), "R 75 is read as the reference impedance");
+        check(nearlyEq(r.freqHz[0], 1.0e9) && nearlyEq(r.freqHz[1], 2.0e9),
+              "GHZ is converted to Hz");
+        check(std::fabs(std::abs(r.at(0, 1, 1)) - 0.1) < 1e-12,
+              "-20 dB → |S| = 0.1");
+        check(std::fabs(r.at(1, 1, 1).imag() + 0.01) < 1e-12,
+              "-40 dB ∠-90° → -0.01j");
+    }
+
+    // ── N=3 (複数行で 1 レコード) のラウンドトリップ ──
+    {
+        TouchstoneData d;
+        d.ports = 3;
+        for (int i = 0; i < 2; ++i) {
+            d.freqHz.push_back(1.0e9 * (i + 1));
+            QVector<std::complex<double>> m(9);
+            for (int k = 0; k < 9; ++k)
+                m[k] = { 0.1 * k + i, -0.05 * k };
+            d.s.push_back(m);
+        }
+        const QString path = td.filePath("n3.snp");   // 拡張子ヒント無しで推定
+        QString err;
+        check(Touchstone::writeSnp(path, d, &err), "writeSnp 3-port ok");
+        TouchstoneData r;
+        check(Touchstone::read(path, &r, &err), "read 3-port ok");
+        check(r.ports == 3 && !r.column1Only, "3-port inferred from layout");
+        bool same = r.freqHz.size() == 2;
+        for (int i = 0; i < r.s.size() && same; ++i)
+            for (int k = 0; k < 9 && same; ++k)
+                same = nearlyEq(r.s[i][k].real(), d.s[i][k].real())
+                       && nearlyEq(r.s[i][k].imag(), d.s[i][k].imag());
+        check(same, "3-port round-trip preserves every element");
+    }
+
+    // ── portsHint による曖昧さの解消 (1 行 9 個 = 2 ポート全行列 / 4 ポート第 1 列) ──
+    {
+        const QString path = td.filePath("ambiguous.snp");
+        QFile f(path);
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "write ambiguous");
+        {
+            QTextStream o(&f);
+            o << "# Hz S RI R 50\n";
+            for (int i = 0; i < 3; ++i)
+                o << QString::number(1.0e9 * (i + 1), 'e', 5)
+                  << " 1 0 2 0 3 0 4 0\n";
+        }
+        f.close();
+        TouchstoneData a, b;
+        QString err;
+        check(Touchstone::read(path, &a, &err), "read ambiguous (no hint)");
+        check(a.ports == 2 && !a.column1Only,
+              "no hint → the standards-conforming 2-port reading");
+        check(Touchstone::read(path, &b, &err, 4), "read ambiguous (hint 4)");
+        check(b.ports == 4 && b.column1Only,
+              "hint 4 → 4-port column-1 reading");
+        check(nearlyEq(b.at(0, 4, 1).real(), 4.0),
+              "hint 4 puts the last value at S41");
+    }
+
+    // ── 雑音パラメータブロック (周波数が戻る) は S データの後で打ち切る ──
+    {
+        const QString path = td.filePath("noise.s2p");
+        QFile f(path);
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "write noise.s2p");
+        {
+            QTextStream o(&f);
+            o << "# Hz S RI R 50\n";
+            for (int i = 0; i < 3; ++i)
+                o << QString::number(1.0e9 * (i + 1), 'e', 5)
+                  << " 1 0 2 0 3 0 4 0\n";
+            o << "1.0e+08 0.5 0.1 0.2 50\n";   // 雑音: 周波数が戻る
+        }
+        f.close();
+        TouchstoneData r;
+        QString err;
+        check(Touchstone::read(path, &r, &err), "read file with a noise block");
+        check(r.freqHz.size() == 3,
+              "the noise block is dropped (frequency stops increasing)");
+    }
+
+    // ── Touchstone 2.0 は誤読せずエラーにする ──
+    {
+        const QString path = td.filePath("v2.s2p");
+        QFile f(path);
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "write v2.s2p");
+        {
+            QTextStream o(&f);
+            o << "[Version] 2.0\n# Hz S RI R 50\n[Number of Ports] 2\n";
+        }
+        f.close();
+        TouchstoneData r;
+        QString err;
+        check(!Touchstone::read(path, &r, &err), "Touchstone 2.0 is rejected");
+        check(!err.isEmpty(), "Touchstone 2.0 rejection has a reason");
+    }
+
+    // ── 位相の連続化と群遅延 (純遅延線 S21 = exp(-i·2πfτ) → τ_g = τ) ──
+    {
+        const double tau = 5.0e-12;            // 5 ps
+        const double df = 1.0e10;              // 位相の 1 ステップ = 0.05·2π
+        QVector<double> freq;
+        QVector<std::complex<double>> s;
+        for (int i = 0; i < 40; ++i) {
+            const double f = 1.0e12 + df * i;
+            const double ph = -2.0 * 3.14159265358979323846 * f * tau;
+            freq.push_back(f);
+            s.push_back(std::complex<double>(std::cos(ph), std::sin(ph)));
+        }
+        const QVector<double> phi = Touchstone::unwrapPhaseRad(s);
+        bool monotone = true;
+        for (int i = 1; i < phi.size(); ++i)
+            if (phi[i] >= phi[i - 1]) monotone = false;
+        check(monotone, "unwrapped phase of a delay line decreases monotonically");
+        check(std::fabs((phi[1] - phi[0])
+                        + 2.0 * 3.14159265358979323846 * df * tau) < 1e-9,
+              "unwrapped phase step equals -2π·df·τ");
+
+        const QVector<double> gd = Touchstone::groupDelaySec(freq, s);
+        check(gd.size() == freq.size(), "group delay has one value per frequency");
+        double worst = 0.0;
+        for (double g : gd) worst = std::max(worst, std::fabs(g - tau));
+        check(worst < 1e-15, "group delay of a pure delay line equals τ");
+
+        check(Touchstone::groupDelaySec({ 1.0e9 }, { { 1.0, 0.0 } }).size() == 1,
+              "group delay of a single point is defined (zero)");
+    }
+
+    // ── zToS ──
+    {
+        check(std::abs(Touchstone::zToS({ 50.0, 0.0 })) < 1e-15,
+              "Z = Z0 → S11 = 0");
+        check(std::fabs(Touchstone::zToS({ 0.0, 0.0 }).real() + 1.0) < 1e-15,
+              "short → S11 = -1");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -12836,6 +13108,7 @@ int main(int argc, char *argv[])
     testRoomAcRunButtonLabels();
     testAcousticAnalogyDialogKeys();
     testComponentDomains();
+    testTouchstone();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);
