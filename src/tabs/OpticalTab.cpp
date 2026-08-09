@@ -2,6 +2,8 @@
 #include "OpticalTab.h"
 #include "../core/Project.h"
 #include "../io/ActivationCurve.h"
+#include "../io/Touchstone.h"
+#include "../kernel/Runner.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -13,7 +15,10 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -23,9 +28,11 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTableWidget>
+#include <QTextStream>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <initializer_list>
 #include <utility>
 
@@ -187,6 +194,44 @@ const bool s_i18nOptModes = [] {
     I18n::reg("optm_sp_gd", "群遅延", "Group delay");
     I18n::reg("optm_sp_export", "Touchstone (.s2p) 出力",
               "Export Touchstone (.s2p)");
+    // S パラメータ出力 (カーネルの test.snp → Touchstone / CSV)
+    I18n::reg("optsp_title", "S パラメータ出力", "Export S-parameters");
+    I18n::reg("optsp_none",
+              "S パラメータの出力が作業ディレクトリに見つかりません。\n"
+              "観測点 (point) と plotspara を有効にしてソルバーを実行してください。\n"
+              "作業ディレクトリ: %1",
+              "No S-parameter output found in the working directory.\n"
+              "Enable observation points (point) and plotspara, then run the "
+              "solver.\nWorking directory: %1");
+    I18n::reg("optsp_read_fail", "%1 を読めませんでした: %2",
+              "Could not read %1: %2");
+    I18n::reg("optsp_port_range",
+              "ポート番号 (入力 %1 / 出力 %2) がファイルのポート数 %3 を超えています。",
+              "Port numbers (in %1 / out %2) exceed the %3 ports in the file.");
+    I18n::reg("optsp_col1_only",
+              "カーネル出力 (%1) はポート 1 を励振した第 1 列 (S_n1) だけです。"
+              "入力ポートに 1 以外を指定した結果は計算されていません。",
+              "The kernel output (%1) contains only the first column (S_n1) "
+              "from exciting port 1. Nothing is available for an input port "
+              "other than 1.");
+    I18n::reg("optsp_nosel", "S11 / S21 のどちらも選択されていません。",
+              "Neither S11 nor S21 is selected.");
+    I18n::reg("optsp_write_fail", "書き出しに失敗しました: %1",
+              "Write failed: %1");
+    I18n::reg("optsp_skip_2port",
+              "2 ポート Touchstone (.s2p) は書けません — S12 / S22 が"
+              "計算されていないためです (カーネルはポート 1 のみ励振)。"
+              "欠けた要素を仮定で埋めることはしません。",
+              "A 2-port Touchstone (.s2p) cannot be written: S12 / S22 were "
+              "never computed (the kernel excites port 1 only). Missing "
+              "entries are not filled in by assumption.");
+    I18n::reg("optsp_done", "出力しました。\n\n入力: %1\n%2周波数: %3 点 (%4 〜 %5 Hz)",
+              "Exported.\n\nSource: %1\n%2Frequencies: %3 points (%4 – %5 Hz)");
+    I18n::reg("optsp_out_ts", "Touchstone: %1\n", "Touchstone: %1\n");
+    I18n::reg("optsp_out_csv", "CSV: %1\n", "CSV: %1\n");
+    I18n::reg("optsp_filter_ts", "Touchstone (*.s1p *.s2p *.snp)",
+              "Touchstone (*.s1p *.s2p *.snp)");
+    I18n::reg("optsp_filter_csv", "CSV (*.csv)", "CSV (*.csv)");
     // 分散モデル
     I18n::reg("optm_disp_section", "分散モデル", "Dispersion model");
     // 固定表示の算出値が「設計例」であることの明記 (絶対規則 5)
@@ -637,7 +682,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_spGroupDelay  = makeCheck(I18n::tr("optm_sp_gd"), false, ssp);
     ssp->vbox()->addLayout(hrow({ m_spPhase, m_spGroupDelay }));
     m_spExport = new QPushButton(I18n::tr("optm_sp_export"), ssp);
-    tabhelp::markNotImplemented(m_spExport);   // Touchstone 出力は未配線
+    connect(m_spExport, &QPushButton::clicked, this, &OpticalTab::exportSparam);
     ssp->vbox()->addLayout(hrow({ m_spExport }));
     v->addWidget(ssp);
 
@@ -1240,4 +1285,164 @@ void OpticalTab::showActivationResult(const QString &workdir, double aeff_m2,
         status += "  " + I18n::tr("opt_onn_aeff")
                              .arg(QString::number(aeff_m2, 'g', 4));
     m_onnStatus->setText(status);
+}
+
+// ── S パラメータの書き出し (Touchstone / CSV) ────────────────────────────────
+// カーネル (ofd / orcwa) は plotspara + 観測点があるとき作業ディレクトリへ
+// test.snp を書く。ただしこれは Touchstone 準拠ではなく **ポート 1 を励振した
+// 第 1 列 (S_n1)** だけを持つ (sol/outputSpara.c)。したがって:
+//   - S11 と S_n1 は実測値として扱える → CSV (dB / 位相 / 群遅延) を出す
+//   - 2 ポート Touchstone (.s2p) は S12 / S22 が無いので **書かない**
+//     (相反性を仮定して埋めれば「計算していない値」を出力することになる)
+// 準拠した全行列のファイル (他ツール製 / 将来のカーネル) が置かれていれば、
+// 選択したポート対の部分行列をそのまま .s1p / .s2p として書き出す。
+void OpticalTab::exportSparam()
+{
+    const QString title = I18n::tr("optsp_title");
+    const QString wd = Runner::resolveWorkingDir(m_p, RunConfig{});
+
+    QString src;
+    if (!wd.isEmpty()) {
+        const QStringList hits = QDir(wd).entryList(
+            { "*.snp", "*.s?p", "*.s??p" }, QDir::Files, QDir::Time);
+        if (!hits.isEmpty()) src = QDir(wd).filePath(hits.first());
+    }
+    if (src.isEmpty()) {
+        QMessageBox::information(this, title,
+                                 I18n::tr("optsp_none").arg(wd));
+        return;
+    }
+
+    TouchstoneData d;
+    QString err;
+    if (!Touchstone::read(src, &d, &err, m_spPorts->value())) {
+        QMessageBox::warning(this, title,
+            I18n::tr("optsp_read_fail").arg(QFileInfo(src).fileName(), err));
+        return;
+    }
+
+    const int pin  = m_spPortIn->value();
+    const int pout = m_spPortOut->value();
+    if (pin > d.ports || pout > d.ports) {
+        QMessageBox::warning(this, title,
+            I18n::tr("optsp_port_range")
+                .arg(pin).arg(pout).arg(d.ports));
+        return;
+    }
+
+    // 使える要素 — カーネル出力では第 1 列だけが計算済み
+    const bool haveS11 = d.isKnown(pin, pin);
+    const bool haveS21 = (pout != pin) && d.isKnown(pout, pin);
+    if (!haveS11 && !haveS21) {
+        QMessageBox::warning(this, title,
+            I18n::tr("optsp_col1_only").arg(QFileInfo(src).fileName()));
+        return;
+    }
+    const bool wantS11 = m_spS11->isChecked() && haveS11;
+    const bool wantS21 = m_spS21->isChecked() && haveS21;
+    if (!wantS11 && !wantS21) {
+        QMessageBox::warning(this, title, I18n::tr("optsp_nosel"));
+        return;
+    }
+
+    // Touchstone に出せるのは、選んだポート対の全要素が計算済みのときだけ
+    QVector<int> sel;
+    sel.push_back(pin);
+    if (pout != pin) sel.push_back(pout);
+    const TouchstoneData sub = Touchstone::subset(d, sel);
+    const bool canTouchstone = !sub.isEmpty();
+
+    const QString base = m_p->general().title.isEmpty()
+                             ? QStringLiteral("sparam")
+                             : m_p->general().title;
+    const QString suggested =
+        canTouchstone ? base + (sub.ports == 1 ? ".s1p" : ".s2p")
+                      : base + "_sparam.csv";
+    const QString dst = QFileDialog::getSaveFileName(
+        this, title, suggested,
+        canTouchstone ? I18n::tr("optsp_filter_ts") + ";;"
+                            + I18n::tr("optsp_filter_csv")
+                      : I18n::tr("optsp_filter_csv"));
+    if (dst.isEmpty()) return;
+
+    QString written;
+    const bool dstIsCsv = dst.endsWith(".csv", Qt::CaseInsensitive);
+    if (canTouchstone && !dstIsCsv) {
+        if (!Touchstone::writeSnp(dst, sub, &err)) {
+            QMessageBox::warning(this, title,
+                                 I18n::tr("optsp_write_fail").arg(err));
+            return;
+        }
+        written += I18n::tr("optsp_out_ts").arg(dst);
+    }
+
+    // CSV — dB (常に) / 位相 (m_spPhase) / 群遅延 (m_spGroupDelay)。
+    // Touchstone を書いたときは同じ場所に <base>_sparam.csv を並べる。
+    const QString csvPath =
+        (dstIsCsv || !canTouchstone)
+            ? (dst.endsWith(".csv", Qt::CaseInsensitive) ? dst : dst + ".csv")
+            : QDir(QFileInfo(dst).path())
+                  .filePath(QFileInfo(dst).completeBaseName() + "_sparam.csv");
+    QFile cf(csvPath);
+    if (!cf.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, title,
+                             I18n::tr("optsp_write_fail").arg(cf.errorString()));
+        return;
+    }
+    {
+        const bool wantPhase = m_spPhase->isChecked();
+        const bool wantGd    = m_spGroupDelay->isChecked();
+        struct Entry {
+            QString name;
+            QVector<std::complex<double>> s;
+            QVector<double> phi, tau;
+        };
+        QVector<Entry> ent;
+        auto addEntry = [&](const QString &name, int row, int col) {
+            Entry e;
+            e.name = name;
+            e.s = d.series(row, col);
+            e.phi = Touchstone::unwrapPhaseRad(e.s);
+            e.tau = Touchstone::groupDelaySec(d.freqHz, e.s);
+            ent.push_back(e);
+        };
+        if (wantS11) addEntry(QStringLiteral("S%1%1").arg(pin), pin, pin);
+        if (wantS21) addEntry(QStringLiteral("S%1%2").arg(pout).arg(pin),
+                              pout, pin);
+
+        QTextStream out(&cf);
+        out << "frequency[Hz]";
+        for (const Entry &e : ent) {
+            out << ',' << e.name << "[dB]";
+            if (wantPhase) out << ',' << e.name << "[deg]";
+            if (wantGd)    out << ',' << e.name << "_groupdelay[ps]";
+        }
+        out << '\n';
+        for (int i = 0; i < d.freqHz.size(); ++i) {
+            out << QString::number(d.freqHz[i], 'e', 9);
+            for (const Entry &e : ent) {
+                const double mag = std::abs(e.s[i]);
+                out << ',' << QString::number(
+                    20.0 * std::log10(std::max(mag, 1e-30)), 'f', 6);
+                if (wantPhase)
+                    out << ',' << QString::number(
+                        e.phi[i] * 180.0 / 3.14159265358979323846, 'f', 6);
+                if (wantGd)
+                    out << ',' << QString::number(e.tau[i] * 1e12, 'f', 6);
+            }
+            out << '\n';
+        }
+    }
+    cf.close();
+    written += I18n::tr("optsp_out_csv").arg(csvPath);
+
+    if (!canTouchstone) written += I18n::tr("optsp_skip_2port") + "\n";
+
+    QMessageBox::information(
+        this, title,
+        I18n::tr("optsp_done")
+            .arg(QFileInfo(src).fileName(), written)
+            .arg(d.freqHz.size())
+            .arg(QString::number(d.freqHz.first(), 'g', 6),
+                 QString::number(d.freqHz.last(), 'g', 6)));
 }

@@ -221,7 +221,7 @@ src/
 │
 ├── io/
 │   ├── OfdIO.{h,cpp}          .ofd テキスト読み書き (本家完全互換) + .ofdx JSON サイドカー
-│   ├── Touchstone.{h,cpp}     S パラメータ .s1p/.s2p 出力
+│   ├── Touchstone.{h,cpp}     S パラメータ .s1p/.s2p/.sNp 読み書き + 群遅延
 │   ├── Tidy3dExporter.{h,cpp} 光プロジェクト → tidy3d Python スクリプト生成
 │   ├── H5Writer.{h,cpp}       HDF5 出力 (USE_HDF5 時)
 │   ├── StlImporter.{h,cpp}    STL (バイナリ/ASCII) 取込

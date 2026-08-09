@@ -50,6 +50,8 @@ private:
     void updateTpaWidgetState();
     // mock の {mode === "…" && <Section…>} 相当: 選択モードのセクションだけ表示
     void updateModeSections();
+    // S パラメータの書き出し (カーネルの test.snp → Touchstone / CSV)
+    void exportSparam();
     // BPF 設計目標の透過スペクトル (目標帯域・Q・IL・阻止域から再計算)
     void updateBpfPlot();
     // RCWA 層テーブル ↔ モデル。applyRcwaTable() はテーブルの内容を
