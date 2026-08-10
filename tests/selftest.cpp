@@ -7834,6 +7834,37 @@ static void testOfdIntegration(const QString &sampleDir)
         KernelResultReader::readFeedSweeps(dir.filePath("ofd.log"));
     check(sweeps.size() == 1 && sweeps.first().points.size() == 21,
           "ofd: feed sweep parsed from real log");
+
+    // ── Δt: GUI の Courant 推定 = カーネルが実際に使う Dt ──────────────────
+    // ソルバ領域タブは Δt = CFL 係数 × Project::courantDt() として .ofd の
+    // timestep を作る。その土台である courantDt() が**カーネルの自動値と
+    // 一致する**ことを、ログが自分で書いた Dt[sec] で確かめる (期待値の出所が
+    // GUI のコードから独立している)。ずれていれば CFL 係数の意味が狂う。
+    {
+        QFile lg(dir.filePath("ofd.log"));
+        QString txt;
+        if (lg.open(QIODevice::ReadOnly | QIODevice::Text))
+            txt = QString::fromUtf8(lg.readAll());
+        // "Dt[sec] = 9.3089e-12, Tw[sec] = ..." の 1 行目から取る
+        double dtLog = 0.0;
+        const int at = txt.indexOf("Dt[sec]");
+        if (at >= 0) {
+            const int eq = txt.indexOf('=', at);
+            const int cm = txt.indexOf(',', eq);
+            if (eq > 0 && cm > eq)
+                dtLog = txt.mid(eq + 1, cm - eq - 1).trimmed().toDouble();
+        }
+        check(dtLog > 0, "ofd: Dt printed by the kernel is readable");
+
+        Project p;
+        QString err;
+        check(OfdIO::load(dir.filePath("dipole.ofd"), p, &err),
+              "ofd: dipole.ofd loads into the GUI model");
+        const double dtGui = p.courantDt();
+        // ログは 5 桁表示なので相対 1e-4 で比べる
+        check(dtGui > 0 && std::fabs(dtGui - dtLog) < 1e-4 * dtLog,
+              "ofd: Project::courantDt matches the kernel's automatic Dt");
+    }
 #ifdef OFD_USE_HDF5
     // 実カーネルの time_series_data.h5 から z 中央断面が再構成できること。
     // dipole は 30×30×31 セル → 断面は 31×31 ノード
@@ -13541,6 +13572,105 @@ static void testOptimizeFom()
     }
 }
 
+// ── Δt (CFL) と solver 行の配線 (SolverRegionTab が書く先) ─────────────────
+//
+// ソルバ領域タブの「シミュレーション時間」節は Δt を CFL 係数から作って
+// .ofd の timestep へ、ステップ数と自動シャットオフを solver 行へ書く。
+// タブそのものはヘッドレスで組めないので、**書く先の不変条件**を押さえる:
+//   1. Project::courantDt() がカーネル (sol/setup.c:setup_timestep) と同式か
+//   2. dt = 0 (既定) のとき timestep 行が出ないこと = 出力バイト列不変
+//   3. dt > 0 のとき往復し、CFL 係数 = dt / courantDt() が取り出せること
+//   4. converg = 0 (シャットオフ OFF) が往復すること
+static void testCourantTimestep()
+{
+    g_file = "courant-dt";
+    const double c0 = 2.99792458e8;
+
+    auto meshed = [](ofd::Project &p, double dx, double dy, double dz) {
+        // 各軸 1 区間 10 分割。分割幅がそのまま最小セル幅になる
+        const double ext[3] = { dx * 10, dy * 10, dz * 10 };
+        for (int a = 0; a < 3; ++a) {
+            p.mesh(a).nodes = { 0.0, ext[a] };
+            p.mesh(a).divs  = { 10 };
+        }
+    };
+
+    {   // 1. 等方メッシュ: Δt = d / (c0·√3)
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const double want = 1e-3 / (c0 * std::sqrt(3.0));
+        check(std::fabs(p.courantDt() - want) < 1e-18,
+              "courant: uniform mesh gives d/(c0*sqrt(3))");
+    }
+    {   // 1'. 非等方メッシュ: 1/(c0·√(Σ 1/d²)) — 最小幅の軸が効く
+        ofd::Project p;
+        meshed(p, 2e-3, 1e-3, 4e-3);
+        const double s = 1.0 / (2e-3 * 2e-3) + 1.0 / (1e-3 * 1e-3)
+                       + 1.0 / (4e-3 * 4e-3);
+        const double want = 1.0 / (c0 * std::sqrt(s));
+        check(std::fabs(p.courantDt() - want) < 1e-18,
+              "courant: anisotropic mesh matches the kernel formula");
+        // 一番細かい軸を細くすると Δt は必ず小さくなる (安定条件の向き)
+        ofd::Project p2;
+        meshed(p2, 2e-3, 0.5e-3, 4e-3);
+        check(p2.courantDt() < p.courantDt(),
+              "courant: a finer cell shortens the time step");
+    }
+    {   // メッシュが無ければ 0 (「メッシュ未定義」表示の根拠)
+        ofd::Project p;
+        for (int a = 0; a < 3; ++a) { p.mesh(a).nodes.clear(); p.mesh(a).divs.clear(); }
+        check(p.courantDt() == 0.0, "courant: no mesh means no estimate");
+    }
+
+    {   // 2. dt = 0 (既定) は timestep 行を書かない = 従来の出力そのまま
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const QString text = ofd::OfdIO::serialize(p);
+        check(p.general().dt == 0.0, "courant: dt defaults to 0 (auto)");
+        check(!text.contains("timestep"),
+              "courant: dt = 0 writes no timestep line (byte compatible)");
+    }
+    {   // 3. CFL 係数 → dt → .ofd → dt → CFL 係数
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const double dt0 = p.courantDt();
+        const double cfl = 0.5;
+        p.general().dt = cfl * dt0;
+        p.general().maxiter = 1234;
+        p.general().nout    = 50;
+        p.general().converg = 1e-5;
+        const QString text = ofd::OfdIO::serialize(p);
+        check(text.contains("timestep"),
+              "courant: dt > 0 writes the timestep line");
+
+        ofd::Project q;
+        QString err;
+        check(ofd::OfdIO::parse(text, q, &err), "courant: reparse ok");
+        check(std::fabs(q.general().dt - cfl * dt0) < 1e-18 * (1 + cfl * dt0),
+              "courant: the time step round-trips");
+        check(q.general().maxiter == 1234 && q.general().nout == 50,
+              "courant: the iteration count round-trips");
+        check(std::fabs(q.general().converg - 1e-5) < 1e-15,
+              "courant: the shutoff level round-trips as converg");
+        // タブが表示する CFL 係数はこの比。同じメッシュなら 0.5 に戻る
+        // (メッシュも一緒に往復しないと比が変わるので両方を見ている)
+        const double back = q.general().dt / q.courantDt();
+        check(std::fabs(back - cfl) < 1e-9,
+              "courant: dt / courantDt recovers the CFL factor");
+    }
+    {   // 4. シャットオフ OFF = converg 0。カーネルは fsum < fmax*converg で
+        //    判定するので 0 は決して成立しない = 打ち切らない
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        p.general().converg = 0.0;
+        ofd::Project q;
+        check(ofd::OfdIO::parse(ofd::OfdIO::serialize(p), q, nullptr),
+              "courant: reparse with converg = 0 ok");
+        check(q.general().converg == 0.0,
+              "courant: converg = 0 (shutoff off) round-trips");
+    }
+}
+
 // ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
 static void testRadarCrossSection()
 {
@@ -14534,6 +14664,7 @@ int main(int argc, char *argv[])
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
     testOptimizeFom();
+    testCourantTimestep();
     testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();
