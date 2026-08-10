@@ -2762,6 +2762,93 @@ static void testKernelResultReader()
     }
     check(KernelResultReader::parseFar1d(QStringLiteral("---\n")).isEmpty(),
           "no far1d block -> empty");
+
+    // ── ファイル経路 (1 行ずつ読む別実装) がテキスト経路と一致すること ──
+    // 大規模データ対策で read* 系はファイル全体を載せずにストリームで読む。
+    // 読み取りの実装が 2 本あるので、片方だけ直したらここが落ちる。
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "kernel_result: temp dir");
+        auto write = [&dir](const char *name, const QString &text) {
+            QFile f(dir.filePath(QString::fromLatin1(name)));
+            f.open(QIODevice::WriteOnly | QIODevice::Text);
+            f.write(text.toUtf8());
+            f.close();
+            return f.fileName();
+        };
+
+        // 給電点表
+        const QString feedPath = write("ofd.log", feedLog);
+        const QVector<FeedSweep> fs = KernelResultReader::readFeedSweeps(feedPath);
+        check(fs.size() == sweeps.size() && !fs.isEmpty(),
+              "kernel_result: streamed feed table has the same blocks");
+        if (fs.size() == sweeps.size() && !fs.isEmpty())
+            check(fs[0].feedIndex == sweeps[0].feedIndex
+                  && fs[0].z0 == sweeps[0].z0
+                  && fs[0].points.size() == sweeps[0].points.size()
+                  && fs[0].points[1].refDb == sweeps[0].points[1].refDb
+                  && fs[0].points[1].vswr == sweeps[0].points[1].vswr,
+                  "kernel_result: streamed feed table matches the text parser");
+
+        // 遠方界パターン
+        const QString farPath = write("far1d.log", farLog);
+        const QVector<FarPattern> fp = KernelResultReader::readFar1d(farPath);
+        check(fp.size() == pats.size() && fp.size() == 2,
+              "kernel_result: streamed far1d has the same blocks");
+        if (fp.size() == pats.size())
+            check(fp[0].plane == pats[0].plane
+                  && fp[0].freqHz == pats[0].freqHz
+                  && fp[0].deg == pats[0].deg
+                  && fp[0].eAbsDb == pats[0].eAbsDb
+                  && fp[1].plane == pats[1].plane,
+                  "kernel_result: streamed far1d matches the text parser");
+
+        // 散乱断面積 — 次の "===" 見出しで止まること (ストリームでも同じ)
+        const QString csText = QStringLiteral(
+            "=== cross section ===\n"
+            "  frequency[Hz] backward[m*m]  forward[m*m]\n"
+            "    3.00000e+09    1.2594e-02    1.9587e-01\n"
+            "    3.50000e+09    2.0000e-02    3.0000e-01\n"
+            "=== output files ===\n"
+            "    9.99000e+09    9.9990e-02    9.9990e-01\n");
+        const QString csPath = write("cs.log", csText);
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::readCrossSection(csPath);
+        const QVector<CrossSectionPoint> csT =
+            KernelResultReader::parseCrossSection(csText);
+        check(cs.size() == 2 && csT.size() == 2,
+              "kernel_result: cross section stops at the next === heading");
+        if (cs.size() == 2 && csT.size() == 2)
+            check(cs[1].freqHz == csT[1].freqHz
+                  && cs[1].backward_m2 == csT[1].backward_m2
+                  && cs[1].forward_m2 == csT[1].forward_m2,
+                  "kernel_result: streamed cross section matches the parser");
+
+        // 熱解析の診断行 (他のログ行に混ざって出る)
+        const QString thText = QStringLiteral(
+            "  some unrelated line\n"
+            "Thermal: dissipated[0] = 1.234560e-03 (f=3.000000e+09 Hz)\n"
+            "Thermal: dissipated[1] = 2.000000e-03 (f=3.500000e+09 Hz)\n"
+            "  another line\n");
+        const QString thPath = write("th.log", thText);
+        const QVector<ThermalPoint> th = KernelResultReader::readThermal(thPath);
+        const QVector<ThermalPoint> thT = KernelResultReader::parseThermal(thText);
+        check(th.size() == 2 && thT.size() == 2,
+              "kernel_result: thermal lines found in a mixed log");
+        if (th.size() == 2 && thT.size() == 2)
+            check(th[1].index == thT[1].index
+                  && th[1].freqHz == thT[1].freqHz
+                  && th[1].dissipated == thT[1].dissipated,
+                  "kernel_result: streamed thermal matches the parser");
+
+        // 存在しないファイルからは何も作らない (残骸を再表示しない)
+        const QString nope = dir.filePath("nope.log");
+        check(KernelResultReader::readFeedSweeps(nope).isEmpty()
+              && KernelResultReader::readFar1d(nope).isEmpty()
+              && KernelResultReader::readCrossSection(nope).isEmpty()
+              && KernelResultReader::readThermal(nope).isEmpty(),
+              "kernel_result: a missing file yields nothing");
+    }
 }
 
 // 音響編集エンジン (AudioEditorTab の DSP — src/audio/AudioEditEngine)。
