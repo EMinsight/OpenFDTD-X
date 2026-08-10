@@ -40,6 +40,7 @@
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
 #include "kernel/SweepRunner.h"
+#include "kernel/OptimizeFom.h"
 #include "io/EvReader.h"
 #include "io/GdsIO.h"
 #include "core/MonteCarlo.h"
@@ -13427,6 +13428,119 @@ static void testUnwiredNotesHaveSubject()
     check(withSubject == total, "unwired: all notes carry a subject");
 }
 
+// ── 掃引結果 → FoM と最良点 (kernel/OptimizeFom) ────────────────────────────
+// 最適化の「どの点が良いか」を決める唯一の場所。最大化/最小化の向きを
+// 取り違えると**最悪の点を最良と呼ぶ**ので、向きは名指しで固定する。
+static void testOptimizeFom()
+{
+    g_file = "optimize-fom";
+
+    // 向き (最大化 / 最小化)
+    check(!fomMaximizes(FomKind::MinReflectionDb) &&
+          !fomMaximizes(FomKind::MinVswr),
+          "fom: reflection and VSWR are minimised");
+    check(fomMaximizes(FomKind::MaxPeakGainDb) &&
+          fomMaximizes(FomKind::MaxFrontToBackDb),
+          "fom: gain and front-to-back are maximised");
+
+    // 給電点表からの評価
+    auto feedResult = [](double refDb, double vswr, double f) {
+        SweepResult r;
+        r.ok = true;
+        FeedSweep fs;
+        fs.feedIndex = 1;
+        FeedSweepPoint p;
+        p.freqHz = f; p.refDb = refDb; p.vswr = vswr;
+        fs.points.push_back(p);
+        r.feeds.push_back(fs);
+        return r;
+    };
+    {
+        const SweepResult r = feedResult(-12.5, 1.62, 2.4e9);
+        const FomValue ref = evaluateFom(FomKind::MinReflectionDb, r, 2.4e9);
+        check(ref.valid && std::fabs(ref.value + 12.5) < 1e-12,
+              "fom: the reflection FoM is the Ref[dB] of the nearest frequency");
+        const FomValue vs = evaluateFom(FomKind::MinVswr, r, 2.4e9);
+        check(vs.valid && std::fabs(vs.value - 1.62) < 1e-12,
+              "fom: the VSWR FoM reads the VSWR column");
+        // 周波数を指定しなければ「その点で最も良い値」
+        SweepResult multi = r;
+        FeedSweepPoint p2;
+        p2.freqHz = 2.5e9; p2.refDb = -20.0; p2.vswr = 1.2;
+        multi.feeds[0].points.push_back(p2);
+        const FomValue anyF = evaluateFom(FomKind::MinReflectionDb, multi, 0.0);
+        check(anyF.valid && std::fabs(anyF.value + 20.0) < 1e-12,
+              "fom: without a frequency the best value over the sweep is used");
+        const FomValue at24 = evaluateFom(FomKind::MinReflectionDb, multi, 2.4e9);
+        check(at24.valid && std::fabs(at24.value + 12.5) < 1e-12,
+              "fom: with a frequency the nearest point is used, not the best");
+    }
+    // 失敗した点・データの無い点は候補から外す
+    {
+        SweepResult bad = feedResult(-12.5, 1.62, 2.4e9);
+        bad.ok = false;
+        check(!evaluateFom(FomKind::MinReflectionDb, bad, 2.4e9).valid,
+              "fom: a failed run is never a candidate");
+        SweepResult empty;
+        empty.ok = true;
+        check(!evaluateFom(FomKind::MinReflectionDb, empty, 2.4e9).valid,
+              "fom: a point without a feed table is not a candidate");
+        check(!evaluateFom(FomKind::MaxPeakGainDb, empty, 0.0).valid,
+              "fom: a point without a pattern is not a candidate");
+        // VSWR < 1 は物理的にあり得ない → 壊れた行を最良点にしない
+        SweepResult brokenVswr = feedResult(-12.5, 0.5, 2.4e9);
+        check(!evaluateFom(FomKind::MinVswr, brokenVswr, 2.4e9).valid,
+              "fom: a VSWR below 1 is rejected instead of winning");
+    }
+    // 遠方界パターンからの評価
+    {
+        SweepResult r;
+        r.ok = true;
+        FarPattern pat;
+        pat.plane = QStringLiteral("X-plane");
+        pat.freqHz = 3.0e9;
+        for (int i = 0; i <= 36; ++i) {
+            pat.deg.push_back(10.0 * i);
+            // 0° で 6 dB、180° で −14 dB になる山
+            pat.eAbsDb.push_back(6.0 - 20.0 * (1.0 - std::cos(
+                10.0 * i * 3.14159265358979 / 180.0)) / 2.0);
+        }
+        r.patterns.push_back(pat);
+        const FomValue g = evaluateFom(FomKind::MaxPeakGainDb, r, 0.0);
+        check(g.valid && std::fabs(g.value - 6.0) < 1e-9,
+              "fom: the peak-gain FoM is the maximum over the pattern");
+        const FomValue fb = evaluateFom(FomKind::MaxFrontToBackDb, r, 0.0);
+        check(fb.valid && std::fabs(fb.value - 20.0) < 1e-9,
+              "fom: front-to-back is the 0 deg value minus the 180 deg value");
+    }
+
+    // 最良点の選択 — 向きが効いていること
+    {
+        auto mk = [](double x, bool ok) {
+            FomValue f; f.value = x; f.valid = ok; return f;
+        };
+        QVector<FomValue> v { mk(-5.0, true), mk(-18.0, true), mk(-9.0, true) };
+        check(bestPointIndex(FomKind::MinReflectionDb, v) == 1,
+              "fom: minimisation picks the smallest value");
+        check(bestPointIndex(FomKind::MaxPeakGainDb, v) == 0,
+              "fom: maximisation picks the largest value");
+        // 無効な点は勝てない
+        QVector<FomValue> w { mk(-99.0, false), mk(-3.0, true) };
+        check(bestPointIndex(FomKind::MinReflectionDb, w) == 1,
+              "fom: an invalid point never wins even with the best number");
+        // 全部無効なら -1
+        QVector<FomValue> none { mk(0.0, false), mk(0.0, false) };
+        check(bestPointIndex(FomKind::MinVswr, none) == -1,
+              "fom: no valid point means no best point");
+        check(bestPointIndex(FomKind::MinVswr, QVector<FomValue>()) == -1,
+              "fom: an empty sweep has no best point");
+        // 同値は先に出てきた点 (順序で決まるので再現する)
+        QVector<FomValue> tie { mk(2.0, true), mk(2.0, true) };
+        check(bestPointIndex(FomKind::MinVswr, tie) == 0,
+              "fom: ties keep the earlier point (reproducible)");
+    }
+}
+
 // ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
 static void testRadarCrossSection()
 {
@@ -14419,6 +14533,7 @@ int main(int argc, char *argv[])
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
+    testOptimizeFom();
     testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();

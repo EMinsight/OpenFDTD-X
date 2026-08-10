@@ -238,6 +238,11 @@ set(CORE_SOURCES
     src/kernel/SweepRunner.cpp
     src/kernel/SweepRunner.h
 
+    # 掃引結果 → 目的関数 (FoM) の評価と最良点の選択。最適化タブの「掃引」の
+    # 判断部分で、最大化/最小化の向きもここに集約する (呼び出し側に書かない)
+    src/kernel/OptimizeFom.cpp
+    src/kernel/OptimizeFom.h
+
     # 光導波路の断面固有モード (FDE) ソルバ — Qt 非依存。
     # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる
     src/optics/FdeModeSolver.cpp

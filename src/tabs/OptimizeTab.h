@@ -8,6 +8,8 @@
 // (Project に対応フィールドが無いため apply() での永続化は行わない)。
 #pragma once
 #include <QScrollArea>
+
+#include "../kernel/OptimizeFom.h"
 #include <QString>
 #include <QVector>
 
@@ -15,6 +17,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QProgressBar;
 class QPushButton;
 class QTableWidget;
 
@@ -31,6 +34,11 @@ public:
 private slots:
     void rebuildDomain();     // ドメイン変更 → 変数表・FoM・制約・実行先
     void updateMode();        // 手法変更 → ヒント文・ハイパーパラメータ表示
+    // 「掃引」の実行 / 中止。実行中に押すと中止する (ScatteringTab と同じ作法)
+    void startSweep();
+    void onPointFinished(int index, const SweepResult &r);
+    void onSweepFinished(bool ok);
+    void updateRunUi();       // 手法・実行状態 → ボタンと注記
 
 private:
     void setMode(const QString &mode);
@@ -63,6 +71,21 @@ private:
     // 実行 / Run
     QComboBox *m_target;                 // ローカル / HPC / tidy3d
     QCheckBox *m_pareto;                 // Paretoフロント出力 (多目的 FoM)
+
+    // ── 掃引の実行 (kernel/SweepRunner + kernel/OptimizeFom) ───────────────
+    // 「掃引」手法だけが実際にカーネルを回す。他の手法 (PSO / 随伴 / GA /
+    // ベイズ / トポロジー) は最適化ループが無いので従来どおり未実装。
+    QComboBox    *m_sweepVar = nullptr;   // 何を振るか (SweepKind)
+    QComboBox    *m_fomKind = nullptr;    // 何で良し悪しを決めるか
+    QLineEdit    *m_fomFreq = nullptr;    // 評価周波数 [Hz] (空 = 各点の最良)
+    QPushButton  *m_runBtn = nullptr;
+    QProgressBar *m_progress = nullptr;
+    QLabel       *m_runStatus = nullptr;
+    QLabel       *m_bestLabel = nullptr;
+    QTableWidget *m_resultTable = nullptr;
+    SweepRunner  *m_sweeper = nullptr;
+    RunConfig     m_runCfg;
+    QVector<FomValue> m_foms;
 };
 
 } // namespace ofd

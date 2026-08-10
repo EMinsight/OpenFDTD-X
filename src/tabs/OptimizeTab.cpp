@@ -5,6 +5,9 @@
 #include "../I18n.h"
 #include "../Theme.h"
 #include "TabHelpers.h"
+#include <QProgressBar>
+#include "../kernel/SweepRunner.h"
+#include "../kernel/Runner.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -104,16 +107,90 @@ const bool s_i18n = [] {
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
-    I18n::reg("opz_uw_method", "最適化手法の選択",
-              "the choice of optimisation method");
-    I18n::reg("opz_uw_vars", "設計変数の表 (ドメイン別の既定例です)",
-              "the design-variable table (a per-domain worked example)");
+    I18n::reg("opz_uw_method",
+              "「掃引」以外の手法 (PSO / 随伴 / GA / ベイズ / トポロジー) の選択",
+              "the choice of method other than sweep (PSO / adjoint / GA / "
+              "Bayesian / topology)");
+    I18n::reg("opz_uw_method_ok",
+              "「掃引」— 下の「実行」から実際にカーネルを回します",
+              "sweep — it actually runs the kernel from Run below");
+    I18n::reg("opz_uw_vars",
+              "変数名と初期値の列 (名前はドメイン別の例で、実在の量には"
+              "結び付いていません)",
+              "the variable-name and initial-value columns (the names are "
+              "per-domain examples and are not bound to real quantities)");
+    I18n::reg("opz_uw_vars_ok",
+              "最小 / 最大 / 分割の列 — 掃引の範囲としてそのまま使われます",
+              "the min / max / divisions columns, which are used as the sweep "
+              "range");
     I18n::reg("opz_uw_con", "制約条件の設定",
               "the constraint settings");
     I18n::reg("opz_uw_topo", "トポロジー最適化の解像度とフィルタ半径",
               "the topology-optimisation resolution and filter radius");
-    I18n::reg("opz_uw_run", "実行先と Pareto 出力の設定",
-              "the execution target and Pareto-output settings");
+    I18n::reg("opz_sweep_hint",
+              "「掃引」手法はここから実際にカーネルを回します。1 点ずつ .ofd を"
+              "書いて実行し、各点の結果から下の評価量を計算して最良点を出します。"
+              "振れるのは掃引エンジンが対応している量だけです (形状寸法を振るには"
+              "エンジン側の対応が要ります)。",
+              "The sweep method actually runs the kernel from here: it writes and "
+              "runs one .ofd per point, evaluates the figure of merit below for "
+              "each and reports the best point. Only quantities the sweep engine "
+              "supports can be varied (varying a geometry dimension needs engine "
+              "support).");
+    I18n::reg("opz_sweep_var", "振る量", "Variable");
+    I18n::reg("opz_var_theta", "平面波の入射角 θ [deg]",
+              "plane-wave incidence theta [deg]");
+    I18n::reg("opz_var_phi", "平面波の入射角 φ [deg]",
+              "plane-wave incidence phi [deg]");
+    I18n::reg("opz_var_mesh", "メッシュ分割の倍率 [×]",
+              "mesh division factor");
+    I18n::reg("opz_fom_kind", "評価量 (FoM)", "Figure of merit");
+    I18n::reg("opz_fom_ref", "反射 Ref [dB] — 最小化",
+              "reflection Ref [dB] — minimise");
+    I18n::reg("opz_fom_vswr", "VSWR — 最小化", "VSWR — minimise");
+    I18n::reg("opz_fom_gain", "遠方界の最大 E-abs [dB] — 最大化",
+              "peak far-field E-abs [dB] — maximise");
+    I18n::reg("opz_fom_fb", "前後比 F/B [dB] — 最大化",
+              "front-to-back ratio [dB] — maximise");
+    I18n::reg("opz_fom_freq", "評価周波数", "Evaluation frequency");
+    I18n::reg("opz_fom_freq_ph", "空 = 各点の最良値", "empty = best per point");
+    I18n::reg("opz_col_value", "振った値", "Value");
+    I18n::reg("opz_col_fom", "評価量", "FoM");
+    I18n::reg("opz_col_state", "状態", "State");
+    I18n::reg("opz_run_stop", "■ 中止", "■ Stop");
+    I18n::reg("opz_run_need",
+              "掃引の範囲が不正です — 変数表の最小 / 最大 / 分割を確認してください "
+              "(分割は 2 以上、最小 ≠ 最大)。",
+              "The sweep range is invalid — check min / max / divisions in the "
+              "variable table (at least 2 divisions, min ≠ max).");
+    I18n::reg("opz_run_notsweep",
+              "▸ 実行できるのは「掃引」手法だけです。他の手法は最適化ループが"
+              "未実装です。",
+              "▸ Only the sweep method can run; the other methods have no "
+              "optimisation loop yet.");
+    I18n::reg("opz_run_running", "実行中: %1 / %2 点", "Running: %1 / %2 points");
+    I18n::reg("opz_run_done", "完了: %1 点", "Done: %1 point(s)");
+    I18n::reg("opz_run_stopped", "中止しました (%1 点まで)",
+              "Stopped after %1 point(s)");
+    I18n::reg("opz_best_fmt", "最良点: %1 = %2 のとき %3 = %4",
+              "Best point: %3 = %4 at %1 = %2");
+    I18n::reg("opz_best_none",
+              "最良点はありません — どの点でも評価量が取れませんでした "
+              "(給電点や遠方界の出力が必要です)。",
+              "No best point — the figure of merit could not be evaluated at any "
+              "point (a feed or far-field output is required).");
+    I18n::reg("opz_state_ok", "正常", "ok");
+    I18n::reg("opz_state_fail", "失敗", "failed");
+    I18n::reg("opz_state_nofom", "評価不可", "no FoM");
+    I18n::reg("opz_uw_run", "実行先 (ローカル / HPC / tidy3d) と Pareto 出力の選択",
+              "the execution target (local / HPC / tidy3d) and the Pareto output "
+              "option");
+    I18n::reg("opz_uw_run_ok",
+              "掃引の実行そのもの — 変数表の最小 / 最大 / 分割と上の評価量を使い、"
+              "ローカルでカーネルを回します",
+              "the sweep run itself — it uses min / max / divisions from the "
+              "variable table and the figure of merit above, and runs the kernel "
+              "locally");
     return true;
 }();
 
@@ -205,7 +282,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_methodHint = hintLabel(QString(), sMethod);
     sMethod->vbox()->addWidget(m_methodHint);
     // 手法選択はローカル state のみ (Project へは書き込まれない)
-    sMethod->vbox()->addWidget(tabhelp::unwiredNote(sMethod, I18n::tr("opz_uw_method")));
+    sMethod->vbox()->addWidget(tabhelp::unwiredNote(sMethod, I18n::tr("opz_uw_method"),
+                                     I18n::tr("opz_uw_method_ok")));
     v->addWidget(sMethod);
 
     // ── パラメータ / Parameters ─────────────────────────────────────────────
@@ -223,7 +301,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_jobs = new QLabel(sParam);
     sParam->vbox()->addWidget(m_jobs);
     // 変数表はドメイン別の既定例で、編集内容はどこにも読まれない
-    sParam->vbox()->addWidget(tabhelp::unwiredNote(sParam, I18n::tr("opz_uw_vars")));
+    sParam->vbox()->addWidget(tabhelp::unwiredNote(sParam, I18n::tr("opz_uw_vars"),
+                                     I18n::tr("opz_uw_vars_ok")));
     v->addWidget(sParam);
 
     // ── 目的関数 (FoM) / Objective ──────────────────────────────────────────
@@ -307,21 +386,68 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
 
     // ── 実行 / Run ──────────────────────────────────────────────────────────
     auto *sRun = new SectionBox(I18n::tr("opz_run"), body);
+
+    // ── 掃引の実行 (kernel/SweepRunner) ─────────────────────────────────
+    // 「掃引」だけが実際にカーネルを回す。振れるのは SweepRunner が対応して
+    // いる量に限る (平面波の入射角・メッシュ倍率)。形状寸法を振るには
+    // SweepRunner 側の対応が要るので、まだ選択肢に出さない (絶対規則 5)。
+    sRun->vbox()->addWidget(hintLabel(I18n::tr("opz_sweep_hint"), sRun));
+    auto *swForm = new QFormLayout();
+    swForm->setContentsMargins(0, 0, 0, 0);
+    m_sweepVar = new QComboBox(sRun);
+    m_sweepVar->addItem(I18n::tr("opz_var_theta"));   // 0
+    m_sweepVar->addItem(I18n::tr("opz_var_phi"));     // 1
+    m_sweepVar->addItem(I18n::tr("opz_var_mesh"));    // 2
+    swForm->addRow(I18n::tr("opz_sweep_var"), m_sweepVar);
+    m_fomKind = new QComboBox(sRun);
+    m_fomKind->addItem(I18n::tr("opz_fom_ref"));      // 0 反射 (最小化)
+    m_fomKind->addItem(I18n::tr("opz_fom_vswr"));     // 1 VSWR (最小化)
+    m_fomKind->addItem(I18n::tr("opz_fom_gain"));     // 2 最大利得 (最大化)
+    m_fomKind->addItem(I18n::tr("opz_fom_fb"));       // 3 前後比 (最大化)
+    swForm->addRow(I18n::tr("opz_fom_kind"), m_fomKind);
+    m_fomFreq = new QLineEdit(sRun);
+    m_fomFreq->setPlaceholderText(I18n::tr("opz_fom_freq_ph"));
+    m_fomFreq->setMaximumWidth(140);
+    swForm->addRow(I18n::tr("opz_fom_freq"), m_fomFreq);
+    sRun->vbox()->addLayout(swForm);
+
     auto *btnRow = new QHBoxLayout();
-    auto *runBtn = new QPushButton(I18n::tr("opz_run_optimize"), sRun);
-    runBtn->setStyleSheet("font-weight:600;");
+    m_runBtn = new QPushButton(I18n::tr("opz_run_optimize"), sRun);
+    m_runBtn->setStyleSheet("font-weight:600;");
+    connect(m_runBtn, &QPushButton::clicked, this, &OptimizeTab::startSweep);
     auto *pauseBtn = new QPushButton(I18n::tr("opz_pause"), sRun);
-    auto *stopBtn = new QPushButton(I18n::tr("opz_stop"), sRun);
-    stopBtn->setStyleSheet("color:#C42B1C;");
-    // 最適化ランナーは未実装 — 3 ボタンとも未配線
-    tabhelp::markNotImplemented(runBtn);
+    // 一時停止はカーネル実行の中断・再開が要る (Runner に無い) ので未実装
     tabhelp::markNotImplemented(pauseBtn);
-    tabhelp::markNotImplemented(stopBtn);
-    btnRow->addWidget(runBtn);
+    btnRow->addWidget(m_runBtn);
     btnRow->addWidget(pauseBtn);
-    btnRow->addWidget(stopBtn);
     btnRow->addStretch(1);
     sRun->vbox()->addLayout(btnRow);
+
+    m_progress = new QProgressBar(sRun);
+    m_progress->setVisible(false);
+    sRun->vbox()->addWidget(m_progress);
+    m_runStatus = hintLabel(QString(), sRun);
+    sRun->vbox()->addWidget(m_runStatus);
+    m_bestLabel = new QLabel(sRun);
+    m_bestLabel->setWordWrap(true);
+    m_bestLabel->setStyleSheet("font-weight:600;");
+    m_bestLabel->setVisible(false);
+    sRun->vbox()->addWidget(m_bestLabel);
+    m_resultTable = new QTableWidget(0, 3, sRun);
+    m_resultTable->setHorizontalHeaderLabels(
+        { I18n::tr("opz_col_value"), I18n::tr("opz_col_fom"),
+          I18n::tr("opz_col_state") });
+    m_resultTable->horizontalHeader()->setStretchLastSection(true);
+    m_resultTable->verticalHeader()->setVisible(false);
+    m_resultTable->setMinimumHeight(140);
+    m_resultTable->setVisible(false);
+    sRun->vbox()->addWidget(m_resultTable);
+
+    m_sweeper = new SweepRunner(this);
+    connect(m_sweeper, &SweepRunner::pointFinished,
+            this, &OptimizeTab::onPointFinished);
+    connect(m_sweeper, &SweepRunner::finished,
+            this, &OptimizeTab::onSweepFinished);
 
     m_target = new QComboBox(sRun);
     sRun->form()->addRow(I18n::tr("opz_target"), m_target);
@@ -331,7 +457,8 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
     sRun->vbox()->addWidget(m_pareto);
     // 実行先・Pareto 出力もローカル state のみ
-    sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun, I18n::tr("opz_uw_run")));
+    sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun, I18n::tr("opz_uw_run"),
+                                     I18n::tr("opz_uw_run_ok")));
     v->addWidget(sRun);
 
     v->addStretch(1);
@@ -347,6 +474,142 @@ void OptimizeTab::setMode(const QString &mode)
 {
     m_mode = mode;
     updateMode();
+}
+
+// ── 掃引の実行 ──────────────────────────────────────────────────────────────
+// 変数表の**最初にチェックの入った行**から最小 / 最大 / 分割を読み、
+// SweepRunner に渡す。範囲が不正なら起動せず理由を出す (絶対規則 5)。
+void OptimizeTab::startSweep()
+{
+    if (m_sweeper->isRunning()) {          // 実行中の押下は中止
+        m_sweeper->stop();
+        return;
+    }
+    if (m_mode != QLatin1String("sweep")) {
+        m_runStatus->setText(I18n::tr("opz_run_notsweep"));
+        return;
+    }
+    // 変数表から範囲を読む
+    double from = 0, to = 0;
+    int points = 0;
+    bool found = false;
+    for (int r = 0; r < m_params->rowCount() && !found; ++r) {
+        const QTableWidgetItem *ck = m_params->item(r, 0);
+        if (!ck || ck->checkState() != Qt::Checked) continue;
+        const QTableWidgetItem *mn = m_params->item(r, 4);
+        const QTableWidgetItem *mx = m_params->item(r, 5);
+        const QTableWidgetItem *dv = m_params->item(r, 6);
+        if (!mn || !mx || !dv) continue;
+        bool a = false, b = false, c = false;
+        const double f = mn->text().toDouble(&a);
+        const double t = mx->text().toDouble(&b);
+        const int    n = dv->text().toInt(&c);
+        if (!a || !b || !c) continue;
+        from = f; to = t; points = n; found = true;
+    }
+    if (!found || points < 2 || from == to) {
+        m_runStatus->setText(I18n::tr("opz_run_need"));
+        return;
+    }
+
+    SweepConfig cfg;
+    switch (m_sweepVar->currentIndex()) {
+    case 1:  cfg.kind = SweepKind::PlaneWavePhi;   break;
+    case 2:  cfg.kind = SweepKind::MeshRefine;     break;
+    default: cfg.kind = SweepKind::PlaneWaveTheta; break;
+    }
+    cfg.from = from;
+    cfg.to = to;
+    cfg.points = points;
+    cfg.run = m_runCfg;
+    // 1 点ずつポストまで走らせる (far1d.log が要る FoM があるため)
+    cfg.run.mode = RunMode::Both;
+    cfg.run.kernel = Runner::kernelForProject(*m_p);
+
+    m_foms.clear();
+    m_resultTable->setRowCount(0);
+    m_resultTable->setVisible(true);
+    m_bestLabel->setVisible(false);
+    m_progress->setVisible(true);
+    m_progress->setRange(0, cfg.points);
+    m_progress->setValue(0);
+    if (!m_sweeper->start(*m_p, cfg)) {
+        m_progress->setVisible(false);
+        m_runStatus->setText(I18n::tr("opz_run_need"));
+        return;
+    }
+    m_runStatus->setText(I18n::tr("opz_run_running").arg(0).arg(cfg.points));
+    updateRunUi();
+}
+
+void OptimizeTab::onPointFinished(int index, const SweepResult &r)
+{
+    const FomKind kind = static_cast<FomKind>(m_fomKind->currentIndex());
+    bool okFreq = false;
+    const double freq = m_fomFreq->text().trimmed().toDouble(&okFreq);
+    const FomValue fv = evaluateFom(kind, r, okFreq ? freq : 0.0);
+    m_foms.push_back(fv);
+
+    const int row = m_resultTable->rowCount();
+    m_resultTable->insertRow(row);
+    auto ro = [](const QString &t) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        return it;
+    };
+    m_resultTable->setItem(row, 0, ro(r.label.isEmpty()
+                                          ? QString::number(r.value, 'g', 6)
+                                          : r.label));
+    m_resultTable->setItem(row, 1, ro(fv.valid
+                                          ? QString::number(fv.value, 'f', 3)
+                                          : QStringLiteral("—")));
+    m_resultTable->setItem(row, 2, ro(I18n::tr(
+        !r.ok ? "opz_state_fail" : (fv.valid ? "opz_state_ok"
+                                             : "opz_state_nofom"))));
+    m_progress->setValue(index + 1);
+    m_runStatus->setText(I18n::tr("opz_run_running")
+                             .arg(index + 1).arg(m_progress->maximum()));
+}
+
+void OptimizeTab::onSweepFinished(bool ok)
+{
+    m_progress->setVisible(false);
+    const QVector<SweepResult> &rs = m_sweeper->results();
+    m_runStatus->setText(I18n::tr(ok ? "opz_run_done" : "opz_run_stopped")
+                             .arg(rs.size()));
+
+    const FomKind kind = static_cast<FomKind>(m_fomKind->currentIndex());
+    const int best = bestPointIndex(kind, m_foms);
+    if (best >= 0 && best < rs.size()) {
+        m_bestLabel->setText(I18n::tr("opz_best_fmt")
+                                 .arg(m_sweepVar->currentText())
+                                 .arg(QString::number(rs[best].value, 'g', 6))
+                                 .arg(m_fomKind->currentText())
+                                 .arg(QString::number(m_foms[best].value,
+                                                      'f', 3)));
+        m_bestLabel->setVisible(true);
+        m_resultTable->selectRow(best);
+    } else {
+        m_bestLabel->setText(I18n::tr("opz_best_none"));
+        m_bestLabel->setVisible(true);
+    }
+    updateRunUi();
+}
+
+// 実行ボタンの文言と有効・無効 (掃引以外では押せない)
+void OptimizeTab::updateRunUi()
+{
+    if (!m_runBtn) return;
+    const bool running = m_sweeper && m_sweeper->isRunning();
+    const bool sweep = (m_mode == QLatin1String("sweep"));
+    m_runBtn->setText(I18n::tr(running ? "opz_run_stop" : "opz_run_optimize"));
+    m_runBtn->setEnabled(sweep || running);
+    if (!sweep && !running && m_runStatus->text().isEmpty())
+        m_runStatus->setText(I18n::tr("opz_run_notsweep"));
+    for (QWidget *w : { static_cast<QWidget *>(m_sweepVar),
+                        static_cast<QWidget *>(m_fomKind),
+                        static_cast<QWidget *>(m_fomFreq) })
+        if (w) w->setEnabled(!running);
 }
 
 void OptimizeTab::rebuildDomain()
@@ -430,6 +693,7 @@ void OptimizeTab::rebuildDomain()
 
 void OptimizeTab::updateMode()
 {
+    updateRunUi();
     const Domain d = m_p->activeDomain();
     for (QPushButton *b : m_methodBtns)
         b->setChecked(b->property("mode").toString() == m_mode);
