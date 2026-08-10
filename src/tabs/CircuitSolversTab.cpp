@@ -117,6 +117,57 @@ const bool s_i18n = [] {
               "Enabled rows are written as OpenPEEC ports / OpenFEM terminals by "
               "Run extraction above.");
 
+    // SPICE ネットリストの取込
+    I18n::reg("cir_net_section", "回路図ネットリストの取込 / Netlist import",
+              "Netlist import");
+    I18n::reg("cir_net_hint",
+              "外部の回路図エディタ (KiCad / LTspice / ngspice など) が出した "
+              "SPICE ネットリスト (.cir / .sp) を読み、R / L / C を「.ofd の "
+              "load 行」としてプロジェクトへ追加します。load は本家 OpenFDTD の"
+              "入力キーなので、追加した素子はカーネルまで届きます。",
+              "Reads a SPICE netlist (.cir / .sp) exported by an external "
+              "schematic editor (KiCad, LTspice, ngspice …) and adds its R / L / C "
+              "elements to the project as .ofd `load` lines. `load` is an "
+              "OpenFDTD input key, so the imported elements reach the kernel.");
+    I18n::reg("cir_net_col_name", "素子", "Element");
+    I18n::reg("cir_net_col_kind", "種別", "Type");
+    I18n::reg("cir_net_col_nodes", "ノード", "Nodes");
+    I18n::reg("cir_net_col_value", "値", "Value");
+    I18n::reg("cir_net_col_dir", "方向", "Axis");
+    I18n::reg("cir_net_add", "✚ 選択行を load 行として追加",
+              "✚ Add the checked rows as load lines");
+    I18n::reg("cir_net_none",
+              "▸ ネットリストが未指定です。「📁 参照…」で .cir / .sp を選ぶと"
+              "素子の一覧が出ます。",
+              "▸ No netlist selected. Pick a .cir / .sp with “📁 Browse…” to list "
+              "its elements.");
+    I18n::reg("cir_net_fail", "%1 を読めませんでした: %2",
+              "Could not read %1: %2");
+    I18n::reg("cir_net_ok",
+              "▸ %1 — 素子 %2 個 (R=%3 / L=%4 / C=%5)。"
+              "方向と座標を入れた行だけが load 行になります。",
+              "▸ %1 — %2 elements (R=%3 / L=%4 / C=%5). Only rows that carry an "
+              "axis and coordinates become load lines.");
+    I18n::reg("cir_net_added",
+              "▸ load 行を %1 個追加しました (配置が未入力の %2 行は追加して"
+              "いません)。保存すると .ofd に書き出されます。",
+              "▸ Added %1 load line(s); %2 row(s) without a placement were not "
+              "added. They are written to the .ofd when you save.");
+    I18n::reg("cir_net_added_none",
+              "▸ 追加できる行がありませんでした — 方向 (X/Y/Z) と座標 x,y,z を"
+              "入れてください (%1 行が未入力)。",
+              "▸ Nothing was added — fill in the axis (X/Y/Z) and the x,y,z "
+              "coordinates (%1 row(s) are incomplete).");
+    I18n::reg("cir_net_caveat",
+              "▸ ネットリストは位置を持たないので、素子をどのセル辺に置くかは"
+              "利用者が決めます (GUI は座標を推測しません)。.subckt の展開、"
+              "電源・半導体の取込、SPICE との共シミュレーションは未対応です "
+              "(読み飛ばした分は上に列挙します)。",
+              "▸ A netlist has no geometry, so you decide which cell edge each "
+              "element sits on (the GUI does not guess coordinates). Expanding "
+              ".subckt, importing sources/semiconductors and co-simulation with "
+              "SPICE are not supported (whatever was skipped is listed above).");
+
     // 抽出設定
     I18n::reg("cir_extract", "抽出設定", "Extraction");
     // 抽出実行 (OpenPEEC / OpenFEM)
@@ -715,19 +766,50 @@ QWidget *CircuitSolversTab::buildSpicePage()
     auto *v = new QVBoxLayout(page);
     v->setSpacing(8);
 
-    auto *s = new SectionBox(I18n::tr("cir_spice"), page);
+    // ── ネットリスト取込 (実配線) ───────────────────────────────────────
+    // 外部の回路図から出した .cir/.sp を読み、R/L/C を .ofd の load 行として
+    // プロジェクトへ入れる。配置 (方向・座標) はネットリストに無いので
+    // 利用者が表で与える (GUI が座標を捏造しない — 絶対規則 5)。
+    auto *sn = new SectionBox(I18n::tr("cir_net_section"), page);
+    sn->vbox()->addWidget(hintLabel(I18n::tr("cir_net_hint"), sn));
     auto *netRow = new QHBoxLayout();
-    auto *netEdit = numEdit("buck_converter.cir", 0, s);
-    netRow->addWidget(netEdit, 1);
-    // 「📁 参照…」のみ実配線 (選択パスを欄へ反映する。共シミュレーションは未実装)
-    auto *netBrowse = new QPushButton(I18n::tr("cir_browse"), s);
-    connect(netBrowse, &QPushButton::clicked, this, [this, netEdit] {
-        const QString path = QFileDialog::getOpenFileName(
-            this, I18n::tr("cir_netlist"), netEdit->text());
-        if (!path.isEmpty()) netEdit->setText(path);
-    });
+    m_netFile = new QLineEdit(sn);
+    m_netFile->setPlaceholderText(QStringLiteral("circuit.cir"));
+    netRow->addWidget(m_netFile, 1);
+    auto *netBrowse = new QPushButton(I18n::tr("cir_browse"), sn);
+    connect(netBrowse, &QPushButton::clicked,
+            this, &CircuitSolversTab::browseNetlist);
     netRow->addWidget(netBrowse);
-    s->form()->addRow(I18n::tr("cir_netlist"), netRow);
+    sn->form()->addRow(I18n::tr("cir_netlist"), netRow);
+    connect(m_netFile, &QLineEdit::textChanged,
+            this, [this](const QString &p) { loadNetlist(p.trimmed()); });
+
+    m_netStatus = hintLabel(QString(), sn);
+    sn->vbox()->addWidget(m_netStatus);
+    m_netTable = new QTableWidget(0, 9, sn);
+    m_netTable->setHorizontalHeaderLabels(
+        { QString(), I18n::tr("cir_net_col_name"), I18n::tr("cir_net_col_kind"),
+          I18n::tr("cir_net_col_nodes"), I18n::tr("cir_net_col_value"),
+          I18n::tr("cir_net_col_dir"), QStringLiteral("x [m]"),
+          QStringLiteral("y [m]"), QStringLiteral("z [m]") });
+    m_netTable->horizontalHeader()->setStretchLastSection(true);
+    m_netTable->verticalHeader()->setVisible(false);
+    m_netTable->setMinimumHeight(160);
+    m_netTable->setVisible(false);
+    sn->vbox()->addWidget(m_netTable);
+
+    auto *addRow = new QHBoxLayout();
+    m_netAdd = new QPushButton(I18n::tr("cir_net_add"), sn);
+    m_netAdd->setEnabled(false);
+    connect(m_netAdd, &QPushButton::clicked,
+            this, &CircuitSolversTab::addNetlistLoads);
+    addRow->addWidget(m_netAdd);
+    addRow->addStretch(1);
+    sn->vbox()->addLayout(addRow);
+    sn->vbox()->addWidget(hintLabel(I18n::tr("cir_net_caveat"), sn));
+    v->addWidget(sn);
+
+    auto *s = new SectionBox(I18n::tr("cir_spice"), page);
 
     auto *engine = new QComboBox(s);
     engine->addItem(I18n::tr("cir_engine_ng"));
@@ -761,6 +843,121 @@ QWidget *CircuitSolversTab::buildSpicePage()
 
     v->addStretch(1);
     return page;
+}
+
+// ── SPICE ネットリストの取込 ────────────────────────────────────────────────
+void CircuitSolversTab::browseNetlist()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("cir_netlist"), m_netFile->text(),
+        SpiceIO::fileDialogFilter());
+    if (!path.isEmpty()) m_netFile->setText(path);   // → loadNetlist
+}
+
+// パスを読み、素子表を作る。読めない場合は **表を空にして理由を出す**。
+void CircuitSolversTab::loadNetlist(const QString &path)
+{
+    m_netlist = SpiceNetlist{};
+    m_netTable->setRowCount(0);
+    m_netTable->setVisible(false);
+    m_netAdd->setEnabled(false);
+
+    if (path.isEmpty()) {
+        m_netStatus->setText(I18n::tr("cir_net_none"));
+        return;
+    }
+    QString err;
+    if (!SpiceIO::read(path, m_netlist, &err)) {
+        m_netStatus->setText(I18n::tr("cir_net_fail")
+                                 .arg(QDir::toNativeSeparators(path), err));
+        return;
+    }
+
+    m_updating = true;
+    for (const SpiceElement &e : m_netlist.elements) {
+        const int r = m_netTable->rowCount();
+        m_netTable->insertRow(r);
+        auto *chk = new QTableWidgetItem();
+        chk->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable |
+                      Qt::ItemIsUserCheckable);
+        chk->setCheckState(Qt::Checked);
+        m_netTable->setItem(r, 0, chk);
+        auto ro = [](const QString &t) {
+            auto *it = new QTableWidgetItem(t);
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            return it;
+        };
+        m_netTable->setItem(r, 1, ro(e.name));
+        m_netTable->setItem(r, 2, ro(QString(e.type)));
+        m_netTable->setItem(r, 3, ro(e.node1 + QStringLiteral(" – ") + e.node2));
+        // 単位は .ofd の load 行と同じ SI (Ω / H / F)
+        const QChar unit = (e.type == 'R') ? QChar(0x03A9)      // Ω
+                         : (e.type == 'L') ? QChar('H') : QChar('F');
+        m_netTable->setItem(r, 4, ro(QString::number(e.value, 'g', 6)
+                                     + QLatin1Char(' ') + unit));
+        // 配置 (方向・座標) は空で始める — 与えられた行だけを書き出す
+        auto *dir = new QTableWidgetItem(QStringLiteral("Z"));
+        m_netTable->setItem(r, 5, dir);
+        for (int c = 6; c < 9; ++c)
+            m_netTable->setItem(r, c, new QTableWidgetItem(QString()));
+    }
+    m_updating = false;
+    m_netTable->resizeColumnsToContents();
+    m_netTable->setVisible(true);
+    m_netAdd->setEnabled(true);
+
+    QString head = I18n::tr("cir_net_ok")
+                       .arg(QDir::toNativeSeparators(path))
+                       .arg(m_netlist.elements.size())
+                       .arg(m_netlist.count('R'))
+                       .arg(m_netlist.count('L'))
+                       .arg(m_netlist.count('C'));
+    for (const QString &w : m_netlist.warnings)
+        head += QStringLiteral("\n• ") + w;
+    m_netStatus->setText(head);
+}
+
+// チェックの入った行のうち、配置 (方向 X/Y/Z + 座標 3 つ) が揃っているものを
+// `.ofd` の load 行としてプロジェクトへ足す。揃っていない行は**書かずに数える**。
+void CircuitSolversTab::addNetlistLoads()
+{
+    if (m_netlist.elements.isEmpty()) return;
+    int added = 0, noPlace = 0;
+    for (int r = 0; r < m_netTable->rowCount()
+                    && r < m_netlist.elements.size(); ++r) {
+        const QTableWidgetItem *chk = m_netTable->item(r, 0);
+        if (!chk || chk->checkState() != Qt::Checked) continue;
+
+        const QString dirTxt = m_netTable->item(r, 5)
+                                   ? m_netTable->item(r, 5)->text().trimmed().toUpper()
+                                   : QString();
+        if (dirTxt.size() != 1 || !QStringLiteral("XYZ").contains(dirTxt)) {
+            ++noPlace;
+            continue;
+        }
+        double xyz[3] = {0, 0, 0};
+        bool ok = true;
+        for (int c = 0; c < 3 && ok; ++c) {
+            const QTableWidgetItem *it = m_netTable->item(r, 6 + c);
+            const QString t = it ? it->text().trimmed() : QString();
+            if (t.isEmpty()) { ok = false; break; }
+            xyz[c] = t.toDouble(&ok);
+        }
+        if (!ok) { ++noPlace; continue; }
+
+        Load l;
+        l.dir = dirTxt.at(0);
+        l.x = xyz[0]; l.y = xyz[1]; l.z = xyz[2];
+        l.kind = m_netlist.elements[r].type;
+        l.value = m_netlist.elements[r].value;
+        m_p->loads().push_back(l);
+        ++added;
+    }
+    if (added > 0) m_p->touch();
+    m_netStatus->setText(added > 0
+        ? I18n::tr("cir_net_added").arg(added).arg(noPlace)
+        : I18n::tr("cir_net_added_none").arg(noPlace));
+    if (added > 0) refresh();     // 結果ページの集中定数モデルを取り直す
 }
 
 // ── 結果 (集中定数モデルの |Z| — 抽出は未実装) ──────────────────────────────

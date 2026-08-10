@@ -125,11 +125,11 @@ const bool s_i18n = [] {
               "🌊 Synthesise a received waveform");
     I18n::reg("ae_u2s",
         "①「📁 WAV読込」で送信波形 (または任意の音源) を開く → "
-        "②「エフェクト > リバーブ」で **外部で用意した水中インパルス応答 WAV** を"
+        "②「エフェクト > リバーブ」で「外部で用意した水中インパルス応答 WAV」を"
         "指定 → ③「畳み込み適用」。※ Bellhop の到達 (.arr) から IR を合成する"
         "機能は未実装なので、IR は計測値か外部ツールの出力を使うこと",
         "\u2460 Load the transmit waveform (or any source) \u2192 \u2461 in Effects > Reverb "
-        "point at an **externally prepared underwater impulse response WAV** \u2192 "
+        "point at an externally prepared underwater impulse response WAV \u2192 "
         "\u2462 apply the convolution. Note: synthesising an IR from Bellhop "
         "arrivals (.arr) is not implemented, so the IR must come from a "
         "measurement or an external tool");

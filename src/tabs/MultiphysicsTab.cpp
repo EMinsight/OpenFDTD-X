@@ -53,11 +53,11 @@ const bool s_i18n = [] {
     // 光: 熱光学 / プラズマ
     I18n::reg("mph_thermo", "熱光学連成設定", "Thermo-optic");
     I18n::reg("mph_th_hint",
-              "▸ カーネル (ofd) の熱解析レイヤは **入力キーを持たず常に動作**し、"
+              "▸ カーネル (ofd) の熱解析レイヤは「入力キーを持たず常に動作」し、"
               "周波数ごとの発熱密度の総和を ofd.log へ書きます。上の設定群は "
               ".ofd に対応キーが無いためカーネルへは渡りません。"
               "値は近傍界 DFT が入射スペクトルで正規化されていないため "
-              "**絶対的な W ではなく相対量**です。"
+              "「絶対的な W ではなく相対量」です。"
               "CPU 版 (ofd) のみ — ofd_mpi / ofd_cuda には熱解析レイヤがありません。",
               "The kernel's thermal layer takes no input keys and always runs, "
               "writing the integrated dissipation per frequency into ofd.log. "

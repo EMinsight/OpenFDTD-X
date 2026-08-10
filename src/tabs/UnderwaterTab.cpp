@@ -141,11 +141,11 @@ const bool s_i18nUnderwater = [] {
               "convolution (reverb) in Audio editing / analysis.");
     I18n::reg("uwx_ir_narrow",
               "▸ 到達の振幅は %1 Hz 1 波数で計算された値です。合成した波形が"
-              "正しいのは **その周波数の近傍だけ** で、広帯域の音を作るには"
+              "正しいのは「その周波数の近傍だけ」で、広帯域の音を作るには"
               "周波数ごとに実行して合成する必要があります (未実装)。",
               "\u25b8 Arrival amplitudes are computed at the single frequency "
-              "%1 Hz, so the synthesised waveform is only valid **near that "
-              "frequency**. Broadband audio needs a run per frequency and a "
+              "%1 Hz, so the synthesised waveform is only valid near that "
+              "frequency. Broadband audio needs a run per frequency and a "
               "combination step (not implemented).");
     I18n::reg("uwx_ir_none",
               "到達ファイル (.arr) がありません — 「計算モード」を"

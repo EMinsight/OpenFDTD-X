@@ -60,7 +60,7 @@ const bool s_i18n = [] {
     I18n::reg("sct_sweep_axis", "振る角度", "Swept angle");
     I18n::reg("sct_sweep_how",
               "カーネルは 1 回の実行につき planewave を 1 組しか受け取らない"
-              "ため、スイープは同じ入力の角度違いを **N 回実行** して行います"
+              "ため、スイープは同じ入力の角度違いを「N 回実行」して行います"
               "(作業ディレクトリの sweep/sweep_000, 001, … に 1 点ずつ)。"
               "点数ぶん計算時間がかかります。",
               "The kernel takes only one planewave per run, so the sweep runs "

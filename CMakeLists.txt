@@ -162,6 +162,10 @@ set(CORE_SOURCES
     # CircuitSolversTab と selftest が共有する
     src/io/CircuitIO.cpp
     src/io/CircuitIO.h
+    # SPICE ネットリスト (.cir/.sp) の読み取り → 集中定数素子 (R/L/C)。
+    # 取り込んだ素子は .ofd の load 行としてカーネルまで届く
+    src/io/SpiceNetlist.cpp
+    src/io/SpiceNetlist.h
     src/io/BathymetryIO.cpp
     src/io/BathymetryIO.h
     # 配布ページ (HTML) からデータファイルへのリンクを抜き出す (Qt Core のみ)。

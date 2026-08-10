@@ -191,10 +191,10 @@ const bool s_i18n = [] {
               "to use it in the run.");
     I18n::reg("oe_bty_synth",
               "▸ 水深データセットが見つからないため、海域代表水深からの"
-              "**合成断面**を表示しています (実地形ではない)。"
+              "「合成断面」を表示しています (実地形ではない)。"
               "「データセット取得」で GEBCO / ETOPO / J-EGG500 を配置すると"
               "実地形に置き換わります。",
-              "▸ No bathymetry dataset was found, so this is a **synthetic** "
+              "▸ No bathymetry dataset was found, so this is a synthetic "
               "section derived from the area depth (not real terrain). Stage "
               "GEBCO / ETOPO / J-EGG500 via the fetch dialog to replace it.");
     I18n::reg("oe_bty_err", "▸ %1 (合成断面で代用しています)",

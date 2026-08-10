@@ -155,11 +155,11 @@ const bool s_i18n = [] {
               "recording before analysing it (not run yet).");
     I18n::reg("rah_sweep_done",
               "▸ ESS 逆畳み込み済み (%1〜%2 Hz, %3 s)。得られる指標は "
-              "**掃引の帯域に制限された**インパルス応答に対する値です "
+              "「掃引の帯域に制限された」インパルス応答に対する値です "
               "(帯域外は録音に含まれないため復元できません)。",
               "▸ Deconvolved from an ESS (%1–%2 Hz, %3 s). The metrics are "
-              "those of an impulse response **band-limited to the sweep "
-              "range** — anything outside it is not in the recording and "
+              "those of an impulse response band-limited to the sweep "
+              "range — anything outside it is not in the recording and "
               "cannot be recovered.");
     I18n::reg("rah_sweep_thd", "▸ 高調波歪み THD = %1 % (%2)",
               "▸ Harmonic distortion THD = %1 % (%2)");

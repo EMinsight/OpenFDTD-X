@@ -226,13 +226,13 @@ const bool s_i18n = [] {
     I18n::reg("asrc_browse", "📁 参照…", "📁 Browse…");
     I18n::reg("asrc_listen", "▶ 試聴", "▶ Preview");
     I18n::reg("asrc_prep_note",
-              "▸ トリム・ゲイン・ハイパスは **トリム → HPF → ゲイン** の順で"
+              "▸ トリム・ゲイン・ハイパスは「トリム → HPF → ゲイン」の順で"
               "適用され、下の波形プレビューと、可聴化 (単発・一括・音響タブ) が"
               "畳み込むドライ音源の両方に効く。"
               "トリムは終了 ≤ 開始のとき全長を使う。HPF は 2 次バタワース "
               "(RBJ biquad, Q=1/√2)。",
               "▸ Trim, gain and the high-pass filter are applied in the order "
-              "**trim → HPF → gain**, and affect both the waveform preview "
+              "trim → HPF → gain, and affect both the waveform preview "
               "below and the dry source convolved by the auralisation (single, "
               "batch and the acoustics tab alike). The trim is "
               "ignored when the end is not after the start. The HPF is a "

@@ -130,7 +130,7 @@ const bool s_i18n = [] {
               "Prediction from the FDTD result");
     I18n::reg("emc_pred_hint",
               "ポスト処理で `plotfar1d` を有効にすると出る far1d.log を読み、"
-              "各周波数の**最大利得**を測定距離での電界強度に換算して限度値と"
+              "各周波数の最大利得を測定距離での電界強度に換算して限度値と"
               "比べます。far1d.log の E-abs[dB] は給電電力で正規化された利得 "
               "[dBi] なので (OpenFDTD sol/farfield.c の farfactor)、"
               "E[dBμV/m] = 134.771 + 10log10(P_t[W]) + G[dBi] − 20log10(d[m]) "
@@ -171,12 +171,12 @@ const bool s_i18n = [] {
               "▸ No far-field pattern was found in %1 (unexpected format, or the "
               "file is empty).");
     I18n::reg("emc_pred_nopower",
-              "▸ 読み込み済み: %1 (%2 周波数)。**放射電力 P_t を入れると"
-              "電界強度に換算します。** .ofd の給電振幅は規格化された任意値なので、"
+              "▸ 読み込み済み: %1 (%2 周波数)。放射電力 P_t を入れると"
+              "電界強度に換算します。.ofd の給電振幅は規格化された任意値なので、"
               "実機の放射電力は GUI からは分かりません — 絶対値を出すには "
               "P_t が要ります。",
-              "▸ Loaded: %1 (%2 frequencies). **Enter the radiated power P_t to "
-              "convert to field strength.** The feed amplitude in the .ofd is an "
+              "▸ Loaded: %1 (%2 frequencies). Enter the radiated power P_t to "
+              "convert to field strength. The feed amplitude in the .ofd is an "
               "arbitrary normalised value, so the GUI cannot know the real "
               "radiated power — P_t is required for an absolute level.");
     I18n::reg("emc_pred_ok",
@@ -185,7 +185,7 @@ const bool s_i18n = [] {
     I18n::reg("emc_pred_ground_on", " · グランド反射 +6.0 dB 込み",
               " · includes +6.0 dB ground reflection");
     I18n::reg("emc_pred_caveat",
-              "▸ 適用限界: (1) この換算は**給電のある問題**専用です — "
+              "▸ 適用限界: (1) この換算は「給電のある問題」専用です — "
               "planewave 入射の far1d は RCS 系の量なので使えません。"
               "(2) far1d.log に含まれる切断面の中の最大値であって、全球の最大"
               "放射方向とは限りません (全球が要るなら far2d)。"
