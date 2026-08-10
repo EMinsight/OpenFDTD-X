@@ -32,6 +32,8 @@ public:
 
     void apply();     // widgets → model (入射波 θ/φ/偏波 + スイープ設定)
     void refresh();   // model → widgets
+    // <kernel>.log の "=== cross section ===" を読んで表に出す
+    void refreshRcsResult();
 
     // 実行設定 (エンジン / スレッド数 / カーネル) は MainWindow が持つので
     // 外から与える。未設定なら CPU 既定で走る。
@@ -71,6 +73,8 @@ private:
 
     // RCS
     QCheckBox *m_rcsMono, *m_rcsBi, *m_rcsMatrix;
+    QLabel       *m_rcsResultNote = nullptr;
+    QTableWidget *m_rcsTable = nullptr;
     QComboBox *m_rcsUnit;                   // m² / dBsm / σ/λ²
 
     // NTFF

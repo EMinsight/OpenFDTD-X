@@ -126,6 +126,42 @@ QVector<FarPattern> readFar1d(const QString &path)
     return text.isEmpty() ? QVector<FarPattern>() : parseFar1d(text);
 }
 
+// ── 散乱断面積 (RCS) ────────────────────────────────────────────────────────
+// "=== cross section ===" の見出しの後、見出し行を 1 行挟んで数値行が続く。
+// 数値行は 3 列 (周波数 / 後方 / 前方) で、次の "===" 見出しまでを読む。
+QVector<CrossSectionPoint> parseCrossSection(const QString &text)
+{
+    QVector<CrossSectionPoint> out;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    int i = 0;
+    while (i < lines.size()
+           && !lines[i].contains(QLatin1String("=== cross section ===")))
+        ++i;
+    if (i >= lines.size()) return out;      // 平面波入射の問題ではない
+    ++i;
+    for (; i < lines.size(); ++i) {
+        const QString line = lines[i].trimmed();
+        if (line.isEmpty()) continue;
+        if (line.startsWith(QLatin1String("==="))) break;   // 次の節
+        QVector<double> v;
+        if (!numericRow(line, v)) continue;                 // 見出し行を飛ばす
+        if (v.size() < 3) continue;
+        CrossSectionPoint p;
+        p.freqHz      = v[0];
+        p.backward_m2 = v[1];
+        p.forward_m2  = v[2];
+        out.push_back(p);
+    }
+    return out;
+}
+
+QVector<CrossSectionPoint> readCrossSection(const QString &path)
+{
+    const QString text = readAll(path);
+    return text.isEmpty() ? QVector<CrossSectionPoint>()
+                          : parseCrossSection(text);
+}
+
 // ── 2 次元の場マップ ────────────────────────────────────────────────────────
 namespace {
 

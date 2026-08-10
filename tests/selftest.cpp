@@ -79,6 +79,7 @@
 #include "em/LumpedRlc.h"
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
+#include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
@@ -7928,6 +7929,64 @@ static void testOfdIntegration(const QString &sampleDir)
         g_file = "ofd_integration";
     }
 
+    // ── RCS: カーネルの cross section を読んで Mie 厳密解と比べる ────────
+    // 期待値は**本家 OpenFDTD の検証スクリプト** data/sample/sphere_rcs_check.sh
+    // が使っている完全導体球の Mie 厳密解 (ka = 3.0, a = 0.05 m):
+    //     後方 σ = 4.0901e-03 m²   前方 σ = 8.4797e-02 m²
+    // 球を直交格子で階段近似するので厳密一致はしない。許容も同スクリプトに
+    // 合わせて 0.625〜1.6 倍とする (0 / NaN / 桁違いは確実に落ちる)。
+    // ここで見たいのは「GUI のパーサが実ログから正しい値を取れているか」で、
+    // 桁や単位を取り違えていればこの窓を外れる。
+    {
+        g_file = "rcs_e2e";
+        const QFileInfo cbi(bin);
+        const QString sample =
+            cbi.dir().absoluteFilePath(QStringLiteral("../data/sample/sphere_rcs.ofd"));
+        if (!QFileInfo::exists(sample)) {
+            std::printf("  (rcs e2e skipped: sphere_rcs.ofd not found next to "
+                        "OFDX_OFD_BIN)\n");
+        } else {
+            QTemporaryDir cdir;
+            check(cdir.isValid(), "rcs-e2e: temp dir");
+            check(QFile::copy(sample, cdir.filePath("sphere_rcs.ofd")),
+                  "rcs-e2e: copy the validated sample");
+            QProcess cproc;
+            cproc.setWorkingDirectory(cdir.path());
+            cproc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                               QStringLiteral("sphere_rcs.ofd") });
+            check(cproc.waitForFinished(600000), "rcs-e2e: solver finished");
+            check(cproc.exitCode() == 0, "rcs-e2e: solver exit code 0");
+
+            const QVector<CrossSectionPoint> cs =
+                KernelResultReader::readCrossSection(cdir.filePath("ofd.log"));
+            check(cs.size() == 1,
+                  "rcs-e2e: one frequency point in the cross-section block");
+            if (cs.size() == 1) {
+                const double back = cs[0].backward_m2;
+                const double fwd  = cs[0].forward_m2;
+                const double mieBack = 4.0901e-03;   // Mie 厳密解 [m^2]
+                const double mieFwd  = 8.4797e-02;
+                check(back > 0 && fwd > 0,
+                      "rcs-e2e: both cross sections are positive "
+                      "(a zero here was a real bug in the past)");
+                check(back / mieBack > 0.625 && back / mieBack < 1.6,
+                      "rcs-e2e: the backscatter matches the Mie exact solution "
+                      "within the sample's own tolerance");
+                check(fwd / mieFwd > 0.625 && fwd / mieFwd < 1.6,
+                      "rcs-e2e: the forward scatter matches Mie");
+                // ka = 3.0 の設計。GUI 側の ka 計算がそれを再現すること
+                const double ka = em::sphereKa(0.05, cs[0].freqHz);
+                check(std::fabs(ka - 3.0) < 0.05,
+                      "rcs-e2e: the GUI reproduces the sample's ka = 3.0");
+                // dBsm 換算が m² と整合すること (往復)
+                check(std::fabs(em::rcsFromDbsm(em::rcsDbsm(back)) - back)
+                          < 1e-12 * back,
+                      "rcs-e2e: the dBsm conversion is lossless");
+            }
+        }
+        g_file = "ofd_integration";
+    }
+
     // ── ポスト作図の前提条件を実カーネルと突き合わせる ──────────────────
     // core/PostPrereq は「チェックしても図が出ない項目」を予告する。その予告が
     // **本当にカーネルの挙動と一致するか**をここで確かめる。平面波入射 (給電点
@@ -13368,6 +13427,83 @@ static void testUnwiredNotesHaveSubject()
     check(withSubject == total, "unwired: all notes carry a subject");
 }
 
+// ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
+static void testRadarCrossSection()
+{
+    g_file = "rcs";
+    using namespace ofd::em;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 単位換算。**σ は電力次元なので 10log10** (20log10 ではない)
+    {
+        check(approx(rcsDbsm(1.0), 0.0, 1e-12), "rcs: 1 m^2 is 0 dBsm");
+        check(approx(rcsDbsm(10.0), 10.0, 1e-12), "rcs: 10 m^2 is 10 dBsm");
+        check(approx(rcsDbsm(0.01), -20.0, 1e-12), "rcs: 0.01 m^2 is -20 dBsm");
+        check(std::isinf(rcsDbsm(0.0)) && rcsDbsm(0.0) < 0,
+              "rcs: zero cross-section is -inf dBsm, not a rounded number");
+        check(approx(rcsFromDbsm(rcsDbsm(0.0123)), 0.0123, 1e-15),
+              "rcs: dBsm round-trips");
+        // 2 倍は +3.01 dB (電力次元)。+6.02 になっていたら 20log10 の誤り
+        check(approx(rcsDbsm(2.0) - rcsDbsm(1.0), 3.0102999566, 1e-9),
+              "rcs: doubling sigma is +3.01 dB (10log10, not 20log10)");
+    }
+    // σ/λ² と σ/(πa²)、ka
+    {
+        const double f = 2.99792458e9;                 // λ = 0.1 m ちょうど
+        check(approx(rcsPerWavelengthSq(0.01, f), 1.0, 1e-12),
+              "rcs: 0.01 m^2 at lambda = 0.1 m is 1 lambda^2");
+        check(rcsPerWavelengthSq(0.01, 0.0) == 0.0,
+              "rcs: no frequency means no lambda normalisation");
+        check(approx(sphereGeometricArea(0.05), 3.14159265358979 * 0.0025, 1e-15),
+              "rcs: the geometric area of a sphere is pi a^2");
+        check(approx(rcsPerGeometric(sphereGeometricArea(0.05), 0.05), 1.0, 1e-12),
+              "rcs: sigma = pi a^2 normalises to 1");
+        check(sphereGeometricArea(0.0) == 0.0 && rcsPerGeometric(1.0, 0.0) == 0.0,
+              "rcs: a zero radius has no geometric normalisation");
+        // ka = 2 pi a / lambda。a = 0.05, lambda = 0.1 → pi
+        check(approx(sphereKa(0.05, f), 3.14159265358979, 1e-12),
+              "rcs: ka = 2 pi a / lambda");
+        check(sphereKa(0.0, f) == 0.0 && sphereKa(0.05, 0.0) == 0.0,
+              "rcs: ka needs both a radius and a frequency");
+    }
+    // カーネルの出力書式をそのまま読む (sol/outputCross.c の fprintf)
+    {
+        const QString text = QStringLiteral(
+            "=== impedance matrix ===\n"
+            "  something else\n"
+            "=== cross section ===\n"
+            "  frequency[Hz] backward[m*m]  forward[m*m]\n"
+            "    3.00000e+09    1.2594e-02    1.9587e-01\n"
+            "    4.00000e+09    2.0000e-02    3.0000e-01\n"
+            "=== output files ===\n"
+            "ofd.log, ofd.out\n");
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::parseCrossSection(text);
+        check(cs.size() == 2, "rcs: both frequency rows are read");
+        check(approx(cs[0].freqHz, 3.0e9, 1.0) &&
+              approx(cs[0].backward_m2, 1.2594e-2, 1e-9) &&
+              approx(cs[0].forward_m2, 1.9587e-1, 1e-9),
+              "rcs: the first row is parsed exactly");
+        check(approx(cs[1].backward_m2, 2.0e-2, 1e-12),
+              "rcs: the second row is parsed");
+        // 見出し行は数値行ではないので取り込まれない / 次の === で止まる
+        check(cs.size() == 2,
+              "rcs: the header line is skipped and the next section ends it");
+    }
+    // cross section の無いログ (給電のある問題) では空
+    {
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::parseCrossSection(
+                QStringLiteral("=== input impedance ===\n  1 2 3\n"));
+        check(cs.isEmpty(),
+              "rcs: a log without a cross-section block yields nothing "
+              "(the kernel only writes it for plane-wave problems)");
+    }
+}
+
 // ── ポスト作図の前提条件 (core/PostPrereq) ─────────────────────────────────
 // 期待値は本家 OpenFDTD の post/ のコードそのもの。判定がずれると、出ない図を
 // 「出る」と言うか、出る図を「出ない」と言うことになる。
@@ -14283,6 +14419,7 @@ int main(int argc, char *argv[])
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
+    testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();

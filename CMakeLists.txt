@@ -147,6 +147,11 @@ set(CORE_SOURCES
     src/em/RadiatedEmission.cpp
     src/em/RadiatedEmission.h
 
+    # レーダ断面積 (RCS) の単位換算 (m² / dBsm / λ² / πa²) — Qt 非依存。
+    # ScatteringTab が <kernel>.log の cross section を表示するのに使う
+    src/em/RadarCrossSection.cpp
+    src/em/RadarCrossSection.h
+
     # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
     # Qt 非依存。SolverSelectorTab の数値の計算実体
     src/core/SolverSelection.cpp

@@ -74,6 +74,23 @@ struct FieldMap {
     }
 };
 
+// 散乱断面積 (RCS) の 1 周波数分。平面波入射の問題で `sol/outputChars.c` が
+// `<kernel>.log` へ書く:
+//
+//   === cross section ===
+//     frequency[Hz] backward[m*m]  forward[m*m]
+//       3.00000e+09    1.2594e-02    1.9587e-01
+//
+// **単位は m² の実値**で、給電電力ではなく入射平面波で正規化されている
+// (sol/farfield.c の farfactor が平面波分岐を持つ)。したがってそのまま
+// dBsm へ換算できる。給電のある問題では書かれない
+// (`sol/outputChars.c:37` — IPlanewave && NFreq2 のときだけ)。
+struct CrossSectionPoint {
+    double freqHz = 0.0;
+    double backward_m2 = 0.0;   // 後方散乱 (モノスタティック RCS)
+    double forward_m2 = 0.0;    // 前方散乱
+};
+
 namespace KernelResultReader {
 
 // <kernel>.log から給電点表を読む (見つからなければ空)
@@ -90,6 +107,10 @@ QVector<FieldMap> parseNear2d(const QString &text);
 // <kernel>.log から熱解析の診断行を読む (見つからなければ空)
 QVector<ThermalPoint> readThermal(const QString &logPath);
 QVector<ThermalPoint> parseThermal(const QString &text);
+
+// <kernel>.log の "=== cross section ===" を読む (見つからなければ空)
+QVector<CrossSectionPoint> readCrossSection(const QString &logPath);
+QVector<CrossSectionPoint> parseCrossSection(const QString &text);
 
 // far1d.log から遠方界パターンを読む (見つからなければ空)
 QVector<FarPattern> readFar1d(const QString &path);
