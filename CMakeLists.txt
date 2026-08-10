@@ -149,6 +149,8 @@ set(CORE_SOURCES
 
     # レーダ断面積 (RCS) の単位換算 (m² / dBsm / λ² / πa²) — Qt 非依存。
     # ScatteringTab が <kernel>.log の cross section を表示するのに使う
+    src/em/MieSphere.cpp
+    src/em/MieSphere.h
     src/em/RadarCrossSection.cpp
     src/em/RadarCrossSection.h
 

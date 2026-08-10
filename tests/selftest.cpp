@@ -80,6 +80,7 @@
 #include "em/LumpedRlc.h"
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
+#include "em/MieSphere.h"
 #include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
@@ -8238,6 +8239,21 @@ static void testOfdIntegration(const QString &sampleDir)
                 check(std::fabs(em::rcsFromDbsm(em::rcsDbsm(back)) - back)
                           < 1e-12 * back,
                       "rcs-e2e: the dBsm conversion is lossless");
+                // 散乱/RCS タブが並べて出す Mie 厳密解を、**同じ半径・同じ
+                // 周波数**で計算し直す。上の定数 (本家スクリプトの転記) と
+                // 一致するはずで、ここがずれていれば画面に出る理論値が嘘になる
+                const em::MieSphereRcs m = em::pecSphereRcs(0.05, cs[0].freqHz);
+                check(m.valid, "rcs-e2e: the Mie solution is computed");
+                check(std::fabs(m.backward_m2 / mieBack - 1.0) < 0.03,
+                      "rcs-e2e: our Mie backscatter reproduces the sample's "
+                      "reference at the run's own frequency");
+                check(std::fabs(m.forward_m2 / mieFwd - 1.0) < 0.03,
+                      "rcs-e2e: our Mie forward scatter reproduces it too");
+                // 表に並ぶ 2 つ (計算値と理論値) が同じ許容窓に収まること
+                check(back / m.backward_m2 > 0.625
+                          && back / m.backward_m2 < 1.6,
+                      "rcs-e2e: measured vs displayed theory agree within the "
+                      "staircase tolerance");
             }
         }
         g_file = "ofd_integration";
@@ -14191,6 +14207,62 @@ static void testCourantTimestep()
 }
 
 // ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
+// ── 完全導体球の Mie 厳密解 (em/MieSphere) ─────────────────────────────────
+//
+// 期待値は **2 つともコードの外にある**:
+//   (a) Rayleigh 極限 σ_b/(πa²) → 9·x⁴  (x → 0) — 古典的な解析的漸近形
+//   (b) 本家 OpenFDTD の検証スクリプト data/sample/sphere_rcs_check.sh が
+//       使う ka = 3.0 / a = 0.05 m の値 (後方 4.0901e-03 / 前方 8.4797e-02 m²)
+// (a) は級数の低次項が正しいこと、(b) は共鳴領域まで含めて正しいことを見る。
+// 片方だけでは足りない — (a) は n = 1 項でほぼ決まり、(b) は 9 項ほど効く。
+static void testMieSphere()
+{
+    g_file = "mie";
+    using ofd::em::pecSphereRcs;
+    const double c0 = 2.99792458e8;
+    const double pi = 3.14159265358979323846;
+    // ka を指定して周波数を作る (λ = 2πa/x)
+    auto freqFor = [&](double a, double x) { return c0 * x / (2.0 * pi * a); };
+
+    {   // (b) 本家の検証値と 5 桁一致すること
+        const double a = 0.05;
+        const auto m = pecSphereRcs(a, freqFor(a, 3.0));
+        check(m.valid, "mie: ka = 3 sphere is computed");
+        check(std::fabs(m.ka - 3.0) < 1e-12, "mie: ka comes back as asked");
+        check(std::fabs(m.backward_m2 / 4.0901e-03 - 1.0) < 1e-4,
+              "mie: backscatter matches the upstream reference (4.0901e-03 m2)");
+        check(std::fabs(m.forward_m2 / 8.4797e-02 - 1.0) < 1e-4,
+              "mie: forward scatter matches the upstream reference "
+              "(8.4797e-02 m2)");
+        check(m.terms >= 8,
+              "mie: the series is long enough for the resonance region");
+    }
+    {   // (a) Rayleigh 極限 σ_b/(πa²) → 9·x⁴
+        const double a = 1e-3;
+        for (double x : { 0.01, 0.02, 0.05 }) {
+            const auto m = pecSphereRcs(a, freqFor(a, x));
+            const double norm = m.backward_m2 / (pi * a * a);
+            check(std::fabs(norm / (9.0 * x * x * x * x) - 1.0) < 1e-3,
+                  "mie: the Rayleigh limit is 9*x^4");
+        }
+    }
+    {   // 前方散乱は後方より大きい (ka >~ 1 の領域で前方に集中する)
+        const double a = 0.05;
+        const auto m = pecSphereRcs(a, freqFor(a, 3.0));
+        check(m.forward_m2 > m.backward_m2,
+              "mie: forward scatter dominates at ka = 3");
+        // ka を上げると前方散乱は単調に増える (幾何光学極限へ向かう)
+        const auto m6 = pecSphereRcs(a, freqFor(a, 6.0));
+        check(m6.forward_m2 > m.forward_m2,
+              "mie: forward scatter grows with ka");
+    }
+    {   // 不正な入力は valid = false (0 を返して計算済みに見せない)
+        check(!pecSphereRcs(0.0, 3e9).valid && !pecSphereRcs(-1.0, 3e9).valid
+              && !pecSphereRcs(0.05, 0.0).valid,
+              "mie: a non-positive radius or frequency is not computed");
+    }
+}
+
 static void testRadarCrossSection()
 {
     g_file = "rcs";
@@ -15185,6 +15257,7 @@ int main(int argc, char *argv[])
     testOptimizeFom();
     testCourantTimestep();
     testPostTables();
+    testMieSphere();
     testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();
