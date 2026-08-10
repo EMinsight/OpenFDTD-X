@@ -3,7 +3,10 @@
 
 #include <QFile>
 #include <QRegularExpression>
+#include <QTextStream>
 #include <QStringList>
+
+#include <utility>
 
 namespace ofd {
 namespace KernelResultReader {
@@ -142,38 +145,82 @@ QVector<FarPattern> readFar1d(const QString &path)
 // 先頭の No. 列は捨て、次の数値列を x、残りを y にする。列名の数が
 // データ列と合わないときは "col N" で埋める (カーネルが列を増やしても
 // 落ちないようにする — 名前を勝手に解釈しないのが前提)。
-QVector<PostTable> parsePostTables(const QString &text,
-                                   const QString &sourceFile)
-{
-    QVector<PostTable> out;
-    const QStringList lines = text.split(QLatin1Char('\n'));
+namespace {
 
-    QString prev1, prev2;      // 直近の非数値行 (prev1 が直前)
-    PostTable cur;
-    bool inBlock = false;
-    QVector<QVector<double>> rows;
+// 行を 1 本ずつ食わせる状態機械。**ファイル全体を QString に載せない**ため
+// (大規模データ対策) パースとテキスト分割を分けてある。テキストから読む
+// parsePostTables() とファイルから読む readPostTables() の両方がこれを使う。
+class PostTableParser {
+public:
+    explicit PostTableParser(QString sourceFile) : m_src(std::move(sourceFile)) {}
 
-    auto columnNames = [](const QString &header) {
-        QStringList c = header.split(QRegularExpression("\\s+"),
-                                     Qt::SkipEmptyParts);
-        if (!c.isEmpty()) c.removeFirst();     // 先頭は必ず "No."
-        return c;
-    };
-    auto flush = [&] {
-        if (!inBlock || rows.isEmpty()) { inBlock = false; rows.clear(); return; }
+    void feed(const QString &raw)
+    {
+        const QString line = raw.trimmed();
+        if (line.isEmpty()) { flush(); return; }
+        // 先頭が通し番号の数値行か (2 列以上ないと x/y に分けられない)
+        if (numericRow(line, m_vals) && m_vals.size() >= 2) {
+            if (!m_inBlock) startBlock();
+            ++m_seen;
+            // 上限を超えたら「半分に間引いてストライドを倍にする」を繰り返す。
+            // 残る行は必ず 0, stride, 2*stride, … の等間隔なので、間引いても
+            // 横軸の目盛が歪まない (先頭だけ密になる、といったことがない)。
+            // 何行あったかは m_seen に残り、画面に「N 行中 M 行」と出す
+            if (((m_seen - 1) % m_stride) != 0) return;
+            m_rows.push_back(m_vals);
+            if (m_rows.size() >= kMaxTableRows) {
+                QVector<QVector<double>> half;
+                half.reserve(m_rows.size() / 2 + 1);
+                for (int i = 0; i < m_rows.size(); i += 2)
+                    half.push_back(m_rows[i]);
+                m_rows = half;
+                m_stride *= 2;
+            }
+        } else {
+            flush();
+            m_prev2 = m_prev1;
+            m_prev1 = line;
+        }
+    }
+
+    QVector<PostTable> take() { flush(); return std::move(m_out); }
+
+private:
+    void startBlock()
+    {
+        m_cur = PostTable();
+        m_cur.sourceFile = m_src;
+        QStringList cols = m_prev1.split(QRegularExpression("\\s+"),
+                                         Qt::SkipEmptyParts);
+        if (!cols.isEmpty()) cols.removeFirst();   // 先頭は必ず "No."
+        m_cur.xName  = cols.isEmpty() ? QString() : cols.first();
+        m_cur.yNames = cols.mid(1);                // flush() で横軸を選び直す
+        m_cur.title  = m_prev2;
+        m_inBlock = true;
+        m_rows.clear();
+        m_seen = 0;
+        m_stride = 1;
+    }
+
+    void flush()
+    {
+        if (!m_inBlock) { m_rows.clear(); return; }
+        m_inBlock = false;
+        if (m_rows.isEmpty()) return;
+
         // 行ごとに列数が違う行は捨てる (先頭行の列数を基準にする)
-        const int ncol = rows.first().size();
-        QVector<QVector<double>> col(ncol - 1);      // 列 1..ncol-1 (0 は通し番号)
-        for (const QVector<double> &r : rows) {
+        const int ncol = m_rows.first().size();
+        QVector<QVector<double>> col(ncol - 1);   // 列 1..ncol-1 (0 は通し番号)
+        for (const QVector<double> &r : m_rows) {
             if (r.size() != ncol) continue;
             for (int c = 1; c < ncol; ++c) col[c - 1].push_back(r[c]);
         }
-        if (col.isEmpty() || col.first().isEmpty()) {
-            inBlock = false; rows.clear(); return;
-        }
+        m_rows.clear();
+        if (col.isEmpty() || col.first().isEmpty()) return;
+
         // 列名を実データの本数に合わせてから、値が変化する列を横軸に採る
-        QStringList names = cur.yNames;
-        names.prepend(cur.xName);                    // 一旦 1 本の列名列にする
+        QStringList names = m_cur.yNames;
+        names.prepend(m_cur.xName);               // 一旦 1 本の列名列にする
         while (names.size() > col.size()) names.removeLast();
         for (int i = names.size(); i < col.size(); ++i)
             names << QStringLiteral("col %1").arg(i + 2);
@@ -186,70 +233,69 @@ QVector<PostTable> parsePostTables(const QString &text,
         int xi = -1;
         for (int i = 0; i < col.size(); ++i)
             if (varies(col[i])) { xi = i; break; }
-        if (xi < 0) xi = 0;                          // 全部一定なら先頭を横軸に
+        if (xi < 0) xi = 0;                       // 全部一定なら先頭を横軸に
 
         // 一定列を注記へ回すのは 2 行以上あるときだけ。1 行しかない表
         // (周波数 1 点の far0d.log など) では全列が「一定」に見えるので、
         // 退避すると系列が 1 本も残らず表ごと消える
         const bool manyRows = (col.first().size() >= 2);
 
-        cur.xName = names[xi];
-        cur.x     = col[xi];
-        cur.yNames.clear();
-        cur.y.clear();
+        m_cur.xName = names[xi];
+        m_cur.x     = col[xi];
+        m_cur.yNames.clear();
+        m_cur.y.clear();
         QStringList fixedParts;
         for (int i = 0; i < col.size(); ++i) {
             if (i == xi) continue;
-            if (manyRows && !varies(col[i])) {  // 一定列は系列にせず注記へ回す
+            if (manyRows && !varies(col[i])) {   // 一定列は系列にせず注記へ回す
                 fixedParts << QStringLiteral("%1=%2")
                                   .arg(names[i])
                                   .arg(col[i].first(), 0, 'g', 4);
                 continue;
             }
-            cur.yNames << names[i];
-            cur.y << col[i];
+            m_cur.yNames << names[i];
+            m_cur.y << col[i];
         }
-        cur.fixed = fixedParts.join(QStringLiteral(", "));
-        if (cur.isValid()) out.push_back(cur);
-        inBlock = false;
-        rows.clear();
-    };
-
-    QVector<double> vals;
-    for (const QString &raw : lines) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty()) { flush(); continue; }
-        // 先頭が通し番号の数値行か (2 列以上ないと x/y に分けられない)
-        const bool data = numericRow(line, vals) && vals.size() >= 2;
-        if (data) {
-            if (!inBlock) {
-                cur = PostTable();
-                cur.sourceFile = sourceFile;
-                const QStringList cols = columnNames(prev1);
-                cur.xName  = cols.isEmpty() ? QString() : cols.first();
-                cur.yNames = cols.mid(1);   // flush() で横軸を選び直す
-                cur.title  = prev2.trimmed();
-                inBlock = true;
-                rows.clear();
-            }
-            rows.push_back(vals);
-        } else {
-            flush();
-            prev2 = prev1;
-            prev1 = line;
-        }
+        m_cur.fixed = fixedParts.join(QStringLiteral(", "));
+        m_cur.totalRows = m_seen;
+        if (m_cur.isValid()) m_out.push_back(m_cur);
     }
-    flush();
-    return out;
+
+    QString m_src;
+    QString m_prev1, m_prev2;      // 直近の非数値行 (m_prev1 が直前)
+    PostTable m_cur;
+    bool m_inBlock = false;
+    QVector<QVector<double>> m_rows;
+    QVector<double> m_vals;
+    QVector<PostTable> m_out;
+    int m_seen = 0;      // このブロックで見た行数 (間引き前)
+    int m_stride = 1;    // 現在の間引き間隔
+};
+
+} // namespace
+
+QVector<PostTable> parsePostTables(const QString &text,
+                                   const QString &sourceFile)
+{
+    PostTableParser parser(sourceFile);
+    for (const QString &line : text.split(QLatin1Char('\n'))) parser.feed(line);
+    return parser.take();
 }
 
+// ファイルは **1 行ずつ** 読む。ポスト出力は問題規模と反復回数に比例して
+// 大きくなる (実測: 30x30x31 セルの dipole でも near2d.log が 117 KB) ので、
+// 全体を QString に載せると規模を上げたときに素直に破綻する。
 QVector<PostTable> readPostTables(const QString &path)
 {
-    const QString text = readAll(path);
-    if (text.isEmpty()) return QVector<PostTable>();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QVector<PostTable>();
     const int slash = qMax(path.lastIndexOf(QLatin1Char('/')),
                            path.lastIndexOf(QLatin1Char('\\')));
-    return parsePostTables(text, path.mid(slash + 1));
+    PostTableParser parser(path.mid(slash + 1));
+    QTextStream in(&f);
+    while (!in.atEnd()) parser.feed(in.readLine());
+    return parser.take();
 }
 
 // ── 散乱断面積 (RCS) ────────────────────────────────────────────────────────

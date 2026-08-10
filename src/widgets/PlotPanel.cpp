@@ -38,6 +38,9 @@ const bool s_i18n = [] {
         "No post-processing tables yet (enable items on Post-Proc (1)/(2) and "
         "run to produce feed.log / point.log / far0d.log / near1d.log)");
     ofd::I18n::reg("ppb_post_logy", "対数 Y 軸", "Log Y axis");
+    ofd::I18n::reg("pp_post_decimated",
+                   "※ %1 行を %2 点へ等間隔に間引いて読み込みました",
+                   "* decimated on load: %1 rows -> %2 points (uniform)");
     ofd::I18n::reg("pp_post_title", "ポスト処理の表 (%1)",
                    "Post-processing table (%1)");
     ofd::I18n::reg("pp_post_hint",
@@ -707,18 +710,40 @@ void PlotPanel::paintPostTable(QPainter &p, const QRectF &plot)
         }
         if (hi <= lo) hi = lo + 1.0;
 
-        QPainterPath path;
-        for (int i = 0; i < col.size(); ++i) {
-            const double x = plot.left()
-                + plot.width() * (t.x[i] - xmin) / (xmax - xmin);
-            const double w = lg ? std::log10(col[i]) : col[i];
-            const double y = plot.bottom()
-                - plot.height() * (w - lo) / (hi - lo) * 0.92;
-            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
-        }
         const QColor cc = colors[c % 6];
         p.setPen(QPen(cc, 2));
-        p.drawPath(path);
+        auto toY = [&](double v) {
+            const double w = lg ? std::log10(v) : v;
+            return plot.bottom() - plot.height() * (w - lo) / (hi - lo) * 0.92;
+        };
+        if (col.size() > int(plot.width())) {
+            // 点数が横方向の画素数より多い: 1 画素ごとの最小/最大を縦線で描く。
+            // 単純に間引くと振動波形の山谷が消えて「小さくなった」ように
+            // 見えるので、包絡線として正しく残す
+            const int px = qMax(1, int(plot.width()));
+            int i = 0;
+            for (int b = 0; b < px; ++b) {
+                const int end = int(qint64(col.size()) * (b + 1) / px);
+                if (end <= i) continue;
+                double vlo = col[i], vhi = col[i];
+                for (int k = i; k < end; ++k) {
+                    vlo = std::min(vlo, col[k]);
+                    vhi = std::max(vhi, col[k]);
+                }
+                const double x = plot.left() + plot.width() * b / double(px);
+                p.drawLine(QPointF(x, toY(vlo)), QPointF(x, toY(vhi)));
+                i = end;
+            }
+        } else {
+            QPainterPath path;
+            for (int i = 0; i < col.size(); ++i) {
+                const double x = plot.left()
+                    + plot.width() * (t.x[i] - xmin) / (xmax - xmin);
+                if (i == 0) path.moveTo(x, toY(col[i]));
+                else        path.lineTo(x, toY(col[i]));
+            }
+            p.drawPath(path);
+        }
         p.drawText(QPointF(plot.right() - 250, legendY),
                    QStringLiteral("%1: %2 … %3%4")
                        .arg(t.yNames.value(c))
@@ -731,12 +756,16 @@ void PlotPanel::paintPostTable(QPainter &p, const QRectF &plot)
     }
 
     p.setPen(palette().text().color());
-    p.drawText(QPointF(plot.left(), plot.bottom() + 16),
-        QStringLiteral("%1: %2 … %3   (%4 点)")
-            .arg(t.xName,
-                 QString::number(xmin, 'g', 4),
-                 QString::number(xmax, 'g', 4))
-            .arg(t.x.size()));
+    QString axis = QStringLiteral("%1: %2 … %3   (%4 点)")
+                       .arg(t.xName,
+                            QString::number(xmin, 'g', 4),
+                            QString::number(xmax, 'g', 4))
+                       .arg(t.x.size());
+    // 読み込み時に間引いたなら黙って隠さない (元の行数を必ず出す)
+    if (t.decimated())
+        axis += QStringLiteral("  ") + I18n::tr("pp_post_decimated")
+                                           .arg(t.totalRows).arg(t.x.size());
+    p.drawText(QPointF(plot.left(), plot.bottom() + 16), axis);
     p.drawText(QPointF(plot.left(), plot.bottom() + 32),
                I18n::tr("pp_post_hint"));
 }

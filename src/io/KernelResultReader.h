@@ -116,6 +116,10 @@ struct PostTable {
     QString     fixed;         // 表の中で値が変わらなかった列 ("X[m]=0.000 …")
     QVector<double>          x;
     QVector<QVector<double>> y;   // yNames と同じ本数、各要素は x と同じ長さ
+    // 元の行数。間引いた場合だけ x.size() より大きくなる (下記 kMaxTableRows)。
+    // 画面に「N 行中 M 行」と出すためのもの — 黙って切り捨てない。
+    int totalRows = 0;
+    bool decimated() const { return totalRows > x.size(); }
 
     bool isValid() const
     {
@@ -128,6 +132,11 @@ struct PostTable {
 };
 
 namespace KernelResultReader {
+
+// 1 ブロックあたりに保持する最大行数 (大規模データ対策)。
+// 実際の反復回数は普通これより桁で小さいので通常は効かないが、効いたときは
+// `PostTable::totalRows` に元の行数が残り、画面に間引きを明示する。
+constexpr int kMaxTableRows = 200000;
 
 // <kernel>.log から給電点表を読む (見つからなければ空)
 QVector<FeedSweep> readFeedSweeps(const QString &logPath);

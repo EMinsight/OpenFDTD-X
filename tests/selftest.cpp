@@ -13765,6 +13765,77 @@ static void testPostTables()
             check(t.first().yNames[1].startsWith("col"),
                   "post: the generated name is visibly generated");
     }
+    {   // 大規模データ: 行数の上限を超えたら等間隔で間引き、元の行数を残す。
+        //   間引きは「半分にしてストライドを倍」の繰り返しなので、残る行は
+        //   必ず 0, s, 2s, … の等間隔。先頭だけ密になるようなことは無い
+        QString big = QStringLiteral("big\n No.  t   v\n");
+        const int n = ofd::KernelResultReader::kMaxTableRows + 5000;
+        big.reserve(n * 24);
+        for (int i = 0; i < n; ++i)
+            big += QStringLiteral("%1 %2 %3\n").arg(i).arg(i).arg(2 * i);
+        const QVector<PostTable> t = parsePostTables(big, "big.log");
+        check(t.size() == 1, "post: an oversized table still yields a block");
+        if (t.size() == 1) {
+            const PostTable &b = t.first();
+            check(b.totalRows == n, "post: the original row count is kept");
+            check(b.x.size() <= ofd::KernelResultReader::kMaxTableRows,
+                  "post: the kept rows respect the cap");
+            check(b.decimated(), "post: the table reports that it was thinned");
+            // 等間隔であること: x は 0, s, 2s, … (t 列 = 行番号なので直接見える)
+            check(b.x.size() >= 2, "post: enough rows survive to check spacing");
+            if (b.x.size() >= 3) {
+                const double s0 = b.x[1] - b.x[0];
+                bool uniform = true;
+                for (int i = 2; i < b.x.size(); ++i)
+                    if (b.x[i] - b.x[i - 1] != s0) { uniform = false; break; }
+                check(uniform, "post: the surviving rows are evenly spaced");
+            }
+            // 値の対応がずれていない (v = 2t)
+            bool paired = true;
+            for (int i = 0; i < b.x.size(); ++i)
+                if (b.y[0][i] != 2.0 * b.x[i]) { paired = false; break; }
+            check(paired, "post: thinning keeps x and y on the same row");
+        }
+    }
+    {   // ファイル経路 (readPostTables) は 1 行ずつ読む別実装なので、
+        //   テキスト経路と同じ結果になることを直接確かめる
+        QTemporaryDir dir;
+        check(dir.isValid(), "post: temp dir");
+        const QString text = QString::fromLatin1(
+            "feed #1 (waveform)\n"
+            "    No.    time[sec]      V[V]\n"
+            "      0   0.00000e+00   1.00000e+00\n"
+            "      1   1.00000e-12   2.00000e+00\n");
+        QFile f(dir.filePath("feed.log"));
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "post: write");
+        f.write(text.toUtf8());
+        f.close();
+        const QVector<PostTable> fromFile =
+            ofd::KernelResultReader::readPostTables(f.fileName());
+        const QVector<PostTable> fromText = parsePostTables(text, "feed.log");
+        check(fromFile.size() == 1 && fromText.size() == 1,
+              "post: both paths find the block");
+        if (fromFile.size() == 1 && fromText.size() == 1) {
+            check(fromFile[0].sourceFile == QLatin1String("feed.log"),
+                  "post: the file path is reduced to its basename");
+            check(fromFile[0].xName == fromText[0].xName
+                  && fromFile[0].x == fromText[0].x
+                  && fromFile[0].y == fromText[0].y,
+                  "post: the streaming reader matches the text parser");
+        }
+        // 存在しないファイルは空 (前の実行の残骸を出さない)
+        check(ofd::KernelResultReader::readPostTables(
+                  dir.filePath("nope.log")).isEmpty(),
+              "post: a missing file yields nothing");
+    }
+    {   // 上限以下なら間引かない (decimated() が誤検知しない)
+        const QString text = QString::fromLatin1(
+            "b\n No. t v\n 0 0 1\n 1 1 2\n 2 2 3\n");
+        const QVector<PostTable> t = parsePostTables(text, "s.log");
+        check(t.size() == 1 && !t.first().decimated()
+              && t.first().totalRows == 3,
+              "post: a small table is not reported as thinned");
+    }
     {   // 表が無いテキスト・空テキストは空を返す (残骸を表示しない)
         check(parsePostTables(QStringLiteral("no tables here\n"), "x").isEmpty(),
               "post: text without a numeric table yields nothing");
