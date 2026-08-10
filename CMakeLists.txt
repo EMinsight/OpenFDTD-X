@@ -59,6 +59,10 @@ set(CORE_SOURCES
     src/core/Source.h
     src/core/MeshAxis.h
     src/core/PostOpts.h
+    # ポスト作図の前提条件 (給電点/観測点/frequency1・2 の有無) — Qt Core のみ。
+    # 出典は本家 post/ のコード。チェックしても図が出ない項目を UI で言うため
+    src/core/PostPrereq.cpp
+    src/core/PostPrereq.h
     src/core/GlassCatalog.cpp
     src/core/GlassCatalog.h
     src/core/RoomAcoustics.cpp

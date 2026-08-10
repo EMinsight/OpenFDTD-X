@@ -109,5 +109,13 @@ QLabel *unwiredNote(QWidget *parent);
 QLabel *unwiredNote(QWidget *parent, const QString &what,
                     const QString &wired = QString());
 
+// ── ポスト作図の前提条件 (core/PostPrereq) ──────────────────────────────────
+// チェックが入っていても、カーネル側の前提 (給電点 / 観測点 / frequency1・2 /
+// 対象行) を満たさなければ `ofd_post` は図を 1 枚も出さない。**チェックを
+// 受け付けて黙っているのが一番わかりにくい**ので、出ない項目とその理由を
+// タブの先頭に出す。空文字列 = 全部出る。
+//   group 0 = ポスト(1) の項目、group 1 = ポスト(2) の項目
+QString postPrereqWarning(const Project &p, int group);
+
 } // namespace tabhelp
 } // namespace ofd

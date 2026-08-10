@@ -21,6 +21,7 @@
 // 外部音響ソルバー起動前の入力点検 (室外の音源など)
 #include "core/AcousticPreflight.h"
 #include "core/Project.h"
+#include "core/PostPrereq.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
@@ -7927,6 +7928,76 @@ static void testOfdIntegration(const QString &sampleDir)
         g_file = "ofd_integration";
     }
 
+    // ── ポスト作図の前提条件を実カーネルと突き合わせる ──────────────────
+    // core/PostPrereq は「チェックしても図が出ない項目」を予告する。その予告が
+    // **本当にカーネルの挙動と一致するか**をここで確かめる。平面波入射 (給電点
+    // も観測点も無い) の問題に給電点系 8 項目 + 収束状況を全部チェックして
+    // 走らせ、ev.ev2 のページが **収束状況の 1 枚だけ** になることを見る。
+    // ここがずれたら、出ない図を「出る」と言っていることになる。
+    {
+        g_file = "post_prereq_e2e";
+        Project rp;
+        check(templates::apply(rp, "em", "em_rcs"), "prereq-e2e: apply em_rcs");
+        rp.general().maxiter = 200;          // 短く回す (判定は枚数だけ)
+        rp.post() = PostOpts{};              // 作図指定を一度空にする
+        rp.post().plotiter  = true;
+        rp.post().plotfeed  = true;
+        rp.post().plotpoint = true;
+        rp.post().plotsmith = true;
+        rp.post().zin.enabled = rp.post().yin.enabled = true;
+        rp.post().ref.enabled = rp.post().spara.enabled = true;
+        rp.post().coupling.enabled = true;
+
+        // 予告: 給電点も観測点も無いので 8 項目が出ない
+        const PostInputs pin = postInputsOf(rp);
+        check(pin.feeds == 0 && pin.probes == 0,
+              "prereq-e2e: the RCS template has neither a feed nor a point");
+        int predicted = 0;
+        for (PostItem it : { PostItem::Feed, PostItem::Point, PostItem::Smith,
+                             PostItem::Zin, PostItem::Yin, PostItem::Ref,
+                             PostItem::Spara, PostItem::Coupling })
+            if (!postWillPlot(it, pin)) ++predicted;
+        check(predicted == 8, "prereq-e2e: 8 of the 9 checks are predicted "
+                              "to produce nothing");
+        check(postWillPlot(PostItem::Iter, pin),
+              "prereq-e2e: only the convergence plot is predicted to appear");
+
+        QTemporaryDir rdir;
+        check(rdir.isValid(), "prereq-e2e: temp dir");
+        QString rerr;
+        check(rp.save(rdir.filePath("rcs.ofd"), &rerr), "prereq-e2e: save");
+        QProcess rproc;
+        rproc.setWorkingDirectory(rdir.path());
+        rproc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                           QStringLiteral("rcs.ofd") });
+        check(rproc.waitForFinished(300000), "prereq-e2e: solver finished");
+        check(rproc.exitCode() == 0, "prereq-e2e: solver exit code 0");
+
+        const QFileInfo rbi(bin);
+        QString rpost = rbi.dir().filePath(QStringLiteral("ofd_post"));
+#ifdef Q_OS_WIN
+        if (!QFileInfo::exists(rpost)) rpost += QStringLiteral(".exe");
+#endif
+        if (!QFileInfo::exists(rpost)) {
+            std::printf("  (post prereq e2e skipped: ofd_post not found)\n");
+        } else {
+            QProcess pproc;
+            pproc.setWorkingDirectory(rdir.path());
+            pproc.start(rpost, { QStringLiteral("-n"), QStringLiteral("2"),
+                                 QStringLiteral("rcs.ofd") });
+            check(pproc.waitForFinished(300000), "prereq-e2e: post finished");
+            check(pproc.exitCode() == 0, "prereq-e2e: post exit code 0");
+            EvDocument ev;
+            QString everr;
+            check(EvReader::load(rdir.filePath("ev.ev2"), ev, &everr),
+                  "prereq-e2e: ev.ev2 is readable");
+            check(ev.pages.size() == 1,
+                  "prereq-e2e: the kernel really draws exactly one page — "
+                  "the 8 feed/point plots produce nothing, as predicted");
+        }
+        g_file = "ofd_integration";
+    }
+
     // テンプレート E2E: ギャラリーの EM テンプレートが生成する .ofd を
     // 実カーネルがそのまま解けること (テンプレートの「実シチュエーション」保証)
     {
@@ -13297,6 +13368,154 @@ static void testUnwiredNotesHaveSubject()
     check(withSubject == total, "unwired: all notes carry a subject");
 }
 
+// ── ポスト作図の前提条件 (core/PostPrereq) ─────────────────────────────────
+// 期待値は本家 OpenFDTD の post/ のコードそのもの。判定がずれると、出ない図を
+// 「出る」と言うか、出る図を「出ない」と言うことになる。
+//   post/post.c:21    plotiter  → 無条件
+//   post/plot2dFeed.c:14  plotfeed  → NFeed  > 0
+//   post/plot2dPoint.c:14 plotpoint → NPoint > 0
+//   post/plot2dFreq.c:29/36/43/50  smith/zin/yin/ref → NFeed  > 0
+//   post/plot2dFreq.c:57           spara            → **NPoint** > 0
+//   post/plot2dFreq.c:64           coupling         → NFeed かつ NPoint
+//   post/post.c:33    周波数特性は NFreq1 > 0 のときだけ
+//   post/post.c:37    遠方界・近傍界は NFreq2 > 0 のときだけ
+static void testPostPrereq()
+{
+    g_file = "post-prereq";
+
+    PostInputs full;                 // 給電点も観測点も両周波数もある
+    full.feeds = 1; full.probes = 1;
+    full.freq1Points = 21; full.freq2Points = 1;
+    full.far1dCount = 1; full.near1dCount = 1; full.near2dCount = 1;
+    full.far0d = true; full.far2d = true;
+
+    const PostItem all[] = {
+        PostItem::Iter, PostItem::Feed, PostItem::Point, PostItem::Smith,
+        PostItem::Zin, PostItem::Yin, PostItem::Ref, PostItem::Spara,
+        PostItem::Coupling, PostItem::Far0d, PostItem::Far1d, PostItem::Far2d,
+        PostItem::Near1d, PostItem::Near2d };
+    for (PostItem it : all)
+        check(postWillPlot(it, full),
+              "prereq: everything plots when feeds, points and both frequency "
+              "lists are present");
+
+    // ── 平面波入射 (RCS) — 給電点も観測点も無い ─────────────────────────
+    // 画面から報告された状況そのもの: 9 個チェックしても収束状況しか出ない。
+    {
+        PostInputs rcs;
+        rcs.feeds = 0; rcs.probes = 0;
+        rcs.freq1Points = 21; rcs.freq2Points = 1;
+        rcs.far1dCount = 1; rcs.far0d = true; rcs.far2d = true;
+        rcs.near1dCount = 1; rcs.near2dCount = 1;
+
+        check(postWillPlot(PostItem::Iter, rcs),
+              "prereq: convergence plots even without a feed");
+        check(postBlocker(PostItem::Feed, rcs) == PostBlocker::NoFeed,
+              "prereq: the feed waveform needs a feed");
+        check(postBlocker(PostItem::Point, rcs) == PostBlocker::NoPoint,
+              "prereq: the probe waveform needs an observation point");
+        for (PostItem it : { PostItem::Smith, PostItem::Zin, PostItem::Yin,
+                             PostItem::Ref })
+            check(postBlocker(it, rcs) == PostBlocker::NoFeed,
+                  "prereq: Smith / Zin / Yin / reflection all need a feed");
+        check(postBlocker(PostItem::Spara, rcs) == PostBlocker::NoPoint,
+              "prereq: S-parameters need an observation point, not a feed "
+              "(post/plot2dFreq.c:57)");
+        check(postBlocker(PostItem::Coupling, rcs)
+                  == PostBlocker::NoFeedAndPoint,
+              "prereq: coupling needs both, and says so when both are missing");
+        // 遠方界・近傍界は給電点が無くても出る (平面波入射の RCS がまさにそれ)
+        for (PostItem it : { PostItem::Far0d, PostItem::Far1d, PostItem::Far2d,
+                             PostItem::Near1d, PostItem::Near2d })
+            check(postWillPlot(it, rcs),
+                  "prereq: far/near fields plot for a plane-wave problem");
+    }
+
+    // ── S パラメータと結合係数の非対称性 ────────────────────────────────
+    // spara は観測点だけ、coupling は両方。ここを取り違えやすい。
+    {
+        PostInputs feedOnly = full;
+        feedOnly.probes = 0;
+        check(postBlocker(PostItem::Spara, feedOnly) == PostBlocker::NoPoint,
+              "prereq: a feed alone is not enough for S-parameters");
+        check(postBlocker(PostItem::Coupling, feedOnly) == PostBlocker::NoPoint,
+              "prereq: a feed alone is not enough for coupling");
+        check(postWillPlot(PostItem::Zin, feedOnly),
+              "prereq: a feed alone is enough for Zin");
+
+        PostInputs pointOnly = full;
+        pointOnly.feeds = 0;
+        check(postWillPlot(PostItem::Spara, pointOnly),
+              "prereq: an observation point alone is enough for S-parameters");
+        check(postBlocker(PostItem::Coupling, pointOnly) == PostBlocker::NoFeed,
+              "prereq: coupling still needs the feed");
+    }
+
+    // ── frequency1 / frequency2 が無いとき ──────────────────────────────
+    {
+        PostInputs noF1 = full;
+        noF1.freq1Points = 0;
+        for (PostItem it : { PostItem::Smith, PostItem::Zin, PostItem::Yin,
+                             PostItem::Ref, PostItem::Spara,
+                             PostItem::Coupling })
+            check(postBlocker(it, noF1) == PostBlocker::NoFreq1,
+                  "prereq: the frequency plots need frequency1");
+        check(postWillPlot(PostItem::Far1d, noF1),
+              "prereq: frequency1 does not gate the far field");
+
+        PostInputs noF2 = full;
+        noF2.freq2Points = 0;
+        for (PostItem it : { PostItem::Far0d, PostItem::Far1d, PostItem::Far2d,
+                             PostItem::Near1d, PostItem::Near2d })
+            check(postBlocker(it, noF2) == PostBlocker::NoFreq2,
+                  "prereq: far and near fields need frequency2");
+        check(postWillPlot(PostItem::Zin, noF2),
+              "prereq: frequency2 does not gate Zin");
+    }
+
+    // ── 行が 1 つも無いとき (far1d / near1d / near2d) ───────────────────
+    {
+        PostInputs empty = full;
+        empty.far1dCount = 0; empty.near1dCount = 0; empty.near2dCount = 0;
+        empty.far0d = false; empty.far2d = false;
+        for (PostItem it : { PostItem::Far0d, PostItem::Far1d, PostItem::Far2d,
+                             PostItem::Near1d, PostItem::Near2d })
+            check(postBlocker(it, empty) == PostBlocker::NoEntry,
+                  "prereq: an empty entry list blocks that plot");
+    }
+
+    // ── Project からの数量取り出し ──────────────────────────────────────
+    {
+        Project p;
+        p.feeds().clear();
+        p.probes().clear();
+        p.general().hasF1 = true;  p.general().f1div = 20;
+        p.general().hasF2 = false;
+        PostInputs in = postInputsOf(p);
+        check(in.feeds == 0 && in.probes == 0,
+              "prereq: an empty project has no feed and no point");
+        check(in.freq1Points == 21,
+              "prereq: frequency1 point count is div + 1 "
+              "(OpenFDTD sol/input_data.c:420)");
+        check(in.freq2Points == 0,
+              "prereq: a missing frequency2 key means zero points");
+
+        Feed f;
+        p.feeds().push_back(f);
+        Probe pr;
+        p.probes().push_back(pr);
+        p.general().hasF2 = true; p.general().f2div = 0;
+        in = postInputsOf(p);
+        check(in.feeds == 1 && in.probes == 1,
+              "prereq: the counts follow the project");
+        check(in.freq2Points == 1,
+              "prereq: frequency2 with div = 0 is a single point");
+        check(postWillPlot(PostItem::Zin, in) &&
+              postWillPlot(PostItem::Spara, in),
+              "prereq: one feed and one point unblock Zin and S-parameters");
+    }
+}
+
 // ── UI 文字列に markdown を書かない ─────────────────────────────────────────
 // `QLabel` の既定 (Qt::AutoText) は **HTML** を検出するが markdown は解釈しない
 // ので、`**強調**` と書くとアスタリスクがそのまま画面に出る (実際に出ていた)。
@@ -14064,6 +14283,7 @@ int main(int argc, char *argv[])
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
+    testPostPrereq();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();
     testNavCategories();
