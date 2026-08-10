@@ -4,8 +4,13 @@
 // セル数/メモリは Project の実メッシュから、Δt/ステップ数は CFL 係数 ×
 // Project::courantDt() から実推定を表示。面別 BC 表は abc/pbc 設定からの導出表示。
 // PML 層数のみ GeneralOpts::pmlL に永続化、その他はローカル状態。
+//
+// シミュレーション時間の節だけは「計算へ反映する」チェックで .ofd の
+// `timestep` / `solver` へ書き込める (applyTime)。既定は OFF で、OFF の間は
+// GeneralOpts に一切触らない = 出力バイト列は従来どおり (絶対規則 2)。
 #pragma once
 #include <QScrollArea>
+#include <QString>
 
 class QCheckBox;
 class QComboBox;
@@ -32,6 +37,7 @@ private slots:
 
 private:
     void apply();
+    void applyTime();           // Δt/反復回数/収束条件 → GeneralOpts (チェック時のみ)
     void updateMeshDerived();   // メッシュ精度 → 精度ヒント/目標解像度表示
     void updateDomainDeps();    // ドメイン → 基準波長・周波数表示/時間単位/項目の出し分け
     void updateEstimates();     // Project → セル数/メモリ/Δt/ステップ数/面別 BC 表
@@ -66,6 +72,8 @@ private:
     QLineEdit *m_shutoffLevel;
     QLineEdit *m_cfl;
     QLabel    *m_dtVal, *m_dtSteps, *m_stable;  // Δt / ステップ数 / 安定バッジ
+    QCheckBox *m_applyTime;     // ON = この節を .ofd (timestep/solver) へ書く
+    QString    m_cflShown;      // refresh() が表示した CFL 文字列 (編集検出用)
 
     // 境界条件 / Boundary conditions
     QTableWidget *m_bcTable;

@@ -147,6 +147,11 @@ set(CORE_SOURCES
     src/em/RadiatedEmission.cpp
     src/em/RadiatedEmission.h
 
+    # レーダ断面積 (RCS) の単位換算 (m² / dBsm / λ² / πa²) — Qt 非依存。
+    # ScatteringTab が <kernel>.log の cross section を表示するのに使う
+    src/em/RadarCrossSection.cpp
+    src/em/RadarCrossSection.h
+
     # ソルバ選定の目安 (電気サイズ / 分解能 / Schroeder 周波数 / Thorp 吸収) —
     # Qt 非依存。SolverSelectorTab の数値の計算実体
     src/core/SolverSelection.cpp
@@ -232,6 +237,11 @@ set(CORE_SOURCES
     # スイープは GUI 側の役目 — selftest が plan/collect を直接検証する
     src/kernel/SweepRunner.cpp
     src/kernel/SweepRunner.h
+
+    # 掃引結果 → 目的関数 (FoM) の評価と最良点の選択。最適化タブの「掃引」の
+    # 判断部分で、最大化/最小化の向きもここに集約する (呼び出し側に書かない)
+    src/kernel/OptimizeFom.cpp
+    src/kernel/OptimizeFom.h
 
     # 光導波路の断面固有モード (FDE) ソルバ — Qt 非依存。
     # selftest から解析解 (スラブ導波路の厳密解) と直接突き合わせる

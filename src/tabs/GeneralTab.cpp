@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -255,6 +256,18 @@ GeneralTab::GeneralTab(Project *project, QWidget *parent)
             [this] { updateDomainVisibility(); });
 
     connect(project, &Project::loaded, this, &GeneralTab::refresh);
+    // 同じ GeneralOpts を他タブ (ソルバ領域タブの Δt / 反復回数 / 収束条件、
+    // PML 層数) も書くので、その変更を取り込む。取り込まないとこのタブの
+    // 欄が古いまま残り、次にここを 1 箇所いじった瞬間に apply() が全項目を
+    // 古い値で上書きしてしまう。
+    // ただし**このタブの入力欄にフォーカスがあるあいだは上書きしない** —
+    // 入力中の文字列が書式化されて化ける。
+    connect(project, &Project::changed, this, [this] {
+        if (m_updating) return;
+        QWidget *f = QApplication::focusWidget();
+        if (f && (f == this || isAncestorOf(f))) return;
+        refresh();
+    });
     refresh();
     updateDomainVisibility();
 }

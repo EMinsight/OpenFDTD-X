@@ -4,9 +4,13 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
+#include "../io/KernelResultReader.h"
+#include "../em/RadarCrossSection.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <cmath>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -120,6 +124,32 @@ const bool s_i18n = [] {
               "Extinction cross-section σ_ext (optical scattering)");
     I18n::reg("sct_m_mie", "効率係数 Q_sca, Q_abs (Mie)",
               "Efficiency factors Q_sca, Q_abs (Mie)");
+    I18n::reg("sct_uw_rcs_ok",
+              "単位 (m² / dBsm / σ/λ²) の選択 — 下の実行結果の表に効きます",
+              "the unit selection (m2 / dBsm / sigma over lambda^2), which "
+              "applies to the result table below");
+    I18n::reg("sct_res_freq", "周波数", "Frequency");
+    I18n::reg("sct_res_back", "後方散乱 (モノスタティック)",
+              "Backscatter (monostatic)");
+    I18n::reg("sct_res_fwd",  "前方散乱", "Forward scatter");
+    I18n::reg("sct_res_ka",   "電気サイズ ka", "Electrical size ka");
+    I18n::reg("sct_res_none",
+              "▸ 実行結果の RCS はまだありません。平面波入射 (planewave) と "
+              "frequency2 のあるプロジェクトを計算すると、カーネルが "
+              "<kernel>.log へ後方 / 前方散乱断面積を書き、ここに出ます。",
+              "▸ No computed RCS yet. Run a project that has a plane wave and "
+              "frequency2 — the kernel writes the backward / forward cross "
+              "sections to <kernel>.log and they appear here.");
+    I18n::reg("sct_res_ok",
+              "▸ %1 の「=== cross section ===」から %2 周波数。値はカーネルが"
+              "出した m² の実値で、ここでは単位を換算しているだけです。"
+              "ka は形状の最大半寸法 %3 m から求めています "
+              "(球ならこれが半径そのもの。球以外では代表寸法の目安)。",
+              "▸ %2 frequency point(s) from the “=== cross section ===” block "
+              "of %1. The values are the kernel's own m² results; only the "
+              "unit is converted here. ka uses the largest half-extent "
+              "%3 m of the geometry (the radius itself for a sphere; only "
+              "indicative for other shapes).");
     I18n::reg("sct_uw_rcs", "RCS の出力形式 (モノ / バイ・単位・散乱行列) の選択",
               "the RCS output options (monostatic / bistatic, unit, scattering matrix)");
     I18n::reg("sct_uw_ntff", "近傍界→遠方界変換の設定 (抽出面・広角オプション)",
@@ -256,7 +286,29 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sRcs->form()->addRow(I18n::tr("sct_unit"), m_rcsUnit);
     m_rcsMatrix = new QCheckBox(I18n::tr("sct_rcs_matrix"), sRcs);
     sRcs->form()->addRow(m_rcsMatrix);
-    sRcs->form()->addRow(tabhelp::unwiredNote(sRcs, I18n::tr("sct_uw_rcs")));
+    sRcs->form()->addRow(
+        tabhelp::unwiredNote(sRcs, I18n::tr("sct_uw_rcs"),
+                             I18n::tr("sct_uw_rcs_ok")));
+
+    // ── 実行結果の RCS (<kernel>.log の "=== cross section ===") ─────────
+    // カーネルは平面波入射の問題について後方 / 前方散乱断面積を **m² の実値**
+    // で書く (sol/outputChars.c:37 — IPlanewave && NFreq2 のときだけ)。
+    // ここはそれを読んで単位を換算するだけで、値そのものはカーネルの出力。
+    m_rcsResultNote = new QLabel(sRcs);
+    m_rcsResultNote->setWordWrap(true);
+    m_rcsResultNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sRcs->vbox()->addWidget(m_rcsResultNote);
+    m_rcsTable = new QTableWidget(0, 4, sRcs);
+    m_rcsTable->setHorizontalHeaderLabels(
+        { I18n::tr("sct_res_freq"), I18n::tr("sct_res_back"),
+          I18n::tr("sct_res_fwd"), I18n::tr("sct_res_ka") });
+    m_rcsTable->horizontalHeader()->setStretchLastSection(true);
+    m_rcsTable->verticalHeader()->setVisible(false);
+    m_rcsTable->setMinimumHeight(110);
+    m_rcsTable->setVisible(false);
+    sRcs->vbox()->addWidget(m_rcsTable);
+    connect(m_rcsUnit, &QComboBox::currentIndexChanged,
+            this, &ScatteringTab::refreshRcsResult);
     v->addWidget(sRcs);
 
     // ── 近傍/遠方界変換 / NTFF ─────────────────────────────────────────────
@@ -349,8 +401,12 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
 
     // SourceTab など他ビューでの平面波編集も反映する (同一モデルの共有)
     connect(project, &Project::loaded,  this, &ScatteringTab::refresh);
+    connect(project, &Project::loaded,  this, &ScatteringTab::refreshRcsResult);
     connect(project, &Project::changed, this, &ScatteringTab::refresh);
     refresh();
+    // 実行結果の RCS はモデルではなくファイル (<kernel>.log) から来るので、
+    // 構築時にも一度読む (loaded シグナルはタブ生成前に飛んでいることがある)
+    refreshRcsResult();
 }
 
 // widgets → model。入射波 (θ/φ/偏波) のみ。平面波の有効/無効は SourceTab が
@@ -450,6 +506,89 @@ void ScatteringTab::exportCsv()
 }
 
 // model → widgets (m_updating ガード付き)
+// ── 実行結果の RCS を読み直す ───────────────────────────────────────────────
+// <kernel>.log の "=== cross section ===" を読み、選択中の単位で表に出す。
+// 無ければ表を隠して理由を出す (空欄を並べない — 絶対規則 5)。
+void ScatteringTab::refreshRcsResult()
+{
+    if (!m_rcsTable) return;
+    m_rcsTable->setRowCount(0);
+    m_rcsTable->setVisible(false);
+
+    if (m_p->filePath().isEmpty()) {
+        m_rcsResultNote->setText(I18n::tr("sct_res_none"));
+        return;
+    }
+    const QFileInfo fi(m_p->filePath());
+    // 実行はプロジェクトの隣に <ケース名>.log を作る (Runner の作業ディレクトリ)
+    const QString logPath = fi.path() + QLatin1Char('/')
+                            + fi.completeBaseName() + QStringLiteral(".log");
+    QVector<CrossSectionPoint> cs =
+        KernelResultReader::readCrossSection(logPath);
+    QString used = logPath;
+    if (cs.isEmpty()) {                       // ofd.log という名前でも探す
+        const QString alt = fi.path() + QStringLiteral("/ofd.log");
+        cs = KernelResultReader::readCrossSection(alt);
+        used = alt;
+    }
+    if (cs.isEmpty()) {
+        m_rcsResultNote->setText(I18n::tr("sct_res_none"));
+        return;
+    }
+
+    // ka の基準にする半径: 形状の最大半寸法 (外接直方体の半辺の最大)。
+    // 球 (shape 2) ではこれが半径そのものになる。半対角 (外接球半径) を使うと
+    // 球でも √3 倍に膨らんで ka がずれるので使わない。球以外では代表寸法の
+    // 目安でしかないため、注記でそう言う。
+    double radius = 0.0;
+    for (const Geometry &g : m_p->geometries()) {
+        const double hx = 0.5 * std::fabs(g.g[1] - g.g[0]);
+        const double hy = 0.5 * std::fabs(g.g[3] - g.g[2]);
+        const double hz = 0.5 * std::fabs(g.g[5] - g.g[4]);
+        radius = std::max(radius, std::max(hx, std::max(hy, hz)));
+    }
+
+    const int unit = m_rcsUnit ? m_rcsUnit->currentIndex() : 0;
+    auto fmt = [&](double sigma, double f) {
+        switch (unit) {
+        case 1: {                              // dBsm
+            const double db = em::rcsDbsm(sigma);
+            return std::isfinite(db)
+                       ? QStringLiteral("%1 dBsm").arg(db, 0, 'f', 2)
+                       : QStringLiteral("−∞ dBsm");
+        }
+        case 2:                                // σ/λ²
+            return QStringLiteral("%1 λ²")
+                .arg(em::rcsPerWavelengthSq(sigma, f), 0, 'g', 4);
+        default:                               // m²
+            return QStringLiteral("%1 m²").arg(sigma, 0, 'g', 4);
+        }
+    };
+    for (const CrossSectionPoint &p : cs) {
+        const int r = m_rcsTable->rowCount();
+        m_rcsTable->insertRow(r);
+        auto ro = [](const QString &t) {
+            auto *it = new QTableWidgetItem(t);
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            return it;
+        };
+        m_rcsTable->setItem(r, 0, ro(QStringLiteral("%1 MHz")
+                                         .arg(p.freqHz * 1e-6, 0, 'g', 6)));
+        m_rcsTable->setItem(r, 1, ro(fmt(p.backward_m2, p.freqHz)));
+        m_rcsTable->setItem(r, 2, ro(fmt(p.forward_m2, p.freqHz)));
+        const double ka = em::sphereKa(radius, p.freqHz);
+        m_rcsTable->setItem(r, 3, ro(ka > 0
+            ? QStringLiteral("%1").arg(ka, 0, 'f', 3)
+            : QStringLiteral("—")));
+    }
+    m_rcsTable->resizeColumnsToContents();
+    m_rcsTable->setVisible(true);
+    m_rcsResultNote->setText(I18n::tr("sct_res_ok")
+                                 .arg(QDir::toNativeSeparators(used))
+                                 .arg(cs.size())
+                                 .arg(QString::number(radius, 'g', 4)));
+}
+
 void ScatteringTab::refresh()
 {
     m_updating = true;

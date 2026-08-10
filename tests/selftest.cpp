@@ -40,6 +40,7 @@
 #include "optics/FdeModeSolver.h"
 #include "kernel/Runner.h"
 #include "kernel/SweepRunner.h"
+#include "kernel/OptimizeFom.h"
 #include "io/EvReader.h"
 #include "io/GdsIO.h"
 #include "core/MonteCarlo.h"
@@ -79,6 +80,7 @@
 #include "em/LumpedRlc.h"
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
+#include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
@@ -7832,6 +7834,37 @@ static void testOfdIntegration(const QString &sampleDir)
         KernelResultReader::readFeedSweeps(dir.filePath("ofd.log"));
     check(sweeps.size() == 1 && sweeps.first().points.size() == 21,
           "ofd: feed sweep parsed from real log");
+
+    // ── Δt: GUI の Courant 推定 = カーネルが実際に使う Dt ──────────────────
+    // ソルバ領域タブは Δt = CFL 係数 × Project::courantDt() として .ofd の
+    // timestep を作る。その土台である courantDt() が**カーネルの自動値と
+    // 一致する**ことを、ログが自分で書いた Dt[sec] で確かめる (期待値の出所が
+    // GUI のコードから独立している)。ずれていれば CFL 係数の意味が狂う。
+    {
+        QFile lg(dir.filePath("ofd.log"));
+        QString txt;
+        if (lg.open(QIODevice::ReadOnly | QIODevice::Text))
+            txt = QString::fromUtf8(lg.readAll());
+        // "Dt[sec] = 9.3089e-12, Tw[sec] = ..." の 1 行目から取る
+        double dtLog = 0.0;
+        const int at = txt.indexOf("Dt[sec]");
+        if (at >= 0) {
+            const int eq = txt.indexOf('=', at);
+            const int cm = txt.indexOf(',', eq);
+            if (eq > 0 && cm > eq)
+                dtLog = txt.mid(eq + 1, cm - eq - 1).trimmed().toDouble();
+        }
+        check(dtLog > 0, "ofd: Dt printed by the kernel is readable");
+
+        Project p;
+        QString err;
+        check(OfdIO::load(dir.filePath("dipole.ofd"), p, &err),
+              "ofd: dipole.ofd loads into the GUI model");
+        const double dtGui = p.courantDt();
+        // ログは 5 桁表示なので相対 1e-4 で比べる
+        check(dtGui > 0 && std::fabs(dtGui - dtLog) < 1e-4 * dtLog,
+              "ofd: Project::courantDt matches the kernel's automatic Dt");
+    }
 #ifdef OFD_USE_HDF5
     // 実カーネルの time_series_data.h5 から z 中央断面が再構成できること。
     // dipole は 30×30×31 セル → 断面は 31×31 ノード
@@ -7924,6 +7957,64 @@ static void testOfdIntegration(const QString &sampleDir)
             check(std::fabs(fs.vPerM - std::sqrt(30.0 * gLin * pW) / dM)
                       < 1e-12,
                   "far1d: the predicted field matches sqrt(30 G P)/d");
+        }
+        g_file = "ofd_integration";
+    }
+
+    // ── RCS: カーネルの cross section を読んで Mie 厳密解と比べる ────────
+    // 期待値は**本家 OpenFDTD の検証スクリプト** data/sample/sphere_rcs_check.sh
+    // が使っている完全導体球の Mie 厳密解 (ka = 3.0, a = 0.05 m):
+    //     後方 σ = 4.0901e-03 m²   前方 σ = 8.4797e-02 m²
+    // 球を直交格子で階段近似するので厳密一致はしない。許容も同スクリプトに
+    // 合わせて 0.625〜1.6 倍とする (0 / NaN / 桁違いは確実に落ちる)。
+    // ここで見たいのは「GUI のパーサが実ログから正しい値を取れているか」で、
+    // 桁や単位を取り違えていればこの窓を外れる。
+    {
+        g_file = "rcs_e2e";
+        const QFileInfo cbi(bin);
+        const QString sample =
+            cbi.dir().absoluteFilePath(QStringLiteral("../data/sample/sphere_rcs.ofd"));
+        if (!QFileInfo::exists(sample)) {
+            std::printf("  (rcs e2e skipped: sphere_rcs.ofd not found next to "
+                        "OFDX_OFD_BIN)\n");
+        } else {
+            QTemporaryDir cdir;
+            check(cdir.isValid(), "rcs-e2e: temp dir");
+            check(QFile::copy(sample, cdir.filePath("sphere_rcs.ofd")),
+                  "rcs-e2e: copy the validated sample");
+            QProcess cproc;
+            cproc.setWorkingDirectory(cdir.path());
+            cproc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                               QStringLiteral("sphere_rcs.ofd") });
+            check(cproc.waitForFinished(600000), "rcs-e2e: solver finished");
+            check(cproc.exitCode() == 0, "rcs-e2e: solver exit code 0");
+
+            const QVector<CrossSectionPoint> cs =
+                KernelResultReader::readCrossSection(cdir.filePath("ofd.log"));
+            check(cs.size() == 1,
+                  "rcs-e2e: one frequency point in the cross-section block");
+            if (cs.size() == 1) {
+                const double back = cs[0].backward_m2;
+                const double fwd  = cs[0].forward_m2;
+                const double mieBack = 4.0901e-03;   // Mie 厳密解 [m^2]
+                const double mieFwd  = 8.4797e-02;
+                check(back > 0 && fwd > 0,
+                      "rcs-e2e: both cross sections are positive "
+                      "(a zero here was a real bug in the past)");
+                check(back / mieBack > 0.625 && back / mieBack < 1.6,
+                      "rcs-e2e: the backscatter matches the Mie exact solution "
+                      "within the sample's own tolerance");
+                check(fwd / mieFwd > 0.625 && fwd / mieFwd < 1.6,
+                      "rcs-e2e: the forward scatter matches Mie");
+                // ka = 3.0 の設計。GUI 側の ka 計算がそれを再現すること
+                const double ka = em::sphereKa(0.05, cs[0].freqHz);
+                check(std::fabs(ka - 3.0) < 0.05,
+                      "rcs-e2e: the GUI reproduces the sample's ka = 3.0");
+                // dBsm 換算が m² と整合すること (往復)
+                check(std::fabs(em::rcsFromDbsm(em::rcsDbsm(back)) - back)
+                          < 1e-12 * back,
+                      "rcs-e2e: the dBsm conversion is lossless");
+            }
         }
         g_file = "ofd_integration";
     }
@@ -13368,6 +13459,295 @@ static void testUnwiredNotesHaveSubject()
     check(withSubject == total, "unwired: all notes carry a subject");
 }
 
+// ── 掃引結果 → FoM と最良点 (kernel/OptimizeFom) ────────────────────────────
+// 最適化の「どの点が良いか」を決める唯一の場所。最大化/最小化の向きを
+// 取り違えると**最悪の点を最良と呼ぶ**ので、向きは名指しで固定する。
+static void testOptimizeFom()
+{
+    g_file = "optimize-fom";
+
+    // 向き (最大化 / 最小化)
+    check(!fomMaximizes(FomKind::MinReflectionDb) &&
+          !fomMaximizes(FomKind::MinVswr),
+          "fom: reflection and VSWR are minimised");
+    check(fomMaximizes(FomKind::MaxPeakGainDb) &&
+          fomMaximizes(FomKind::MaxFrontToBackDb),
+          "fom: gain and front-to-back are maximised");
+
+    // 給電点表からの評価
+    auto feedResult = [](double refDb, double vswr, double f) {
+        SweepResult r;
+        r.ok = true;
+        FeedSweep fs;
+        fs.feedIndex = 1;
+        FeedSweepPoint p;
+        p.freqHz = f; p.refDb = refDb; p.vswr = vswr;
+        fs.points.push_back(p);
+        r.feeds.push_back(fs);
+        return r;
+    };
+    {
+        const SweepResult r = feedResult(-12.5, 1.62, 2.4e9);
+        const FomValue ref = evaluateFom(FomKind::MinReflectionDb, r, 2.4e9);
+        check(ref.valid && std::fabs(ref.value + 12.5) < 1e-12,
+              "fom: the reflection FoM is the Ref[dB] of the nearest frequency");
+        const FomValue vs = evaluateFom(FomKind::MinVswr, r, 2.4e9);
+        check(vs.valid && std::fabs(vs.value - 1.62) < 1e-12,
+              "fom: the VSWR FoM reads the VSWR column");
+        // 周波数を指定しなければ「その点で最も良い値」
+        SweepResult multi = r;
+        FeedSweepPoint p2;
+        p2.freqHz = 2.5e9; p2.refDb = -20.0; p2.vswr = 1.2;
+        multi.feeds[0].points.push_back(p2);
+        const FomValue anyF = evaluateFom(FomKind::MinReflectionDb, multi, 0.0);
+        check(anyF.valid && std::fabs(anyF.value + 20.0) < 1e-12,
+              "fom: without a frequency the best value over the sweep is used");
+        const FomValue at24 = evaluateFom(FomKind::MinReflectionDb, multi, 2.4e9);
+        check(at24.valid && std::fabs(at24.value + 12.5) < 1e-12,
+              "fom: with a frequency the nearest point is used, not the best");
+    }
+    // 失敗した点・データの無い点は候補から外す
+    {
+        SweepResult bad = feedResult(-12.5, 1.62, 2.4e9);
+        bad.ok = false;
+        check(!evaluateFom(FomKind::MinReflectionDb, bad, 2.4e9).valid,
+              "fom: a failed run is never a candidate");
+        SweepResult empty;
+        empty.ok = true;
+        check(!evaluateFom(FomKind::MinReflectionDb, empty, 2.4e9).valid,
+              "fom: a point without a feed table is not a candidate");
+        check(!evaluateFom(FomKind::MaxPeakGainDb, empty, 0.0).valid,
+              "fom: a point without a pattern is not a candidate");
+        // VSWR < 1 は物理的にあり得ない → 壊れた行を最良点にしない
+        SweepResult brokenVswr = feedResult(-12.5, 0.5, 2.4e9);
+        check(!evaluateFom(FomKind::MinVswr, brokenVswr, 2.4e9).valid,
+              "fom: a VSWR below 1 is rejected instead of winning");
+    }
+    // 遠方界パターンからの評価
+    {
+        SweepResult r;
+        r.ok = true;
+        FarPattern pat;
+        pat.plane = QStringLiteral("X-plane");
+        pat.freqHz = 3.0e9;
+        for (int i = 0; i <= 36; ++i) {
+            pat.deg.push_back(10.0 * i);
+            // 0° で 6 dB、180° で −14 dB になる山
+            pat.eAbsDb.push_back(6.0 - 20.0 * (1.0 - std::cos(
+                10.0 * i * 3.14159265358979 / 180.0)) / 2.0);
+        }
+        r.patterns.push_back(pat);
+        const FomValue g = evaluateFom(FomKind::MaxPeakGainDb, r, 0.0);
+        check(g.valid && std::fabs(g.value - 6.0) < 1e-9,
+              "fom: the peak-gain FoM is the maximum over the pattern");
+        const FomValue fb = evaluateFom(FomKind::MaxFrontToBackDb, r, 0.0);
+        check(fb.valid && std::fabs(fb.value - 20.0) < 1e-9,
+              "fom: front-to-back is the 0 deg value minus the 180 deg value");
+    }
+
+    // 最良点の選択 — 向きが効いていること
+    {
+        auto mk = [](double x, bool ok) {
+            FomValue f; f.value = x; f.valid = ok; return f;
+        };
+        QVector<FomValue> v { mk(-5.0, true), mk(-18.0, true), mk(-9.0, true) };
+        check(bestPointIndex(FomKind::MinReflectionDb, v) == 1,
+              "fom: minimisation picks the smallest value");
+        check(bestPointIndex(FomKind::MaxPeakGainDb, v) == 0,
+              "fom: maximisation picks the largest value");
+        // 無効な点は勝てない
+        QVector<FomValue> w { mk(-99.0, false), mk(-3.0, true) };
+        check(bestPointIndex(FomKind::MinReflectionDb, w) == 1,
+              "fom: an invalid point never wins even with the best number");
+        // 全部無効なら -1
+        QVector<FomValue> none { mk(0.0, false), mk(0.0, false) };
+        check(bestPointIndex(FomKind::MinVswr, none) == -1,
+              "fom: no valid point means no best point");
+        check(bestPointIndex(FomKind::MinVswr, QVector<FomValue>()) == -1,
+              "fom: an empty sweep has no best point");
+        // 同値は先に出てきた点 (順序で決まるので再現する)
+        QVector<FomValue> tie { mk(2.0, true), mk(2.0, true) };
+        check(bestPointIndex(FomKind::MinVswr, tie) == 0,
+              "fom: ties keep the earlier point (reproducible)");
+    }
+}
+
+// ── Δt (CFL) と solver 行の配線 (SolverRegionTab が書く先) ─────────────────
+//
+// ソルバ領域タブの「シミュレーション時間」節は Δt を CFL 係数から作って
+// .ofd の timestep へ、ステップ数と自動シャットオフを solver 行へ書く。
+// タブそのものはヘッドレスで組めないので、**書く先の不変条件**を押さえる:
+//   1. Project::courantDt() がカーネル (sol/setup.c:setup_timestep) と同式か
+//   2. dt = 0 (既定) のとき timestep 行が出ないこと = 出力バイト列不変
+//   3. dt > 0 のとき往復し、CFL 係数 = dt / courantDt() が取り出せること
+//   4. converg = 0 (シャットオフ OFF) が往復すること
+static void testCourantTimestep()
+{
+    g_file = "courant-dt";
+    const double c0 = 2.99792458e8;
+
+    auto meshed = [](ofd::Project &p, double dx, double dy, double dz) {
+        // 各軸 1 区間 10 分割。分割幅がそのまま最小セル幅になる
+        const double ext[3] = { dx * 10, dy * 10, dz * 10 };
+        for (int a = 0; a < 3; ++a) {
+            p.mesh(a).nodes = { 0.0, ext[a] };
+            p.mesh(a).divs  = { 10 };
+        }
+    };
+
+    {   // 1. 等方メッシュ: Δt = d / (c0·√3)
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const double want = 1e-3 / (c0 * std::sqrt(3.0));
+        check(std::fabs(p.courantDt() - want) < 1e-18,
+              "courant: uniform mesh gives d/(c0*sqrt(3))");
+    }
+    {   // 1'. 非等方メッシュ: 1/(c0·√(Σ 1/d²)) — 最小幅の軸が効く
+        ofd::Project p;
+        meshed(p, 2e-3, 1e-3, 4e-3);
+        const double s = 1.0 / (2e-3 * 2e-3) + 1.0 / (1e-3 * 1e-3)
+                       + 1.0 / (4e-3 * 4e-3);
+        const double want = 1.0 / (c0 * std::sqrt(s));
+        check(std::fabs(p.courantDt() - want) < 1e-18,
+              "courant: anisotropic mesh matches the kernel formula");
+        // 一番細かい軸を細くすると Δt は必ず小さくなる (安定条件の向き)
+        ofd::Project p2;
+        meshed(p2, 2e-3, 0.5e-3, 4e-3);
+        check(p2.courantDt() < p.courantDt(),
+              "courant: a finer cell shortens the time step");
+    }
+    {   // メッシュが無ければ 0 (「メッシュ未定義」表示の根拠)
+        ofd::Project p;
+        for (int a = 0; a < 3; ++a) { p.mesh(a).nodes.clear(); p.mesh(a).divs.clear(); }
+        check(p.courantDt() == 0.0, "courant: no mesh means no estimate");
+    }
+
+    {   // 2. dt = 0 (既定) は timestep 行を書かない = 従来の出力そのまま
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const QString text = ofd::OfdIO::serialize(p);
+        check(p.general().dt == 0.0, "courant: dt defaults to 0 (auto)");
+        check(!text.contains("timestep"),
+              "courant: dt = 0 writes no timestep line (byte compatible)");
+    }
+    {   // 3. CFL 係数 → dt → .ofd → dt → CFL 係数
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        const double dt0 = p.courantDt();
+        const double cfl = 0.5;
+        p.general().dt = cfl * dt0;
+        p.general().maxiter = 1234;
+        p.general().nout    = 50;
+        p.general().converg = 1e-5;
+        const QString text = ofd::OfdIO::serialize(p);
+        check(text.contains("timestep"),
+              "courant: dt > 0 writes the timestep line");
+
+        ofd::Project q;
+        QString err;
+        check(ofd::OfdIO::parse(text, q, &err), "courant: reparse ok");
+        check(std::fabs(q.general().dt - cfl * dt0) < 1e-18 * (1 + cfl * dt0),
+              "courant: the time step round-trips");
+        check(q.general().maxiter == 1234 && q.general().nout == 50,
+              "courant: the iteration count round-trips");
+        check(std::fabs(q.general().converg - 1e-5) < 1e-15,
+              "courant: the shutoff level round-trips as converg");
+        // タブが表示する CFL 係数はこの比。同じメッシュなら 0.5 に戻る
+        // (メッシュも一緒に往復しないと比が変わるので両方を見ている)
+        const double back = q.general().dt / q.courantDt();
+        check(std::fabs(back - cfl) < 1e-9,
+              "courant: dt / courantDt recovers the CFL factor");
+    }
+    {   // 4. シャットオフ OFF = converg 0。カーネルは fsum < fmax*converg で
+        //    判定するので 0 は決して成立しない = 打ち切らない
+        ofd::Project p;
+        meshed(p, 1e-3, 1e-3, 1e-3);
+        p.general().converg = 0.0;
+        ofd::Project q;
+        check(ofd::OfdIO::parse(ofd::OfdIO::serialize(p), q, nullptr),
+              "courant: reparse with converg = 0 ok");
+        check(q.general().converg == 0.0,
+              "courant: converg = 0 (shutoff off) round-trips");
+    }
+}
+
+// ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
+static void testRadarCrossSection()
+{
+    g_file = "rcs";
+    using namespace ofd::em;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    // 単位換算。**σ は電力次元なので 10log10** (20log10 ではない)
+    {
+        check(approx(rcsDbsm(1.0), 0.0, 1e-12), "rcs: 1 m^2 is 0 dBsm");
+        check(approx(rcsDbsm(10.0), 10.0, 1e-12), "rcs: 10 m^2 is 10 dBsm");
+        check(approx(rcsDbsm(0.01), -20.0, 1e-12), "rcs: 0.01 m^2 is -20 dBsm");
+        check(std::isinf(rcsDbsm(0.0)) && rcsDbsm(0.0) < 0,
+              "rcs: zero cross-section is -inf dBsm, not a rounded number");
+        check(approx(rcsFromDbsm(rcsDbsm(0.0123)), 0.0123, 1e-15),
+              "rcs: dBsm round-trips");
+        // 2 倍は +3.01 dB (電力次元)。+6.02 になっていたら 20log10 の誤り
+        check(approx(rcsDbsm(2.0) - rcsDbsm(1.0), 3.0102999566, 1e-9),
+              "rcs: doubling sigma is +3.01 dB (10log10, not 20log10)");
+    }
+    // σ/λ² と σ/(πa²)、ka
+    {
+        const double f = 2.99792458e9;                 // λ = 0.1 m ちょうど
+        check(approx(rcsPerWavelengthSq(0.01, f), 1.0, 1e-12),
+              "rcs: 0.01 m^2 at lambda = 0.1 m is 1 lambda^2");
+        check(rcsPerWavelengthSq(0.01, 0.0) == 0.0,
+              "rcs: no frequency means no lambda normalisation");
+        check(approx(sphereGeometricArea(0.05), 3.14159265358979 * 0.0025, 1e-15),
+              "rcs: the geometric area of a sphere is pi a^2");
+        check(approx(rcsPerGeometric(sphereGeometricArea(0.05), 0.05), 1.0, 1e-12),
+              "rcs: sigma = pi a^2 normalises to 1");
+        check(sphereGeometricArea(0.0) == 0.0 && rcsPerGeometric(1.0, 0.0) == 0.0,
+              "rcs: a zero radius has no geometric normalisation");
+        // ka = 2 pi a / lambda。a = 0.05, lambda = 0.1 → pi
+        check(approx(sphereKa(0.05, f), 3.14159265358979, 1e-12),
+              "rcs: ka = 2 pi a / lambda");
+        check(sphereKa(0.0, f) == 0.0 && sphereKa(0.05, 0.0) == 0.0,
+              "rcs: ka needs both a radius and a frequency");
+    }
+    // カーネルの出力書式をそのまま読む (sol/outputCross.c の fprintf)
+    {
+        const QString text = QStringLiteral(
+            "=== impedance matrix ===\n"
+            "  something else\n"
+            "=== cross section ===\n"
+            "  frequency[Hz] backward[m*m]  forward[m*m]\n"
+            "    3.00000e+09    1.2594e-02    1.9587e-01\n"
+            "    4.00000e+09    2.0000e-02    3.0000e-01\n"
+            "=== output files ===\n"
+            "ofd.log, ofd.out\n");
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::parseCrossSection(text);
+        check(cs.size() == 2, "rcs: both frequency rows are read");
+        check(approx(cs[0].freqHz, 3.0e9, 1.0) &&
+              approx(cs[0].backward_m2, 1.2594e-2, 1e-9) &&
+              approx(cs[0].forward_m2, 1.9587e-1, 1e-9),
+              "rcs: the first row is parsed exactly");
+        check(approx(cs[1].backward_m2, 2.0e-2, 1e-12),
+              "rcs: the second row is parsed");
+        // 見出し行は数値行ではないので取り込まれない / 次の === で止まる
+        check(cs.size() == 2,
+              "rcs: the header line is skipped and the next section ends it");
+    }
+    // cross section の無いログ (給電のある問題) では空
+    {
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::parseCrossSection(
+                QStringLiteral("=== input impedance ===\n  1 2 3\n"));
+        check(cs.isEmpty(),
+              "rcs: a log without a cross-section block yields nothing "
+              "(the kernel only writes it for plane-wave problems)");
+    }
+}
+
 // ── ポスト作図の前提条件 (core/PostPrereq) ─────────────────────────────────
 // 期待値は本家 OpenFDTD の post/ のコードそのもの。判定がずれると、出ない図を
 // 「出る」と言うか、出る図を「出ない」と言うことになる。
@@ -14283,6 +14663,9 @@ int main(int argc, char *argv[])
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
+    testOptimizeFom();
+    testCourantTimestep();
+    testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();

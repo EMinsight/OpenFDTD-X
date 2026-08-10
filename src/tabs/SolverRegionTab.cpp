@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QApplication>
 #include <QBrush>
 #include <QCheckBox>
 #include <QColor>
@@ -121,8 +122,28 @@ const bool s_i18n = [] {
               "the analysis-region settings (not wired to the Project or the .ofd yet)");
     I18n::reg("sreg_uw_mesh", "メッシュ細分化・サブピクセル・自動上書きの設定",
               "the mesh-refinement, subpixel and auto-override settings");
-    I18n::reg("sreg_uw_dt", "Δt と CFL 係数の設定",
-              "the time step and CFL factor");
+    ofd::I18n::reg("sreg_apply_time",
+        "この節の値を計算へ反映する (.ofd の timestep / solver を書き換えます)",
+        "Apply this section to the solver (writes the .ofd timestep / solver "
+        "keys)");
+    ofd::I18n::reg("sreg_apply_time_hint",
+        "OFF のあいだ Δt はカーネルが Courant 限界から自動決定します "
+        "(CFL = 0.99 相当)。ON にすると Δt = CFL 係数 × Courant 限界、"
+        "反復回数 = シミュレーション時間 ÷ Δt、収束条件 = シャットオフレベル "
+        "を「全般」タブと同じ値として書き込みます。",
+        "While OFF the kernel picks Δt from the Courant limit itself "
+        "(equivalent to CFL = 0.99). When ON, Δt = CFL factor x Courant "
+        "limit, the iteration count = simulation time / Δt and the "
+        "convergence criterion = the shutoff level are written into the same "
+        "fields the General tab edits.");
+    I18n::reg("sreg_uw_dt", "メッシュ精度スライダの Δt への反映",
+              "the effect of the mesh-accuracy slider on the time step");
+    I18n::reg("sreg_uw_dt_ok",
+              "Δt (CFL 係数)・シミュレーション時間・自動シャットオフ "
+              "— 上のチェックが ON のとき .ofd の timestep / solver へ書かれます",
+              "the time step (CFL factor), the simulation time and the auto "
+              "shutoff level — written to the .ofd timestep / solver keys when "
+              "the checkbox above is ON");
     return true;
 }();
 
@@ -282,7 +303,17 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_cflRow->addWidget(new QLabel(I18n::tr("sreg_cfl_hint"), ss));
     m_cflRow->addStretch(1);
     ss->form()->addRow(I18n::tr("sreg_cfl"), m_cflRow);
-    ss->form()->addRow(tabhelp::unwiredNote(ss, I18n::tr("sreg_uw_dt")));
+
+    // この節を .ofd (timestep / solver) へ書くかどうか。既定 OFF =
+    // GeneralOpts に触らない = 出力バイト列は従来どおり (絶対規則 2)。
+    m_applyTime = new QCheckBox(I18n::tr("sreg_apply_time"), ss);
+    ss->form()->addRow(m_applyTime);
+    auto *applyHint = new QLabel(I18n::tr("sreg_apply_time_hint"), ss);
+    applyHint->setWordWrap(true);
+    applyHint->setStyleSheet("color:#666; font-size:11px;");
+    ss->form()->addRow(applyHint);
+    ss->form()->addRow(tabhelp::unwiredNote(ss, I18n::tr("sreg_uw_dt"),
+                                            I18n::tr("sreg_uw_dt_ok")));
     v->addWidget(ss);
 
     // ── 境界条件 / Boundary conditions ──────────────────────────────────────
@@ -339,16 +370,29 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
             [this] { updateMeshDerived(); });
     connect(m_pmlLayers, &QSpinBox::valueChanged, this,
             [this] { apply(); });
-    // CFL 係数・シミュレーション時間はローカル状態だが Δt/ステップ数表示に効く
+    // CFL 係数・シミュレーション時間は Δt/ステップ数表示に効き、
+    // 「計算へ反映する」が ON のときは GeneralOpts へも書く
     connect(m_cfl, &QLineEdit::textChanged, this,
-            [this] { updateEstimates(); });
+            [this] { updateEstimates(); applyTime(); });
     connect(m_simTime, &QLineEdit::textChanged, this,
-            [this] { updateEstimates(); });
+            [this] { updateEstimates(); applyTime(); });
+    connect(m_shutoffOn, &QCheckBox::toggled, this, [this] { applyTime(); });
+    connect(m_shutoffLevel, &QLineEdit::textChanged, this,
+            [this] { applyTime(); });
+    connect(m_applyTime, &QCheckBox::toggled, this, [this] { applyTime(); });
     connect(project, &Project::domainChanged, this,
             [this] { updateDomainDeps(); });
-    // メッシュ/全般設定の編集 (他タブ含む) で実推定を追従させる
-    connect(project, &Project::changed, this,
-            [this] { updateEstimates(); });
+    // メッシュ/全般設定の編集 (他タブ含む) で実推定を追従させる。
+    // Δt / 反復回数 / 収束条件は「全般」タブも書くので、そちらの変更も
+    // 取り込む (このタブの欄にフォーカスがあるあいだは上書きしない —
+    // CFL 欄は 1 打鍵ごとに applyTime() が走るため、書式化されると入力できない)
+    connect(project, &Project::changed, this, [this] {
+        updateEstimates();
+        if (m_updating) return;
+        QWidget *f = QApplication::focusWidget();
+        if (f && (f == this || isAncestorOf(f))) return;
+        refresh();
+    });
     connect(project, &Project::loaded, this, &SolverRegionTab::refresh);
     refresh();
 }
@@ -361,10 +405,73 @@ void SolverRegionTab::apply()
     m_p->touch();
 }
 
+// シミュレーション時間の節 → .ofd の timestep / solver。
+//
+//   timestep = CFL 係数 × Courant 限界 (Project::courantDt() はカーネルの
+//              sol/setup.c:setup_timestep() と同じ式)
+//   solver   = <反復回数> <出力間隔> <収束条件>
+//              反復回数 = シミュレーション時間 ÷ Δt、収束条件 = シャットオフ
+//              レベル (シャットオフ OFF なら 0 = 打ち切らない。カーネルは
+//              fsum < fmax*converg で判定するので 0 は決して成立しない)
+//
+// チェックが OFF のあいだは GeneralOpts に一切書かない。CFL 欄は refresh() が
+// 丸めた文字列を入れるので、**利用者が実際に編集したときだけ** Δt を作り直す
+// (他の欄をいじっただけで読み込んだ timestep が丸め値に化けるのを防ぐ)。
+void SolverRegionTab::applyTime()
+{
+    if (m_updating || !m_applyTime->isChecked()) return;
+
+    const Domain d = m_p->activeDomain();
+    if (d != Domain::EM && d != Domain::Optical) return;  // 行ごと隠している
+
+    GeneralOpts &g = m_p->general();
+
+    bool okCfl = false;
+    const double cfl = m_cfl->text().toDouble(&okCfl);
+    const double dt0 = m_p->courantDt();
+    if (okCfl && cfl > 0 && dt0 > 0 && m_cfl->text() != m_cflShown)
+        g.dt = cfl * dt0;
+
+    // 反復回数は「今の Δt」から数える (g.dt が 0 = 自動なら Courant 限界)
+    const double dt = (g.dt > 0) ? g.dt : dt0;
+    bool okT = false;
+    const double t = m_simTime->text().toDouble(&okT);
+    if (okT && t > 0 && dt > 0) {
+        const double steps = t * m_simTimeScale / dt;
+        if (steps >= 1.0 && steps < 1e9)
+            g.maxiter = int(steps + 0.5);
+    }
+
+    bool okLv = false;
+    const double lv = m_shutoffLevel->text().toDouble(&okLv);
+    g.converg = (m_shutoffOn->isChecked() && okLv && lv > 0) ? lv : 0.0;
+
+    m_p->touch();
+}
+
 void SolverRegionTab::refresh()
 {
     m_updating = true;
     m_pmlLayers->setValue(m_p->general().pmlL);
+    updateDomainDeps();          // m_simTimeScale を先に確定させる (時間欄の単位)
+
+    // 既に timestep が入っているファイルは「反映する」状態として表示する
+    // (書いてあるのに OFF と見せると、画面と .ofd が食い違う)
+    const GeneralOpts &g = m_p->general();
+    const double dt0 = m_p->courantDt();
+    m_applyTime->setChecked(g.dt > 0);
+    if (g.dt > 0 && dt0 > 0) {
+        m_cflShown = QString::number(g.dt / dt0, 'g', 6);
+        m_cfl->setText(m_cflShown);
+        const double t = g.maxiter * g.dt / m_simTimeScale;
+        if (t > 0) m_simTime->setText(QString::number(t, 'g', 6));
+    } else {
+        m_cflShown.clear();
+    }
+    m_shutoffOn->setChecked(g.converg > 0);
+    if (g.converg > 0)
+        m_shutoffLevel->setText(QString::number(g.converg, 'g', 6));
+
     m_updating = false;
     updateMeshDerived();
     updateDomainDeps();
