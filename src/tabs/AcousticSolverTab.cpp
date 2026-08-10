@@ -54,7 +54,7 @@ const bool s_i18n = [] {
         "(fmax = c/(10·dx) — only 69 Hz at dx = 0.5 m). Reaching the 4 kHz a "
         "singing-voice auralization needs is not feasible with FDTD alone, so "
         "the low band comes from FDTD and the high band from geometrical "
-        "acoustics. This panel implements the **combining** side: supply the "
+        "acoustics. This panel implements the combining side: supply the "
         "high band from geometrical acoustics. \"Run hybrid\" launches the "
         "acoustic FDTD (ofdx_acoustic_fdtd) and the geometric solver "
         "(ofdx_acoustic_ga) in sequence, combines them and sets the "

@@ -109,10 +109,10 @@ const bool s_i18n = [] {
     I18n::reg("gds_export",  "📤 GDS エクスポート", "📤 GDS export");
     I18n::reg("gds_import",  "📥 GDS インポート",   "📥 GDS import");
     I18n::reg("gds_io_note",
-              "▸ エクスポートは形状を XY 平面へ投影した **外接矩形** を "
+              "▸ エクスポートは形状を XY 平面へ投影した「外接矩形」を "
               "レイヤー 1 の BOUNDARY として書きます (実際の断面形状ではなく"
               "占有領域です)。単位は 1 µm ユーザー単位 / 1 nm データベース単位。"
-              "インポートは内容を読んで要約しますが、**形状としては取り込みません** "
+              "インポートは内容を読んで要約しますが、「形状としては取り込みません」 "
               "— Project の形状モデルは直方体・球などのパラメトリック立体で、"
               "任意多角形を受ける型が無いためです。",
               "\u25b8 Export writes the XY bounding boxes of the shapes as "

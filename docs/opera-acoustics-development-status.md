@@ -1345,3 +1345,32 @@ R / L / C を取り出す。取り出した素子は **`.ofd` の `load` 行**
 あわせて、**QLabel は markdown を描画しない**ことに気付いたので、本セッションで
 自分が入れた `**強調**` を UI 文字列から外した (画面にアスタリスクがそのまま
 出ていた)。同じ書き方が他のタブにも残っている (10 ファイル程度) — 別途整理する。
+
+### UI 文字列から markdown を除去し、混入を selftest で止める (2026-08-10)
+
+画面に `**強調**` のアスタリスクがそのまま出ていた。`QLabel` の既定
+(`Qt::AutoText`) は `Qt::mightBeRichText()` で **HTML を検出**するが、
+markdown は解釈しないため。SPICE 取込の画面を目視確認していて気付いた。
+
+対象は 9 ファイル 18 箇所 (`AcousticSolverTab` / `AcousticSourceTab` /
+`AudioEditorTab` / `LayoutGDSTab` / `MultiphysicsTab` /
+`OceanEnvironmentTab` / `RoomAcousticsTab` / `ScatteringTab` /
+`UnderwaterTab`)。日本語は `「」` に、英語はマーカーを落として文の
+組み立てで表すよう直した。
+
+**RichText へ倒す案は採らなかった。** UI 文字列には `<kernel>.log` のように
+山括弧を含むものがあり、`Qt::RichText` にするとタグとして食われて消える。
+`Qt::MarkdownText` も `*.stl` や `_` を含む文字列を壊す。素の文字列で書くのが
+一番安全なので、そちらへ寄せた。
+
+`H5ViewerTab` だけは対象外にしている — あそこの `**` は
+**生成する Python コード** (`frame ** 2` = べき乗) で、画面に出る文言ではない。
+
+再発防止に selftest `ui-markdown` を追加した。src/ の .cpp を走査し、
+**文字列リテラルの中の** `**` を検出して file:line で報告する
+(C++ コメントや `T **p` の宣言は除外する)。ガードが実際に落ちることを、
+1 箇所へわざと `**` を戻して確認した (`ScatteringTab.cpp:63` を名指しで検出)。
+規則は `.claude/rules/gui.md` に追記。
+
+検証は selftest +2 checks (8405 → 8407)。表示文言のみの変更で、
+`.ofd` / `.ofdx` の出力は変わらない。

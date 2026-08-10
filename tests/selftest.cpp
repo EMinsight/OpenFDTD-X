@@ -13297,6 +13297,78 @@ static void testUnwiredNotesHaveSubject()
     check(withSubject == total, "unwired: all notes carry a subject");
 }
 
+// ── UI 文字列に markdown を書かない ─────────────────────────────────────────
+// `QLabel` の既定 (Qt::AutoText) は **HTML** を検出するが markdown は解釈しない
+// ので、`**強調**` と書くとアスタリスクがそのまま画面に出る (実際に出ていた)。
+// RichText へ倒す手もあるが、UI 文字列には `<kernel>.log` のように山括弧を含む
+// ものがあり、タグとして食われるので採らない。**素の文字列で書く**のが正。
+static void testNoMarkdownInUiStrings()
+{
+    g_file = "ui-markdown";
+    const QString base = QCoreApplication::applicationDirPath();
+    QString srcDir;
+    for (const QString &c : { base + "/../src", base + "/../../src",
+                              QStringLiteral("src") }) {
+        if (QDir(c).exists()) { srcDir = c; break; }
+    }
+    if (srcDir.isEmpty()) {
+        std::printf("  (ui markdown scan skipped: src/ not found)\n");
+        return;
+    }
+    // H5ViewerTab は **生成する Python コード** を文字列で持つ (`frame ** 2` は
+    // べき乗)。UI へ出る文言ではないので対象外にする。
+    const QString kPythonEmitter = QStringLiteral("H5ViewerTab.cpp");
+
+    QStringList offenders;
+    int scanned = 0;
+    QDirIterator it(srcDir, { QStringLiteral("*.cpp") }, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        if (QFileInfo(path).fileName() == kPythonEmitter) continue;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        ++scanned;
+        const QStringList lines =
+            QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+        for (int i = 0; i < lines.size(); ++i) {
+            const QString &line = lines[i];
+            if (!line.contains(QLatin1String("**"))) continue;
+            // 文字列リテラルの中の ** だけを見る (C++ コメントや `T **p` は除く)
+            bool inStr = false, esc = false, hit = false;
+            QString cur;
+            for (int j = 0; j < line.size(); ++j) {
+                const QChar c = line.at(j);
+                if (inStr) {
+                    if (esc) esc = false;
+                    else if (c == QLatin1Char('\\')) esc = true;
+                    else if (c == QLatin1Char('"')) inStr = false;
+                    else {
+                        cur.append(c);
+                        if (cur.endsWith(QLatin1String("**"))) hit = true;
+                    }
+                } else if (c == QLatin1Char('"')) {
+                    inStr = true;
+                    cur.clear();
+                } else if (c == QLatin1Char('/') && j + 1 < line.size()
+                           && line.at(j + 1) == QLatin1Char('/')) {
+                    break;                      // 行コメント
+                }
+            }
+            if (hit)
+                offenders << (QFileInfo(path).fileName() + QStringLiteral(":")
+                              + QString::number(i + 1));
+        }
+    }
+    check(scanned > 50, "ui-markdown: scanned the source tree");
+    if (!offenders.isEmpty())
+        std::printf("  markdown in UI strings: %s\n",
+                    qPrintable(offenders.join(QStringLiteral(", "))));
+    check(offenders.isEmpty(),
+          "ui-markdown: no '**' inside UI strings (QLabel does not render "
+          "markdown — the asterisks would show up on screen)");
+}
+
 static void testNavSourceAcLabel()
 {
     g_file = "nav-source-ac";
@@ -13992,6 +14064,7 @@ int main(int argc, char *argv[])
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
+    testNoMarkdownInUiStrings();
     testNavSourceAcLabel();
     testNavCategories();
     testRoomAcRunButtonLabels();
