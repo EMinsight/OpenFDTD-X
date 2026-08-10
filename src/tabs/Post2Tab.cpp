@@ -1,6 +1,7 @@
 // Post2Tab.cpp
 #include "Post2Tab.h"
 #include "TabHelpers.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -98,6 +99,15 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     v->setSpacing(8);
 
     auto applyCb = [this] { apply(); };
+
+    // 遠方界・近傍界は frequency2 が無いと ofd_post が 1 枚も出さない
+    // (post/post.c:37)。チェックを受け付けて黙っていると「反映されない」に
+    // 見えるので、出ない項目を名指しで出す。
+    m_prereq = new QLabel(body);
+    m_prereq->setWordWrap(true);
+    m_prereq->setStyleSheet("color:#B8860B; font-size:11px;");
+    m_prereq->setVisible(false);
+    v->addWidget(m_prereq);
 
     // far0d
     auto *s0 = new SectionBox(I18n::tr("p2_far0d"), body);
@@ -416,6 +426,8 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
             [this] { updateDomainVisibility(); });
 
     connect(project, &Project::loaded, this, &Post2Tab::refresh);
+    // frequency2 の有無で前提が変わるので、モデル変更でも出し直す
+    connect(project, &Project::changed, this, &Post2Tab::updatePrereq);
     refresh();
     updateDomainVisibility();
 }
@@ -496,6 +508,15 @@ void Post2Tab::syncDrawMethod()
     m_near2dDrawMethod->setCurrentIndex(idx);
     m_updating = guard;
     m_drawMethod = idx;
+}
+
+// 前提条件の警告を出し直す (core/PostPrereq)
+void Post2Tab::updatePrereq()
+{
+    if (!m_prereq) return;
+    const QString w = tabhelp::postPrereqWarning(*m_p, 1);
+    m_prereq->setText(w);
+    m_prereq->setVisible(!w.isEmpty());
 }
 
 void Post2Tab::applyFar1dTable()
@@ -624,4 +645,5 @@ void Post2Tab::refresh()
     syncDrawMethod();
 
     m_updating = false;
+    updatePrereq();
 }

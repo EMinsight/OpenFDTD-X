@@ -34,6 +34,8 @@ public:
 
 private slots:
     void refresh();
+    // チェックしても図が出ない項目を名指しで出す (core/PostPrereq)
+    void updatePrereq();
 
 private:
     void apply();
@@ -49,6 +51,7 @@ private:
     bool       m_updating = false;
 
     // far0d
+    QLabel    *m_prereq = nullptr;   // 前提条件の警告 (空なら非表示)
     QCheckBox *m_far0d;
     QLineEdit *m_far0dTheta, *m_far0dPhi;
 

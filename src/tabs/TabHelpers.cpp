@@ -1,5 +1,6 @@
 // TabHelpers.cpp
 #include "TabHelpers.h"
+#include "../core/PostPrereq.h"
 #include "../I18n.h"
 
 #include <QAbstractButton>
@@ -26,6 +27,37 @@ const bool s_i18n = [] {
     ofd::I18n::reg("th_unwired_what",
         "▸ %1 — 現在計算へ反映されません (未実装)",
         "▸ %1 — not applied to any computation yet (not implemented)");
+    // ポスト作図の前提条件 (core/PostPrereq)
+    ofd::I18n::reg("pp_blocked_fmt",
+        "⚠ チェックが入っていても、このプロジェクトでは出力されない項目が "
+        "%1 件あります: %2。"
+        "給電点は「④ 波源」タブ、観測点は「⑤ モニター」タブ、"
+        "frequency1 / frequency2 は「全般」タブで設定します。",
+        "⚠ %1 item(s) are checked but produce no plot for this project: %2. "
+        "Feeds are set on the Source tab, observation points on the Monitors "
+        "tab, and frequency1 / frequency2 on the General tab.");
+    ofd::I18n::reg("pp_it_iter",     "収束状況", "convergence");
+    ofd::I18n::reg("pp_it_feed",     "給電点波形・スペクトル", "feed waveform");
+    ofd::I18n::reg("pp_it_point",    "観測点波形・スペクトル", "probe waveform");
+    ofd::I18n::reg("pp_it_smith",    "スミスチャート", "Smith chart");
+    ofd::I18n::reg("pp_it_zin",      "入力インピーダンス", "input impedance");
+    ofd::I18n::reg("pp_it_yin",      "入力アドミタンス", "input admittance");
+    ofd::I18n::reg("pp_it_ref",      "反射係数", "reflection");
+    ofd::I18n::reg("pp_it_spara",    "S パラメータ", "S-parameters");
+    ofd::I18n::reg("pp_it_coupling", "結合係数", "coupling");
+    ofd::I18n::reg("pp_it_far0d",    "遠方界周波数特性", "far field vs frequency");
+    ofd::I18n::reg("pp_it_far1d",    "遠方界指向性", "far-field pattern");
+    ofd::I18n::reg("pp_it_far2d",    "遠方界全方向 (3D)", "far field (3D)");
+    ofd::I18n::reg("pp_it_near1d",   "近傍界 1D", "near field 1D");
+    ofd::I18n::reg("pp_it_near2d",   "近傍界 2D", "near field 2D");
+    ofd::I18n::reg("pp_why_nofeed",  "給電点が無い", "no feed");
+    ofd::I18n::reg("pp_why_nopoint", "観測点が無い", "no observation point");
+    ofd::I18n::reg("pp_why_nofeedpoint", "給電点も観測点も無い",
+                   "neither a feed nor an observation point");
+    ofd::I18n::reg("pp_why_nofreq1", "frequency1 が無い", "no frequency1");
+    ofd::I18n::reg("pp_why_nofreq2", "frequency2 が無い", "no frequency2");
+    ofd::I18n::reg("pp_why_noentry", "対象の行が 1 つも無い",
+                   "no entry of this kind");
     ofd::I18n::reg("th_unwired_mixed",
         "▸ %1 — 現在計算へ反映されません (未実装)。反映されるもの: %2",
         "▸ %1 — not applied to any computation yet (not implemented). "
@@ -140,6 +172,54 @@ QLabel *unwiredNote(QWidget *parent, const QString &what, const QString &wired)
     l->setWordWrap(true);
     l->setStyleSheet("font-size:11px; color:palette(mid);");
     return l;
+}
+
+// ── ポスト作図の前提条件 ────────────────────────────────────────────────────
+QString postPrereqWarning(const Project &p, int group)
+{
+    struct Row { PostItem item; bool enabled; const char *nameKey; };
+    const PostOpts &po = p.post();
+    const Row rows1[] = {
+        { PostItem::Iter,     po.plotiter,      "pp_it_iter" },
+        { PostItem::Feed,     po.plotfeed,      "pp_it_feed" },
+        { PostItem::Point,    po.plotpoint,     "pp_it_point" },
+        { PostItem::Smith,    po.plotsmith,     "pp_it_smith" },
+        { PostItem::Zin,      po.zin.enabled,   "pp_it_zin" },
+        { PostItem::Yin,      po.yin.enabled,   "pp_it_yin" },
+        { PostItem::Ref,      po.ref.enabled,   "pp_it_ref" },
+        { PostItem::Spara,    po.spara.enabled, "pp_it_spara" },
+        { PostItem::Coupling, po.coupling.enabled, "pp_it_coupling" },
+    };
+    const Row rows2[] = {
+        { PostItem::Far0d,  po.far0d,               "pp_it_far0d" },
+        { PostItem::Far1d,  !po.far1d.isEmpty(),    "pp_it_far1d" },
+        { PostItem::Far2d,  po.far2d,               "pp_it_far2d" },
+        { PostItem::Near1d, !po.near1d.isEmpty(),   "pp_it_near1d" },
+        { PostItem::Near2d, !po.near2d.isEmpty(),   "pp_it_near2d" },
+    };
+    const Row *rows = (group == 0) ? rows1 : rows2;
+    const int n = (group == 0) ? int(sizeof(rows1) / sizeof(rows1[0]))
+                               : int(sizeof(rows2) / sizeof(rows2[0]));
+
+    const PostInputs in = postInputsOf(p);
+    QStringList blocked;
+    for (int i = 0; i < n; ++i) {
+        if (!rows[i].enabled) continue;             // チェックされていない
+        const PostBlocker b = postBlocker(rows[i].item, in);
+        if (b == PostBlocker::None) continue;
+        const char *why =
+            (b == PostBlocker::NoFeed)         ? "pp_why_nofeed" :
+            (b == PostBlocker::NoPoint)        ? "pp_why_nopoint" :
+            (b == PostBlocker::NoFeedAndPoint) ? "pp_why_nofeedpoint" :
+            (b == PostBlocker::NoFreq1)        ? "pp_why_nofreq1" :
+            (b == PostBlocker::NoFreq2)        ? "pp_why_nofreq2" : "pp_why_noentry";
+        blocked << I18n::tr(rows[i].nameKey) + QStringLiteral(" (")
+                       + I18n::tr(why) + QStringLiteral(")");
+    }
+    if (blocked.isEmpty()) return QString();
+    return I18n::tr("pp_blocked_fmt")
+               .arg(blocked.size())
+               .arg(blocked.join(QStringLiteral("、")));
 }
 
 QString qualityBadge(const QString &token)

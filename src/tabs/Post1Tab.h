@@ -12,6 +12,7 @@
 #include <QVector>
 
 class QCheckBox;
+class QLabel;
 class QSpinBox;
 class QLineEdit;
 
@@ -28,6 +29,8 @@ public:
 
 private slots:
     void refresh();
+    // チェックしても図が出ない項目を名指しで出す (core/PostPrereq)
+    void updatePrereq();
 
 private:
     struct FreqRow {
@@ -56,6 +59,8 @@ private:
     // 周波数特性(2D) セクション — スミスチャート/Zin/Yin/反射/Sパラ/結合/整合損。
     // 音響・水中・光カーネルはこれらを出力しないので EM 以外では丸ごと隠す。
     SectionBox *m_freqSection = nullptr;
+    // 前提条件の警告 (空なら非表示)
+    QLabel     *m_prereq = nullptr;
 };
 
 } // namespace ofd

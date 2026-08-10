@@ -1,5 +1,6 @@
 // Post1Tab.cpp
 #include "Post1Tab.h"
+#include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -70,6 +71,15 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
     dest->setWordWrap(true);
     dest->setStyleSheet("color:#888888; font-size:11px;");
     v->addWidget(dest);
+
+    // チェックが入っていても、カーネル側の前提 (給電点 / 観測点 /
+    // frequency1) を満たさなければ ofd_post は図を出さない。黙っていると
+    // 「チェックしたのに反映されない」に見えるので、ここで名指しで言う。
+    m_prereq = new QLabel(body);
+    m_prereq->setWordWrap(true);
+    m_prereq->setStyleSheet("color:#B8860B; font-size:11px;");
+    m_prereq->setVisible(false);
+    v->addWidget(m_prereq);
 
     auto *sw = new SectionBox(I18n::tr("p1x_time_2d"), body);
     m_iter  = new QCheckBox(I18n::tr("p1x_conv"), sw);
@@ -142,6 +152,8 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
             [this] { updateDomainVisibility(); });
 
     connect(project, &Project::loaded, this, &Post1Tab::refresh);
+    // 波源・モニターの増減で前提が変わるので、モデル変更でも出し直す
+    connect(project, &Project::changed, this, &Post1Tab::updatePrereq);
     refresh();
     updateDomainVisibility();
 }
@@ -154,6 +166,15 @@ Post1Tab::Post1Tab(Project *project, QWidget *parent)
 //   給電点の概念は無いので「音源波形・スペクトル」ラベルへ切り替える。
 // 表示のみの切替で、apply() は隠れていても従来どおり全値を書く
 // (シリアライズ出力は不変)。
+// 前提条件の警告を出し直す (チェック変更・ファイル読込・波源/モニター変更)
+void Post1Tab::updatePrereq()
+{
+    if (!m_prereq) return;
+    const QString w = tabhelp::postPrereqWarning(*m_p, 0);
+    m_prereq->setText(w);
+    m_prereq->setVisible(!w.isEmpty());
+}
+
 void Post1Tab::updateDomainVisibility()
 {
     const Domain d = m_p->activeDomain();
@@ -213,6 +234,7 @@ void Post1Tab::apply()
         r.target->div = r.div->value();
     }
     syncAutoScale();
+    updatePrereq();
     m_p->touch();
 }
 
@@ -248,4 +270,5 @@ void Post1Tab::refresh()
     }
     syncAutoScale();
     m_updating = false;
+    updatePrereq();
 }
