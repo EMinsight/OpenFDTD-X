@@ -184,10 +184,12 @@ void I18n::loadTables() {
     add("ge_shape_51", "円錐台 (X軸)", "Cone (X)");
     add("ge_shape_52", "円錐台 (Y軸)", "Cone (Y)");
     add("ge_shape_53", "円錐台 (Z軸)", "Cone (Z)");
-    add("ge_import", "3Dモデル取込 (STL)", "3D model import (STL)");
-    add("ge_import_btn", "STLを取り込む…", "Import STL…");
+    add("ge_import", "3Dモデル取込 (STL/OBJ/PLY)",
+        "3D model import (STL/OBJ/PLY)");
+    add("ge_import_btn", "モデルを取り込む… (STL/OBJ/PLY)",
+        "Import a mesh… (STL/OBJ/PLY)");
     add("ge_import_hint",
-        "STLを取り込み後「ボクセル化」で現在のメッシュへ階段近似変換します。",
+        "モデルを取り込み後「ボクセル化」で現在のメッシュへ階段近似変換します。",
         "After import, press Voxelize to staircase-map the mesh onto the grid.");
     add("ge_voxelize_btn", "ボクセル化 (Yee格子へ)", "Voxelize (to Yee grid)");
     add("ge_voxel_mat", "材質番号", "Material id");

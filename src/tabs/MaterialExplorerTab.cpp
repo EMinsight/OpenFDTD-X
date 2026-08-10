@@ -190,6 +190,8 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_nonlinear",    "非線形 χ⁽²⁾/χ⁽³⁾ 付与", "Nonlinear χ⁽²⁾/χ⁽³⁾");
     ofd::I18n::reg("mex_gain",         "利得媒質 (4準位)", "Gain medium (4-level)");
     ofd::I18n::reg("mex_magnetic",     "磁性 (μr≠1)", "Magnetic (μr≠1)");
+    I18n::reg("mex_uw_flags", "非線形・利得・磁性のチェック",
+              "the nonlinear / gain / magnetic check boxes");
     return true;
 }();
 
@@ -493,7 +495,7 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     checkRow->addStretch(1);
     sApply->vbox()->addLayout(checkRow);
     // 非線形/利得/磁性チェックはどこにも読まれない
-    sApply->vbox()->addWidget(tabhelp::unwiredNote(sApply));
+    sApply->vbox()->addWidget(tabhelp::unwiredNote(sApply, I18n::tr("mex_uw_flags")));
     v->addWidget(sApply);
 
     v->addStretch(1);

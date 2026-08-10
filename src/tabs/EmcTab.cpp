@@ -392,6 +392,18 @@ const bool s_i18n = [] {
               "setup for the field inside the enclosure plus a coupling model to "
               "the board traces. Running the kernel and importing its results is "
               "not implemented, so no verdict — and no estimate — is shown.");
+    I18n::reg("emc_uw_setup", "試験配置 (サイト種別・アンテナ高・EUT 回転・グランドプレーン)",
+              "the test setup (site type, antenna height, EUT rotation, ground plane)");
+    I18n::reg("emc_uw_setup_ok", "測定距離 (限度値の距離換算と上の予測に使われます)",
+              "the measurement distance (used for the limit conversion and the prediction above)");
+    I18n::reg("emc_uw_src", "放射源のチェックとクロック周波数",
+              "the emission-source check boxes and the clock frequency");
+    I18n::reg("emc_uw_cond", "伝導エミッションの設定 (LISN / プローブ・検波器)",
+              "the conducted-emission settings (LISN / probe, detectors)");
+    I18n::reg("emc_uw_imm", "電界分布の可視化と誘導電圧のチェック",
+              "the field-visualisation and induced-voltage check boxes");
+    I18n::reg("emc_uw_imm_ok", "下の「試験レベルから決まる量」(電力密度・ESD 電流)",
+              "the quantities derived from the test level below (power density, ESD current)");
     return true;
 }();
 
@@ -665,7 +677,7 @@ QWidget *EmcTab::buildEmissionPage()
     ss->form()->addRow(I18n::tr("emc_gnd"),
                        checkRow({ m_gndPec, m_gndCable }));
     // 試験配置フォームはどこにも読まれていない (未実装)
-    ss->vbox()->addWidget(ofd::tabhelp::unwiredNote(ss));
+    ss->vbox()->addWidget(ofd::tabhelp::unwiredNote(ss, I18n::tr("emc_uw_setup"), I18n::tr("emc_uw_setup_ok")));
     v->addWidget(ss);
 
     // 放射源 / Emission sources
@@ -679,7 +691,7 @@ QWidget *EmcTab::buildEmissionPage()
     se->form()->addRow(I18n::tr("emc_clock"),
                        unitRow(m_clock, I18n::tr("emc_clock_unit"), se));
     // 放射源フォームはどこにも読まれていない (未実装)
-    se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se));
+    se->vbox()->addWidget(ofd::tabhelp::unwiredNote(se, I18n::tr("emc_uw_src")));
     v->addWidget(se);
 
     // FDTD 結果からの予測 (far1d.log + 放射電力 → 電界強度)
@@ -1207,7 +1219,7 @@ QWidget *EmcTab::buildConductedPage()
     s->vbox()->addLayout(checkRow({ m_detQp, m_detAv }));
     s->vbox()->addWidget(makeHint(I18n::tr("emc_cond_hint"), s));
     // 伝導エミッションのフォームはどこにも読まれていない (未実装)
-    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s, I18n::tr("emc_uw_cond")));
     v->addWidget(s);
 
     return page;
@@ -1237,7 +1249,7 @@ QWidget *EmcTab::buildImmunityPage()
     m_immInduced = makeCheck(I18n::tr("emc_imm_induced"), true, s);
     s->vbox()->addLayout(checkRow({ m_immField, m_immInduced }));
     // 電界分布の可視化・誘導電圧の算出は未実装 (チェックはどこにも読まれない)
-    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(ofd::tabhelp::unwiredNote(s, I18n::tr("emc_uw_imm"), I18n::tr("emc_uw_imm_ok")));
 
     // 試験レベルから規格の定義どおりに決まる量 (実計算)
     auto *dTitle = new QLabel(I18n::tr("emc_imm_derived"), s);

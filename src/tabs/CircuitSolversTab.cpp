@@ -258,6 +258,12 @@ const bool s_i18n = [] {
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
     I18n::reg("cir_exp_h5", "💾 HDF5 保存", "💾 Save HDF5");
     I18n::reg("cir_exp_fdtd", "→ FDTDポートへ適用", "→ Apply to FDTD ports");
+    I18n::reg("cir_uw_extract", "抽出設定 (メッシュ・周波数分割・オプション)",
+              "the extraction settings (mesh, frequency division, options)");
+    I18n::reg("cir_uw_extract_ok", "「抽出実行」そのもの — 導体はジオメトリタブの直方体から、ポートは下のポート表から作られます",
+              "Run extraction itself — conductors come from the boxes on the Geometry tab and ports from the port table below");
+    I18n::reg("cir_uw_spice", "SPICE 共シミュレーションの設定",
+              "the SPICE co-simulation settings");
     return true;
 }();
 
@@ -660,7 +666,7 @@ QWidget *CircuitSolversTab::buildExtractPage()
     m_extractStack->addWidget(buildFemwPage());   // [2] femw
     sExt->vbox()->addWidget(m_extractStack);
     // 抽出設定フォームはどこにも読まれていない (未実装)
-    sExt->vbox()->addWidget(tabhelp::unwiredNote(sExt));
+    sExt->vbox()->addWidget(tabhelp::unwiredNote(sExt, I18n::tr("cir_uw_extract"), I18n::tr("cir_uw_extract_ok")));
 
     auto *runRow = new QHBoxLayout();
     m_runExtract = new QPushButton(I18n::tr("cir_run_extract"), sExt);
@@ -743,7 +749,7 @@ QWidget *CircuitSolversTab::buildSpicePage()
     s->form()->addRow(I18n::tr("cir_analysis"), anaRow);
 
     // 設定フォームはどこにも読まれていない (未実装)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("cir_uw_spice")));
 
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("cir_run_spice"), s);

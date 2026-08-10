@@ -43,7 +43,7 @@
 #include "core/MonteCarlo.h"
 #include "core/AimDirection.h"
 #include "io/MeshDiagnostics.h"
-#include "io/StlImporter.h"
+#include "io/MeshImporter.h"
 #include "io/Touchstone.h"
 #include "io/Voxelizer.h"
 #include "core/GlassCatalog.h"
@@ -10497,6 +10497,278 @@ static void testBendWaveguide()
 }
 
 // ── 取込メッシュの位相・幾何検査 (io/MeshDiagnostics) ───────────────────────
+// ── メッシュ取込: STL / OBJ / PLY (io/MeshImporter) ─────────────────────────
+// 同じ形状 (z=0 平面の 1×1 正方形 = 三角形 2 枚・面積 1) を 3 形式で書き、
+// **どの形式でも同じ ImportedMesh になること**を検証する。形式ごとの実装差が
+// 下流 (Voxelizer / MeshDiagnostics) に漏れないことがこの検査の目的。
+static void testMeshImporterFormats()
+{
+    g_file = "mesh-import";
+    QTemporaryDir dir;
+    check(dir.isValid(), "meshimp: temp dir");
+    if (!dir.isValid()) return;
+
+    auto write = [&](const QString &name, const QByteArray &bytes) {
+        QFile f(dir.filePath(name));
+        const bool ok = f.open(QIODevice::WriteOnly);
+        if (ok) f.write(bytes);
+        return ok;
+    };
+    // 正方形 (0,0,0)-(1,1,0) を 2 三角形に割ったときの期待値
+    auto isSquare = [&](const ImportedMesh &m, const char *what) {
+        check(m.numTriangles == 2, what);
+        check(std::fabs(m.surfaceArea - 1.0) < 1e-6,
+              "meshimp: the unit square has area 1");
+        check(std::fabs(m.bbox[0]) < 1e-6 && std::fabs(m.bbox[1]) < 1e-6 &&
+              std::fabs(m.bbox[2]) < 1e-6 &&
+              std::fabs(m.bbox[3] - 1.0) < 1e-6 &&
+              std::fabs(m.bbox[4] - 1.0) < 1e-6 &&
+              std::fabs(m.bbox[5]) < 1e-6,
+              "meshimp: the bounding box is (0,0,0)-(1,1,0)");
+    };
+
+    // 拡張子の一覧とフィルタ
+    {
+        const QStringList ext = MeshImporter::supportedExtensions();
+        check(ext.contains("stl") && ext.contains("obj") && ext.contains("ply"),
+              "meshimp: stl / obj / ply are advertised as supported");
+        check(!ext.contains("3mf") && !ext.contains("step"),
+              "meshimp: unsupported formats are not advertised");
+        const QString filt = MeshImporter::fileDialogFilter();
+        check(filt.contains("*.obj") && filt.contains("*.ply"),
+              "meshimp: the dialog filter lists the new formats");
+    }
+
+    // ── ASCII STL (基準) ────────────────────────────────────────────────
+    {
+        const QByteArray stl =
+            "solid s\n"
+            "facet normal 0 0 1\n outer loop\n"
+            "  vertex 0 0 0\n  vertex 1 0 0\n  vertex 1 1 0\n"
+            " endloop\nendfacet\n"
+            "facet normal 0 0 1\n outer loop\n"
+            "  vertex 0 0 0\n  vertex 1 1 0\n  vertex 0 1 0\n"
+            " endloop\nendfacet\n"
+            "endsolid s\n";
+        check(write("sq.stl", stl), "meshimp: wrote the ascii STL");
+        ImportedMesh m;
+        QString err;
+        check(MeshImporter::load(dir.filePath("sq.stl"), m, &err),
+              "meshimp: ascii STL loads");
+        isSquare(m, "meshimp: ascii STL gives 2 triangles");
+    }
+
+    // ── OBJ: 四角形 1 枚 → 扇状に 2 三角形 ──────────────────────────────
+    {
+        const QByteArray obj =
+            "# a unit square\n"
+            "mtllib none.mtl\n"
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "vn 0 0 1\nvt 0 0\n"
+            "usemtl m\n"
+            "f 1 2 3 4\n";
+        check(write("sq.obj", obj), "meshimp: wrote the OBJ");
+        ImportedMesh m;
+        QString err;
+        check(MeshImporter::load(dir.filePath("sq.obj"), m, &err),
+              "meshimp: OBJ loads");
+        isSquare(m, "meshimp: an OBJ quad is fanned into 2 triangles");
+        check(m.name == QLatin1String("sq"),
+              "meshimp: the mesh name comes from the file name");
+    }
+    // OBJ: v/vt/vn 形式と負の添字 (末尾からの相対) が同じ結果になること
+    {
+        const QByteArray slashes =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "vt 0 0\nvn 0 0 1\n"
+            "f 1/1/1 2/1/1 3/1/1 4/1/1\n";
+        const QByteArray noUv =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvn 0 0 1\n"
+            "f 1//1 2//1 3//1 4//1\n";
+        const QByteArray negative =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "f -4 -3 -2 -1\n";
+        const char *names[3] = { "slash.obj", "nouv.obj", "neg.obj" };
+        const QByteArray *bodies[3] = { &slashes, &noUv, &negative };
+        for (int i = 0; i < 3; ++i) {
+            check(write(QString::fromLatin1(names[i]), *bodies[i]),
+                  "meshimp: wrote an OBJ index variant");
+            ImportedMesh m;
+            check(MeshImporter::load(dir.filePath(names[i]), m, nullptr),
+                  "meshimp: the OBJ index variant loads");
+            isSquare(m, "meshimp: the OBJ index variant gives 2 triangles");
+        }
+    }
+    // OBJ: 範囲外の添字は黙って通さない
+    {
+        const QByteArray bad = "v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 99\n";
+        check(write("bad.obj", bad), "meshimp: wrote the broken OBJ");
+        ImportedMesh m;
+        QString err;
+        check(!MeshImporter::load(dir.filePath("bad.obj"), m, &err),
+              "meshimp: an out-of-range OBJ index fails the load");
+        check(err.contains(QLatin1String("OBJ")),
+              "meshimp: the OBJ error says which format failed");
+    }
+
+    // ── PLY: ascii / binary little / binary big ────────────────────────
+    {
+        const QByteArray hdr =
+            "ply\nformat ascii 1.0\ncomment made by hand\n"
+            "element vertex 4\n"
+            "property float x\nproperty float y\nproperty float z\n"
+            "element face 2\n"
+            "property list uchar int vertex_indices\n"
+            "end_header\n"
+            "0 0 0\n1 0 0\n1 1 0\n0 1 0\n"
+            "3 0 1 2\n3 0 2 3\n";
+        check(write("sq.ply", hdr), "meshimp: wrote the ascii PLY");
+        ImportedMesh m;
+        QString err;
+        check(MeshImporter::load(dir.filePath("sq.ply"), m, &err),
+              "meshimp: ascii PLY loads");
+        isSquare(m, "meshimp: ascii PLY gives 2 triangles");
+    }
+    // x/y/z 以外のプロパティが混ざっていても名前で拾えること
+    {
+        const QByteArray hdr =
+            "ply\nformat ascii 1.0\n"
+            "element vertex 4\n"
+            "property float nx\nproperty float x\nproperty uchar red\n"
+            "property float y\nproperty float z\nproperty float ny\n"
+            "element face 2\n"
+            "property list uchar int vertex_indices\n"
+            "end_header\n"
+            "0 0 255 0 0 0\n0 1 255 0 0 0\n0 1 255 1 0 0\n0 0 255 1 0 0\n"
+            "3 0 1 2\n3 0 2 3\n";
+        check(write("props.ply", hdr), "meshimp: wrote the PLY with extra props");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("props.ply"), m, nullptr),
+              "meshimp: PLY with extra properties loads");
+        isSquare(m, "meshimp: x/y/z are picked by name, not by position");
+    }
+    // バイナリ (両エンディアン)
+    {
+        for (int big = 0; big < 2; ++big) {
+            QByteArray b;
+            b += big ? "ply\nformat binary_big_endian 1.0\n"
+                     : "ply\nformat binary_little_endian 1.0\n";
+            b += "element vertex 4\n"
+                 "property float x\nproperty float y\nproperty float z\n"
+                 "element face 2\n"
+                 "property list uchar int vertex_indices\n"
+                 "end_header\n";
+            const float xyz[12] = { 0,0,0,  1,0,0,  1,1,0,  0,1,0 };
+            auto putF = [&](float v) {
+                unsigned char t[4];
+                std::memcpy(t, &v, 4);
+                if (big) std::swap(t[0], t[3]), std::swap(t[1], t[2]);
+                b.append(reinterpret_cast<const char *>(t), 4);
+            };
+            auto putI = [&](qint32 v) {
+                unsigned char t[4];
+                std::memcpy(t, &v, 4);
+                if (big) std::swap(t[0], t[3]), std::swap(t[1], t[2]);
+                b.append(reinterpret_cast<const char *>(t), 4);
+            };
+            for (float v : xyz) putF(v);
+            const qint32 faces[2][3] = { {0,1,2}, {0,2,3} };
+            for (int f = 0; f < 2; ++f) {
+                b.append(char(3));                     // uchar の個数
+                for (int k = 0; k < 3; ++k) putI(faces[f][k]);
+            }
+            const QString name = big ? QStringLiteral("be.ply")
+                                     : QStringLiteral("le.ply");
+            check(write(name, b), "meshimp: wrote the binary PLY");
+            ImportedMesh m;
+            QString err;
+            check(MeshImporter::load(dir.filePath(name), m, &err),
+                  "meshimp: binary PLY loads");
+            isSquare(m, "meshimp: binary PLY gives 2 triangles");
+        }
+    }
+    // 形式が違っても同じメッシュになること (下流が形式を意識しない保証)
+    {
+        ImportedMesh a, b, c;
+        check(MeshImporter::load(dir.filePath("sq.stl"), a, nullptr) &&
+              MeshImporter::load(dir.filePath("sq.obj"), b, nullptr) &&
+              MeshImporter::load(dir.filePath("le.ply"), c, nullptr),
+              "meshimp: all three formats load");
+        check(a.numTriangles == b.numTriangles &&
+              b.numTriangles == c.numTriangles,
+              "meshimp: STL / OBJ / PLY agree on the triangle count");
+        check(std::fabs(a.surfaceArea - b.surfaceArea) < 1e-6 &&
+              std::fabs(b.surfaceArea - c.surfaceArea) < 1e-6,
+              "meshimp: STL / OBJ / PLY agree on the surface area");
+        for (int i = 0; i < 6; ++i)
+            check(std::fabs(a.bbox[i] - b.bbox[i]) < 1e-6 &&
+                  std::fabs(b.bbox[i] - c.bbox[i]) < 1e-6,
+                  "meshimp: STL / OBJ / PLY agree on the bounding box");
+    }
+    // 閉じた立方体を OBJ / PLY で書き、**符号付き体積が a³ になること**。
+    // 多角形を扇状に割るときに周回方向が保たれていないと符号や大きさが狂う
+    // ので、面の向きが取込を通っても壊れないことの検査になる。
+    {
+        // 外から見て CCW になる 6 面 (1 辺 2 の立方体 → 体積 8)
+        const char *objCube =
+            "v -1 -1 -1\nv  1 -1 -1\nv  1  1 -1\nv -1  1 -1\n"
+            "v -1 -1  1\nv  1 -1  1\nv  1  1  1\nv -1  1  1\n"
+            "f 1 4 3 2\n"      // z−
+            "f 5 6 7 8\n"      // z+
+            "f 1 2 6 5\n"      // y−
+            "f 4 8 7 3\n"      // y+
+            "f 1 5 8 4\n"      // x−
+            "f 2 3 7 6\n";     // x+
+        check(write("cube.obj", QByteArray(objCube)),
+              "meshimp: wrote the OBJ cube");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("cube.obj"), m, nullptr),
+              "meshimp: the OBJ cube loads");
+        check(m.numTriangles == 12,
+              "meshimp: 6 quads become 12 triangles");
+        check(std::fabs(m.surfaceArea - 24.0) < 1e-5,
+              "meshimp: the cube of edge 2 has surface area 24");
+        check(std::fabs(meshSignedVolume(m) - 8.0) < 1e-5,
+              "meshimp: the fan triangulation keeps the winding "
+              "(signed volume = a^3, not -a^3)");
+
+        // 同じ立方体を PLY (ascii) でも書いて一致を見る
+        QByteArray ply =
+            "ply\nformat ascii 1.0\nelement vertex 8\n"
+            "property float x\nproperty float y\nproperty float z\n"
+            "element face 6\n"
+            "property list uchar int vertex_indices\n"
+            "end_header\n"
+            "-1 -1 -1\n1 -1 -1\n1 1 -1\n-1 1 -1\n"
+            "-1 -1 1\n1 -1 1\n1 1 1\n-1 1 1\n"
+            "4 0 3 2 1\n4 4 5 6 7\n4 0 1 5 4\n"
+            "4 3 7 6 2\n4 0 4 7 3\n4 1 2 6 5\n";
+        check(write("cube.ply", ply), "meshimp: wrote the PLY cube");
+        ImportedMesh p;
+        check(MeshImporter::load(dir.filePath("cube.ply"), p, nullptr),
+              "meshimp: the PLY cube loads");
+        check(p.numTriangles == m.numTriangles &&
+              std::fabs(meshSignedVolume(p) - meshSignedVolume(m)) < 1e-6,
+              "meshimp: the OBJ and PLY cubes have the same signed volume");
+    }
+
+    // 壊れた入力 / 未対応形式は理由付きで失敗する (空メッシュを黙って返さない)
+    {
+        check(write("empty.obj", QByteArray()), "meshimp: wrote an empty file");
+        ImportedMesh m;
+        QString err;
+        check(!MeshImporter::load(dir.filePath("empty.obj"), m, &err),
+              "meshimp: an empty file fails");
+        check(!err.isEmpty(), "meshimp: the failure has a reason");
+        check(write("bad.ply", QByteArray("ply\nformat ascii 1.0\n")),
+              "meshimp: wrote a PLY without end_header");
+        check(!MeshImporter::load(dir.filePath("bad.ply"), m, &err),
+              "meshimp: a PLY without end_header fails");
+        check(!MeshImporter::load(dir.filePath("does-not-exist.obj"), m, &err),
+              "meshimp: a missing file fails");
+    }
+}
+
 // GeometryTab「ジオメトリ検査」節の検出値の実体。期待値はコードからではなく
 // 立方体の位相 (頂点 8・辺 18・面 12 三角形) から手で導ける値を使う。
 static void testMeshDiagnostics()
@@ -12713,6 +12985,63 @@ static void testI18nKeysRegistered()
               "i18n: the acoustic source-count keys are registered");
 }
 
+// ── 未反映注記は必ず主語を持つ (docs/unwired-inventory.md) ──────────────────
+// 「▸ この設定は現在計算へ反映されません (未実装)」という主語なしの注記は、
+// 節の中に反映される入力と反映されない入力が混在していると「節ごと死んで
+// いる」と読まれる (実際にそう報告された)。主語のある版
+// unwiredNote(parent, what[, wired]) だけを使う。
+// 引数なしの版は既存互換で残してあるが、呼び出しは 0 件でなければならない。
+static void testUnwiredNotesHaveSubject()
+{
+    g_file = "unwired-subject";
+    const QString base = QCoreApplication::applicationDirPath();
+    QString srcDir;
+    for (const QString &c : { base + "/../src", base + "/../../src",
+                              QStringLiteral("src") }) {
+        if (QDir(c).exists()) { srcDir = c; break; }
+    }
+    if (srcDir.isEmpty()) {
+        std::printf("  (unwired-note scan skipped: src/ not found)\n");
+        return;
+    }
+    // unwiredNote(x) — 引数 1 個だけの呼び出し
+    static const QRegularExpression bare(
+        QStringLiteral("unwiredNote\\(\\s*[A-Za-z_]\\w*\\s*\\)"));
+    static const QRegularExpression any(QStringLiteral("unwiredNote\\("));
+
+    QStringList offenders;
+    int total = 0, withSubject = 0;
+    QDirIterator it(srcDir, { QStringLiteral("*.cpp") }, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        // 定義そのもの (TabHelpers.cpp) は対象外
+        if (QFileInfo(path).fileName() == QLatin1String("TabHelpers.cpp"))
+            continue;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QStringList lines =
+            QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+        for (int i = 0; i < lines.size(); ++i) {
+            if (!any.match(lines[i]).hasMatch()) continue;
+            ++total;
+            if (bare.match(lines[i]).hasMatch())
+                offenders << (QFileInfo(path).fileName()
+                              + QStringLiteral(":") + QString::number(i + 1));
+            else
+                ++withSubject;
+        }
+    }
+    if (!offenders.isEmpty())
+        std::printf("  unwiredNote() without a subject: %s\n",
+                    qPrintable(offenders.join(QStringLiteral(", "))));
+    check(total > 50, "unwired: scanned the tab sources");
+    check(offenders.isEmpty(),
+          "unwired: every unwiredNote() names what is not applied "
+          "(the subject-less overload must not be used in new code)");
+    check(withSubject == total, "unwired: all notes carry a subject");
+}
+
 static void testNavSourceAcLabel()
 {
     g_file = "nav-source-ac";
@@ -13388,6 +13717,7 @@ int main(int argc, char *argv[])
     testRadioPropagation();
     testDispersionFit();
     testBendWaveguide();
+    testMeshImporterFormats();
     testMeshDiagnostics();
     testMeshAxes();
     testRefineRegions();
@@ -13404,6 +13734,7 @@ int main(int argc, char *argv[])
     testParaxialTrace();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
+    testUnwiredNotesHaveSubject();
     testNavSourceAcLabel();
     testNavCategories();
     testRoomAcRunButtonLabels();

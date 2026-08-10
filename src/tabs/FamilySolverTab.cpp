@@ -133,6 +133,20 @@ const bool s_i18n = [] {
               "OpenRTM ← OpenFDTD: near field in FDTD, far propagation in RTM");
     I18n::reg("fam_cross_4", "OpenTHFD vs OpenFDTD: 同じ問題を2手法で比較し検証",
               "OpenTHFD vs OpenFDTD: verify by comparing two methods on the same problem");
+    I18n::reg("fam_uw_link", "他ソルバーとの連携チェック",
+              "the solver-interoperation check boxes");
+    I18n::reg("fam_uw_fdtd", "FDTD ページの設定 (互換モード・実行バイナリ・出力)",
+              "the FDTD page settings (compatibility mode, binary, outputs)");
+    I18n::reg("fam_uw_rtm", "RTM ページの設定 (シーン・観測条件)",
+              "the RTM page settings (scene and observation conditions)");
+    I18n::reg("fam_uw_thfd", "THFD ページの設定 (周波数・準静近似・ソルバ・収束条件)",
+              "the THFD page settings (frequency, quasi-static option, solver, convergence)");
+    I18n::reg("fam_uw_mom", "MoM ページの設定 (導体・基底関数・セグメント長・周波数)",
+              "the MoM page settings (conductor, basis function, segment length, frequency)");
+    I18n::reg("fam_uw_stf", "STF ページの設定 (電極配置ほか)",
+              "the STF page settings (electrode layout and the rest)");
+    I18n::reg("fam_uw_tomo", "トモグラフィページの設定 (アンテナ数・再構成法・領域)",
+              "the tomography page settings (antenna count, reconstruction, region)");
     return true;
 }();
 
@@ -273,7 +287,7 @@ FamilySolverTab::FamilySolverTab(Project *project, QWidget *parent)
     for (const char *key : { "fam_cross_1", "fam_cross_2", "fam_cross_3", "fam_cross_4" })
         m_crossSection->vbox()->addWidget(new QCheckBox(I18n::tr(key), m_crossSection));
     // 連携チェックはどこにも読まれていない (未実装)
-    m_crossSection->vbox()->addWidget(tabhelp::unwiredNote(m_crossSection));
+    m_crossSection->vbox()->addWidget(tabhelp::unwiredNote(m_crossSection, I18n::tr("fam_uw_link")));
     v->addWidget(m_crossSection);
 
     v->addStretch(1);
@@ -361,7 +375,7 @@ QWidget *FamilySolverTab::buildFdtdPage()
     outRow->addWidget(h5Ck);
     outRow->addStretch(1);
     form->addRow(I18n::tr("fam_fdtd_output"), outRow);
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_fdtd")));   // このページの設定は未配線
     return page;
 }
 
@@ -391,7 +405,7 @@ QWidget *FamilySolverTab::buildRtmPage()
     row2->addWidget(new QCheckBox(I18n::tr("fam_rtm_pol"), page));
     row2->addStretch(1);
     form->addRow(row2);
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_rtm")));   // このページの設定は未配線
     return page;
 }
 
@@ -414,7 +428,7 @@ QWidget *FamilySolverTab::buildThfdPage()
     solver->addItems({ "BiCGStab", "GMRES", I18n::tr("fam_thfd_direct") });
     form->addRow(I18n::tr("fam_solver"), solver);
     form->addRow(I18n::tr("fam_converge"), numEdit("1e-6", 110, page));
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_thfd")));   // このページの設定は未配線
     return page;
 }
 
@@ -440,7 +454,7 @@ QWidget *FamilySolverTab::buildMomPage()
     form->addRow(I18n::tr("fam_freq"), freqRow);
     form->addRow(I18n::tr("fam_mom_input"),
                  new QCheckBox(I18n::tr("fam_mom_nec"), page));
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_mom")));   // このページの設定は未配線
     return page;
 }
 
@@ -469,7 +483,7 @@ QWidget *FamilySolverTab::buildStfPage()
     auto *elecNote = hintLabel(I18n::tr("fam_stf_elec_note"), page);
     elecNote->setStyleSheet("color:#7A7A7A; font-size:11px;");
     form->addRow(elecNote);
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_stf")));   // このページの設定は未配線
     refreshStfElectrodes();
     return page;
 }
@@ -538,6 +552,6 @@ QWidget *FamilySolverTab::buildTomoPage()
     auto *mfCk = new QCheckBox(I18n::tr("fam_tomo_multifreq"), page);
     mfCk->setChecked(true);
     form->addRow(mfCk);
-    form->addRow(tabhelp::unwiredNote(page));   // このページの設定は未配線
+    form->addRow(tabhelp::unwiredNote(page, I18n::tr("fam_uw_tomo")));   // このページの設定は未配線
     return page;
 }

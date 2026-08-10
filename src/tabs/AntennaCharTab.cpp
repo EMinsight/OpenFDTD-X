@@ -86,6 +86,8 @@ const bool s_i18n = [] {
               "Exported %1 \u2014 %2 feed(s) over %3 frequencies, %4 pattern cut(s)");
     I18n::reg("ant_csv_fail", "書き出しに失敗しました: %1",
               "Export failed: %1");
+    I18n::reg("ant_uw_items", "出力項目のチェック",
+              "the output-item check boxes");
     return true;
 }();
 
@@ -171,7 +173,7 @@ SectionBox *AntennaCharTab::checkSection(QWidget *parent, const char *titleKey,
         out->push_back(ck);
     }
     // チェック状態はまだどこにも読まれない (ローカル状態のみ)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("ant_uw_items")));
     return s;
 }
 

@@ -120,6 +120,10 @@ const bool s_i18n = [] {
                    "Pressure time response at one point");
     ofd::I18n::reg("mon_ac_d_plane", "面上 周波数領域 音圧",
                    "Frequency-domain pressure on a plane");
+    I18n::reg("mon_uw_sync", "同期・レコーダ・apodization の設定",
+              "the synchronisation, recorder and apodization settings");
+    I18n::reg("mon_uw_sync_ok", "サンプリング周波数 (音響設定へ反映されます)",
+              "the sampling frequency (applied to the acoustic settings)");
     return true;
 }();
 
@@ -265,7 +269,7 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
 
     // 同期/レコーダ/apodization はどこにも読まれない
     // (サンプリング周波数のみ AcousticOpts へ反映される)
-    m_settings->form()->addRow(tabhelp::unwiredNote(m_settings));
+    m_settings->form()->addRow(tabhelp::unwiredNote(m_settings, I18n::tr("mon_uw_sync"), I18n::tr("mon_uw_sync_ok")));
 
     // サンプリング周波数 行 (音響 / 水中のみ) — AcousticOpts::sampleRate
     m_srateRow = new QWidget(m_settings);

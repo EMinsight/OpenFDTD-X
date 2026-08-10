@@ -574,6 +574,14 @@ const bool s_i18n = [] {
     I18n::reg("asrc_q_refl_n", "%1 個", "%1 events");
     I18n::reg("asrc_q_lf_need", "2ch 測定が必要 (ISO 3382-1)",
               "needs 2-channel measurement (ISO 3382-1)");
+    I18n::reg("asrc_uw_norm", "正規化・遅延・位相のチェック",
+              "the normalisation / delay / phase check boxes");
+    I18n::reg("asrc_uw_norm_ok", "基準 SPL",
+              "the reference SPL");
+    I18n::reg("asrc_uw_array", "アレイ設定 (素子配置・ステアリング・指向性合成)",
+              "the array settings (element layout, steering, pattern synthesis)");
+    I18n::reg("asrc_uw_conv", "畳み込み設定 (レンダリング品質・HRTF・出力形式)",
+              "the convolution settings (render quality, HRTF, output format)");
     return true;
 }();
 
@@ -1096,7 +1104,7 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     auto *coh = new QCheckBox(I18n::tr("asrc_coherence"), sc);
     sc->form()->addRow(I18n::tr("asrc_phase"), coh);
     // 正規化/遅延/位相のチェックはどこにも読まれない — 注記 (基準SPLのみ有効)
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("asrc_uw_norm"), I18n::tr("asrc_uw_norm_ok")));
     v->addWidget(sc);
     v->addStretch(1);
 
@@ -1865,7 +1873,7 @@ QWidget *AcousticSourceTab::buildArrayPage()
     ss->form()->addRow(I18n::tr("asrc_delay_rear"), delayRow);
     v->addWidget(ss);
     // アレイページの設定は全節ともまだどこにも読まれない
-    v->addWidget(tabhelp::unwiredNote(page));
+    v->addWidget(tabhelp::unwiredNote(page, I18n::tr("asrc_uw_array")));
     v->addStretch(1);
     return page;
 }
@@ -1921,7 +1929,7 @@ QWidget *AcousticSourceTab::buildAuralPage()
     conv->setCurrentIndex(2);   // mock: value="partition"
     sc->form()->addRow(I18n::tr("asrc_convmode"), conv);
     // 畳み込み設定はまだどこにも読まれない
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("asrc_uw_conv")));
     v->addWidget(sc);
 
     auto *sr = new SectionBox(I18n::tr("asrc_render_section"), page);

@@ -20,7 +20,7 @@
 // しまう。検出して報告するに留める (RepairReport::boundaryEdgesLeft)。
 #pragma once
 #include "MeshDiagnostics.h"
-#include "StlImporter.h"
+#include "MeshImporter.h"
 
 namespace ofd {
 

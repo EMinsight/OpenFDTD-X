@@ -64,6 +64,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ag_input_monitors", "入力モニター", "Input monitors");
     ofd::I18n::reg("ag_script", "解析スクリプト", "Analysis script");
     ofd::I18n::reg("ag_create_btn", "作成", "Create");
+    I18n::reg("ag_uw_lang", "スクリプト言語の選択 (実行が未実装のため)",
+              "the script language (running scripts is not implemented)");
+    I18n::reg("ag_uw_lang_ok", "作成したグループの一覧そのもの (.ofdx に保存されます)",
+              "the group list itself (saved to .ofdx)");
     return true;
 }();
 
@@ -148,7 +152,7 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     sc->vbox()->addLayout(crow);
     // 作成したグループは一覧 (.ofdx) に入るが、スクリプト言語の選択は
     // どこにも読まれない (実行が未実装のため)
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc));
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("ag_uw_lang"), I18n::tr("ag_uw_lang_ok")));
     v->addWidget(sc);
 
     // 「作成」= 名前 + 選択したモニターから一覧へ 1 行追加する

@@ -9,7 +9,7 @@
 // 表示する数値は「実測・実計算した値」だけに限る (モックの固定サンプル値は
 // 出さない):
 //   - アセンブリツリー / 取込プレビュー / 取込済みモデル / ボクセル統計
-//     … 取込 STL (io/StlImporter) と staircase ボクセル化 (io/Voxelizer) の実測値。
+//     … 取込 STL (io/MeshImporter) と staircase ボクセル化 (io/Voxelizer) の実測値。
 //       未取込・未実行のときは「—」+ 何をすれば埋まるかの導線を出す。
 //   - ジオメトリ検査 … io/MeshDiagnostics が実メッシュから数えた検出数
 //       (自動修復は未実装なので検出のみと明記する)。
@@ -22,7 +22,7 @@
 #include "../io/MeshAxes.h"
 #include "../io/MeshDiagnostics.h"
 #include "../io/MeshRepair.h"
-#include "../io/StlImporter.h"
+#include "../io/MeshImporter.h"
 
 class QButtonGroup;
 class QCheckBox;

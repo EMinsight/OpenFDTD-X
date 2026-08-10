@@ -146,6 +146,10 @@ const bool s_i18n = [] {
               "Other cells use the S-parameter library");
     I18n::reg("gds_fdtd_rerun", "🔍 選択範囲をFDTDで再解析",
               "🔍 Re-analyze selection with FDTD");
+    I18n::reg("gds_uw_top", "トップセル・単位・グリッドの設定",
+              "the top cell, unit and grid settings");
+    I18n::reg("gds_uw_fdtd", "FDTD へ渡す対象の選択チェック",
+              "the check boxes selecting what is handed to FDTD");
     return true;
 }();
 
@@ -283,7 +287,7 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     m_grid->setCurrentIndex(1);        // mock: value="db"
     sTop->form()->addRow(I18n::tr("gds_grid"), m_grid);
     // このフォームはまだ計算へ配線されていない (apply/refresh 不在)
-    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop, I18n::tr("gds_uw_top")));
     v->addWidget(sTop);
 
     // レイヤー / Layers
@@ -389,7 +393,7 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     chkRow->addStretch(1);
     sFdtd->vbox()->addLayout(chkRow);
     // チェックはどこにも読まれていない (apply/refresh 不在)
-    sFdtd->vbox()->addWidget(tabhelp::unwiredNote(sFdtd));
+    sFdtd->vbox()->addWidget(tabhelp::unwiredNote(sFdtd, I18n::tr("gds_uw_fdtd")));
     auto *rerunRow = new QHBoxLayout();
     // FDTD 再解析は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *rerun = new QPushButton(I18n::tr("gds_fdtd_rerun"), sFdtd);

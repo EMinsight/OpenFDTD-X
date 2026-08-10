@@ -173,6 +173,18 @@ const bool s_i18n = [] {
     I18n::reg("mph_current", "流れ場 (ドップラー)", "Current field (Doppler)");
     I18n::reg("mph_wave", "海面波", "Sea surface");
     I18n::reg("mph_flat", "鏡面", "Flat (specular)");
+    I18n::reg("mph_uw_all", "このタブの設定すべて (.ofd に対応キーが無く、カーネルへ渡せません)",
+              "every setting on this tab (there is no corresponding .ofd key, so nothing can be handed to the kernel)");
+    I18n::reg("mph_uw_scheme", "連成スキームの選択と収束条件 (許容誤差・最大反復)",
+              "the coupling scheme and the convergence settings (tolerance, maximum iterations)");
+    I18n::reg("mph_uw_thermal", "熱解析の設定",
+              "the thermal-analysis settings");
+    I18n::reg("mph_uw_sar", "生体組織モデルと灌流の設定",
+              "the tissue model and perfusion settings");
+    I18n::reg("mph_uw_vibro", "振動音響の励振・モーダル解析の設定",
+              "the vibro-acoustic excitation and modal-analysis settings");
+    I18n::reg("mph_uw_ocean", "海洋環境データの選択 (水温・塩分・流れ)",
+              "the ocean-environment data selection (temperature, salinity, currents)");
     return true;
 }();
 
@@ -270,7 +282,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
     m_hint = hintLabel(QString(), sTop);
     sTop->vbox()->addWidget(m_hint);
     // タブ全体が設計モック — どの設定も計算へ反映されない
-    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop, I18n::tr("mph_uw_all")));
 
     m_modules = new QTableWidget(0, 4, sTop);
     m_modules->setHorizontalHeaderLabels({ QString(), I18n::tr("mph_c_module"),
@@ -296,7 +308,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
     sScheme->form()->addRow(I18n::tr("mph_tol"), m_tol);
     m_maxIter = numEdit("20", 70, sScheme);
     sScheme->form()->addRow(I18n::tr("mph_maxiter"), m_maxIter);
-    sScheme->form()->addRow(tabhelp::unwiredNote(sScheme));
+    sScheme->form()->addRow(tabhelp::unwiredNote(sScheme, I18n::tr("mph_uw_scheme")));
     v->addWidget(sScheme);
 
     // ── 光: 熱光学連成設定 ─────────────────────────────────────────────────
@@ -322,7 +334,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         bcRow->addStretch(1);
         m_secThermo->form()->addRow(I18n::tr("mph_heat_bc"), bcRow);
         // 上の設定群は .ofd に対応キーが無く、カーネルへ渡せない
-        m_secThermo->form()->addRow(tabhelp::unwiredNote(m_secThermo));
+        m_secThermo->form()->addRow(tabhelp::unwiredNote(m_secThermo, I18n::tr("mph_uw_thermal")));
 
         // ── カーネルの熱解析レイヤ (実測値) ──────────────────────────────
         // ofd は入力キー無しで常に発熱密度を積算し、周波数ごとに
@@ -442,7 +454,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         metRow->addWidget(check(I18n::tr("mph_dtemp"), true, m_secSar));
         metRow->addStretch(1);
         m_secSar->form()->addRow(I18n::tr("mph_metric"), metRow);
-        m_secSar->form()->addRow(tabhelp::unwiredNote(m_secSar));
+        m_secSar->form()->addRow(tabhelp::unwiredNote(m_secSar, I18n::tr("mph_uw_sar")));
     }
     v->addWidget(m_secSar);
 
@@ -459,7 +471,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         row->addWidget(check(I18n::tr("mph_frf"), true, m_secVibro));
         row->addStretch(1);
         m_secVibro->form()->addRow(row);
-        m_secVibro->form()->addRow(tabhelp::unwiredNote(m_secVibro));
+        m_secVibro->form()->addRow(tabhelp::unwiredNote(m_secVibro, I18n::tr("mph_uw_vibro")));
     }
     v->addWidget(m_secVibro);
 
@@ -482,7 +494,7 @@ MultiphysicsTab::MultiphysicsTab(Project *project, QWidget *parent)
         wave->addItem("JONSWAP");
         wave->setCurrentIndex(1);            // 既定 "pier"
         m_secOcean->form()->addRow(I18n::tr("mph_wave"), wave);
-        m_secOcean->form()->addRow(tabhelp::unwiredNote(m_secOcean));
+        m_secOcean->form()->addRow(tabhelp::unwiredNote(m_secOcean, I18n::tr("mph_uw_ocean")));
     }
     v->addWidget(m_secOcean);
 

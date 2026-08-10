@@ -98,7 +98,16 @@ QLabel *sampleNote(QWidget *parent);
 
 // どこにも反映されない設定フォームの節に置く注記ラベル:
 // 「この設定は現在計算へ反映されません (未実装)」
+//
+// **主語のある方を使うこと。** 引数なしの版は「この設定」としか言わないので、
+// 節の中に反映される入力と反映されない入力が混在していると、利用者は節ごと
+// 死んでいると受け取る (実際にそう報告された)。what に「何が」反映されない
+// のかを、wired に「代わりに何が」反映されるのかを渡す。
+//   unwiredNote(s, I18n::tr("xxx_unwired_what"), I18n::tr("xxx_unwired_ok"))
+//     → 「▸ <what> は現在計算へ反映されません (未実装)。<wired> は反映されます。」
 QLabel *unwiredNote(QWidget *parent);
+QLabel *unwiredNote(QWidget *parent, const QString &what,
+                    const QString &wired = QString());
 
 } // namespace tabhelp
 } // namespace ofd

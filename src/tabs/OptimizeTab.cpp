@@ -104,6 +104,16 @@ const bool s_i18n = [] {
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
+    I18n::reg("opz_uw_method", "最適化手法の選択",
+              "the choice of optimisation method");
+    I18n::reg("opz_uw_vars", "設計変数の表 (ドメイン別の既定例です)",
+              "the design-variable table (a per-domain worked example)");
+    I18n::reg("opz_uw_con", "制約条件の設定",
+              "the constraint settings");
+    I18n::reg("opz_uw_topo", "トポロジー最適化の解像度とフィルタ半径",
+              "the topology-optimisation resolution and filter radius");
+    I18n::reg("opz_uw_run", "実行先と Pareto 出力の設定",
+              "the execution target and Pareto-output settings");
     return true;
 }();
 
@@ -195,7 +205,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_methodHint = hintLabel(QString(), sMethod);
     sMethod->vbox()->addWidget(m_methodHint);
     // 手法選択はローカル state のみ (Project へは書き込まれない)
-    sMethod->vbox()->addWidget(tabhelp::unwiredNote(sMethod));
+    sMethod->vbox()->addWidget(tabhelp::unwiredNote(sMethod, I18n::tr("opz_uw_method")));
     v->addWidget(sMethod);
 
     // ── パラメータ / Parameters ─────────────────────────────────────────────
@@ -213,7 +223,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_jobs = new QLabel(sParam);
     sParam->vbox()->addWidget(m_jobs);
     // 変数表はドメイン別の既定例で、編集内容はどこにも読まれない
-    sParam->vbox()->addWidget(tabhelp::unwiredNote(sParam));
+    sParam->vbox()->addWidget(tabhelp::unwiredNote(sParam, I18n::tr("opz_uw_vars")));
     v->addWidget(sParam);
 
     // ── 目的関数 (FoM) / Objective ──────────────────────────────────────────
@@ -238,7 +248,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     conRow->addWidget(m_cSym);
     conRow->addStretch(1);
     sObj->form()->addRow(I18n::tr("opz_constraint"), conRow);
-    sObj->form()->addRow(tabhelp::unwiredNote(sObj));
+    sObj->form()->addRow(tabhelp::unwiredNote(sObj, I18n::tr("opz_uw_con")));
     v->addWidget(sObj);
 
     // ── ハイパーパラメータ / Hyper-parameters (mode != sweep のみ) ───────────
@@ -292,7 +302,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         f->addRow(I18n::tr("opz_filter_radius"), filtRow);
     }
     m_hyperSec->vbox()->addWidget(m_pageTopology);
-    m_hyperSec->vbox()->addWidget(tabhelp::unwiredNote(m_hyperSec));
+    m_hyperSec->vbox()->addWidget(tabhelp::unwiredNote(m_hyperSec, I18n::tr("opz_uw_topo")));
     v->addWidget(m_hyperSec);
 
     // ── 実行 / Run ──────────────────────────────────────────────────────────
@@ -321,7 +331,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
     sRun->vbox()->addWidget(m_pareto);
     // 実行先・Pareto 出力もローカル state のみ
-    sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun));
+    sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun, I18n::tr("opz_uw_run")));
     v->addWidget(sRun);
 
     v->addStretch(1);

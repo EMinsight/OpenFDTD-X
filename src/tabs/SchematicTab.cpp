@@ -146,6 +146,10 @@ const bool s_i18n = [] {
     I18n::reg("sch_temp",    "温度",                 "Temperature");
     I18n::reg("sch_to_shift", "熱光学シフトを自動適用 (未実装)",
               "Apply thermo-optic shift automatically (not implemented)");
+    I18n::reg("sch_uw_sim", "回路シミュレーションの設定 (解析モードほか)",
+              "the circuit-simulation settings (analysis mode and the rest)");
+    I18n::reg("sch_uw_thermo", "温度と熱光学シフトの設定",
+              "the temperature and thermo-optic shift settings");
     return true;
 }();
 
@@ -205,7 +209,7 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_mode->addItem(I18n::tr("sch_mode_mixed"));
     m_mode->setCurrentIndex(0);              // mock: value="freq"
     sSim->form()->addRow(I18n::tr("sch_mode"), m_mode);
-    sSim->form()->addRow(tabhelp::unwiredNote(sSim));
+    sSim->form()->addRow(tabhelp::unwiredNote(sSim, I18n::tr("sch_uw_sim")));
     v->addWidget(sSim);
 
     // ── 要素ライブラリ / Element library (3列グリッドのカード) ─────────────
@@ -409,7 +413,7 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_toShift = new QCheckBox(I18n::tr("sch_to_shift"), sNo);
     m_toShift->setChecked(true);
     sNo->form()->addRow(m_toShift);
-    sNo->form()->addRow(tabhelp::unwiredNote(sNo));
+    sNo->form()->addRow(tabhelp::unwiredNote(sNo, I18n::tr("sch_uw_thermo")));
     v->addWidget(sNo);
 
     v->addStretch(1);

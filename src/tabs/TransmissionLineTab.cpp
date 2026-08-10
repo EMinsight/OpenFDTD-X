@@ -55,6 +55,14 @@ const bool s_i18n = [] {
     I18n::reg("tln_d_xtalk", "近端/遠端クロストーク NEXT/FEXT",
               "Near/far-end crosstalk NEXT/FEXT");
     I18n::reg("tln_d_eye", "アイダイアグラム", "Eye diagram");
+    I18n::reg("tln_uw_all", "このタブの設定すべて (タブ全体が設計モックです)",
+              "every setting on this tab (the whole tab is a design mock-up)");
+    I18n::reg("tln_uw_z0", "特性インピーダンスの算出法と周波数依存 / 複素表示の選択",
+              "the characteristic-impedance method and the frequency-dependence / complex-display options");
+    I18n::reg("tln_uw_spara", "S パラメータのポート数と出力の選択",
+              "the S-parameter port count and output options");
+    I18n::reg("tln_uw_chk", "チェック状態",
+              "the check boxes");
     return true;
 }();
 
@@ -86,7 +94,7 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
     hint->setWordWrap(true);
     sTop->vbox()->addWidget(hint);
     // このタブは全体が設計モック — どの設定も計算へ配線されていない
-    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop));
+    sTop->vbox()->addWidget(tabhelp::unwiredNote(sTop, I18n::tr("tln_uw_all")));
     v->addWidget(sTop);
 
     // ── 特性インピーダンス Z₀ ──────────────────────────────────────────────
@@ -102,7 +110,7 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
     sZ->form()->addRow(m_z0FreqDep);
     m_z0ReIm = new QCheckBox(I18n::tr("tln_z0_reim"), sZ);
     sZ->form()->addRow(m_z0ReIm);
-    sZ->form()->addRow(tabhelp::unwiredNote(sZ));   // 全設定が未読
+    sZ->form()->addRow(tabhelp::unwiredNote(sZ, I18n::tr("tln_uw_z0")));   // 全設定が未読
     v->addWidget(sZ);
 
     // ── 伝搬定数 γ = α + jβ ────────────────────────────────────────────────
@@ -120,7 +128,7 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
         sS->form()->addRow(ck);
         m_spara.push_back(ck);
     }
-    sS->form()->addRow(tabhelp::unwiredNote(sS));   // 全設定が未読
+    sS->form()->addRow(tabhelp::unwiredNote(sS, I18n::tr("tln_uw_spara")));   // 全設定が未読
     v->addWidget(sS);
 
     // ── 不連続部・整合 ────────────────────────────────────────────────────
@@ -145,6 +153,6 @@ SectionBox *TransmissionLineTab::checkSection(QWidget *parent, const char *title
         out->push_back(ck);
     }
     // チェック状態はどこにも読まれない (タブ全体が設計モック)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s));
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("tln_uw_chk")));
     return s;
 }

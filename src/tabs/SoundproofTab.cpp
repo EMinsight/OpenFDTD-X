@@ -629,6 +629,8 @@ const bool s_i18n = [] {
               "🎧 Auralization (listen at receiver)");
     I18n::reg("sp_exp_std", "📑 規格対応書式 (ISO/ASTM)",
               "📑 Standard forms (ISO/ASTM)");
+    I18n::reg("sp_uw_flank", "改善案のチェック",
+              "the improvement-proposal check boxes");
     return true;
 }();
 
@@ -1577,7 +1579,7 @@ QWidget *SoundproofTab::buildFlankingPage()
     si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_tape"), false, si));
     si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_elastic"), false, si));
     // 改善案チェックはどこにも反映されない (絶対規則 5)
-    si->vbox()->addWidget(tabhelp::unwiredNote(si));
+    si->vbox()->addWidget(tabhelp::unwiredNote(si, I18n::tr("sp_uw_flank")));
     auto *hr = new QHBoxLayout();
     auto *recalcBtn = new QPushButton(I18n::tr("sp_recalc_btn"), si);
     tabhelp::markNotImplemented(recalcBtn);   // 再計算は未実装
