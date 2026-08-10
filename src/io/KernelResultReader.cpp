@@ -377,17 +377,39 @@ FieldMap buildMap(const QVector<int> &ii, const QVector<int> &jj,
     return m;
 }
 
+// テキストからでもファイルからでも 1 行ずつ供給する。ファイル版は
+// **全体をメモリに載せない** (大規模データ対策 — near2d.log はセル数と
+// 周波数点数の積で増える)。
+template <class F>
+void eachLineOfText(const QString &text, F &&f)
+{
+    for (const QString &raw : text.split(QLatin1Char('\n'))) f(raw);
+}
+
+template <class F>
+bool eachLineOfFile(const QString &path, F &&f)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    QTextStream in(&file);
+    while (!in.atEnd()) f(in.readLine());
+    return true;
+}
+
 } // namespace
 
-QVector<FieldMap> parseFar2d(const QString &text)
-{
+namespace {
+
+// far2d.log の 1 ブロック = 1 周波数。行を 1 本ずつ食わせる。
+struct Far2dCollector {
     QVector<FieldMap> out;
     QVector<int> ii, jj;
     QVector<double> th, ph, val;
     double freq = 0.0;
     QString label;
 
-    const auto flush = [&] {
+    void flush()
+    {
         if (ii.isEmpty()) return;
         FieldMap m = buildMap(ii, jj, th, ph, val);
         if (m.rows > 0) {
@@ -399,43 +421,55 @@ QVector<FieldMap> parseFar2d(const QString &text)
             out.push_back(m);
         }
         ii.clear(); jj.clear(); th.clear(); ph.clear(); val.clear();
-    };
+    }
 
-    for (const QString &raw : text.split(QLatin1Char('\n'))) {
+    void feed(const QString &raw)
+    {
         const QString line = raw.trimmed();
-        if (line.isEmpty()) continue;
+        if (line.isEmpty()) return;
         if (line.contains(QLatin1String("frequency"))) {
             flush();
             label = line;
             const int eq = line.lastIndexOf(QLatin1Char('='));
             if (eq >= 0) freq = line.mid(eq + 1).trimmed().toDouble();
-            continue;
+            return;
         }
         const QStringList t =
             line.split(QRegularExpression(QStringLiteral("\\s+")),
                        Qt::SkipEmptyParts);
-        if (!dataRow(t, 5)) continue;    // 列見出しなどは飛ばす
+        if (!dataRow(t, 5)) return;    // 列見出しなどは飛ばす
         ii.push_back(t[0].toInt());
         jj.push_back(t[1].toInt());
         th.push_back(t[2].toDouble());
         ph.push_back(t[3].toDouble());
         val.push_back(t[4].toDouble());   // E-abs[dB]
     }
-    flush();
-    return out;
+
+    QVector<FieldMap> take() { flush(); return std::move(out); }
+};
+
+} // namespace
+
+QVector<FieldMap> parseFar2d(const QString &text)
+{
+    Far2dCollector c;
+    eachLineOfText(text, [&c](const QString &l) { c.feed(l); });
+    return c.take();
 }
 
-QVector<FieldMap> parseNear2d(const QString &text)
-{
+namespace {
+
+// near2d.log の 1 ブロック = 1 周波数。3 座標のうち変化しない軸が断面の法線。
+struct Near2dCollector {
     QVector<FieldMap> out;
     QVector<int> ii, jj;
     QVector<double> xs, ys, zs, val;
     double freq = 0.0;
     QString label;
 
-    const auto flush = [&] {
+    void flush()
+    {
         if (ii.isEmpty()) return;
-        // 3 座標のうち変化しない軸が断面の法線。残り 2 軸を面内座標にする。
         const auto spread = [](const QVector<double> &v) {
             if (v.isEmpty()) return 0.0;
             double lo = v[0], hi = v[0];
@@ -459,22 +493,23 @@ QVector<FieldMap> parseNear2d(const QString &text)
             out.push_back(m);
         }
         ii.clear(); jj.clear(); xs.clear(); ys.clear(); zs.clear(); val.clear();
-    };
+    }
 
-    for (const QString &raw : text.split(QLatin1Char('\n'))) {
+    void feed(const QString &raw)
+    {
         const QString line = raw.trimmed();
-        if (line.isEmpty()) continue;
+        if (line.isEmpty()) return;
         if (line.contains(QLatin1String("frequency"))) {
             flush();
             label = line;
             const int eq = line.lastIndexOf(QLatin1Char('='));
             if (eq >= 0) freq = line.mid(eq + 1).trimmed().toDouble();
-            continue;
+            return;
         }
         const QStringList t =
             line.split(QRegularExpression(QStringLiteral("\\s+")),
                        Qt::SkipEmptyParts);
-        if (!dataRow(t, 6)) continue;
+        if (!dataRow(t, 6)) return;
         ii.push_back(t[0].toInt());
         jj.push_back(t[1].toInt());
         xs.push_back(t[2].toDouble());
@@ -482,19 +517,36 @@ QVector<FieldMap> parseNear2d(const QString &text)
         zs.push_back(t[4].toDouble());
         val.push_back(t[5].toDouble());   // E[V/m]
     }
-    flush();
-    return out;
+
+    QVector<FieldMap> take() { flush(); return std::move(out); }
+};
+
+} // namespace
+
+QVector<FieldMap> parseNear2d(const QString &text)
+{
+    Near2dCollector c;
+    eachLineOfText(text, [&c](const QString &l) { c.feed(l); });
+    return c.take();
 }
 
+// ファイルからは 1 行ずつ読む。near2d.log / far2d.log はセル数 (または角度
+// 分解能) と周波数点数の積で増えるので、全体を QString に載せると規模を
+// 上げたときに破綻する (QString は UTF-16 なのでファイルの約 2 倍を追加で
+// 使う)。1 周波数ぶんの格子だけが常時メモリに載る。
 QVector<FieldMap> readFar2d(const QString &path)
 {
-    const QString t = readAll(path);
-    return t.isEmpty() ? QVector<FieldMap>() : parseFar2d(t);
+    Far2dCollector c;
+    if (!eachLineOfFile(path, [&c](const QString &l) { c.feed(l); }))
+        return QVector<FieldMap>();
+    return c.take();
 }
 QVector<FieldMap> readNear2d(const QString &path)
 {
-    const QString t = readAll(path);
-    return t.isEmpty() ? QVector<FieldMap>() : parseNear2d(t);
+    Near2dCollector c;
+    if (!eachLineOfFile(path, [&c](const QString &l) { c.feed(l); }))
+        return QVector<FieldMap>();
+    return c.take();
 }
 
 // ── 熱解析レイヤの診断 ──────────────────────────────────────────────────────

@@ -2610,6 +2610,48 @@ static void testFieldMapReader()
         "   1   1  90.0  90.0   -2.0   0.0\n";
     check(KernelResultReader::parseFar2d(holed).isEmpty(),
           "fieldmap: an incomplete grid is rejected, not zero-filled");
+
+    // ── ファイル経路 (1 行ずつ読む別実装) がテキスト経路と一致すること ──
+    // 大規模データ対策で readFar2d / readNear2d はファイル全体を載せずに
+    // ストリームで読む。実装が 2 本あるので、片方だけ直したらここが落ちる。
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "fieldmap: temp dir");
+        const struct { const char *name; const QString &text; bool isFar; }
+        cases[] = { { "far2d.log", two, true }, { "near2d.log", nearZ, false } };
+        for (const auto &c : cases) {
+            QFile f(dir.filePath(QString::fromLatin1(c.name)));
+            check(f.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "fieldmap: write sample");
+            f.write(c.text.toUtf8());
+            f.close();
+            const QVector<FieldMap> fromFile =
+                c.isFar ? KernelResultReader::readFar2d(f.fileName())
+                        : KernelResultReader::readNear2d(f.fileName());
+            const QVector<FieldMap> fromText =
+                c.isFar ? KernelResultReader::parseFar2d(c.text)
+                        : KernelResultReader::parseNear2d(c.text);
+            check(fromFile.size() == fromText.size() && !fromFile.isEmpty(),
+                  "fieldmap: the streaming reader finds the same blocks");
+            if (fromFile.size() == fromText.size()) {
+                bool same = true;
+                for (int i = 0; i < fromFile.size(); ++i)
+                    if (fromFile[i].rows != fromText[i].rows
+                        || fromFile[i].cols != fromText[i].cols
+                        || fromFile[i].values != fromText[i].values
+                        || fromFile[i].rowAxis != fromText[i].rowAxis
+                        || fromFile[i].colAxis != fromText[i].colAxis
+                        || fromFile[i].freqHz != fromText[i].freqHz)
+                        { same = false; break; }
+                check(same,
+                      "fieldmap: the streaming reader matches the text parser");
+            }
+        }
+        check(KernelResultReader::readFar2d(dir.filePath("nope.log")).isEmpty()
+              && KernelResultReader::readNear2d(
+                     dir.filePath("nope.log")).isEmpty(),
+              "fieldmap: a missing file yields nothing");
+    }
 }
 
 static void testThermalReader()
