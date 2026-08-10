@@ -91,6 +91,42 @@ struct CrossSectionPoint {
     double forward_m2 = 0.0;    // 前方散乱
 };
 
+// ofd_post が書く「番号付きの表」1 ブロック分 (ev2d を介さないポスト表示)。
+//
+// ofd_post は作図 (ev.ev2 / ev.ev3) と**同じ内容をテキスト表**にも書く:
+//
+//   feed.log   : feed #N (waveform) / (spectrum)   post/plot2dFeed.c
+//   point.log  : point #N (waveform) / (spectrum)  post/plot2dPoint.c
+//   far0d.log  : theta=… phi=… の周波数特性        post/outputFar0d.c
+//   near1d.log : #N : frequency[Hz] = … の線上分布 post/outputNear1d.c
+//
+// どれも「見出し行 → 列見出し行 → 先頭が通し番号の数値行」という同じ形を
+// している (先頭列は No.)。したがって 1 つのパーサで全部読める。列の**意味**
+// はカーネル側が正なので、GUI は列名をそのまま持ち回り、解釈を足さない。
+//
+// 横軸は「表の中で値が変化する最初の列」を採る。near1d.log は X/Y/Z の 3 列を
+// 持ち、線に沿って動くのはそのうち 1 つだけなので、先頭列固定では線上分布に
+// ならない。値が変わらなかった列は `fixed` に文字列として退避する
+// (捨てずに画面へ出す — 断面位置の情報そのものなので)。
+struct PostTable {
+    QString     sourceFile;    // "feed.log" 等 (どのファイル由来かを画面に出す)
+    QString     title;         // 見出し行そのまま ("feed #1 (waveform)")
+    QString     xName;         // 横軸に選んだ列名 ("time[sec]" / "frequency[Hz]")
+    QStringList yNames;        // 残りの列名 ("V[V]", "I[A]" …)
+    QString     fixed;         // 表の中で値が変わらなかった列 ("X[m]=0.000 …")
+    QVector<double>          x;
+    QVector<QVector<double>> y;   // yNames と同じ本数、各要素は x と同じ長さ
+
+    bool isValid() const
+    {
+        if (x.isEmpty() || y.isEmpty() || y.size() != yNames.size())
+            return false;
+        for (const QVector<double> &c : y)
+            if (c.size() != x.size()) return false;
+        return true;
+    }
+};
+
 namespace KernelResultReader {
 
 // <kernel>.log から給電点表を読む (見つからなければ空)
@@ -115,6 +151,12 @@ QVector<CrossSectionPoint> parseCrossSection(const QString &text);
 // far1d.log から遠方界パターンを読む (見つからなければ空)
 QVector<FarPattern> readFar1d(const QString &path);
 QVector<FarPattern> parseFar1d(const QString &text);
+
+// ofd_post の番号付き表 (feed.log / point.log / far0d.log / near1d.log) を
+// 読む。sourceFile には見出し用の表示名 (既定はファイル名) が入る。
+QVector<PostTable> readPostTables(const QString &path);
+QVector<PostTable> parsePostTables(const QString &text,
+                                   const QString &sourceFile = QString());
 
 } // namespace KernelResultReader
 } // namespace ofd

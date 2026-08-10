@@ -7961,6 +7961,101 @@ static void testOfdIntegration(const QString &sampleDir)
         g_file = "ofd_integration";
     }
 
+    // ── ポスト表: ev2d/ev3d を使わずに ofd_post のテキスト表を読む ─────────
+    // GUI の「ポスト表」モードは feed.log / far0d.log / near1d.log を直接
+    // 描く。ここでは**実カーネルに実際に書かせて**パーサを通す。写経した
+    // 見本ではなく本物なので、カーネルの書式が変わればここで落ちる。
+    {
+        g_file = "post_tables_e2e";
+        const QFileInfo bi(bin);
+        QString postBin = bi.dir().filePath(QStringLiteral("ofd_post"));
+#ifdef Q_OS_WIN
+        if (!QFileInfo::exists(postBin)) postBin += QStringLiteral(".exe");
+#endif
+        if (!QFileInfo::exists(postBin)) {
+            std::printf("  (post tables e2e skipped: ofd_post not found)\n");
+        } else {
+            // dipole.ofd に 3 つのポストキーを **end 行の手前へ** 足す。
+            // end より後ろに書いた行はカーネルが読まない (実測済み)。
+            QFile src(dir.filePath("dipole.ofd"));
+            check(src.open(QIODevice::ReadOnly), "post-e2e: read dipole.ofd");
+            const QString body = QString::fromUtf8(src.readAll());
+            src.close();
+            const QString extra =
+                QStringLiteral("plotfeed = 1\n"
+                               "plotfar0d = 0 0 1\n"
+                               "plotnear1d = E Z 0 0\n");
+            QString out = body;
+            const int endAt = out.lastIndexOf(QStringLiteral("end"));
+            if (endAt >= 0) out.insert(endAt, extra);
+            QFile dst(dir.filePath("posttab.ofd"));
+            check(dst.open(QIODevice::WriteOnly | QIODevice::Truncate),
+                  "post-e2e: write posttab.ofd");
+            dst.write(out.toUtf8());
+            dst.close();
+
+            for (const QString &exe : { bin, postBin }) {
+                QProcess pr;
+                pr.setWorkingDirectory(dir.path());
+                pr.start(exe, { QStringLiteral("-n"), QStringLiteral("2"),
+                                QStringLiteral("posttab.ofd") });
+                check(pr.waitForFinished(600000), "post-e2e: process finished");
+                check(pr.exitCode() == 0, "post-e2e: exit code 0");
+            }
+
+            // feed.log: 波形とスペクトルの 2 種類が出る
+            const QVector<PostTable> feed =
+                KernelResultReader::readPostTables(dir.filePath("feed.log"));
+            check(feed.size() >= 2, "post-e2e: feed.log has waveform+spectrum");
+            bool sawWave = false, sawSpec = false;
+            for (const PostTable &t : feed) {
+                if (t.xName == QLatin1String("time[sec]")) {
+                    sawWave = true;
+                    check(t.yNames.contains(QStringLiteral("V[V]"))
+                          && t.yNames.contains(QStringLiteral("I[A]")),
+                          "post-e2e: the waveform block carries V and I");
+                    // 時刻は Δt 刻みで単調増加
+                    check(t.x.size() > 2 && t.x.first() == 0.0
+                          && t.x.last() > t.x.first(),
+                          "post-e2e: time starts at 0 and increases");
+                }
+                if (t.xName == QLatin1String("frequency[Hz]")
+                    && t.sourceFile == QLatin1String("feed.log")) {
+                    sawSpec = true;
+                    // dipole.ofd の frequency1 は 2.0 … 3.0 GHz
+                    check(t.x.first() >= 1.9e9 && t.x.last() <= 3.1e9,
+                          "post-e2e: the spectrum spans frequency1");
+                }
+            }
+            check(sawWave && sawSpec,
+                  "post-e2e: both feed blocks are recognised");
+
+            // near1d.log: X/Y は固定、Z が横軸 (線上分布として読めている)
+            const QVector<PostTable> n1 =
+                KernelResultReader::readPostTables(dir.filePath("near1d.log"));
+            check(!n1.isEmpty(), "post-e2e: near1d.log parsed");
+            if (!n1.isEmpty()) {
+                check(n1.first().xName == QLatin1String("Z[m]"),
+                      "post-e2e: near1d x axis is Z (the line direction)");
+                check(n1.first().fixed.contains(QLatin1String("X[m]")),
+                      "post-e2e: the fixed coordinates are reported");
+                // メッシュは z = −0.075 … +0.075 m
+                check(n1.first().x.first() < -0.07
+                      && n1.first().x.last() > 0.07,
+                      "post-e2e: near1d spans the mesh in Z");
+            }
+
+            // far0d.log: 周波数 1 点 (frequency2 = 3 GHz 単点) でも表が残る
+            const QVector<PostTable> f0 =
+                KernelResultReader::readPostTables(dir.filePath("far0d.log"));
+            check(!f0.isEmpty(), "post-e2e: far0d.log parsed");
+            if (!f0.isEmpty())
+                check(f0.first().title.contains(QLatin1String("theta=")),
+                      "post-e2e: far0d heading carries the direction");
+        }
+        g_file = "ofd_integration";
+    }
+
     // ── RCS: カーネルの cross section を読んで Mie 厳密解と比べる ────────
     // 期待値は**本家 OpenFDTD の検証スクリプト** data/sample/sphere_rcs_check.sh
     // が使っている完全導体球の Mie 厳密解 (ka = 3.0, a = 0.05 m):
@@ -13572,6 +13667,115 @@ static void testOptimizeFom()
     }
 }
 
+// ── ofd_post のテキスト表 (ev2d/ev3d を使わないポスト表示の素データ) ────────
+//
+// 下のテキストは実カーネル (ofd_post) の出力そのままの写し。書式を勝手に
+// 整えると「動くはずのパーサ」を検査してしまうので、空白まで含めて写す。
+static void testPostTables()
+{
+    g_file = "post-tables";
+    using ofd::PostTable;
+    using ofd::KernelResultReader::parsePostTables;
+
+    {   // feed.log — 波形 (time) とスペクトル (frequency) の 2 ブロック
+        const QString text = QString::fromLatin1(
+            "feed #1 (waveform)\n"
+            "    No.    time[sec]      V[V]          I[A]\n"
+            "      0   0.00000e+00   1.84208e-06   0.00000e+00\n"
+            "      1   9.30887e-12   3.19735e-06   1.20082e-08\n"
+            "      2   1.86177e-11   5.44861e-06   3.51947e-08\n"
+            "feed #1 (spectrum)\n"
+            " No. frequency[Hz]       V          I\n"
+            "   0   2.00000e+09    1.00000    0.63740\n"
+            "   1   2.05000e+09    0.99249    0.69508\n"
+            "   2   2.10000e+09    0.98366    0.75720\n");
+        const QVector<PostTable> t = parsePostTables(text, "feed.log");
+        check(t.size() == 2, "post: feed.log yields two blocks");
+        if (t.size() == 2) {
+            check(t[0].title == "feed #1 (waveform)"
+                  && t[1].title == "feed #1 (spectrum)",
+                  "post: block titles come from the heading line");
+            check(t[0].sourceFile == "feed.log",
+                  "post: source file is carried on every block");
+            // 先頭の No. 列は捨て、次の変化する列が横軸
+            check(t[0].xName == "time[sec]" && t[0].x.size() == 3,
+                  "post: waveform x axis is time");
+            check(t[0].yNames.size() == 2
+                  && t[0].yNames[0] == "V[V]" && t[0].yNames[1] == "I[A]",
+                  "post: waveform y columns are V and I");
+            check(qFuzzyCompare(t[0].x[1], 9.30887e-12)
+                  && qFuzzyCompare(t[0].y[0][2], 5.44861e-06)
+                  && qFuzzyCompare(t[0].y[1][2], 3.51947e-08),
+                  "post: waveform values land in the right column");
+            check(t[1].xName == "frequency[Hz]"
+                  && qFuzzyCompare(t[1].y[1][0], 0.63740),
+                  "post: spectrum x axis is frequency");
+        }
+    }
+    {   // near1d.log — X/Y は一定で Z だけ動く。**横軸は Z** でなければ
+        //   線上分布にならない (先頭列固定だと X の一点に潰れる)
+        const QString text = QString::fromLatin1(
+            "#1 : frequency[Hz] = 3.00000e+09\n"
+            " No.     X[m]        Y[m]        Z[m]      E[V/m]     Ez[deg]\n"
+            "   0   0.000e+00   0.000e+00  -7.500e-02  3.222e+00   39.671\n"
+            "   1   0.000e+00   0.000e+00  -7.000e-02  3.224e+00   62.385\n"
+            "   2   0.000e+00   0.000e+00  -6.500e-02  3.648e+00   85.033\n");
+        const QVector<PostTable> t = parsePostTables(text, "near1d.log");
+        check(t.size() == 1, "post: near1d.log yields one block");
+        if (t.size() == 1) {
+            check(t[0].xName == "Z[m]",
+                  "post: near1d x axis is the coordinate that varies");
+            check(qFuzzyCompare(t[0].x.first(), -7.5e-2)
+                  && qFuzzyCompare(t[0].x.last(), -6.5e-2),
+                  "post: near1d x values are the Z column");
+            check(t[0].yNames.size() == 2
+                  && t[0].yNames[0] == "E[V/m]" && t[0].yNames[1] == "Ez[deg]",
+                  "post: constant coordinate columns are not plotted");
+            check(t[0].fixed.contains("X[m]=0") && t[0].fixed.contains("Y[m]=0"),
+                  "post: the constant columns are kept as a note, not dropped");
+        }
+    }
+    {   // far0d.log — 周波数 1 点だけの表。全列が「一定」に見えるので、
+        //   一定列を退避すると系列が消えて表ごと落ちる。1 行のときは退避しない
+        const QString text = QString::fromLatin1(
+            "theta=0.000[deg] phi=0.000[deg]\n"
+            "  No. frequency[Hz]    E-abs[dB]  E-theta[dB]\n"
+            "   1    3.00000e+09    -240.0000    -240.0000\n");
+        const QVector<PostTable> t = parsePostTables(text, "far0d.log");
+        check(t.size() == 1, "post: a single-row table is not dropped");
+        if (t.size() == 1) {
+            check(t[0].title == "theta=0.000[deg] phi=0.000[deg]",
+                  "post: far0d heading carries the direction");
+            check(t[0].xName == "frequency[Hz]" && t[0].yNames.size() == 2,
+                  "post: single-row table keeps every column");
+            check(t[0].fixed.isEmpty(),
+                  "post: nothing is demoted to a note when there is one row");
+        }
+    }
+    {   // 列名がデータ列より少ないとき (カーネルが列を増やした場合) も落ちない
+        const QString text = QString::fromLatin1(
+            "block\n"
+            " No.  x   a\n"
+            "   0  1.0  2.0  3.0\n"
+            "   1  2.0  4.0  9.0\n");
+        const QVector<PostTable> t = parsePostTables(text, "x.log");
+        check(t.size() == 1 && t.first().yNames.size() == 2,
+              "post: extra data columns get generated names");
+        if (t.size() == 1)
+            check(t.first().yNames[1].startsWith("col"),
+                  "post: the generated name is visibly generated");
+    }
+    {   // 表が無いテキスト・空テキストは空を返す (残骸を表示しない)
+        check(parsePostTables(QStringLiteral("no tables here\n"), "x").isEmpty(),
+              "post: text without a numeric table yields nothing");
+        check(parsePostTables(QString(), "x").isEmpty(),
+              "post: empty text yields nothing");
+        // 数値行が 1 列しかないものは x/y に分けられないので表にしない
+        check(parsePostTables(QStringLiteral("t\n No.\n 0\n 1\n"), "x").isEmpty(),
+              "post: a single-column table is not a plot");
+    }
+}
+
 // ── Δt (CFL) と solver 行の配線 (SolverRegionTab が書く先) ─────────────────
 //
 // ソルバ領域タブの「シミュレーション時間」節は Δt を CFL 係数から作って
@@ -14665,6 +14869,7 @@ int main(int argc, char *argv[])
     testUnwiredNotesHaveSubject();
     testOptimizeFom();
     testCourantTimestep();
+    testPostTables();
     testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();

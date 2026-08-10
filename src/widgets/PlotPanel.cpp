@@ -4,6 +4,8 @@
 #include "../em/Reflection.h"
 #include "../I18n.h"
 
+#include <QCheckBox>
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -28,6 +30,21 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ppb_mode_freq", "周波数特性", "Frequency");
     ofd::I18n::reg("ppb_mode_smith", "スミスチャート", "Smith chart");
     ofd::I18n::reg("ppb_mode_far", "放射パターン", "Pattern");
+    ofd::I18n::reg("ppb_mode_post", "ポスト表", "Post tables");
+    ofd::I18n::reg("ppb_post_none_tip",
+        "ポスト処理のテキスト表がまだありません "
+        "(ポスト(1)/(2) の項目を有効にして実行すると feed.log / point.log / "
+        "far0d.log / near1d.log が出ます)",
+        "No post-processing tables yet (enable items on Post-Proc (1)/(2) and "
+        "run to produce feed.log / point.log / far0d.log / near1d.log)");
+    ofd::I18n::reg("ppb_post_logy", "対数 Y 軸", "Log Y axis");
+    ofd::I18n::reg("pp_post_title", "ポスト処理の表 (%1)",
+                   "Post-processing table (%1)");
+    ofd::I18n::reg("pp_post_hint",
+        "ev2d / ev3d を使わず、ofd_post が出したテキスト表をそのまま描いています。"
+        "列の意味はカーネルの出力どおりです。",
+        "Drawn directly from the text tables written by ofd_post - no ev2d or "
+        "ev3d involved. The columns are exactly as the kernel wrote them.");
     ofd::I18n::reg("ppb_smith_none_tip",
         "計算を実行すると <kernel>.log の給電点表から Γ = (Z−Z0)/(Z+Z0) を"
         "描きます",
@@ -105,11 +122,21 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     m_btnFreq  = modeBtn("ppb_mode_freq");
     m_btnSmith = modeBtn("ppb_mode_smith");
     m_btnFar   = modeBtn("ppb_mode_far");
+    m_btnPost  = modeBtn("ppb_mode_post");
     btnRow->addWidget(m_btnWave);
     btnRow->addWidget(m_btnConv);
     btnRow->addWidget(m_btnFreq);
     btnRow->addWidget(m_btnSmith);
     btnRow->addWidget(m_btnFar);
+    btnRow->addWidget(m_btnPost);
+    // ポスト表モードの表選択と対数軸 (このモードのときだけ出す)
+    m_tableSel = new QComboBox(this);
+    m_tableSel->setMinimumWidth(200);
+    m_tableSel->setVisible(false);
+    m_logY = new QCheckBox(I18n::tr("ppb_post_logy"), this);
+    m_logY->setVisible(false);
+    btnRow->addWidget(m_tableSel);
+    btnRow->addWidget(m_logY);
     btnRow->addStretch(1);
     m_csvBtn = new QToolButton(this);
     m_csvBtn->setText(QStringLiteral("CSV"));
@@ -128,6 +155,10 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     connect(m_btnFreq, &QToolButton::clicked, this, &PlotPanel::showFreqChar);
     connect(m_btnSmith, &QToolButton::clicked, this, &PlotPanel::showSmith);
     connect(m_btnFar, &QToolButton::clicked, this, &PlotPanel::showFarPattern);
+    connect(m_btnPost, &QToolButton::clicked, this, &PlotPanel::showPostTable);
+    connect(m_tableSel, &QComboBox::currentIndexChanged, this,
+            [this] { update(); });
+    connect(m_logY, &QCheckBox::toggled, this, [this] { update(); });
     connect(m_csvBtn, &QToolButton::clicked, this, &PlotPanel::saveCsvDialog);
     connect(m_pngBtn, &QToolButton::clicked, this, &PlotPanel::savePngDialog);
     updateModeButtons();
@@ -160,6 +191,9 @@ bool PlotPanel::modeAllowed(Mode m) const
     case Pattern:
         // far1d.log の放射パターン — 音響/水中には無い
         return m_domain == Domain::EM || m_domain == Domain::Optical;
+    case PostLog:
+        // ofd_post のテキスト表 — 出るかどうかは結果次第でドメインを問わない
+        return true;
     case Convergence:
     default:
         return true;    // 収束履歴は全ドメイン共通
@@ -174,6 +208,7 @@ void PlotPanel::updateDomainVisibility()
     m_btnFreq->setVisible(modeAllowed(FreqChar));
     m_btnSmith->setVisible(modeAllowed(Smith));
     m_btnFar->setVisible(modeAllowed(Pattern));
+    m_btnPost->setVisible(modeAllowed(PostLog));
     // 隠したモードが選択中だった場合は表示可能なモードへフォールバック
     if (!modeAllowed(m_mode))
         m_mode = modeAllowed(Waveform) ? Waveform : Convergence;
@@ -208,6 +243,12 @@ void PlotPanel::showFarPattern()
     else updateModeButtons();
 }
 
+void PlotPanel::showPostTable()
+{
+    if (hasPostTables()) setMode(PostLog);
+    else updateModeButtons();
+}
+
 void PlotPanel::updateModeButtons()
 {
     m_btnWave->setChecked(m_mode == Waveform);
@@ -215,6 +256,7 @@ void PlotPanel::updateModeButtons()
     m_btnFreq->setChecked(m_mode == FreqChar);
     m_btnSmith->setChecked(m_mode == Smith);
     m_btnFar->setChecked(m_mode == Pattern);
+    m_btnPost->setChecked(m_mode == PostLog);
     // 結果系モードはデータが届くまで無効 (未実装ではなく「まだ結果が無い」)
     m_btnFreq->setEnabled(hasFreqChar());
     m_btnFreq->setToolTip(hasFreqChar() ? QString()
@@ -225,6 +267,13 @@ void PlotPanel::updateModeButtons()
     m_btnFar->setEnabled(hasFarPattern());
     m_btnFar->setToolTip(hasFarPattern() ? QString()
                                          : I18n::tr("ppb_far_none_tip"));
+    m_btnPost->setEnabled(hasPostTables());
+    m_btnPost->setToolTip(hasPostTables() ? QString()
+                                          : I18n::tr("ppb_post_none_tip"));
+    // 表選択と対数軸はポスト表モードのときだけ意味がある
+    const bool post = (m_mode == PostLog) && hasPostTables();
+    m_tableSel->setVisible(post);
+    m_logY->setVisible(post);
 }
 
 void PlotPanel::setRunResults(const QVector<FeedSweep> &sweeps,
@@ -240,11 +289,32 @@ void PlotPanel::setRunResults(const QVector<FeedSweep> &sweeps,
     update();
 }
 
+// ofd_post のテキスト表を受け取る。ev.ev2 の有無とは無関係 — こちらは
+// 「作図が無くても結果が見える」ための経路なので、表があれば必ず出す。
+void PlotPanel::setPostTables(const QVector<PostTable> &tables)
+{
+    m_tables = tables;
+    m_tableSel->blockSignals(true);
+    m_tableSel->clear();
+    for (const PostTable &t : m_tables) {
+        QString label = t.sourceFile;
+        if (!t.title.isEmpty())
+            label += QStringLiteral(" — ") + t.title;
+        m_tableSel->addItem(label);
+    }
+    m_tableSel->setCurrentIndex(m_tables.isEmpty() ? -1 : 0);
+    m_tableSel->blockSignals(false);
+    updateModeButtons();
+    update();
+}
+
 void PlotPanel::clearRunResults()
 {
     m_sweeps.clear();
     m_patterns.clear();
-    if (m_mode == FreqChar || m_mode == Smith || m_mode == Pattern)
+    setPostTables(QVector<PostTable>());
+    if (m_mode == FreqChar || m_mode == Smith || m_mode == Pattern
+        || m_mode == PostLog)
         m_mode = Convergence;    // 実行中は収束を見せる
     updateModeButtons();
     update();
@@ -255,7 +325,8 @@ void PlotPanel::saveCsvDialog()
     const char *suggest =
         m_mode == FreqChar ? "feed_response.csv" :
         m_mode == Smith ? "reflection.csv" :
-        m_mode == Pattern ? "far_pattern.csv" : "convergence.csv";
+        m_mode == Pattern ? "far_pattern.csv" :
+        m_mode == PostLog ? "post_table.csv" : "convergence.csv";
     const QString path = QFileDialog::getSaveFileName(
         this, I18n::tr("ppb_csv_tip"), QString::fromLatin1(suggest),
         "CSV (*.csv)");
@@ -270,7 +341,7 @@ void PlotPanel::savePngDialog()
     // ボタンを写し込まないため一時的に隠して grab する
     // (モードボタンはドメインで出し分けているので元の可視状態へ戻す)
     QToolButton *btns[] = { m_csvBtn, m_pngBtn, m_btnWave, m_btnConv,
-                            m_btnFreq, m_btnSmith, m_btnFar };
+                            m_btnFreq, m_btnSmith, m_btnFar, m_btnPost };
     const int n = int(sizeof(btns) / sizeof(btns[0]));
     QVector<bool> vis(n);
     for (int i = 0; i < n; ++i) {
@@ -333,6 +404,19 @@ bool PlotPanel::exportCsv(const QString &path) const
             for (int i = 0; i < pat.deg.size(); ++i)
                 out << pat.plane << ',' << pat.freqHz << ',' << pat.deg[i]
                     << ',' << pat.eAbsDb[i] << '\n';
+    } else if (m_mode == PostLog && !m_tables.isEmpty()) {
+        // 表示中の表をそのまま出す。列名はカーネルの出力どおり
+        const int i = qBound(0, m_tableSel->currentIndex(),
+                             int(m_tables.size()) - 1);
+        const PostTable &t = m_tables[i];
+        out << t.xName;
+        for (const QString &n : t.yNames) out << ',' << n;
+        out << '\n';
+        for (int r = 0; r < t.x.size(); ++r) {
+            out << t.x[r];
+            for (const QVector<double> &c : t.y) out << ',' << c[r];
+            out << '\n';
+        }
     } else {
         // 音響/水中は電磁界 (E/H) ではなく音圧/粒子速度 (p/v) の平均
         const bool acoustic = (m_domain == Domain::Acoustic
@@ -580,6 +664,83 @@ void PlotPanel::paintFarPattern(QPainter &p, const QRectF &plot,
                  QString::number(m_patterns.first().freqHz, 'g', 4)));
 }
 
+// ── ofd_post のテキスト表をそのまま描く (ev2d / ev3d を介さない経路) ────────
+//
+// 列の意味はカーネルが決めたものなので、GUI は解釈を足さずに列名を凡例に
+// 出すだけにする。単位の違う列 (V[V] と I[A]、E-abs[dB] と degree など) が
+// 同じ表に並ぶので、**縦軸は列ごとに自分の最小最大へ正規化**して重ねる。
+// 共通の縦軸に押し込むと桁の小さい列が潰れて「出ていない」ように見える。
+// 各列のレンジは凡例に数値で書くので、読み取りに必要な情報は失われない。
+void PlotPanel::paintPostTable(QPainter &p, const QRectF &plot)
+{
+    const int idx = qBound(0, m_tableSel->currentIndex(),
+                           int(m_tables.size()) - 1);
+    const PostTable &t = m_tables[idx];
+    if (!t.isValid()) return;
+
+    QString head = I18n::tr("pp_post_title").arg(t.sourceFile);
+    if (!t.title.isEmpty()) head += QStringLiteral("  ") + t.title;
+    if (!t.fixed.isEmpty()) head += QStringLiteral("  [") + t.fixed
+                                  + QStringLiteral("]");
+    p.drawText(QPointF(plot.left(), plot.top() - 8), head);
+
+    double xmin = t.x.first(), xmax = t.x.first();
+    for (double v : t.x) { xmin = std::min(xmin, v); xmax = std::max(xmax, v); }
+    if (xmax <= xmin) xmax = xmin + 1.0;
+
+    const bool logY = m_logY->isChecked();
+    const QColor colors[6] = { QColor("#C42B1C"), QColor("#0078D4"),
+                               QColor("#2E8B57"), QColor("#C08030"),
+                               QColor("#8A2BE2"), QColor("#008080") };
+    qreal legendY = plot.top() + 16;
+    for (int c = 0; c < t.y.size(); ++c) {
+        const QVector<double> &col = t.y[c];
+        // 対数軸は正の値だけ (0 や負を含む列は線形のまま — 落とさない)
+        bool allPositive = true;
+        for (double v : col) if (v <= 0) { allPositive = false; break; }
+        const bool lg = logY && allPositive;
+
+        double lo = 1e300, hi = -1e300;
+        for (double v : col) {
+            const double w = lg ? std::log10(v) : v;
+            lo = std::min(lo, w); hi = std::max(hi, w);
+        }
+        if (hi <= lo) hi = lo + 1.0;
+
+        QPainterPath path;
+        for (int i = 0; i < col.size(); ++i) {
+            const double x = plot.left()
+                + plot.width() * (t.x[i] - xmin) / (xmax - xmin);
+            const double w = lg ? std::log10(col[i]) : col[i];
+            const double y = plot.bottom()
+                - plot.height() * (w - lo) / (hi - lo) * 0.92;
+            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        const QColor cc = colors[c % 6];
+        p.setPen(QPen(cc, 2));
+        p.drawPath(path);
+        p.drawText(QPointF(plot.right() - 250, legendY),
+                   QStringLiteral("%1: %2 … %3%4")
+                       .arg(t.yNames.value(c))
+                       .arg(QString::number(lg ? std::pow(10.0, lo) : lo,
+                                            'g', 4))
+                       .arg(QString::number(lg ? std::pow(10.0, hi) : hi,
+                                            'g', 4))
+                       .arg(lg ? QStringLiteral(" (log)") : QString()));
+        legendY += 15;
+    }
+
+    p.setPen(palette().text().color());
+    p.drawText(QPointF(plot.left(), plot.bottom() + 16),
+        QStringLiteral("%1: %2 … %3   (%4 点)")
+            .arg(t.xName,
+                 QString::number(xmin, 'g', 4),
+                 QString::number(xmax, 'g', 4))
+            .arg(t.x.size()));
+    p.drawText(QPointF(plot.left(), plot.bottom() + 32),
+               I18n::tr("pp_post_hint"));
+}
+
 void PlotPanel::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -622,6 +783,10 @@ void PlotPanel::paintEvent(QPaintEvent *)
     }
     if (m_mode == Pattern && hasFarPattern()) {
         paintFarPattern(p, plot, accent);
+        return;
+    }
+    if (m_mode == PostLog && hasPostTables()) {
+        paintPostTable(p, plot);
         return;
     }
 

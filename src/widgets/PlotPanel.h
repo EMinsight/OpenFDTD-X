@@ -17,6 +17,8 @@
 #include "../core/Domain.h"
 #include "../io/KernelResultReader.h"
 
+class QCheckBox;
+class QComboBox;
 class QToolButton;
 
 namespace ofd {
@@ -39,12 +41,18 @@ public:
     bool hasFreqChar() const { return !m_sweeps.isEmpty(); }
     bool hasFarPattern() const { return !m_patterns.isEmpty(); }
 
+    // ofd_post の番号付き表 (feed.log / point.log / far0d.log / near1d.log)。
+    // ev2d / ev3d を介さずにポスト処理の結果を出すための経路。
+    void setPostTables(const QVector<PostTable> &tables);
+    bool hasPostTables() const { return !m_tables.isEmpty(); }
+
 public slots:
     void showWaveform();
     void showConvergence();
     void showFreqChar();
     void showSmith();
     void showFarPattern();
+    void showPostTable();
     void clearConvergence();
     void addConvergencePoint(int step, double e, double h);
     bool exportCsv(const QString &path) const;
@@ -60,7 +68,7 @@ protected:
 
 private:
     // Pattern は構造体 FarPattern との名前衝突を避けた列挙名
-    enum Mode { Waveform, Convergence, FreqChar, Smith, Pattern };
+    enum Mode { Waveform, Convergence, FreqChar, Smith, Pattern, PostLog };
 
     void setMode(Mode m);
     bool modeAllowed(Mode m) const;   // 現在のドメインで意味を持つモードか
@@ -72,6 +80,7 @@ private:
     void paintSmith(QPainter &p, const QRectF &plot, const QColor &accent);
     void paintFarPattern(QPainter &p, const QRectF &plot,
                          const QColor &accent);
+    void paintPostTable(QPainter &p, const QRectF &plot);
 
     Project *m_project;
     Domain   m_domain = Domain::EM;
@@ -81,12 +90,15 @@ private:
     QToolButton *m_pngBtn = nullptr;
     QToolButton *m_btnWave = nullptr, *m_btnConv = nullptr,
                 *m_btnFreq = nullptr, *m_btnSmith = nullptr,
-                *m_btnFar = nullptr;
+                *m_btnFar = nullptr, *m_btnPost = nullptr;
+    QComboBox   *m_tableSel = nullptr;   // PostLog モードの表選択
+    QCheckBox   *m_logY = nullptr;       // PostLog モードの対数 Y 軸
 
     QVector<int>    m_steps;
     QVector<double> m_eAvg, m_hAvg;
     QVector<FeedSweep>  m_sweeps;
     QVector<FarPattern> m_patterns;
+    QVector<PostTable>  m_tables;
 };
 
 } // namespace ofd
