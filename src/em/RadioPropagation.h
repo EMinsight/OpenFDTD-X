@@ -33,6 +33,8 @@
 #ifndef OFD_EM_RADIOPROPAGATION_H
 #define OFD_EM_RADIOPROPAGATION_H
 
+#include <vector>
+
 namespace ofd {
 namespace em {
 namespace propagation {
@@ -100,6 +102,39 @@ double arrayGainDb(int elements);
 // 仮定した**上限**。実チャネルの相関・ランク落ちは含まない。
 // Nt = Nr = 1 なら shannonCapacity と一致する。
 double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx);
+
+// 受信電力のカバレッジ格子 (受信点を「格子」にしたときの表示の実体)。
+//
+// 送信点を格子の中心に置き、受信点を水平面 (x, y) 上へ並べて 2 波モデルで
+// 受信電力 [dBm] を求める。**アンテナ指向性は含まない** (等方 + 受信利得の
+// 一定加算)。したがって等方円対称になり、遮蔽物の影は出ない — 見通し内の
+// 距離依存を見るための図であることを画面に明示すること。
+struct CoverageGrid {
+    int n = 0;                  // 1 辺の点数 (n×n)
+    double halfSpan_m = 0.0;    // 中心からの半幅 [m]
+    std::vector<double> dbm;    // n*n, row-major。[0] は (x,y) = (−half, −half)
+    double minDbm = 0.0, maxDbm = 0.0;
+
+    bool valid() const
+    {
+        return n > 0 && halfSpan_m > 0.0
+            && dbm.size() == std::size_t(n) * std::size_t(n);
+    }
+    // (ix, iy) の座標 [m] (中心が 0)
+    double coord(int i) const
+    {
+        return (n > 1) ? (-halfSpan_m + 2.0 * halfSpan_m * i / (n - 1)) : 0.0;
+    }
+};
+
+// カバレッジ格子を作る。距離は minDistance_m で下限を切る (原点は距離 0 で
+// 発散するため、また 2 波モデルは遠方界の式なので近すぎる点は意味を持たない)。
+// n ≤ 0 / halfSpan ≤ 0 / 周波数 ≤ 0 なら valid() == false の空を返す。
+CoverageGrid coverageMap(double halfSpan_m, int n,
+                         double hTx_m, double hRx_m, double freq_hz,
+                         double eirpDbm, double rxGainDbi,
+                         double reflection = 1.0,
+                         double minDistance_m = 1.0);
 
 } // namespace propagation
 } // namespace em

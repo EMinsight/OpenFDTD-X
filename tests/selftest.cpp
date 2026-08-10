@@ -10623,6 +10623,79 @@ static void testRadioPropagation()
               && pr::mimoCapacity(b, snr, 4, 0) == 0.0,
               "prop: no bandwidth or no antenna yields 0 (not computed)");
     }
+
+    // ── カバレッジ格子 ────────────────────────────────────────────────────
+    {
+        const double half = 200.0, ht = 10.0, hr = 1.5, f = 3.5e9;
+        const double eirp = 30.0, grx = 2.0, refl = 1.0, minD = 1.0;
+        const int n = 41;                     // 奇数 = 中心の点を含む
+        const pr::CoverageGrid g =
+            pr::coverageMap(half, n, ht, hr, f, eirp, grx, refl, minD);
+        check(g.valid() && g.n == n
+              && g.dbm.size() == std::size_t(n) * std::size_t(n),
+              "coverage: the grid has n*n points");
+        // 座標は中心が 0、両端が ±half
+        check(std::fabs(g.coord(0) + half) < 1e-12
+              && std::fabs(g.coord(n - 1) - half) < 1e-12
+              && std::fabs(g.coord(n / 2)) < 1e-12,
+              "coverage: coordinates run from -half to +half through 0");
+
+        // **格子の各点は直接評価と一致しなければならない** — 図が別物の式で
+        // 描かれていないことの検査 (ここがずれたら図は嘘になる)
+        bool same = true;
+        for (int iy = 0; iy < n && same; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = g.coord(ix), y = g.coord(iy);
+                double d = std::sqrt(x * x + y * y);
+                if (d < minD) d = minD;
+                const double want = pr::receivedPowerDbm(
+                    eirp, pr::twoRayPathLossDb(d, ht, hr, f, refl), grx);
+                if (std::fabs(g.dbm[std::size_t(iy) * n + ix] - want) > 1e-12)
+                    { same = false; break; }
+            }
+        check(same, "coverage: every cell equals the two-ray model directly");
+
+        // 送信点が中央なので、原点対称・軸対称でなければならない
+        bool sym = true;
+        for (int iy = 0; iy < n && sym; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double a = g.dbm[std::size_t(iy) * n + ix];
+                const double b2 =
+                    g.dbm[std::size_t(n - 1 - iy) * n + (n - 1 - ix)];
+                if (std::fabs(a - b2) > 1e-9) { sym = false; break; }
+            }
+        check(sym, "coverage: the map is symmetric about the transmitter");
+
+        // **最大は中心とは限らない。** ブレークポイント距離
+        // d_bp = 4·ht·hr/λ ≈ 700 m に対して図の半幅は 200 m なので、格子は
+        // まるごと 2 波の干渉領域に入る。最大は干渉が強め合うリング上に来る。
+        // (「ピークは送信点」と書いた最初のテストはここで落ちた — 図の見た目
+        //  についての思い込みであって、モデルの主張ではなかった。)
+        check(pr::breakpointDistance(ht, hr, f) > half,
+              "coverage: the map lies inside the two-ray interference region");
+        // 言えるのは「近い方が強い」と「包絡線が距離とともに落ちる」こと
+        const double centre = g.dbm[std::size_t(n / 2) * n + n / 2];
+        check(centre > g.dbm[0] && centre > g.dbm[g.dbm.size() - 1],
+              "coverage: the centre beats the far corners");
+        double innerMax = -1e300, outerMax = -1e300;
+        for (int iy = 0; iy < n; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = g.coord(ix), y = g.coord(iy);
+                const double r = std::sqrt(x * x + y * y);
+                const double v = g.dbm[std::size_t(iy) * n + ix];
+                if (r <= 0.25 * half) innerMax = std::max(innerMax, v);
+                if (r >= 0.75 * half) outerMax = std::max(outerMax, v);
+            }
+        check(innerMax > outerMax,
+              "coverage: the envelope falls off with distance");
+        check(g.minDbm < g.maxDbm, "coverage: the map has a real range");
+
+        // 不正な入力からは空を返す (図を描かせない)
+        check(!pr::coverageMap(half, 0, ht, hr, f, eirp, grx).valid()
+              && !pr::coverageMap(0.0, n, ht, hr, f, eirp, grx).valid()
+              && !pr::coverageMap(half, n, ht, hr, 0.0, eirp, grx).valid(),
+              "coverage: bad inputs yield an invalid grid");
+    }
 }
 
 // ── 分散モデルのフィット (src/optics/DispersionFit) ─────────────────────────
