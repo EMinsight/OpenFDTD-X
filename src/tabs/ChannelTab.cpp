@@ -186,8 +186,41 @@ const bool s_i18n = [] {
               "selections above do not enter the calculation.");
     I18n::reg("chn_uw_env", "環境モデルの選択とそのパラメータ",
               "the environment model and its parameters");
-    I18n::reg("chn_uw_txrx", "送受信機の設定",
-              "the transmitter / receiver settings");
+    I18n::reg("chn_m_array", "アレイ利得 (ビームフォーミング)",
+              "Array gain (beamforming)");
+    I18n::reg("chn_m_array_note",
+              "10log10(N) — N 素子を同相合成した上限。"
+              "単一素子に対する増分なので、EIRP に既にアレイ分が入っていれば"
+              "二重計上になる (上の受信電力には加えていません)",
+              "10log10(N) - the upper bound for N elements combined in phase. "
+              "It is the increment over a single element, so adding it on top "
+              "of an EIRP that already includes the array double-counts "
+              "(it is not added to the received power above)");
+    I18n::reg("chn_m_array_off",
+              "ビームフォーミングのチェックが外れています (単一素子)",
+              "Beamforming is unchecked (single element)");
+    I18n::reg("chn_m_mimo", "空間多重の容量上限 (MIMO)",
+              "Spatial-multiplexing capacity (MIMO)");
+    I18n::reg("chn_m_mimo_note",
+              "min(Nt,Nr)·B·log2(1+SNR/Nt) — %1×%2、送信電力を Nt 本へ等分し"
+              "等利得な固有モードが立つと仮定した上限。"
+              "実チャネルの相関やランク落ちは含みません",
+              "min(Nt,Nr)*B*log2(1+SNR/Nt) - %1x%2, an upper bound assuming the "
+              "transmit power is split evenly over Nt and equal-gain "
+              "eigenmodes exist. Channel correlation and rank loss are not "
+              "included");
+    I18n::reg("chn_m_mimo_off",
+              "MIMO のチェックが外れています (1×1 = 上の Shannon 容量と同じ)",
+              "MIMO is unchecked (1x1 - same as the Shannon capacity above)");
+    I18n::reg("chn_uw_txrx", "基地局/AP の台数と受信点の種別",
+              "the number of base stations / APs and the receive-point kind");
+    I18n::reg("chn_uw_txrx_ok",
+              "MIMO 4×4 とビームフォーミングのチェック "
+              "— 下のチャネル特性表の「アレイ利得」「空間多重の容量上限」に"
+              "反映されます",
+              "the MIMO 4x4 and beamforming checkboxes - they drive the "
+              "\"array gain\" and \"spatial-multiplexing capacity\" rows of "
+              "the channel table below");
     return true;
 }();
 
@@ -281,11 +314,13 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
 // note が計算値を含む行は書式引数を持つので、行ごとに fillMetricsTable で作る。
 enum MetricRow {
     RowFspl = 0, RowTwoRay, RowBreak, RowRx, RowN, RowK, RowTau,
-    RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity, RowCount
+    RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity,
+    RowArrayGain, RowMimoCap, RowCount
 };
 const char *kMetricNameKey[RowCount] = {
     "chn_m_fspl", "chn_m_2ray", "chn_m_bp", "chn_m_rx", "chn_m_n", "chn_m_k",
     "chn_m_tau", "chn_m_ds", "chn_m_as", "chn_m_noise", "chn_m_cap",
+    "chn_m_array", "chn_m_mimo",
 };
 
 // 選択した周波数帯の代表中心周波数 [GHz] (モックの帯域区分に対応)。
@@ -392,8 +427,10 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
                        segRow(sx, &m_rxKind, { I18n::tr("chn_rx_grid"),
                                                I18n::tr("chn_rx_route"),
                                                I18n::tr("chn_rx_points") }, 0));
-    // 送受信フォームはどこにも読まれていない (未実装)
-    sx->vbox()->addWidget(tabhelp::unwiredNote(sx, I18n::tr("chn_uw_txrx")));
+    // AP 台数と受信点の種別はどこにも読まれていない。MIMO / ビームフォーミング
+    // はチャネル特性表の 2 行に効くので、注記に「反映されるもの」を併記する
+    sx->vbox()->addWidget(tabhelp::unwiredNote(sx, I18n::tr("chn_uw_txrx"),
+                                               I18n::tr("chn_uw_txrx_ok")));
     v->addWidget(sx);
 
     // ── リンク条件 / Link budget inputs (チャネル特性の計算入力) ────────────
@@ -429,6 +466,9 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
         connect(r.edit, &QLineEdit::textChanged,
                 this, &ChannelTab::recompute);
     }
+    // MIMO / ビームフォーミングもチャネル特性表に効くので再計算させる
+    connect(m_mimo, &QCheckBox::toggled, this, &ChannelTab::recompute);
+    connect(m_beamforming, &QCheckBox::toggled, this, &ChannelTab::recompute);
     m_inputError = new QLabel(sl);
     m_inputError->setWordWrap(true);
     m_inputError->setStyleSheet("color:#C0392B; font-size:11px;");
@@ -572,4 +612,19 @@ void ChannelTab::recompute()
            I18n::tr("chn_m_noise_note"));
     setRow(RowCapacity, QStringLiteral("%1 Mbps").arg(cap / 1e6, 0, 'f', 1),
            I18n::tr("chn_m_cap_note"));
+
+    // ── 送受信セクションのチェックが効く 2 行 ──────────────────────────────
+    // 「MIMO 4×4」はラベルどおり 4 送信 × 4 受信。外せば 1×1 (SISO)。
+    // ビームフォーミングのアレイ素子数は MIMO の送信本数に合わせる。
+    const int nT = m_mimo->isChecked() ? 4 : 1;
+    const int nR = nT;
+    const double ag = prop::arrayGainDb(m_beamforming->isChecked() ? nT : 1);
+    setRow(RowArrayGain, QStringLiteral("%1 dB").arg(ag, 0, 'f', 2),
+           m_beamforming->isChecked() ? I18n::tr("chn_m_array_note")
+                                      : I18n::tr("chn_m_array_off"));
+    const double mcap = prop::mimoCapacity(bw, snr, nT, nR);
+    setRow(RowMimoCap, QStringLiteral("%1 Mbps").arg(mcap / 1e6, 0, 'f', 1),
+           m_mimo->isChecked()
+               ? I18n::tr("chn_m_mimo_note").arg(nT).arg(nR)
+               : I18n::tr("chn_m_mimo_off"));
 }

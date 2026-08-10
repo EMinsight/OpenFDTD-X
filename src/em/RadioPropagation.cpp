@@ -105,6 +105,22 @@ double shannonCapacity(double bandwidth_hz, double snrDb)
     return bandwidth_hz * std::log2(1.0 + snr);
 }
 
+double arrayGainDb(int elements)
+{
+    if (elements < 1) return 0.0;
+    return 10.0 * std::log10(double(elements));
+}
+
+double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx)
+{
+    if (!(bandwidth_hz > 0.0)) return 0.0;
+    if (nTx < 1 || nRx < 1) return 0.0;
+    const int streams = (nTx < nRx) ? nTx : nRx;
+    // 送信電力を Nt 本へ等分するので、1 本あたりの SNR は SNR/Nt
+    const double snr = std::pow(10.0, snrDb / 10.0) / double(nTx);
+    return double(streams) * bandwidth_hz * std::log2(1.0 + snr);
+}
+
 } // namespace propagation
 } // namespace em
 } // namespace ofd

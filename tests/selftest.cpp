@@ -10581,6 +10581,48 @@ static void testRadioPropagation()
         check(std::fabs(pr::receivedPowerDbm(30.0, 100.0, 3.0) + 67.0) < 1e-12,
               "prop: received power is EIRP - loss + gain");
     }
+
+    // ── アレイ利得 10log10(N) ──────────────────────────────────────────────
+    {
+        check(pr::arrayGainDb(1) == 0.0,
+              "prop: a single element has no array gain");
+        // 素子数 2 倍で +3.01 dB (電力比なので 10log10 — 20log10 なら +6.02)
+        check(std::fabs(pr::arrayGainDb(2) - 3.0102999566398120) < 1e-12,
+              "prop: doubling the elements adds 3.01 dB (10log10, not 20log10)");
+        check(std::fabs(pr::arrayGainDb(4) - 2.0 * pr::arrayGainDb(2)) < 1e-12,
+              "prop: array gain is logarithmic in the element count");
+        check(pr::arrayGainDb(0) == 0.0 && pr::arrayGainDb(-3) == 0.0,
+              "prop: a non-positive element count yields 0 (not computed)");
+    }
+
+    // ── MIMO 空間多重の容量上限 ────────────────────────────────────────────
+    {
+        const double b = 1.0e6, snr = 20.0;
+        // 1×1 は Shannon 容量と厳密に一致しなければならない
+        check(std::fabs(pr::mimoCapacity(b, snr, 1, 1)
+                        - pr::shannonCapacity(b, snr)) < 1e-9,
+              "prop: 1x1 MIMO equals the Shannon capacity");
+        // min(Nt,Nr)·B·log2(1 + SNR/Nt) — 定義式そのもの
+        const double want = 4.0 * b
+            * std::log2(1.0 + std::pow(10.0, snr / 10.0) / 4.0);
+        check(std::fabs(pr::mimoCapacity(b, snr, 4, 4) - want) < 1e-6,
+              "prop: 4x4 follows min(Nt,Nr)*B*log2(1+SNR/Nt)");
+        // ストリーム数は少ない側で決まる (4×2 は 2 ストリーム)
+        const double want42 = 2.0 * b
+            * std::log2(1.0 + std::pow(10.0, snr / 10.0) / 4.0);
+        check(std::fabs(pr::mimoCapacity(b, snr, 4, 2) - want42) < 1e-6,
+              "prop: the stream count is min(Nt,Nr)");
+        // 高 SNR では 4×4 が 1×1 の 4 倍へ漸近する (電力等分の -6 dB を含めても
+        // 多重利得が勝つ)。低 SNR では逆に電力等分の損が効く — 向きを固定する
+        check(pr::mimoCapacity(b, 40.0, 4, 4) > 3.0 * pr::shannonCapacity(b, 40.0),
+              "prop: at high SNR spatial multiplexing wins");
+        check(pr::mimoCapacity(b, -10.0, 4, 4) < 2.0 * pr::shannonCapacity(b, -10.0),
+              "prop: at low SNR splitting the power costs more than it gains");
+        check(pr::mimoCapacity(0.0, snr, 4, 4) == 0.0
+              && pr::mimoCapacity(b, snr, 0, 4) == 0.0
+              && pr::mimoCapacity(b, snr, 4, 0) == 0.0,
+              "prop: no bandwidth or no antenna yields 0 (not computed)");
+    }
 }
 
 // ── 分散モデルのフィット (src/optics/DispersionFit) ─────────────────────────

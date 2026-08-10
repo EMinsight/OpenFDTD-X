@@ -18,6 +18,13 @@
 //       Bell Syst. Tech. J. 27, 379-423 (1948)。C = B·log2(1+S/N)。
 //   [5] IEEE Std 1149 系で慣用の標準雑音温度 T0 = 290 K。
 //       雑音電力 N = kT0B (k = 1.380649e-23 J/K, CODATA 2018)。
+//   [6] C. A. Balanis, "Antenna Theory: Analysis and Design", 4th ed.,
+//       Wiley (2016), §6.3 (N 素子等間隔アレイの指向性)。
+//   [7] I. E. Telatar, "Capacity of multi-antenna Gaussian channels",
+//       Eur. Trans. Telecommun. 10(6), 585-595 (1999)。
+//   [8] G. J. Foschini and M. J. Gans, "On limits of wireless communications
+//       in a fading environment when using multiple antennas",
+//       Wireless Pers. Commun. 6, 311-335 (1998)。
 //
 // 適用範囲 (GUI にも明示すること):
 //   - two-ray モデルは「平面大地・完全反射 (Γ = −1)・等方アンテナ」を仮定した
@@ -80,6 +87,19 @@ double thermalNoiseDbm(double bandwidth_hz, double noiseFigureDb);
 // Shannon 容量 [bit/s] = B·log2(1 + SNR) ([4])。B ≤ 0 なら 0。
 // SISO (単一入出力) の上限であり、MIMO の多重利得は含まない。
 double shannonCapacity(double bandwidth_hz, double snrDb);
+
+// N 素子アレイの最大アレイ利得 [dB] = 10·log10(N) ([6] §6.3)。
+// 素子が無損失・等間隔・同振幅で、ボアサイト方向へ同相合成した場合の上限。
+// **単一素子の利得に対する増分**なので、EIRP に既にアレイ分が入っていれば
+// 二重計上になる (呼び出し側で明示すること)。N < 1 なら 0。
+double arrayGainDb(int elements);
+
+// 空間多重 MIMO の容量 [bit/s] ([7] eq.(7), [8])。
+//   C = min(Nt, Nr)·B·log2(1 + SNR/Nt)
+// 送信電力を Nt 本へ等分し、min(Nt,Nr) 本の等利得な固有モードが立つと
+// 仮定した**上限**。実チャネルの相関・ランク落ちは含まない。
+// Nt = Nr = 1 なら shannonCapacity と一致する。
+double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx);
 
 } // namespace propagation
 } // namespace em
