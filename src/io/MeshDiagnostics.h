@@ -16,7 +16,7 @@
 //
 // *修復* (縫合・法線統一・デシメーション) は未実装 — ここは検出のみ。
 #pragma once
-#include "StlImporter.h"
+#include "MeshImporter.h"
 
 namespace ofd {
 

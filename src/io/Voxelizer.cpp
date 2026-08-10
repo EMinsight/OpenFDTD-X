@@ -1,6 +1,6 @@
 // Voxelizer.cpp
 #include "Voxelizer.h"
-#include "StlImporter.h"
+#include "MeshImporter.h"
 #include "../core/MeshAxis.h"
 
 #include <QObject>

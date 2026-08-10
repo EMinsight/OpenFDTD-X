@@ -194,8 +194,10 @@ set(CORE_SOURCES
     src/io/H5Reader.h
     src/io/KernelResultReader.cpp
     src/io/KernelResultReader.h
-    src/io/StlImporter.cpp
-    src/io/StlImporter.h
+    # 3D メッシュ取込 (STL バイナリ/ASCII, OBJ, PLY ascii/binary) — 自前パーサ。
+    # 旧名 StlImporter (型別名として残してある)
+    src/io/MeshImporter.cpp
+    src/io/MeshImporter.h
     # 取込メッシュの位相・幾何検査 (重複頂点 / 縮退三角形 / 境界・非多様体辺 /
     # 法線の向き) — Qt Widgets 非依存。GeometryTab「ジオメトリ検査」の検出側の
     # 実体で、selftest から既知メッシュの厳密な期待値と突き合わせる

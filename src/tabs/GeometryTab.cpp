@@ -1,7 +1,7 @@
 // GeometryTab.cpp
 #include "GeometryTab.h"
 #include "../core/Project.h"
-#include "../io/StlImporter.h"
+#include "../io/MeshImporter.h"
 #include "../io/Voxelizer.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/UnitNav.h"
@@ -52,12 +52,12 @@ const Tr kTr[] = {
     { "geoc_fmt_eda", "2D/EDA:", "2D/EDA:" },
     { "geoc_cad_hint",
       "▸ STEP/IGES など B-rep CAD の実取込は未実装 — 現在取込できるのは "
-      "STL のみです (OCCT 連携によるテセレーション・アセンブリ対応は今後追加予定)。",
+      "STL / OBJ / PLY です (STEP/IGES 等の B-rep CAD は OCCT 連携が要るため未対応)。",
       "▸ Importing STEP/IGES and other B-rep CAD is not implemented yet — "
-      "only STL can be imported today (OCCT-based tessellation and assembly "
+      "STL, OBJ and PLY can be imported (B-rep CAD such as STEP/IGES needs "
       "support is planned)." },
-    { "geoc_file_ph", "例: antenna.stl (STL のみ取込可)",
-      "e.g. antenna.stl (STL only)" },
+    { "geoc_file_ph", "例: antenna.stl (STL / OBJ / PLY を取込可)",
+      "e.g. antenna.stl (STL / OBJ / PLY)" },
 
     // ── マウス操作 / Mouse shortcuts ────────────────────────────────────────
     // 実装済みの操作のみ掲載する (Viewport3D::mouse*Event / wheelEvent 準拠)。
@@ -112,15 +112,15 @@ const Tr kTr[] = {
       "Shows the structure of the imported mesh (measured values)." },
     { "geoc_asm_none",
       "取込済みモデルがありません — 上の「3Dモデル取込」または「取込プレビュー」"
-      "の「📥 取込実行」で STL を取り込むと、ここに実測値が表示されます。",
-      "No model imported yet — load an STL with \"📥 Run import\" (in "
+      "の「📥 取込実行」でモデルを取り込むと、ここに実測値が表示されます。",
+      "No model imported yet — load a mesh with \"📥 Run import\" (in "
       "\"Import 3D CAD model\" or \"Import preview\" above) and the measured "
       "values will appear here." },
     { "geoc_asm_note",
       "▸ STEP/IGES の部品階層 (アセンブリ) の取込は外部 CAD カーネルを要する"
-      "ため未実装です。STL は単一メッシュなので 1 部品として表示されます。",
+      "ため未実装です。STL / OBJ / PLY は単一メッシュなので 1 部品として表示されます。",
       "▸ Importing the STEP/IGES part hierarchy needs an external CAD kernel "
-      "and is not implemented. An STL is a single mesh, so it shows as one "
+      "and is not implemented. STL / OBJ / PLY are single meshes, so they show "
       "part." },
     { "geoc_asm_root_fmt", "1 mesh · %1 三角形 · 単位=m",
       "1 mesh · %1 triangles · unit=m" },
@@ -146,10 +146,10 @@ const Tr kTr[] = {
       "Align the model bbox centre with the origin" },
     { "geoc_place_autoaxis", "主軸を自動検出", "Auto-detect principal axes" },
     { "geoc_place_hint",
-      "取込 STL の頂点に スケール (単位換算 ×係数) → 中心合わせ → 回転 "
+      "取込メッシュの頂点に スケール (単位換算 ×係数) → 中心合わせ → 回転 "
       "(X→Y→Z, 原点基準) → オフセット [m] の順で適用され、プレビュー・計測・"
       "ボクセル化に反映されます。",
-      "Applied to the imported STL vertices as scale (unit conversion × "
+      "Applied to the imported mesh vertices as scale (unit conversion × "
       "factor) → centring → rotation (X→Y→Z about the origin) → offset [m]; "
       "reflected in the preview, measurement and voxelization." },
 
@@ -183,9 +183,9 @@ const Tr kTr[] = {
     { "geoc_heal_wt_ng", "非水密", "not watertight" },
     { "geoc_heal_pending", "— (未取込)", "— (not imported)" },
     { "geoc_heal_none",
-      "▸ モデル未取込 — STL を取り込むと、この表は実メッシュから計算した"
+      "▸ モデル未取込 — モデルを取り込むと、この表は実メッシュから計算した"
       "検出数で埋まります。",
-      "▸ No model imported — once an STL is loaded this table is filled with "
+      "▸ No model imported — once a mesh is loaded this table is filled with "
       "counts computed from the actual mesh." },
     { "geoc_heal_note",
       "▸ 検出数はこの表で実計算した値です。自動修復 (縫合・法線統一・"
@@ -303,9 +303,9 @@ const Tr kTr[] = {
     { "geoc_prev_vol_fmt", "体積 %1 cm³", "volume %1 cm³" },
     { "geoc_prev_bbox_fmt", "bbox %1×%2×%3 mm", "bbox %1×%2×%3 mm" },
     { "geoc_prev_none",
-      "▸ モデル未取込 — 「📥 取込実行」で STL を取り込むと、実測した"
+      "▸ モデル未取込 — 「📥 取込実行」でモデルを取り込むと、実測した"
       "三角形数・表面積・体積・bbox がここに表示されます。",
-      "▸ No model imported — run \"📥 Run import\" on an STL and the measured "
+      "▸ No model imported — run \"📥 Run import\" on a mesh and the measured "
       "triangle count, area, volume and bbox appear here." },
     { "geoc_prev_import", "📥 取込実行", "📥 Run import" },
     { "geoc_prev_3d", "👁 3Dプレビュー", "👁 3D preview" },
@@ -314,9 +314,9 @@ const Tr kTr[] = {
     // ── 寸法測定 / Measure (取込メッシュの実測値ダイアログ) ─────────────────
     { "geoc_meas_title", "寸法測定", "Measure" },
     { "geoc_meas_none",
-      "取込済みのモデルがありません。先に「取込実行」で STL を取り込んで"
+      "取込済みのモデルがありません。先に「取込実行」でモデルを取り込んで"
       "ください。",
-      "No imported model yet — load an STL with \"Run import\" first." },
+      "No imported model yet — load a mesh with \"Run import\" first." },
     { "geoc_meas_model", "モデル", "Model" },
     { "geoc_meas_tri", "三角形数", "Triangles" },
     { "geoc_meas_bbox", "bbox 寸法", "Bbox size" },
@@ -345,9 +345,9 @@ const Tr kTr[] = {
       "▸ After import, convert to the Yee grid in Voxelization → FDTD run" },
     { "geoc_mdl_live", "%1 (現在の取込)", "%1 (live import)" },
     { "geoc_models_none",
-      "▸ 取込済みモデルはありません — 「📥 取込実行」で STL を取り込むと"
+      "▸ 取込済みモデルはありません — 「📥 取込実行」でモデルを取り込むと"
       "一覧に追加されます (同時に保持できるのは 1 モデルです)。",
-      "▸ No imported models — run \"📥 Run import\" on an STL to add one "
+      "▸ No imported models — run \"📥 Run import\" on a mesh to add one "
       "(only one model is held at a time)." },
 
     // ── ボクセル化 / Voxelization ───────────────────────────────────────────
@@ -1245,9 +1245,11 @@ void GeometryTab::addCadImportRows(SectionBox *s)
     auto *meshRow = new QHBoxLayout();
     meshRow->setSpacing(6);
     meshRow->addWidget(makeHint(I18n::tr("geoc_fmt_mesh"), s));
-    meshRow->addWidget(makeBadge("STL", kAcc, s));   // 実装済みは STL のみ
-    for (const char *f : { "OBJ", "PLY", "3MF" })
-        meshRow->addWidget(makeBadge(QString::fromLatin1(f), kMuted, s));
+    // 対応済み (アクセント色) は自前パーサのある STL / OBJ / PLY。
+    // 3MF は ZIP (deflate) の展開が要るので未対応のまま (依存を増やさない)
+    for (const char *f : { "STL", "OBJ", "PLY" })
+        meshRow->addWidget(makeBadge(QString::fromLatin1(f), kAcc, s));
+    meshRow->addWidget(makeBadge("3MF", kMuted, s));
     meshRow->addSpacing(8);
     meshRow->addWidget(makeHint(I18n::tr("geoc_fmt_eda"), s));
     for (const char *f : { "GDSII", "DXF", "OASIS" })
@@ -1262,7 +1264,8 @@ void GeometryTab::addCadImportRows(SectionBox *s)
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("geoc_import_section"), {},
             "CAD/mesh (*.step *.stp *.igs *.iges *.brep *.x_t *.sat *.stl "
-            "*.obj *.ply *.3mf);;All files (*)");
+            "*.obj *.ply *.3mf);;"
+            + MeshImporter::fileDialogFilter());
         if (!path.isEmpty()) m_cadFile->setText(path);
     });
 }
@@ -1501,7 +1504,7 @@ QWidget *GeometryTab::buildPreviewSection()
     hr->addStretch(1);
     s->vbox()->addLayout(hr);
 
-    // 取込実行 = 実際の STL 取込 (io/StlImporter)
+    // 取込実行 = 実際の STL 取込 (io/MeshImporter)
     connect(runImport, &QPushButton::clicked, this, &GeometryTab::importStl);
     // 寸法測定 = 取込メッシュの実測値ダイアログ
     connect(measureBtn, &QPushButton::clicked, this,
@@ -1896,12 +1899,12 @@ void GeometryTab::updateRefineBadge()
 void GeometryTab::importStl()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, I18n::tr("ge_import_btn"), {}, "STL (*.stl);;All files (*)");
+        this, I18n::tr("ge_import_btn"), {}, MeshImporter::fileDialogFilter());
     if (path.isEmpty()) return;
 
     ImportedMesh mesh;
     QString err;
-    if (!StlImporter::load(path, mesh, &err)) {
+    if (!MeshImporter::load(path, mesh, &err)) {
         m_importInfo->setText("error: " + err);
         return;
     }
@@ -2150,7 +2153,10 @@ void GeometryTab::refreshImportBadges()
     const QString base = QFileInfo(m_lastMesh.sourcePath).fileName();
     m_modelTable->setItem(m_liveModelRow, 1, textItem(
         I18n::tr("geoc_mdl_live").arg(base.isEmpty() ? m_lastMesh.name : base)));
-    m_modelTable->setItem(m_liveModelRow, 2, textItem("STL"));
+    // 形式は取込元の拡張子から出す (STL 決め打ちにしない — OBJ / PLY も読む)
+    const QString fmt = QFileInfo(m_lastMesh.sourcePath).suffix().toUpper();
+    m_modelTable->setItem(m_liveModelRow, 2,
+                          textItem(fmt.isEmpty() ? QStringLiteral("STL") : fmt));
     m_modelTable->setItem(m_liveModelRow, 3,
                           numItem(groupNum(m_lastMesh.numTriangles)));
     m_modelTable->setItem(m_liveModelRow, 4,

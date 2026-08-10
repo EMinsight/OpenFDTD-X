@@ -16,7 +16,7 @@
 // 「絶対値最大の成分を正にする」規約で一意にし、右手系 (det = +1) に揃える。
 // これにより同じメッシュからは常に同じ結果が出る。
 #pragma once
-#include "StlImporter.h"
+#include "MeshImporter.h"
 
 namespace ofd {
 
