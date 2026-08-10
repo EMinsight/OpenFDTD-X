@@ -26,6 +26,7 @@
 #include "io/BellhopIO.h"
 #include "io/ArrReader.h"
 #include "io/CircuitIO.h"
+#include "io/SpiceNetlist.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/BathymetryIO.h"
 #include "io/PageLinkScanner.h"
@@ -11668,6 +11669,260 @@ static void testRadiatedEmission()
     }
 }
 
+// ── SPICE ネットリストの読み取り (io/SpiceNetlist) ──────────────────────────
+// 期待値は SPICE の書式仕様そのもの (Berkeley SPICE3 / LTspice のマニュアルに
+// ある接尾辞表と行の扱い)。**M = ミリ / MEG = メガ** の取り違えは実際の回路で
+// 3 桁ずれるので、そこを名指しで固定する。
+static void testSpiceNetlist()
+{
+    g_file = "spice-netlist";
+
+    auto val = [](const char *s) {
+        double v = -1;
+        return SpiceIO::parseValue(QString::fromLatin1(s), &v) ? v : -1.0;
+    };
+    auto approx = [](double a, double b) {
+        return std::fabs(a - b) <= 1e-12 * std::max(1.0, std::fabs(b));
+    };
+
+    // 接尾辞 (SPICE 固有の落とし穴を含む)
+    {
+        check(approx(val("50"), 50.0), "spice: a bare number");
+        check(approx(val("4.7k"), 4700.0), "spice: k = 1e3");
+        check(approx(val("4.7K"), 4700.0), "spice: the suffix is case-insensitive");
+        check(approx(val("1meg"), 1e6), "spice: MEG = 1e6");
+        check(approx(val("1m"), 1e-3),
+              "spice: a bare M is milli, not mega (the classic SPICE trap)");
+        check(approx(val("2.2u"), 2.2e-6), "spice: u = 1e-6");
+        check(approx(val("100n"), 100e-9), "spice: n = 1e-9");
+        check(approx(val("3p"), 3e-12), "spice: p = 1e-12");
+        check(approx(val("5f"), 5e-15), "spice: f = 1e-15");
+        check(approx(val("2t"), 2e12), "spice: T = 1e12");
+        check(approx(val("7g"), 7e9), "spice: G = 1e9");
+        check(approx(val("1mil"), 25.4e-6), "spice: MIL = 25.4 um");
+        // 接尾辞の後ろの単位表記は読み捨てる
+        check(approx(val("4.7kOhm"), 4700.0), "spice: trailing units are ignored");
+        check(approx(val("10uF"), 10e-6), "spice: 10uF is 10 microfarad");
+        // 指数表記 (E は接尾辞ではない)
+        check(approx(val("1e-9"), 1e-9), "spice: exponent notation");
+        check(approx(val("2.5E3"), 2500.0), "spice: uppercase exponent");
+        // 単位だけの F は femto ではなく「ファラド」に見えるが、
+        // SPICE の規則どおり **接尾辞として femto** に解釈する
+        check(approx(val("1F"), 1e-15),
+              "spice: a lone F is the femto suffix (SPICE rule)");
+        // 数字で始まらないものは値ではない
+        double dummy = 0;
+        check(!SpiceIO::parseValue(QStringLiteral("abc"), &dummy),
+              "spice: a non-numeric token is rejected");
+        check(!SpiceIO::parseValue(QString(), &dummy),
+              "spice: an empty token is rejected");
+    }
+
+    // 素子行・コメント・継続行・サブサーキット
+    {
+        const QString text = QStringLiteral(
+            "* RLC example (title line)\n"
+            "R1 in mid 4.7k        ; series resistor\n"
+            "L1 mid out 10u\n"
+            "C1 out 0 100n\n"
+            "* a comment line\n"
+            "V1 in 0 DC 1\n"
+            "D1 out 0 DMOD\n"
+            ".subckt amp a b\n"
+            "R9 a b 1k\n"
+            ".ends\n"
+            "X1 in out amp\n"
+            ".tran 1n 100n\n"
+            ".end\n");
+        const SpiceNetlist n = SpiceIO::parse(text);
+        check(n.isValid(), "spice: the netlist parses");
+        check(n.elements.size() == 3,
+              "spice: three R/L/C elements are taken (subckt bodies excluded)");
+        check(n.count('R') == 1 && n.count('L') == 1 && n.count('C') == 1,
+              "spice: one of each of R / L / C");
+        check(approx(n.elements[0].value, 4700.0) &&
+              n.elements[0].name == QLatin1String("R1") &&
+              n.elements[0].node1 == QLatin1String("in") &&
+              n.elements[0].node2 == QLatin1String("mid"),
+              "spice: the R line keeps its name, nodes and value");
+        check(approx(n.elements[1].value, 10e-6) &&
+              approx(n.elements[2].value, 100e-9),
+              "spice: the L and C values are in SI units");
+        // ノードは出現順・重複なし
+        check(n.nodes.size() == 4 && n.nodes[0] == QLatin1String("in") &&
+              n.nodes[1] == QLatin1String("mid") &&
+              n.nodes[2] == QLatin1String("out") &&
+              n.nodes[3] == QLatin1String("0"),
+              "spice: nodes are listed once, in order of appearance");
+        // 読み飛ばしたものは黙って落とさない
+        check(n.skippedSubckts == 1,
+              "spice: the .subckt is counted as skipped");
+        check(n.skippedElements == 3,
+              "spice: V / D / X are counted as skipped");
+        bool saysSubckt = false, saysElements = false;
+        for (const QString &w : n.warnings) {
+            if (w.contains(QLatin1String(".subckt"))) saysSubckt = true;
+            if (w.contains(QLatin1String("R/L/C"))) saysElements = true;
+        }
+        check(saysSubckt && saysElements,
+              "spice: the skipped items are reported in the warnings "
+              "(silently dropping them would hide missing elements)");
+        // **サブサーキット内の R9 は取り込まれていないこと**
+        for (const SpiceElement &e : n.elements)
+            check(e.name != QLatin1String("R9"),
+                  "spice: elements inside .subckt are not imported");
+    }
+
+    // 継続行 (`+`) と行中コメント (`;`)
+    {
+        const QString text = QStringLiteral(
+            "title\n"
+            "R1 a b\n"
+            "+ 2.2k       ; the value arrives on the continuation line\n"
+            "C1 b 0 1u\n");
+        const SpiceNetlist n = SpiceIO::parse(text);
+        check(n.elements.size() == 2, "spice: continuation lines are joined");
+        check(approx(n.elements[0].value, 2200.0),
+              "spice: the value from the continuation line is used");
+    }
+
+    // 先頭行はタイトル (回路行として解釈しない)
+    {
+        const SpiceNetlist n = SpiceIO::parse(
+            QStringLiteral("R0 x y 1k\nR1 a b 2k\n"));
+        check(n.title == QLatin1String("R0 x y 1k"),
+              "spice: the first line is the title");
+        check(n.elements.size() == 1 &&
+              n.elements[0].name == QLatin1String("R1"),
+              "spice: the title line is not parsed as an element");
+    }
+
+    // 壊れた行は理由付きで落とす (値が無い / 解釈できない)
+    {
+        const SpiceNetlist n = SpiceIO::parse(QStringLiteral(
+            "title\nR1 a b\nR2 c d zzz\nR3 e f 1k\n"));
+        check(n.elements.size() == 1,
+              "spice: malformed element lines are dropped");
+        check(n.warnings.size() >= 2,
+              "spice: each dropped line has a warning");
+    }
+
+    // 素子が 1 つも無いファイルは失敗扱い (空のまま成功にしない)
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "spice: temp dir");
+        QFile f(dir.filePath("empty.cir"));
+        check(f.open(QIODevice::WriteOnly | QIODevice::Text), "spice: open");
+        f.write("title\n.tran 1n 10n\n.end\n");
+        f.close();
+        SpiceNetlist n;
+        QString err;
+        check(!SpiceIO::read(dir.filePath("empty.cir"), n, &err),
+              "spice: a netlist without R/L/C fails the read");
+        check(!err.isEmpty(), "spice: the failure has a reason");
+        check(!SpiceIO::read(dir.filePath("missing.cir"), n, &err),
+              "spice: a missing file fails");
+    }
+
+    // .ofd の load 行と同じ単位系であること (R=Ω, L=H, C=F)。
+    // ここがずれると取り込んだ素子がカーネルで別物になる。
+    {
+        const SpiceNetlist n = SpiceIO::parse(
+            QStringLiteral("t\nR1 a b 50\nL1 b c 1n\nC1 c 0 1p\n"));
+        check(n.elements.size() == 3, "spice: three elements");
+        check(approx(n.elements[0].value, 50.0),
+              "spice: 50 ohm stays 50 (the .ofd load value is in ohms)");
+        check(approx(n.elements[1].value, 1e-9),
+              "spice: 1n henry stays 1e-9 (the .ofd load value is in henries)");
+        check(approx(n.elements[2].value, 1e-12),
+              "spice: 1p farad stays 1e-12 (the .ofd load value is in farads)");
+    }
+}
+
+// ── ネットリストの素子が .ofd の load 行として出ること ──────────────────────
+// 「取り込んだ素子がカーネルまで届く」という主張の実体。SpiceElement →
+// Load → .ofd テキスト → 読み直し の一周を通す。ここが切れていると、画面上は
+// 取り込めたのに計算に入っていない、という一番たちの悪い状態になる。
+static void testSpiceToOfdLoad()
+{
+    g_file = "spice-to-load";
+    QTemporaryDir dir;
+    check(dir.isValid(), "spice2load: temp dir");
+    if (!dir.isValid()) return;
+
+    const SpiceNetlist n = SpiceIO::parse(QStringLiteral(
+        "matching network\n"
+        "R1 in out 50\n"
+        "L1 out gnd 2.5n\n"
+        "C1 in gnd 0.5p\n"));
+    check(n.elements.size() == 3, "spice2load: three elements parsed");
+
+    Project p;
+    const int before = p.loads().size();
+    // CircuitSolversTab::addNetlistLoads() と同じ変換 (配置は利用者が与える)
+    const QChar dirs[3] = { 'X', 'Y', 'Z' };
+    for (int i = 0; i < n.elements.size(); ++i) {
+        Load l;
+        l.dir = dirs[i];
+        l.x = 0.001 * (i + 1);
+        l.y = 0.002 * (i + 1);
+        l.z = 0.003 * (i + 1);
+        l.kind = n.elements[i].type;
+        l.value = n.elements[i].value;
+        p.loads().push_back(l);
+    }
+    check(p.loads().size() == before + 3, "spice2load: three loads added");
+
+    QString err;
+    const QString path = dir.filePath("net.ofd");
+    check(p.save(path, &err), "spice2load: the project saves");
+
+    // .ofd のテキストに load 行が出ていること (キーの書式はカーネルが正)
+    QFile f(path);
+    check(f.open(QIODevice::ReadOnly | QIODevice::Text), "spice2load: reopen");
+    const QString text = QString::fromUtf8(f.readAll());
+    f.close();
+    check(text.contains(QLatin1String("load = X")),
+          "spice2load: the .ofd carries a load line with its axis");
+    // R は Ω、L は H、C は F でそのまま出る (SPICE 側の SI 値と同じ)
+    check(text.contains(QLatin1String(" R ")) &&
+          text.contains(QLatin1String(" L ")) &&
+          text.contains(QLatin1String(" C ")),
+          "spice2load: R / L / C all reach the .ofd");
+
+    // 読み直して値が保たれること
+    Project q;
+    check(q.load(path, &err), "spice2load: the project reloads");
+    check(q.loads().size() == 3, "spice2load: three loads come back");
+    auto findLoad = [&](QChar kind) -> const Load * {
+        for (const Load &l : q.loads()) if (l.kind == kind) return &l;
+        return nullptr;
+    };
+    const Load *lr = findLoad('R');
+    const Load *ll = findLoad('L');
+    const Load *lc = findLoad('C');
+    check(lr && std::fabs(lr->value - 50.0) < 1e-12,
+          "spice2load: 50 ohm survives the round trip");
+    check(ll && std::fabs(ll->value - 2.5e-9) < 1e-21,
+          "spice2load: 2.5n henry survives the round trip");
+    check(lc && std::fabs(lc->value - 0.5e-12) < 1e-24,
+          "spice2load: 0.5p farad survives the round trip");
+    check(lr && lr->dir == QChar('X'),
+          "spice2load: the axis given by the user survives");
+
+    // 何も足さなければ出力は従来どおり (load 行が 1 行も出ない)
+    {
+        Project empty;
+        const QString p2 = dir.filePath("empty.ofd");
+        check(empty.save(p2, &err), "spice2load: an empty project saves");
+        QFile g(p2);
+        check(g.open(QIODevice::ReadOnly | QIODevice::Text), "spice2load: open");
+        check(!QString::fromUtf8(g.readAll()).contains(QLatin1String("load =")),
+              "spice2load: a project with no imported element writes no load "
+              "line (the import must not change existing output)");
+    }
+}
+
 // ── 回路ポート定義 (.ofdx "circuit.ports") ──────────────────────────────────
 static void testCircuitPorts()
 {
@@ -13725,6 +13980,8 @@ int main(int argc, char *argv[])
     testLumpedRlc();
     testReflection();
     testRadiatedEmission();
+    testSpiceNetlist();
+    testSpiceToOfdLoad();
     testCircuitPorts();
     testPhotonicNetlist();
     testMonitorList();

@@ -3,7 +3,12 @@
 //   モデル/ポート → 抽出設定 → SPICE連成 → 結果 のサブタブで一連の流れを扱う。
 //
 //   - ポート定義表は `Project::circuitPorts()` のビュー。編集はモデルへ書き戻し、
-//     .ofdx ("circuit.ports") に保存される。抽出エンジンの起動は未実装。
+//     .ofdx ("circuit.ports") に保存される。「抽出実行」は OpenPEEC / OpenFEM を
+//     QProcess で起動する。
+//   - SPICE 連成ページは外部の回路図から出したネットリスト (.cir/.sp) を読み
+//     (io/SpiceNetlist)、R/L/C を **`.ofd` の `load` 行としてプロジェクトへ
+//     追加**できる。配置 (方向・座標) は利用者が表で与える — ネットリストは
+//     位置を持たないので、GUI が座標を推測して捏造してはいけない。
 //   - 結果ページは **抽出結果ではない**: PEEC/FEM 抽出が未実装なので寄生
 //     パラメータは存在しない。代わりに利用者が入力した集中定数 RLC の
 //     |Z(f)| を解析式 (em/LumpedRlc) で表示する (プロジェクトに .ofd の
@@ -11,6 +16,8 @@
 #pragma once
 #include <QFont>
 #include <QScrollArea>
+
+#include "../io/SpiceNetlist.h"
 
 class QCheckBox;
 class QComboBox;
@@ -54,6 +61,10 @@ private:
     QWidget *buildSpicePage();          // SPICE連成
     QWidget *buildResultsPage();        // 結果 (集中定数モデルの |Z|)
     QWidget *buildPeecPage();
+    // SPICE ネットリストの取込 (パスが変わったら読み直す)
+    void browseNetlist();
+    void loadNetlist(const QString &path);
+    void addNetlistLoads();     // 表の選択行 → Project::loads()
     QWidget *buildFemqPage();
     QWidget *buildFemwPage();
 
@@ -75,6 +86,13 @@ private:
     QString         m_runDir;
 
     QTableWidget   *m_portTable;
+
+    // SPICE 連成: ネットリスト取込
+    QLineEdit      *m_netFile = nullptr;
+    QLabel         *m_netStatus = nullptr;
+    QTableWidget   *m_netTable = nullptr;
+    QPushButton    *m_netAdd = nullptr;
+    SpiceNetlist    m_netlist;          // 読み込み済みの内容
 
     // 結果ページ: 集中定数モデルの入力と表示
     QComboBox      *m_rlcTopology = nullptr;   // 直列 / 並列
