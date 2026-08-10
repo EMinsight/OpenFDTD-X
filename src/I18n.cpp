@@ -1155,11 +1155,18 @@ void I18n::loadTables() {
         "結果プロットに出せるデータが %1 にありません "
         "(周波数特性は波源 + frequency1 の給電点表、放射パターンは "
         "far1d.log が要ります)。ポスト(1) のチェックは「図形表示2D」"
-        "(ev.ev2) と HTML 出力に効くもので、結果プロットは変わりません。",
+        "(ev.ev2) と HTML 出力、および結果プロットの「ポスト表」"
+        "(feed.log / point.log / far0d.log / near1d.log) に効きます。",
         "No data for the result plots in %1 (the frequency response needs a "
         "feed + frequency1 in the feed table, the radiation pattern needs "
         "far1d.log). The Post-Proc (1) checkboxes drive the 2-D view "
-        "(ev.ev2) and the HTML output, not the result plots.");
+        "(ev.ev2), the HTML output and the \"Post tables\" mode of the result "
+        "plot (feed.log / point.log / far0d.log / near1d.log).");
+    add("log_posttables",
+        "ポスト処理のテキスト表を %1 件読み込みました "
+        "— 結果プロットの「ポスト表」で見られます (ev2d/ev3d 不要)",
+        "Loaded %1 post-processing tables - see the \"Post tables\" mode of "
+        "the result plot (no ev2d/ev3d needed)");
     add("log_ev_native",
         "カーネル作図を読み込みました (%1 ページ) — 中央の「カーネル作図」タブで見られます",
         "Loaded the kernel figures (%1 pages) — see the \"Kernel figures\" tab in the centre");

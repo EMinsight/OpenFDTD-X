@@ -126,6 +126,132 @@ QVector<FarPattern> readFar1d(const QString &path)
     return text.isEmpty() ? QVector<FarPattern>() : parseFar1d(text);
 }
 
+// ── ofd_post の番号付き表 (ev2d を介さないポスト表示の素データ) ─────────────
+//
+// 形は 4 ファイル共通:
+//
+//   feed #1 (waveform)                        ← 見出し
+//       No.    time[sec]      V[V]          I[A]   ← 列見出し
+//         0   0.00000e+00   1.23456e-03   4.56789e-05
+//
+// 判定は「先頭トークンが非負整数の数値行かどうか」だけで行う。数値行が
+// 始まった時点で、直前の非数値行を列見出し、その 1 つ前を見出しとみなす。
+// 見出しが 1 行しか無いファイル (先頭ブロック) でも列見出しは必ずあるので、
+// title が空になるだけで表としては成立する。
+//
+// 先頭の No. 列は捨て、次の数値列を x、残りを y にする。列名の数が
+// データ列と合わないときは "col N" で埋める (カーネルが列を増やしても
+// 落ちないようにする — 名前を勝手に解釈しないのが前提)。
+QVector<PostTable> parsePostTables(const QString &text,
+                                   const QString &sourceFile)
+{
+    QVector<PostTable> out;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+
+    QString prev1, prev2;      // 直近の非数値行 (prev1 が直前)
+    PostTable cur;
+    bool inBlock = false;
+    QVector<QVector<double>> rows;
+
+    auto columnNames = [](const QString &header) {
+        QStringList c = header.split(QRegularExpression("\\s+"),
+                                     Qt::SkipEmptyParts);
+        if (!c.isEmpty()) c.removeFirst();     // 先頭は必ず "No."
+        return c;
+    };
+    auto flush = [&] {
+        if (!inBlock || rows.isEmpty()) { inBlock = false; rows.clear(); return; }
+        // 行ごとに列数が違う行は捨てる (先頭行の列数を基準にする)
+        const int ncol = rows.first().size();
+        QVector<QVector<double>> col(ncol - 1);      // 列 1..ncol-1 (0 は通し番号)
+        for (const QVector<double> &r : rows) {
+            if (r.size() != ncol) continue;
+            for (int c = 1; c < ncol; ++c) col[c - 1].push_back(r[c]);
+        }
+        if (col.isEmpty() || col.first().isEmpty()) {
+            inBlock = false; rows.clear(); return;
+        }
+        // 列名を実データの本数に合わせてから、値が変化する列を横軸に採る
+        QStringList names = cur.yNames;
+        names.prepend(cur.xName);                    // 一旦 1 本の列名列にする
+        while (names.size() > col.size()) names.removeLast();
+        for (int i = names.size(); i < col.size(); ++i)
+            names << QStringLiteral("col %1").arg(i + 2);
+
+        auto varies = [](const QVector<double> &v) {
+            for (int i = 1; i < v.size(); ++i)
+                if (v[i] != v[0]) return true;
+            return false;
+        };
+        int xi = -1;
+        for (int i = 0; i < col.size(); ++i)
+            if (varies(col[i])) { xi = i; break; }
+        if (xi < 0) xi = 0;                          // 全部一定なら先頭を横軸に
+
+        // 一定列を注記へ回すのは 2 行以上あるときだけ。1 行しかない表
+        // (周波数 1 点の far0d.log など) では全列が「一定」に見えるので、
+        // 退避すると系列が 1 本も残らず表ごと消える
+        const bool manyRows = (col.first().size() >= 2);
+
+        cur.xName = names[xi];
+        cur.x     = col[xi];
+        cur.yNames.clear();
+        cur.y.clear();
+        QStringList fixedParts;
+        for (int i = 0; i < col.size(); ++i) {
+            if (i == xi) continue;
+            if (manyRows && !varies(col[i])) {  // 一定列は系列にせず注記へ回す
+                fixedParts << QStringLiteral("%1=%2")
+                                  .arg(names[i])
+                                  .arg(col[i].first(), 0, 'g', 4);
+                continue;
+            }
+            cur.yNames << names[i];
+            cur.y << col[i];
+        }
+        cur.fixed = fixedParts.join(QStringLiteral(", "));
+        if (cur.isValid()) out.push_back(cur);
+        inBlock = false;
+        rows.clear();
+    };
+
+    QVector<double> vals;
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty()) { flush(); continue; }
+        // 先頭が通し番号の数値行か (2 列以上ないと x/y に分けられない)
+        const bool data = numericRow(line, vals) && vals.size() >= 2;
+        if (data) {
+            if (!inBlock) {
+                cur = PostTable();
+                cur.sourceFile = sourceFile;
+                const QStringList cols = columnNames(prev1);
+                cur.xName  = cols.isEmpty() ? QString() : cols.first();
+                cur.yNames = cols.mid(1);   // flush() で横軸を選び直す
+                cur.title  = prev2.trimmed();
+                inBlock = true;
+                rows.clear();
+            }
+            rows.push_back(vals);
+        } else {
+            flush();
+            prev2 = prev1;
+            prev1 = line;
+        }
+    }
+    flush();
+    return out;
+}
+
+QVector<PostTable> readPostTables(const QString &path)
+{
+    const QString text = readAll(path);
+    if (text.isEmpty()) return QVector<PostTable>();
+    const int slash = qMax(path.lastIndexOf(QLatin1Char('/')),
+                           path.lastIndexOf(QLatin1Char('\\')));
+    return parsePostTables(text, path.mid(slash + 1));
+}
+
 // ── 散乱断面積 (RCS) ────────────────────────────────────────────────────────
 // "=== cross section ===" の見出しの後、見出し行を 1 行挟んで数値行が続く。
 // 数値行は 3 列 (周波数 / 後方 / 前方) で、次の "===" 見出しまでを読む。

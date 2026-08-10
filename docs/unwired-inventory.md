@@ -49,6 +49,20 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 **新しく `unwiredNote()` を足すときは必ず主語のある版を使うこと。**
 引数なしの版は既存互換のために残してあるだけで、新規利用は禁止。
 
+## ポスト処理の「どこに出るか」(2026-08-10 更新)
+
+ポスト(1) / ポスト(2) のチェックの出力先は 3 つある。**ev2d / ev3d が無くても
+中身が見られる**のは下 2 つ。
+
+| 出力先 | 実体 | 見る場所 |
+|---|---|---|
+| 作図 | `ev.ev2` / `ev.ev3` / HTML | 中央「カーネル作図」タブ、外部 ev2d/ev3d |
+| 2 次元の場マップ | `far2d.log` / `near2d.log` | 中央の 2D 断面 (`CenterPane::loadPostMaps`) |
+| 番号付きテキスト表 | `feed.log` / `point.log` / `far0d.log` / `near1d.log` | 結果プロットの「ポスト表」モード |
+
+結果プロットの周波数特性・スミスチャート・放射パターンは `<kernel>.log` と
+`far1d.log` から作るので、**ポストのチェックとは無関係**に出る。
+
 ## 全件表
 
 ### AcousticSourceTab

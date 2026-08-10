@@ -1691,6 +1691,23 @@ void MainWindow::onRunnerFinished(bool ok)
         // 直接読む。作図出力 (ev) の有無とは無関係なので、
         // 上の if / else とは別に必ず行う。
         m_center->loadPostMaps(wd.path());
+        // ポスト処理のテキスト表 (feed.log / point.log / far0d.log /
+        // near1d.log) を結果プロットへ。ev.ev2 が出ていなくても、ポストの
+        // チェックを入れた項目の中身がここで見える (ev2d/ev3d を使わない経路)。
+        // この実行が更新したファイルに限る (残存ログを再表示しない)。
+        {
+            QVector<PostTable> tables;
+            for (const char *name : { "feed.log", "point.log",
+                                      "far0d.log", "near1d.log" }) {
+                const QString path = freshFile(QString::fromLatin1(name));
+                if (!path.isEmpty())
+                    tables += KernelResultReader::readPostTables(path);
+            }
+            m_plotPanel->setPostTables(tables);
+            if (!tables.isEmpty())
+                m_rightDock->appendLog(
+                    I18n::tr("log_posttables").arg(tables.size()));
+        }
     }
     // ONN 活性化カーブは、この実行が obpm + powersweep だったときだけ
     // 表示する (他カーネルの実行で過去の CSV を再表示しない)。
