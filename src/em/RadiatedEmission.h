@@ -61,6 +61,42 @@ FieldStrength fieldStrength(double gainDbi, double powerW, double distM);
 // 自由空間予測と実測を比べるときの上振れ分として使う。
 double groundReflectionMaxDb();
 
+// ── 試験サイトのグランド反射 (試験配置の設定がここに効く) ──────────────────
+//
+// `groundReflectionMaxDb()` は「同相合成の上限」という**周波数にも配置にも
+// 依らない一律 6.02 dB** で、どんな距離・アンテナ高でも同じ値を返す。
+// 実際の増分は 2 波の干渉なので配置で決まり、打ち消し側に振れることもある。
+// ここは試験配置 (サイト種別・測定距離・アンテナ高) から実際の増分を出す。
+//
+// 前提と出典:
+//   - EUT は卓上機器の標準配置で高さ 0.8 m (CISPR 16-1-4 / ANSI C63.4)。
+//   - 受信アンテナは 1〜4 m を走査し、**その最大値**を測定値とする
+//     (同上)。`scanMaxDb` がその走査の最大、`atHeightDb` が画面で指定した
+//     高さでの値。
+//   - 反射係数は Γ = −1 (水平偏波の grazing 入射) を仮定する。垂直偏波では
+//     異なるが、規格の上限側を見る目的にはこれで足りる。
+//   - 全電波暗室にはグランド反射が無い (applies = false)。反射室
+//     (リバブレーション) は距離基準の測定ではないので同じく扱わない。
+enum class EmcSite {
+    OpenArea = 0,        // オープンサイト (OATS)
+    SemiAnechoic = 1,    // 半電波暗室 (グランドプレーンあり)
+    FullyAnechoic = 2,   // 全電波暗室 (反射なし)
+    Reverberation = 3,   // 反射室
+};
+
+struct GroundEnhancement {
+    double atHeightDb = 0.0;   // 指定アンテナ高での自由空間からの増分 [dB]
+    double scanMaxDb  = 0.0;   // 1〜4 m 走査の最大 [dB]
+    bool   applies    = false; // グランド反射のあるサイトか
+    bool   valid      = false; // 入力が計算できるか
+};
+
+// 試験配置から反射の増分を求める。距離・高さ・周波数が非正なら valid = false。
+// applies = false のサイトでは増分 0 を返す (0 dB は「反射が無い」の意味)。
+GroundEnhancement groundEnhancement(EmcSite site, double distM,
+                                    double antHeightM, double freqHz,
+                                    double eutHeightM = 0.8);
+
 // 遠方界 (Fraunhofer) 距離 2D²/λ [m]。D は放射体の最大寸法 [m]。
 // D ≤ 0 または λ ≤ 0 なら 0 を返す。
 double fraunhoferDistanceM(double maxDimM, double lambdaM);

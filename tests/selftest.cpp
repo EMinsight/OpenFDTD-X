@@ -12139,6 +12139,63 @@ static void testRadiatedEmission()
     check(approx(groundReflectionMaxDb(), 6.0205999, 1e-6),
           "radem: the ground-reflection ceiling is 6.02 dB");
 
+    // ── 試験配置から求める実際のグランド反射 ─────────────────────────────
+    // 一律 6.02 dB は「同相合成の上限」であって実際の増分ではない。
+    // 配置 (サイト種別・距離・アンテナ高・周波数) で決まる量として検算する。
+    {
+        const double d = 3.0, f = 300e6;      // 3 m 法, 300 MHz (λ = 1 m)
+        // 反射の無いサイトでは増分そのものが無い (0 dB は「反射なし」の意味)
+        const GroundEnhancement far =
+            groundEnhancement(EmcSite::FullyAnechoic, d, 2.0, f);
+        check(far.valid && !far.applies && far.atHeightDb == 0.0
+                  && far.scanMaxDb == 0.0,
+              "radem: a fully anechoic room has no ground reflection");
+        const GroundEnhancement rev =
+            groundEnhancement(EmcSite::Reverberation, d, 2.0, f);
+        check(rev.valid && !rev.applies,
+              "radem: a reverberation chamber is not a two-ray site");
+
+        // OATS / 半電波暗室では反射がある。**どの高さでも上限 6.02 dB を
+        // 超えてはならない** — 超えたら 2 波の合成が壊れている
+        bool everOverCeiling = false, anyPositive = false, anyNegative = false;
+        for (double h = 1.0; h <= 4.0 + 1e-9; h += 0.05) {
+            const GroundEnhancement g =
+                groundEnhancement(EmcSite::OpenArea, d, h, f);
+            if (!g.valid || !g.applies) { everOverCeiling = true; break; }
+            if (g.atHeightDb > 6.0206 + 1e-6) everOverCeiling = true;
+            if (g.atHeightDb > 0.5)  anyPositive = true;
+            if (g.atHeightDb < -0.5) anyNegative = true;
+            // 走査の最大は、その走査に含まれるどの点の値より小さくない
+            if (g.scanMaxDb + 1e-9 < g.atHeightDb) everOverCeiling = true;
+        }
+        check(!everOverCeiling,
+              "radem: the enhancement never exceeds the 6.02 dB ceiling and "
+              "the scan maximum bounds every height in the scan");
+        check(anyPositive && anyNegative,
+              "radem: the two-ray term both reinforces and cancels across the "
+              "height scan (a flat +6 dB would fail here)");
+
+        // OATS と半電波暗室は同じ 2 波の扱い (床のグランドプレーンは共通)
+        const GroundEnhancement oats =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f);
+        const GroundEnhancement sac =
+            groundEnhancement(EmcSite::SemiAnechoic, d, 2.0, f);
+        check(approx(oats.atHeightDb, sac.atHeightDb, 1e-12)
+                  && approx(oats.scanMaxDb, sac.scanMaxDb, 1e-12),
+              "radem: OATS and a semi-anechoic chamber use the same two-ray "
+              "geometry");
+        // 走査の最大は上限に肉薄する (規格が最大を拾う前提と整合する)
+        check(oats.scanMaxDb > 5.0 && oats.scanMaxDb <= 6.0206 + 1e-6,
+              "radem: the 1-4 m scan finds a near-constructive height");
+
+        // 入力が不正なら計算しない (0 を返して計算済みに見せない)
+        check(!groundEnhancement(EmcSite::OpenArea, 0.0, 2.0, f).valid
+              && !groundEnhancement(EmcSite::OpenArea, d, 0.0, f).valid
+              && !groundEnhancement(EmcSite::OpenArea, d, 2.0, 0.0).valid,
+              "radem: a non-positive distance, height or frequency is not "
+              "computed");
+    }
+
     // 遠方界距離 2D²/λ と波長
     {
         check(approx(wavelengthM(2.99792458e8), 1.0, 1e-12),
