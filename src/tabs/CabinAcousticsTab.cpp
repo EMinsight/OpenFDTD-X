@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 #include "../acoustics/core/RoomModes.h"
+#include "../core/LevelSum.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -218,8 +219,48 @@ const bool s_i18n = [] {
     I18n::reg("cab_meas_total_none",
               "選択中 %1 件 / 重量の入力がないため合計は未計算",
               "%1 selected / no weight entered, so no total");
-    I18n::reg("cab_uw_noise", "騒音源のチェック",
-              "the noise-source check boxes");
+    // 騒音源の寄与 (エネルギー加算)
+    I18n::reg("cab_ns_section", "騒音源の寄与 (エネルギー加算)",
+              "Noise-source contributions (energy summation)");
+    I18n::reg("cab_ns_hint",
+              "上でチェックした源のレベルをエネルギー加算します "
+              "(L = 10·log10 Σ 10^(Lᵢ/10))。「レベルは入力値」で、"
+              "既定値は代表的な走行条件の目安にすぎません — 実測値や"
+              "部品メーカーの値に置き換えてください。源同士は無相関と"
+              "みなしています (相関があると干渉で ±6 dB ずれます)。",
+              "Energy-sums the levels of the sources ticked above "
+              "(L = 10 log10 sum 10^(Li/10)). The levels are inputs - the "
+              "defaults are only typical figures, so replace them with measured "
+              "or supplier data. The sources are assumed uncorrelated (with "
+              "correlation the sum can be off by 6 dB either way).");
+    I18n::reg("cab_ns_src",    "騒音源",           "Source");
+    I18n::reg("cab_ns_level",  "レベル [dB(A)]",   "Level [dB(A)]");
+    I18n::reg("cab_ns_share",  "寄与率 [%]",       "Share [%]");
+    I18n::reg("cab_ns_gain",   "消したときの低減 [dB]",
+              "Gain if removed [dB]");
+    I18n::reg("cab_ns_total",
+              "合計 %1 dB(A) — 支配的なのは「%2」(寄与 %3 %)。"
+              "上位 2 つの差は %4 dB です。",
+              "Total %1 dB(A) - dominated by \"%2\" (%3 % of the energy). "
+              "The top two differ by %4 dB.");
+    I18n::reg("cab_ns_flat",
+              " 差が小さいので、1 つだけ対策しても効果は限定的です "
+              "(最大でも %1 dB)。",
+              " The gap is small, so treating one source alone helps little "
+              "(%1 dB at most).");
+    I18n::reg("cab_ns_none",
+              "チェックの入った騒音源がありません。",
+              "No noise source is ticked.");
+    I18n::reg("cab_ns_bad",
+              "レベルが数値として読めない行があります。",
+              "Some level is not a number.");
+    I18n::reg("cab_uw_noise",
+              "騒音源のチェックの、伝達経路 (車室への入り方) の扱い",
+              "how the ticked noise sources couple into the cabin");
+    I18n::reg("cab_uw_noise_ok",
+              "下の「騒音源の寄与」(チェックした源のレベルを合成しています)",
+              "the contribution table below, which sums the levels of the "
+              "ticked sources");
     I18n::reg("cab_uw_cad", "CAD ファイルの指定と吸音内装のチェック",
               "the CAD file and the absorbing-trim check boxes");
     I18n::reg("cab_uw_cad_ok", "下の音響モード計算 (寸法入力から算出しています)",
@@ -351,9 +392,33 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     m_srcStack->addWidget(buildTrainSources());     // 2 train
     m_srcStack->addWidget(buildAircraftSources());  // 3 aircraft
     ss->vbox()->addWidget(m_srcStack);
-    // 騒音源チェックはローカル状態のみ (どこにも読まれない)
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("cab_uw_noise")));
+    // チェックした源のレベルは下の寄与表で合成する。伝達経路 (車室への
+    // 入り方) までは扱わないので、そこは未反映として明示する
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("cab_uw_noise"),
+                                               I18n::tr("cab_uw_noise_ok")));
     v->addWidget(ss);
+
+    // ── 騒音源の寄与 (エネルギー加算) ───────────────────────────────────────
+    auto *sn = new SectionBox(I18n::tr("cab_ns_section"), body);
+    sn->vbox()->addWidget(makeHint(I18n::tr("cab_ns_hint"), sn));
+    m_noiseTable = new QTableWidget(0, 4, sn);
+    m_noiseTable->setHorizontalHeaderLabels({ I18n::tr("cab_ns_src"),
+                                              I18n::tr("cab_ns_level"),
+                                              I18n::tr("cab_ns_share"),
+                                              I18n::tr("cab_ns_gain") });
+    m_noiseTable->verticalHeader()->setVisible(false);
+    m_noiseTable->verticalHeader()->setDefaultSectionSize(24);
+    // レベル列だけ編集できる (他は計算結果)
+    m_noiseTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                  | QAbstractItemView::EditKeyPressed);
+    m_noiseTable->horizontalHeader()->setSectionResizeMode(0,
+                                                           QHeaderView::Stretch);
+    m_noiseTable->setMinimumHeight(150);
+    sn->vbox()->addWidget(m_noiseTable);
+    m_noiseSummary = new QLabel(sn);
+    m_noiseSummary->setWordWrap(true);
+    sn->vbox()->addWidget(m_noiseSummary);
+    v->addWidget(sn);
 
     // ── 解析手法 (帯域別) ───────────────────────────────────────────────────
     auto *sf = new SectionBox(I18n::tr("cab_method_section"), body);
@@ -493,7 +558,24 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
         if (m_updating) return;
         m_vehicleIdx = i;
         m_srcStack->setCurrentIndex(i);
+        rebuildNoiseTable();
     });
+    // 騒音源のチェック → 寄与の再計算 (外した源は合成に入れない)
+    for (QCheckBox *c : { m_carEngine, m_carRoad, m_carWind, m_carBoom,
+                          m_evMotor, m_evInverter, m_evRoad, m_evGear,
+                          m_trRolling, m_trTunnel, m_trHvac,
+                          m_acTbl, m_acEngine, m_acPressure })
+        connect(c, &QCheckBox::toggled, this, [this](bool) {
+            if (m_updating) return;
+            updateNoiseSum();
+        });
+    // レベル列の編集 → 再計算
+    connect(m_noiseTable, &QTableWidget::itemChanged, this,
+            [this](QTableWidgetItem *it) {
+                if (m_updating || !it || it->column() != 1) return;
+                updateNoiseSum();
+            });
+    rebuildNoiseTable();
 
     // 音響モード: 寸法・室温・上限周波数のいずれかが変わるたびに再計算する
     // (直方体の閉形式解なので同期実行でよい — 数万モードでも数 ms)
@@ -634,6 +716,137 @@ void CabinAcousticsTab::updateMeasures()
 }
 
 // ── 乗用車 / car ────────────────────────────────────────────────────────────
+// 対象を切り替えたら騒音源の行を作り直す。既定レベルは代表的な走行条件の
+// **目安**で、測定値ではない (画面にもそう書いてある)。
+void CabinAcousticsTab::rebuildNoiseTable()
+{
+    if (!m_noiseTable) return;
+    struct Row { QCheckBox *chk; const char *key; double level; };
+    QVector<Row> rows;
+    switch (m_vehicleIdx) {
+    case 1:   // EV
+        rows = { { m_evMotor,    "cab_ev_motor",    55.0 },
+                 { m_evInverter, "cab_ev_inverter", 50.0 },
+                 { m_evRoad,     "cab_ev_road",     64.0 },
+                 { m_evGear,     "cab_ev_gear",     52.0 } };
+        break;
+    case 2:   // 鉄道
+        rows = { { m_trRolling, "cab_tr_rolling", 68.0 },
+                 { m_trTunnel,  "cab_tr_tunnel",  62.0 },
+                 { m_trHvac,    "cab_tr_hvac",    55.0 } };
+        break;
+    case 3:   // 航空機
+        rows = { { m_acTbl,      "cab_ac_tbl",    78.0 },
+                 { m_acEngine,   "cab_ac_engine", 74.0 },
+                 { m_acPressure, "cab_ac_press",  60.0 } };
+        break;
+    default:  // 乗用車
+        rows = { { m_carEngine, "cab_car_engine", 62.0 },
+                 { m_carRoad,   "cab_car_road",   66.0 },
+                 { m_carWind,   "cab_car_wind",   58.0 },
+                 { m_carBoom,   "cab_car_boom",   60.0 } };
+        break;
+    }
+
+    const bool was = m_updating;
+    m_updating = true;
+    m_noiseChecks.clear();
+    m_noiseTable->clearContents();
+    m_noiseTable->setRowCount(rows.size());
+    for (int i = 0; i < rows.size(); ++i) {
+        m_noiseChecks.push_back(rows[i].chk);
+        auto *name = new QTableWidgetItem(I18n::tr(rows[i].key));
+        name->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        m_noiseTable->setItem(i, 0, name);
+        auto *lv = new QTableWidgetItem(QString::number(rows[i].level, 'f', 1));
+        lv->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_noiseTable->setItem(i, 1, lv);
+        for (int c = 2; c < 4; ++c) {
+            auto *it = new QTableWidgetItem(QStringLiteral("—"));
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            m_noiseTable->setItem(i, c, it);
+        }
+    }
+    m_updating = was;
+    updateNoiseSum();
+}
+
+// チェックの入った源のレベルをエネルギー加算して寄与を出す (core/LevelSum)
+void CabinAcousticsTab::updateNoiseSum()
+{
+    if (!m_noiseTable || !m_noiseSummary) return;
+    std::vector<double> levels;
+    QVector<int> rowOf;          // levels[i] がどの行か
+    bool bad = false;
+    for (int r = 0; r < m_noiseTable->rowCount(); ++r) {
+        // 対応するチェックが外れている源は合成に入れない
+        if (r < m_noiseChecks.size() && m_noiseChecks[r]
+            && !m_noiseChecks[r]->isChecked()) {
+            if (auto *it = m_noiseTable->item(r, 2))
+                it->setText(QStringLiteral("—"));
+            if (auto *it = m_noiseTable->item(r, 3))
+                it->setText(QStringLiteral("—"));
+            continue;
+        }
+        const QTableWidgetItem *lv = m_noiseTable->item(r, 1);
+        if (!lv) continue;
+        bool ok = false;
+        const double v = lv->text().trimmed().toDouble(&ok);
+        if (!ok) { bad = true; continue; }
+        levels.push_back(v);
+        rowOf.push_back(r);
+    }
+    if (bad) {
+        m_noiseSummary->setText(I18n::tr("cab_ns_bad"));
+        return;
+    }
+    const levelsum::Result res = levelsum::energySum(levels);
+    if (!res.valid) {
+        for (int r = 0; r < m_noiseTable->rowCount(); ++r) {
+            if (auto *it = m_noiseTable->item(r, 2))
+                it->setText(QStringLiteral("—"));
+            if (auto *it = m_noiseTable->item(r, 3))
+                it->setText(QStringLiteral("—"));
+        }
+        m_noiseSummary->setText(I18n::tr("cab_ns_none"));
+        return;
+    }
+
+    const bool was = m_updating;
+    m_updating = true;
+    double bestGain = 0.0;
+    for (int i = 0; i < int(res.parts.size()); ++i) {
+        const int r = rowOf[i];
+        if (auto *it = m_noiseTable->item(r, 2))
+            it->setText(QString::number(res.parts[std::size_t(i)].share * 100.0,
+                                        'f', 1));
+        const double g = res.parts[std::size_t(i)].removalGain_db;
+        if (auto *it = m_noiseTable->item(r, 3))
+            it->setText(g > 100.0 ? QStringLiteral("—")
+                                  : QString::number(g, 'f', 1));
+        bestGain = std::max(bestGain, (g > 100.0) ? 0.0 : g);
+    }
+    m_updating = was;
+
+    const int d = res.dominantIndex;
+    QString name = QStringLiteral("—");
+    double share = 0.0;
+    if (d >= 0 && d < rowOf.size()) {
+        if (const QTableWidgetItem *it = m_noiseTable->item(rowOf[d], 0))
+            name = it->text();
+        share = res.parts[std::size_t(d)].share * 100.0;
+    }
+    QString msg = I18n::tr("cab_ns_total")
+                      .arg(QString::number(res.total_db, 'f', 1), name,
+                           QString::number(share, 'f', 1),
+                           QString::number(res.topTwoGap_db, 'f', 1));
+    // 源が拮抗していると 1 つ潰しても効かない — その事実を出す
+    if (levels.size() >= 2 && res.topTwoGap_db < 3.0)
+        msg += I18n::tr("cab_ns_flat").arg(QString::number(bestGain, 'f', 1));
+    m_noiseSummary->setText(msg);
+}
+
 QWidget *CabinAcousticsTab::buildCarSources()
 {
     auto *page = new QWidget;

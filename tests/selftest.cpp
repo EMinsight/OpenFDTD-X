@@ -74,6 +74,7 @@
 #include "optics/DisplayMetrics.h"
 #include "optics/ParaxialTrace.h"
 #include "core/WaveformSpectrum.h"
+#include "core/LevelSum.h"
 #include "io/GdsGeometry.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
@@ -13770,6 +13771,107 @@ static void testParaxialTrace()
     }
 }
 
+// ── デシベルのエネルギー加算と寄与分析 (core/LevelSum) ─────────────────────
+// 判定はすべて閉形式: 等レベル n 個で +10·log10(n)、10 dB 下の源は
+// +0.414 dB、寄与率の総和は 1、除去効果 ΔL = −10·log10(1 − p)。
+static void testLevelSum()
+{
+    g_file = "levelsum";
+    namespace ls = ofd::levelsum;
+
+    // 1) 等しい 2 源は +3.0103 dB (エネルギー 2 倍)
+    {
+        const ls::Result r = ls::energySum({ 70.0, 70.0 });
+        check(r.valid, "levelsum: two equal sources are summed");
+        check(std::fabs(r.total_db - (70.0 + 10.0 * std::log10(2.0))) < 1e-12,
+              "levelsum: two equal sources add 3.0103 dB");
+        check(std::fabs(r.parts[0].share - 0.5) < 1e-12
+              && std::fabs(r.parts[1].share - 0.5) < 1e-12,
+              "levelsum: they contribute half each");
+        // 片方を消すと 3.0103 dB 下がる
+        check(std::fabs(r.parts[0].removalGain_db - 10.0 * std::log10(2.0))
+                  < 1e-12,
+              "levelsum: removing one of two equals gains 3.0103 dB");
+        check(std::fabs(r.topTwoGap_db) < 1e-12,
+              "levelsum: the top two are level");
+    }
+
+    // 2) 等しい n 個は +10·log10(n)
+    {
+        for (int n : { 1, 2, 4, 10, 100 }) {
+            const ls::Result r = ls::energySum(std::vector<double>(n, 60.0));
+            check(r.valid && std::fabs(r.total_db
+                                       - (60.0 + 10.0 * std::log10(double(n))))
+                                 < 1e-12,
+                  "levelsum: n equal sources add 10 log10(n)");
+            check(std::fabs(r.parts[0].share - 1.0 / n) < 1e-12,
+                  "levelsum: each contributes 1/n");
+        }
+    }
+
+    // 3) 10 dB 下の源は合計を 0.414 dB しか上げない (= 消しても 0.414 dB)
+    {
+        const ls::Result r = ls::energySum({ 80.0, 70.0 });
+        const double expect = 80.0 + 10.0 * std::log10(1.1);
+        check(std::fabs(r.total_db - expect) < 1e-12,
+              "levelsum: a source 10 dB down adds only 0.414 dB");
+        check(std::fabs(r.parts[1].removalGain_db
+                        - (-10.0 * std::log10(1.0 - 1.0 / 11.0))) < 1e-12,
+              "levelsum: and removing it gains exactly that much");
+        check(r.parts[1].removalGain_db < 0.5,
+              "levelsum: (which is under half a decibel)");
+        check(r.dominantIndex == 0, "levelsum: the loud one dominates");
+        check(std::fabs(r.topTwoGap_db - 10.0) < 1e-12,
+              "levelsum: the top-two gap is 10 dB");
+    }
+
+    // 4) 寄与率の総和は 1、除去効果は ΔL = −10·log10(1 − p) と厳密一致
+    {
+        const std::vector<double> lv = { 72.0, 68.5, 65.0, 61.2, 55.0 };
+        const ls::Result r = ls::energySum(lv);
+        check(r.valid && int(r.parts.size()) == int(lv.size()),
+              "levelsum: every source is reported");
+        double sum = 0.0;
+        for (const ls::Contribution &c : r.parts) sum += c.share;
+        check(std::fabs(sum - 1.0) < 1e-12,
+              "levelsum: the contributions sum to one");
+        for (const ls::Contribution &c : r.parts)
+            check(std::fabs(c.removalGain_db
+                            + 10.0 * std::log10(1.0 - c.share)) < 1e-12,
+                  "levelsum: the removal gain follows -10 log10(1-p)");
+        // 合計は最大の源より上、かつ 全部同じだった場合の上限より下
+        check(r.total_db > 72.0 && r.total_db < 72.0 + 10.0 * std::log10(5.0),
+              "levelsum: the total sits between the loudest and n-equal");
+        check(r.dominantIndex == 0, "levelsum: the first one dominates here");
+    }
+
+    // 5) 1 個だけなら合計は自分自身。除去すれば「全部消える」
+    {
+        const ls::Result r = ls::energySum({ 65.0 });
+        check(r.valid && std::fabs(r.total_db - 65.0) < 1e-12,
+              "levelsum: a single source is its own total");
+        check(std::fabs(r.parts[0].share - 1.0) < 1e-12,
+              "levelsum: it contributes everything");
+        check(r.parts[0].removalGain_db > 100.0,
+              "levelsum: removing the only source removes everything");
+        check(std::fabs(r.topTwoGap_db) < 1e-12,
+              "levelsum: a single source has no gap");
+    }
+
+    // 6) 負のレベルや大きな差でも壊れない / 壊れた入力は作らない
+    {
+        const ls::Result r = ls::energySum({ -10.0, -20.0 });
+        check(r.valid && std::fabs(r.total_db
+                                   - (-10.0 + 10.0 * std::log10(1.1))) < 1e-12,
+              "levelsum: negative levels work the same way");
+        check(!ls::energySum({}).valid,
+              "levelsum: no sources means no total");
+        check(!ls::energySum({ 70.0,
+                               std::numeric_limits<double>::infinity() }).valid,
+              "levelsum: a non-finite level is rejected");
+    }
+}
+
 // ── GDS 多角形 → 直方体ジオメトリ (io/GdsGeometry) ─────────────────────────
 // 中心となる不変条件は **面積の厳密な保存**。頂点 y の間では多角形の幅が
 // y の 1 次式なので、中点で測った幅の積分は厳密になる (中点則は 1 次式に
@@ -16449,6 +16551,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testLevelSum();
     testGdsGeometry();
     testWaveformSpectrum();
     testSeidelAberration();

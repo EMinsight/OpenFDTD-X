@@ -97,6 +97,11 @@ set(CORE_SOURCES
     src/core/AimDirection.cpp
     src/core/AimDirection.h
 
+    # デシベル量のエネルギー加算と寄与分析 (車内音響の騒音源の寄与) —
+    # Qt 非依存。selftest から解析値 (等レベル 2 源で +3.01 dB 等) と照合する
+    src/core/LevelSum.cpp
+    src/core/LevelSum.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h
