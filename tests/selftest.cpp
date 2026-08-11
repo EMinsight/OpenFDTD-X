@@ -11736,6 +11736,172 @@ static void testMeshImporterFormats()
         check(!MeshImporter::load(dir.filePath("does-not-exist.obj"), m, &err),
               "meshimp: a missing file fails");
     }
+
+    // ── OBJ の部品分け (g / o / usemtl) ────────────────────────────────────
+    // **2 つ以上に分かれているときだけ**グループとして扱う。1 つしか無い
+    // ファイルはこれまでどおり「部品分けなし」— 既存の経路を変えないため。
+    {
+        // 2 つの正方形を別グループに置く (下段 = base、上段 = lid)
+        const QByteArray two =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+            "g base\nf 1 2 3 4\n"
+            "g lid\nf 5 6 7 8\n";
+        check(write("two.obj", two), "meshimp: wrote a two-group OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("two.obj"), m, nullptr),
+              "meshimp: the two-group OBJ loads");
+        check(m.numTriangles == 4,
+              "meshimp: two quads are four triangles");
+        check(m.hasGroups(), "meshimp: it reports groups");
+        check(m.groupNames.size() == 2
+              && m.groupNames[0] == QLatin1String("base")
+              && m.groupNames[1] == QLatin1String("lid"),
+              "meshimp: the group names come from the g lines");
+        check(m.triGroup.size() == 4
+              && m.triGroup[0] == 0 && m.triGroup[1] == 0
+              && m.triGroup[2] == 1 && m.triGroup[3] == 1,
+              "meshimp: each triangle knows its group");
+
+        // 取り出したサブメッシュは三角形数・bbox・面積が正しい
+        const ImportedMesh base = subMeshOfGroup(m, 0);
+        const ImportedMesh lid  = subMeshOfGroup(m, 1);
+        check(base.numTriangles == 2 && lid.numTriangles == 2,
+              "meshimp: each group has two triangles");
+        check(base.name == QLatin1String("base")
+              && lid.name == QLatin1String("lid"),
+              "meshimp: the sub-mesh carries the group name");
+        check(std::fabs(base.surfaceArea - 1.0) < 1e-6
+              && std::fabs(lid.surfaceArea - 1.0) < 1e-6,
+              "meshimp: each unit square has area 1");
+        check(std::fabs(base.bbox[2]) < 1e-6
+              && std::fabs(base.bbox[5]) < 1e-6,
+              "meshimp: the base sits at z = 0");
+        check(std::fabs(lid.bbox[2] - 1.0) < 1e-6
+              && std::fabs(lid.bbox[5] - 1.0) < 1e-6,
+              "meshimp: the lid sits at z = 1");
+        check(std::fabs(base.surfaceArea + lid.surfaceArea - m.surfaceArea)
+                  < 1e-6,
+              "meshimp: the parts add up to the whole");
+        check(subMeshOfGroup(m, -1).numTriangles == 0
+              && subMeshOfGroup(m, 2).numTriangles == 0,
+              "meshimp: an out-of-range group is empty");
+    }
+    // usemtl でも分かれる / 同じ名前が離れて出てきたら 1 つにまとめる
+    {
+        const QByteArray mats =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\n"
+            "usemtl copper\nf 1 2 3\n"
+            "usemtl teflon\nf 5 6 7\n"
+            "usemtl copper\nf 1 3 4\n";
+        check(write("mats.obj", mats), "meshimp: wrote a usemtl OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("mats.obj"), m, nullptr),
+              "meshimp: the usemtl OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: usemtl splits the mesh in two");
+        check(m.groupNames[0] == QLatin1String("copper")
+              && m.groupNames[1] == QLatin1String("teflon"),
+              "meshimp: the material names are kept");
+        check(subMeshOfGroup(m, 0).numTriangles == 2,
+              "meshimp: the same name reappearing joins the same group");
+        check(subMeshOfGroup(m, 1).numTriangles == 1,
+              "meshimp: the other material keeps its single triangle");
+    }
+    // 1 グループしか無いファイルは「部品分けなし」に戻る (後方互換)
+    {
+        ImportedMesh one;
+        check(MeshImporter::load(dir.filePath("sq.obj"), one, nullptr),
+              "meshimp: the single-usemtl OBJ still loads");
+        check(!one.hasGroups() && one.groupNames.isEmpty()
+              && one.triGroup.isEmpty(),
+              "meshimp: one group means no grouping at all");
+        ImportedMesh stl;
+        check(MeshImporter::load(dir.filePath("sq.stl"), stl, nullptr),
+              "meshimp: STL still loads");
+        check(!stl.hasGroups(), "meshimp: STL has no groups");
+        check(subMeshOfGroup(stl, 0).numTriangles == 0,
+              "meshimp: asking a group of an ungrouped mesh gives nothing");
+    }
+    // 部品ごとにボクセル化して材料を分ける (GeometryTab の「名前で」経路)。
+    // 全体を 1 材料でボクセル化したときと **占有セル数が一致**することを見る
+    // (部品が重ならないので和集合は同じはず)。
+    {
+        // 離れた 2 つの立方体を別グループに置いた OBJ を書く
+        auto cubeObj = [](double x0, double y0, double z0, double s, int base) {
+            QByteArray o;
+            const double v[8][3] = {
+                { x0, y0, z0 }, { x0+s, y0, z0 }, { x0+s, y0+s, z0 },
+                { x0, y0+s, z0 }, { x0, y0, z0+s }, { x0+s, y0, z0+s },
+                { x0+s, y0+s, z0+s }, { x0, y0+s, z0+s } };
+            for (int i = 0; i < 8; ++i)
+                o += QStringLiteral("v %1 %2 %3\n")
+                         .arg(v[i][0]).arg(v[i][1]).arg(v[i][2]).toUtf8();
+            const int f[12][3] = {
+                {0,1,2},{0,2,3}, {4,6,5},{4,7,6}, {0,4,5},{0,5,1},
+                {1,5,6},{1,6,2}, {2,6,7},{2,7,3}, {3,7,4},{3,4,0} };
+            for (int i = 0; i < 12; ++i)
+                o += QStringLiteral("f %1 %2 %3\n")
+                         .arg(base + f[i][0]).arg(base + f[i][1])
+                         .arg(base + f[i][2]).toUtf8();
+            return o;
+        };
+        QByteArray two = "g left\n";
+        two += cubeObj(-0.75, -0.25, -0.25, 0.5, 1);
+        two += "g right\n";
+        two += cubeObj(0.25, -0.25, -0.25, 0.5, 9);
+        check(write("parts.obj", two), "meshimp: wrote a two-cube OBJ");
+
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("parts.obj"), m, nullptr),
+              "meshimp: the two-cube OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: the two cubes are two parts");
+
+        MeshAxis ax;
+        ax.nodes = { -1.0, 1.0 };
+        ax.divs  = { 20 };
+        // 部品ごとに別材料でボクセル化する (GUI がやることと同じ手順)
+        const ImportedMesh a = subMeshOfGroup(m, 0);
+        const ImportedMesh b = subMeshOfGroup(m, 1);
+        const VoxelResult ra = Voxelizer::voxelize(a, ax, ax, ax, 2);
+        const VoxelResult rb = Voxelizer::voxelize(b, ax, ax, ax, 5);
+        check(ra.ok && rb.ok, "meshimp: both parts voxelize");
+        check(ra.occupied > 0 && rb.occupied > 0,
+              "meshimp: both parts occupy cells");
+        for (const Geometry &g : ra.bricks)
+            check(g.materialId == 2, "meshimp: part A keeps material 2");
+        for (const Geometry &g : rb.bricks)
+            check(g.materialId == 5, "meshimp: part B keeps material 5");
+
+        // 全体を 1 材料で入れたときと占有セル数が一致する
+        const VoxelResult whole = Voxelizer::voxelize(m, ax, ax, ax, 2);
+        check(whole.ok, "meshimp: the whole mesh voxelizes");
+        check(ra.occupied + rb.occupied == whole.occupied,
+              "meshimp: per-part voxelization covers exactly the same cells");
+        // 2 つの立方体は同じ大きさなので占有も同じ
+        check(ra.occupied == rb.occupied,
+              "meshimp: the two equal cubes occupy the same number of cells");
+    }
+    // 名前が付く前の面は「(default)」グループになる
+    {
+        const QByteArray mixed =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\n"
+            "f 1 2 3\n"
+            "g later\nf 4 5 6\n";
+        check(write("mixed.obj", mixed), "meshimp: wrote a partly named OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("mixed.obj"), m, nullptr),
+              "meshimp: the partly named OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: the unnamed faces get their own group");
+        check(m.groupNames[0] == QLatin1String("(default)"),
+              "meshimp: and it is called (default)");
+        check(m.triGroup[0] == 0 && m.triGroup[1] == 1,
+              "meshimp: the faces land in the right groups");
+    }
 }
 
 // GeometryTab「ジオメトリ検査」節の検出値の実体。期待値はコードからではなく

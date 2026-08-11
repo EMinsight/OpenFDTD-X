@@ -521,8 +521,37 @@ const Tr kTr[] = {
       "⚠ This shape cannot rotate about %1 (prisms/frusta: own axis only)" },
     { "geoc_uw_tess", "テセレーション設定 (偏差・角度・品質・並列 / 曲率適応)",
       "the tessellation settings (deviation, angle, quality, parallel / curvature adaptation)" },
-    { "geoc_uw_map", "材料マッピングの方式と既定材料の選択",
-      "the material-mapping method and the default material" },
+    { "geoc_map_col_part", "部品 (OBJ の g / o / usemtl)",
+      "Part (OBJ g / o / usemtl)" },
+    { "geoc_map_col_tris", "三角形", "Triangles" },
+    { "geoc_map_col_mat",  "材料番号", "Material #" },
+    { "geoc_map_none",
+      "▸ 部品分けのあるメッシュ (OBJ の g / o / usemtl) を取り込むと、"
+      "部品ごとに材料番号を割り当てられます。STL / PLY と、部品が 1 つしかない "
+      "OBJ は分けられないので、下のボクセル化行の材質番号が全体に使われます。",
+      "▸ Import a mesh with parts (OBJ g / o / usemtl) and you can give each "
+      "part its own material number. STL / PLY and single-part OBJ files "
+      "cannot be split, so the material number in the voxelize row below is "
+      "used for the whole mesh." },
+    { "geoc_map_have",
+      "▸ %1 個の部品に分かれています。方式を「名前で」にすると、この表の"
+      "材料番号で部品ごとにボクセル化します (方式が「単一材料」なら"
+      "ボクセル化行の材質番号が全体に使われます)。",
+      "▸ Split into %1 parts. With the method set to “by name” each part is "
+      "voxelized with the material number in this table; with “single "
+      "material” the number in the voxelize row is used for everything." },
+    { "geoc_map_bycolor_why",
+      "色で分ける方式は、取込側が面の色を保持していないため選べません "
+      "(STL/OBJ/PLY のいずれも色を読み飛ばしています)。",
+      "Mapping by colour is unavailable because the importer does not keep "
+      "face colours (STL / OBJ / PLY colours are skipped)." },
+    { "geoc_map_manual_why",
+      "手動割当は上の部品表そのものです — 方式は「名前で」を選んでください。",
+      "Manual assignment is what the parts table above already is - choose "
+      "“by name”." },
+    { "geoc_vox_bygroup",
+      "%1: 部品ごとにボクセル化しました — %2 (合計 %L3 セル / %L4 ブロック)",
+      "%1: voxelized per part - %2 (%L3 cells / %L4 bricks in total)" },
     { "geoc_uw_refine", "細分化の設定 (細分化エンジンが未実装のため)",
       "the refinement settings (the refinement engine is not implemented)" },
 };
@@ -1466,7 +1495,40 @@ QWidget *GeometryTab::buildMaterialMapSection()
     m_mapDefault->addItem(I18n::tr("geoc_map_m1"));
     m_mapDefault->addItem(I18n::tr("geoc_map_m3"));
     s->form()->addRow(I18n::tr("geoc_map_default"), m_mapDefault);
-    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("geoc_uw_map")));   // 取込材質は m_voxMat のみ有効
+
+    // 部品 → 材料の割当表 (OBJ の g / o / usemtl で分かれているとき)
+    m_mapTable = new QTableWidget(0, 3, s);
+    m_mapTable->setHorizontalHeaderLabels({ I18n::tr("geoc_map_col_part"),
+                                            I18n::tr("geoc_map_col_tris"),
+                                            I18n::tr("geoc_map_col_mat") });
+    m_mapTable->verticalHeader()->setVisible(false);
+    m_mapTable->verticalHeader()->setDefaultSectionSize(24);
+    m_mapTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                | QAbstractItemView::EditKeyPressed);
+    m_mapTable->horizontalHeader()->setSectionResizeMode(0,
+                                                         QHeaderView::Stretch);
+    m_mapTable->setMinimumHeight(120);
+    m_mapTable->setVisible(false);          // 部品分けのある取込後に出す
+    s->vbox()->addWidget(m_mapTable);
+    m_mapNote = makeHint(I18n::tr("geoc_map_none"), s);
+    s->vbox()->addWidget(m_mapNote);
+
+    // 色で分ける / 手動割当は選べない — 理由を添えて無効化する (絶対規則 5)。
+    // 色: 取込側が面の色を保持していない。手動: 上の部品表がそれ自体なので、
+    // 同じことをする選択肢を 2 つ置かない。
+    if (m_mapMethod) {
+        const QList<QAbstractButton *> btns = m_mapMethod->buttons();
+        if (btns.size() >= 4) {
+            btns[2]->setEnabled(false);
+            btns[2]->setToolTip(I18n::tr("geoc_map_bycolor_why"));
+            btns[3]->setEnabled(false);
+            btns[3]->setToolTip(I18n::tr("geoc_map_manual_why"));
+        }
+    }
+    // 既定材料を変えたら表の初期値も追従させる (未取込なら何も起きない)
+    if (m_mapDefault)
+        connect(m_mapDefault, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) { rebuildPartTable(); });
     return s;
 }
 
@@ -1917,6 +1979,7 @@ void GeometryTab::importStl()
     // 位相検査は取込時に 1 度だけ (アフィン変換で位相は変わらないので
     // 配置・変換のたびに数え直さない)。
     m_diag = analyzeMesh(m_rawMesh);
+    rebuildPartTable();
     m_voxBtn->setEnabled(true);
     if (m_cadFile) m_cadFile->setText(path);
 
@@ -1942,6 +2005,44 @@ void GeometryTab::importStl()
 // かけ、bbox / 表面積を頂点から取り直す。恒等変換ならメッシュをそのまま返す
 // (既定値では従来の取込動作と完全一致)。純幾何処理 — StlImporter / Voxelizer
 // は変更しない。
+// 取込メッシュの部品 (OBJ の g / o / usemtl) → 材料番号の割当表を作り直す。
+// 部品分けの無いファイル (STL / PLY / 単一部品の OBJ) では表を隠す。
+void GeometryTab::rebuildPartTable()
+{
+    if (!m_mapTable || !m_mapNote) return;
+    const bool has = m_lastMesh.hasGroups();
+    m_mapTable->setVisible(has);
+    if (!has) {
+        m_mapTable->setRowCount(0);
+        m_mapNote->setText(I18n::tr("geoc_map_none"));
+        return;
+    }
+    // 既定材料コンボの選択 → 材料番号 (表示順は 2 / 1 / 3)
+    const int defMat = (m_mapDefault && m_mapDefault->currentIndex() == 1) ? 1
+                     : (m_mapDefault && m_mapDefault->currentIndex() == 2) ? 3
+                     : 2;
+    QVector<int> tris(m_lastMesh.groupNames.size(), 0);
+    for (int t = 0; t < m_lastMesh.numTriangles; ++t) {
+        const int g = m_lastMesh.triGroup[t];
+        if (g >= 0 && g < tris.size()) ++tris[g];
+    }
+    m_mapTable->setRowCount(m_lastMesh.groupNames.size());
+    for (int r = 0; r < m_lastMesh.groupNames.size(); ++r) {
+        auto *nm = new QTableWidgetItem(m_lastMesh.groupNames[r]);
+        nm->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        m_mapTable->setItem(r, 0, nm);
+        auto *tc = new QTableWidgetItem(QString::number(tris[r]));
+        tc->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        tc->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_mapTable->setItem(r, 1, tc);
+        auto *mt = new QTableWidgetItem(QString::number(defMat));
+        mt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_mapTable->setItem(r, 2, mt);
+    }
+    m_mapNote->setText(I18n::tr("geoc_map_have")
+                           .arg(m_lastMesh.groupNames.size()));
+}
+
 ImportedMesh GeometryTab::applyPlacement(const ImportedMesh &src) const
 {
     // 単位ボタン (mm / m / μm / nm / inch) → m 換算係数
@@ -2078,6 +2179,65 @@ void GeometryTab::voxelizeImported()
         QMessageBox::warning(this, I18n::tr("ge_voxelize_btn"),
                              I18n::tr("geoc_vox_wind_needs_normals")
                                  .arg(m_diag.inconsistentEdges));
+        return;
+    }
+
+    // 方式が「名前で」で、部品分けのあるメッシュなら **部品ごとに**
+    // ボクセル化する (部品ごとに材料番号が違うので 1 回では表せない)。
+    const bool byName = m_mapMethod && m_mapMethod->checkedId() == 1;
+    const bool perPart = byName && m_lastMesh.hasGroups() && m_mapTable
+                         && m_mapTable->rowCount()
+                                == m_lastMesh.groupNames.size();
+    if (perPart) {
+        qint64 cells = 0;
+        int bricks = 0;
+        QStringList per;
+        VoxelResult last;
+        for (int gi = 0; gi < m_lastMesh.groupNames.size(); ++gi) {
+            const QTableWidgetItem *mi = m_mapTable->item(gi, 2);
+            bool okM = false;
+            const int mat = mi ? mi->text().trimmed().toInt(&okM) : 0;
+            if (!okM || mat < 1) continue;      // 材料番号が読めない行は飛ばす
+            const ImportedMesh part = subMeshOfGroup(m_lastMesh, gi);
+            if (part.numTriangles == 0) continue;
+            const VoxelResult r = Voxelizer::voxelize(
+                part, m_p->mesh(0), m_p->mesh(1), m_p->mesh(2),
+                mat, 8'000'000, opt);
+            if (!r.ok) {
+                m_importInfo->setText("voxelize error (" + part.name + "): "
+                                      + r.error);
+                return;
+            }
+            for (Geometry g : r.bricks) {
+                g.name = part.name + " (voxel)";
+                m_p->geometries().push_back(g);
+            }
+            cells += r.occupied;
+            bricks += r.bricks.size();
+            per << QStringLiteral("%1→#%2 (%L3)")
+                       .arg(part.name).arg(mat).arg(r.occupied);
+            last = r;
+        }
+        if (per.isEmpty()) {
+            m_importInfo->setText(I18n::tr("geoc_map_none"));
+            return;
+        }
+        refresh();
+        m_p->touch();
+        m_importInfo->setText(I18n::tr("geoc_vox_bygroup")
+                                  .arg(m_lastMesh.name,
+                                       per.join(QStringLiteral(", ")))
+                                  .arg(cells).arg(bricks));
+        m_voxOccupied = cells;
+        m_voxTotal    = qint64(last.nx) * last.ny * last.nz;
+        m_hasVox      = true;
+        m_voxHasPvf   = opt.pvf;
+        m_voxBoundary = last.boundaryCells;
+        m_voxPvfN     = opt.pvfSamples;
+        m_voxStairVol = last.stairVolume;
+        m_voxPvfVol   = last.pvfVolume;
+        m_voxMeshVol  = meshVolume(m_lastMesh);
+        refreshVoxelStats();
         return;
     }
 

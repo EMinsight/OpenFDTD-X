@@ -1,6 +1,8 @@
 // MeshImporter.cpp — STL / OBJ / PLY の取込 (仕様は MeshImporter.h)
 #include "MeshImporter.h"
 
+#include <QHash>
+
 #include <QByteArray>
 #include <QFile>
 #include <QFileInfo>
@@ -176,12 +178,34 @@ bool MeshImporter::loadObj(const QByteArray &data, ImportedMesh &mesh,
     QVector<int> idx;
     int badFaces = 0;
 
+    // 部品分け: g / o / usemtl で切り替わる。名前ごとに 1 グループへまとめる
+    // (同じ名前が離れて何度も出てくる OBJ があるため)。
+    QHash<QString, int> groupOf;
+    QString curGroup;                  // "" = 名前が付く前の面
+    auto groupIndex = [&](const QString &n) {
+        const auto it = groupOf.constFind(n);
+        if (it != groupOf.constEnd()) return it.value();
+        const int i = mesh.groupNames.size();
+        mesh.groupNames << (n.isEmpty() ? QStringLiteral("(default)") : n);
+        groupOf.insert(n, i);
+        return i;
+    };
+
     const QList<QByteArray> lines = data.split('\n');
     for (const QByteArray &raw : lines) {
         const QByteArray line = raw.trimmed();
         if (line.isEmpty() || line.startsWith('#')) continue;
         const QList<QByteArray> tok = line.simplified().split(' ');
         if (tok.isEmpty()) continue;
+
+        if (tok[0] == "g" || tok[0] == "o" || tok[0] == "usemtl") {
+            // 名前は残り全部 (空白を含む名前がある)
+            QStringList parts;
+            for (int i = 1; i < tok.size(); ++i)
+                parts << QString::fromUtf8(tok[i]);
+            curGroup = parts.join(QLatin1Char(' ')).trimmed();
+            continue;
+        }
 
         if (tok[0] == "v") {
             if (tok.size() < 4) continue;
@@ -204,7 +228,19 @@ bool MeshImporter::loadObj(const QByteArray &data, ImportedMesh &mesh,
                 idx << v;
             }
             if (idx.size() >= 3 && !addPolygon(mesh, xyz, idx)) ++badFaces;
+            // 追加された三角形 (多角形は扇状に分割されるので複数のことがある)
+            // を現在のグループに属させる
+            const int gi = groupIndex(curGroup);
+            while (mesh.triGroup.size() < mesh.numTriangles)
+                mesh.triGroup.push_back(gi);
         }
+    }
+
+    // 分かれていない (グループが 1 つ以下) なら「部品分けなし」に戻す。
+    // 単一部品の OBJ を今までどおり扱うため (hasGroups() が false になる)。
+    if (mesh.groupNames.size() < 2) {
+        mesh.groupNames.clear();
+        mesh.triGroup.clear();
     }
 
     if (mesh.numTriangles == 0) {
@@ -447,4 +483,22 @@ bool MeshImporter::loadPly(const QByteArray &data, ImportedMesh &mesh,
         *err = QStringLiteral("PLY: skipped %1 face(s) with out-of-range "
                               "vertex indices").arg(badFaces);
     return true;
+}
+
+// ── グループの取り出し ─────────────────────────────────────────────────────
+// (accumulate は上の無名 name space のもの — ここからも見える)
+ImportedMesh ofd::subMeshOfGroup(const ImportedMesh &mesh, int group)
+{
+    ImportedMesh out;
+    if (!mesh.hasGroups() || group < 0 || group >= mesh.groupNames.size())
+        return out;
+    out.name = mesh.groupNames[group];
+    out.sourcePath = mesh.sourcePath;
+    for (int t = 0; t < mesh.numTriangles; ++t) {
+        if (mesh.triGroup[t] != group) continue;
+        float v[9];
+        for (int k = 0; k < 9; ++k) v[k] = mesh.vertices[t * 9 + k];
+        accumulate(out, v);      // bbox と面積もここで積む
+    }
+    return out;
 }
