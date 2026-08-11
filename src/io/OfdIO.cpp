@@ -896,6 +896,32 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         }
         root["underwater"] = uwObj;
     }
+    // ── 伝送線路 (.ofdx "transmission_line") — 既定値のままなら書かない ────
+    {
+        auto toJson = [](const TransmissionLineOpts &t) {
+            return QJsonObject{
+                {"kind", t.kind},
+                {"w_mm", t.w_mm}, {"h_mm", t.h_mm},
+                {"a_mm", t.a_mm}, {"b_mm", t.b_mm},
+                {"d_mm", t.d_mm}, {"dia_mm", t.dia_mm},
+                {"slot_mm", t.slot_mm},
+                {"epsr", t.epsr}, {"tan_d", t.tanD},
+                {"sigma_sm", t.sigma_Sm},
+                {"length_mm", t.length_mm},
+                {"freq_ghz", t.freq_GHz},
+                {"z0_ref_ohm", t.z0Ref_ohm},
+                {"ports", t.ports},
+                {"show", QJsonObject{
+                    {"beta", t.showBeta}, {"vp", t.showVp}, {"vg", t.showVg},
+                    {"alpha", t.showAlpha}, {"eps_eff", t.showEpsEff},
+                    {"s_mag", t.showSmag}, {"il", t.showIL}, {"rl", t.showRL},
+                    {"delay", t.showDelay}, {"touchstone", t.showTouchstone},
+                    {"z0_freq_dep", t.z0FreqDep}, {"z0_reim", t.z0ReIm} }} };
+        };
+        const QJsonObject cur = toJson(p.tline());
+        if (cur != toJson(TransmissionLineOpts{}))
+            root["transmission_line"] = cur;
+    }
     {
         // API key is NOT persisted here — it lives in QSettings
         const Tidy3dOpts &t = p.tidy3d();
@@ -1543,6 +1569,39 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             u.sonarDir = qBound(0, bm.value("directivity").toInt(u.sonarDir), 2);
             u.beamWidth_deg = bm.value("width_deg").toDouble(u.beamWidth_deg);
         }
+    }
+    // 伝送線路 — キーが無い旧ファイルは既定値のまま
+    if (root.contains("transmission_line")) {
+        const QJsonObject tj = root["transmission_line"].toObject();
+        TransmissionLineOpts &t = p.tline();
+        t.kind = qBound(0, tj.value("kind").toInt(t.kind), 4);
+        t.w_mm = tj.value("w_mm").toDouble(t.w_mm);
+        t.h_mm = tj.value("h_mm").toDouble(t.h_mm);
+        t.a_mm = tj.value("a_mm").toDouble(t.a_mm);
+        t.b_mm = tj.value("b_mm").toDouble(t.b_mm);
+        t.d_mm = tj.value("d_mm").toDouble(t.d_mm);
+        t.dia_mm = tj.value("dia_mm").toDouble(t.dia_mm);
+        t.slot_mm = tj.value("slot_mm").toDouble(t.slot_mm);
+        t.epsr = tj.value("epsr").toDouble(t.epsr);
+        t.tanD = tj.value("tan_d").toDouble(t.tanD);
+        t.sigma_Sm = tj.value("sigma_sm").toDouble(t.sigma_Sm);
+        t.length_mm = tj.value("length_mm").toDouble(t.length_mm);
+        t.freq_GHz = tj.value("freq_ghz").toDouble(t.freq_GHz);
+        t.z0Ref_ohm = tj.value("z0_ref_ohm").toDouble(t.z0Ref_ohm);
+        t.ports = tj.value("ports").toInt(t.ports);
+        const QJsonObject sh = tj["show"].toObject();
+        t.showBeta = sh.value("beta").toBool(t.showBeta);
+        t.showVp = sh.value("vp").toBool(t.showVp);
+        t.showVg = sh.value("vg").toBool(t.showVg);
+        t.showAlpha = sh.value("alpha").toBool(t.showAlpha);
+        t.showEpsEff = sh.value("eps_eff").toBool(t.showEpsEff);
+        t.showSmag = sh.value("s_mag").toBool(t.showSmag);
+        t.showIL = sh.value("il").toBool(t.showIL);
+        t.showRL = sh.value("rl").toBool(t.showRL);
+        t.showDelay = sh.value("delay").toBool(t.showDelay);
+        t.showTouchstone = sh.value("touchstone").toBool(t.showTouchstone);
+        t.z0FreqDep = sh.value("z0_freq_dep").toBool(t.z0FreqDep);
+        t.z0ReIm = sh.value("z0_reim").toBool(t.z0ReIm);
     }
     if (root.contains("tidy3d")) {
         const QJsonObject t3 = root["tidy3d"].toObject();

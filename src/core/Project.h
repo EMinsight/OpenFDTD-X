@@ -609,6 +609,35 @@ struct UnderwaterOpts {
     double  beamWidth_deg = 15.0;
 };
 
+// ── 伝送線路タブ (.ofdx "transmission_line") ────────────────────────────────
+// 断面形状と材料から準 TEM の閉形式で Z₀ / ε_eff / γ / S を出す
+// (`core/TransmissionLine`)。既定値は FR-4 上の 50 Ω 級マイクロストリップ。
+struct TransmissionLineOpts {
+    // 0=マイクロストリップ 1=ストリップライン 2=同軸 3=平行2線 4=コプレーナ
+    int     kind = 0;
+    double  w_mm = 3.0;        // 線路幅 / CPW の中心導体幅
+    double  h_mm = 1.6;        // 基板厚 / ストリップラインの地板間隔
+    double  a_mm = 0.5;        // 同軸の内導体半径
+    double  b_mm = 1.68;       // 同軸の外導体内半径
+    double  d_mm = 3.0;        // 平行 2 線の中心間隔
+    double  dia_mm = 1.0;      // 平行 2 線の線径
+    double  slot_mm = 0.3;     // CPW のスロット幅
+    double  epsr = 4.4;
+    double  tanD = 0.02;
+    double  sigma_Sm = 5.8e7;  // 導体導電率 (0 = 無損失)
+    double  length_mm = 50.0;
+    double  freq_GHz = 1.0;
+    double  z0Ref_ohm = 50.0;
+    int     ports = 2;
+    // 表示の取捨 (既定はモックのチェック状態そのまま)
+    bool    showBeta = true, showVp = false, showVg = false;
+    bool    showAlpha = true, showEpsEff = true;
+    bool    showSmag = true, showIL = true, showRL = true;
+    bool    showDelay = false, showTouchstone = true;
+    bool    z0FreqDep = true;  // Z₀(f) を 3 点で出す
+    bool    z0ReIm = false;    // 複素 Z₀ を出す
+};
+
 // ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────
 // GeometryTab「細分化領域」表の 1 行。局所的に格子を細かく (あるいは粗く)
 // したい直方体領域の *定義* で、利用者が入力するデータそのもの。
@@ -892,6 +921,7 @@ public:
     AcousticOpts       &acoustic()    { return m_acoustic; }
     OperaAcousticSettings &operaAcoustic() { return m_operaAcoustic; }
     UnderwaterOpts     &underwater()  { return m_underwater; }
+    TransmissionLineOpts &tline()    { return m_tline; }
     Tidy3dOpts         &tidy3d()      { return m_tidy3d; }
     QVector<RefineRegion> &refineRegions() { return m_refineRegions; }
     QVector<CircuitPortRow> &circuitPorts() { return m_circuitPorts; }
@@ -916,6 +946,7 @@ public:
     const AcousticOpts      &acoustic()   const { return m_acoustic; }
     const OperaAcousticSettings &operaAcoustic() const { return m_operaAcoustic; }
     const UnderwaterOpts    &underwater() const { return m_underwater; }
+    const TransmissionLineOpts &tline() const { return m_tline; }
     const Tidy3dOpts        &tidy3d()     const { return m_tidy3d; }
     const QVector<RefineRegion> &refineRegions() const { return m_refineRegions; }
     const QVector<CircuitPortRow> &circuitPorts() const { return m_circuitPorts; }
@@ -980,6 +1011,7 @@ private:
     AcousticOpts       m_acoustic;
     OperaAcousticSettings m_operaAcoustic;
     UnderwaterOpts     m_underwater;
+    TransmissionLineOpts m_tline;
     Tidy3dOpts         m_tidy3d;
     QVector<RefineRegion> m_refineRegions;   // 既定は空 (.ofdx へ書かない)
     // 既定行のままなら .ofdx へキーを書かない (旧ファイルとバイト一致)

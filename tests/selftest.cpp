@@ -78,6 +78,7 @@
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
 #include "core/FlankingTransmission.h"
+#include "core/TransmissionLine.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "optics/IlluminationTrace.h"
@@ -15660,6 +15661,340 @@ static void testIlluminationTrace()
     }
 }
 
+// ── 伝送線路の準 TEM 解析 (core/TransmissionLine) ──────────────────────────
+// 判定は **厳密解が分かっている形状** (同軸・平行 2 線・等角写像で解ける
+// ストリップライン / CPW) と、近似式でも成り立つ極限で行う:
+//   同軸        Z0 = (eta0/2pi)ln(b/a)/sqrt(eps)          — 閉形式そのもの
+//   平行 2 線   Z0 = (eta0/pi)acosh(D/d)/sqrt(eps)        — 同上
+//   自己補対称  K(k)/K(k') = 1 at k = 1/sqrt(2)           — 楕円積分の恒等式
+//     → ストリップラインは eta0/4、CPW は 30pi (誘電率で割る前) に厳密に一致
+//   マイクロストリップは近似式なので、代わりに **満たすべき性質**で見る
+//     (eps=1 なら eps_eff=1 厳密 / W→大 で eps_eff→eps / Z0 は単調減少)
+//   半波長線路は Z0 に依らず透過 (|S11|=0, |S21|=1) — 分布定数の恒等式
+//   1/4 波長変成器は Zin = Z0^2/ZL                        — 同上
+static void testTransmissionLine()
+{
+    g_file = "tline";
+    namespace tl = ofd::tline;
+
+    const double PI = 3.14159265358979323846;
+    const double ETA0 = 376.730313668;
+    const double C0 = 299792458.0;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    // ── 1) 楕円積分の比 ───────────────────────────────────────────────────
+    {
+        check(std::fabs(tl::ellipticRatio(1.0 / std::sqrt(2.0)) - 1.0) < 1e-12,
+              "tline: K(k)/K(k') is exactly 1 at the self-complementary "
+              "k = 1/sqrt(2)");
+        // k が小さいほど K(k')/K(k) は大きい (単調減少)
+        check(tl::ellipticRatio(0.1) > tl::ellipticRatio(0.5)
+                  && tl::ellipticRatio(0.5) > tl::ellipticRatio(0.9),
+              "tline: the ratio decreases monotonically with k");
+        check(tl::ellipticRatio(0.0) == 0.0 && tl::ellipticRatio(1.0) == 0.0,
+              "tline: k outside (0,1) has no ratio");
+    }
+
+    // ── 2) 同軸 (厳密) ────────────────────────────────────────────────────
+    {
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 1.674; c.epsr = 2.1;
+        c.tanD = 0.0; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+        check(r.valid, "tline: the coax line analyses");
+        const double exact = (ETA0 / (2.0 * PI)) * std::log(c.b_mm / c.a_mm)
+                           / std::sqrt(c.epsr);
+        check(rel(r.z0_ohm, exact) < 1e-12,
+              "tline: coax Z0 is (eta0/2pi)ln(b/a)/sqrt(epsr) exactly");
+        check(rel(r.epsEff, c.epsr) < 1e-12,
+              "tline: a homogeneous line has eps_eff = epsr");
+        check(rel(r.vp_mps, C0 / std::sqrt(c.epsr)) < 1e-12,
+              "tline: the phase velocity is c/sqrt(eps_eff)");
+        check(rel(r.beta_radm, 2.0 * PI * 1.0e9 / r.vp_mps) < 1e-12,
+              "tline: beta = omega / v_p");
+        // 半径を両方 2 倍しても Z0 は変わらない (比だけで決まる)
+        tl::Line c2 = c; c2.a_mm *= 2.0; c2.b_mm *= 2.0;
+        check(rel(tl::analyze(c2, 1.0e9).z0_ohm, r.z0_ohm) < 1e-12,
+              "tline: coax Z0 depends only on the ratio b/a");
+        // 不正な幾何 (b <= a) は結果を返さない
+        tl::Line bad = c; bad.b_mm = bad.a_mm;
+        check(!tl::analyze(bad, 1.0e9).valid,
+              "tline: an outer radius not larger than the inner one is rejected");
+        check(!tl::analyze(c, 0.0).valid, "tline: zero frequency is rejected");
+    }
+
+    // ── 3) 平行 2 線 (厳密) ───────────────────────────────────────────────
+    {
+        tl::Line t;
+        t.kind = tl::Kind::TwoWire;
+        t.d_mm = 3.0; t.dia_mm = 1.0; t.epsr = 1.0;
+        t.tanD = 0.0; t.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(t, 1.0e9);
+        const double exact = (ETA0 / PI) * std::acosh(3.0);
+        check(rel(r.z0_ohm, exact) < 1e-12,
+              "tline: two-wire Z0 is (eta0/pi)acosh(D/d)/sqrt(epsr) exactly");
+        tl::Line bad = t; bad.d_mm = bad.dia_mm;
+        check(!tl::analyze(bad, 1.0e9).valid,
+              "tline: touching wires (D = d) are rejected");
+    }
+
+    // ── 4) ストリップライン / CPW — 自己補対称の厳密値 ────────────────────
+    {
+        tl::Line s;
+        s.kind = tl::Kind::Stripline;
+        s.h_mm = 1.0;                                   // 地板間隔 B
+        s.w_mm = (2.0 / PI) * std::acosh(std::sqrt(2.0)); // k = 1/sqrt(2)
+        s.epsr = 1.0; s.tanD = 0.0; s.sigma_Sm = 0.0;
+        check(rel(tl::analyze(s, 1.0e9).z0_ohm, ETA0 / 4.0) < 1e-9,
+              "tline: a self-complementary stripline is exactly eta0/4");
+        // 誘電体を入れると 1/sqrt(epsr) 倍
+        tl::Line s4 = s; s4.epsr = 4.0;
+        check(rel(tl::analyze(s4, 1.0e9).z0_ohm, ETA0 / 8.0) < 1e-9,
+              "tline: filling the stripline with epsr = 4 halves Z0");
+
+        tl::Line p;
+        p.kind = tl::Kind::Coplanar;
+        p.w_mm = 1.0;
+        p.slot_mm = 0.5 * (std::sqrt(2.0) - 1.0) * p.w_mm;  // k = 1/sqrt(2)
+        p.epsr = 1.0; p.tanD = 0.0; p.sigma_Sm = 0.0;
+        const tl::Result pr = tl::analyze(p, 1.0e9);
+        check(rel(pr.z0_ohm, 30.0 * PI) < 1e-9,
+              "tline: a self-complementary CPW in air is exactly 30pi ohm");
+        check(rel(pr.epsEff, 1.0) < 1e-12,
+              "tline: a CPW in air has eps_eff = 1");
+        tl::Line p10 = p; p10.epsr = 10.0;
+        check(rel(tl::analyze(p10, 1.0e9).epsEff, 5.5) < 1e-12,
+              "tline: the CPW eps_eff is the average (epsr+1)/2 for a thick "
+              "substrate");
+    }
+
+    // ── 5) マイクロストリップ — 近似式が満たすべき性質 ────────────────────
+    {
+        tl::Line m;
+        m.kind = tl::Kind::Microstrip;
+        m.h_mm = 1.6; m.w_mm = 3.0; m.epsr = 4.4;
+        m.tanD = 0.0; m.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(m, 1.0e9);
+        check(r.valid, "tline: the microstrip analyses");
+        // eps=1 (基板が空気) では実効誘電率も厳密に 1
+        tl::Line air = m; air.epsr = 1.0;
+        check(rel(tl::analyze(air, 1.0e9).epsEff, 1.0) < 1e-12,
+              "tline: an air microstrip has eps_eff = 1 exactly");
+        // 実効誘電率は (epsr+1)/2 と epsr の間 (部分充填)
+        check(r.epsEff > 0.5 * (m.epsr + 1.0) && r.epsEff < m.epsr,
+              "tline: eps_eff lies between the half-filled limit and epsr");
+        // W を広げると eps_eff は epsr へ、Z0 は単調に下がる
+        double prevZ = 1e9, prevE = 0.0;
+        bool zDown = true, eUp = true;
+        for (double u : { 0.2, 0.5, 1.0, 2.0, 5.0, 20.0, 100.0 }) {
+            tl::Line q = m; q.w_mm = u * q.h_mm;
+            const tl::Result qr = tl::analyze(q, 1.0e9);
+            if (!(qr.z0_ohm < prevZ)) zDown = false;
+            if (!(qr.epsEff > prevE)) eUp = false;
+            prevZ = qr.z0_ohm; prevE = qr.epsEff;
+        }
+        check(zDown, "tline: microstrip Z0 falls monotonically with W/h");
+        check(eUp, "tline: eps_eff rises monotonically with W/h");
+        tl::Line wide = m; wide.w_mm = 1000.0 * wide.h_mm;
+        check(rel(tl::analyze(wide, 1.0e9).epsEff, m.epsr) < 0.02,
+              "tline: a very wide microstrip approaches the filled limit "
+              "eps_eff -> epsr");
+        // 教科書的な FR-4 の 50 ohm 級であること (W/h = 1.875, epsr = 4.4)
+        check(r.z0_ohm > 45.0 && r.z0_ohm < 55.0,
+              "tline: FR-4 with W/h = 1.875 lands in the 50 ohm class");
+        check(!tl::analyze(tl::Line{ tl::Kind::Microstrip, 0.0 }, 1.0e9).valid,
+              "tline: a zero-width strip is rejected");
+    }
+
+    // ── 6) 損失 ───────────────────────────────────────────────────────────
+    {
+        // 均質線路では誘電損が厳密に beta*tan(delta)/2 になる
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 1.674; c.epsr = 2.1;
+        c.tanD = 0.001; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+        check(rel(r.alphaD_Npm, 0.5 * r.beta_radm * c.tanD) < 1e-12,
+              "tline: for a homogeneous line the dielectric loss is exactly "
+              "beta*tan(delta)/2");
+        check(r.alphaC_Npm == 0.0,
+              "tline: a perfect conductor contributes no loss");
+        // 同軸の導体損は厳密式 (近似フラグが立たない)
+        tl::Line c2 = c; c2.sigma_Sm = 5.8e7;
+        const tl::Result r2 = tl::analyze(c2, 1.0e9);
+        check(!r2.alphaCApprox,
+              "tline: the coax conductor loss is the exact expression");
+        check(r2.alphaC_Npm > 0.0 && r2.alpha_dBm
+                  > (r2.alphaC_Npm + r2.alphaD_Npm) * 8.68 * 0.999,
+              "tline: the total attenuation is the Np/m sum in dB/m");
+        // 表皮効果: 周波数 4 倍で導体損は 2 倍 (Rs ∝ sqrt(f))
+        const tl::Result r4 = tl::analyze(c2, 4.0e9);
+        check(rel(r4.alphaC_Npm, 2.0 * r2.alphaC_Npm) < 1e-9,
+              "tline: the conductor loss follows the skin-effect sqrt(f)");
+        // 誘電損は f に比例
+        check(rel(r4.alphaD_Npm, 4.0 * r2.alphaD_Npm) < 1e-9,
+              "tline: the dielectric loss is proportional to frequency");
+        // マイクロストリップの導体損は広線路近似であることを申告する
+        tl::Line m; m.kind = tl::Kind::Microstrip; m.sigma_Sm = 5.8e7;
+        check(tl::analyze(m, 1.0e9).alphaCApprox,
+              "tline: the microstrip conductor loss declares itself an "
+              "approximation");
+
+        // 複素 Z0: 無損失なら虚部は厳密に 0 で実部は z0_ohm に一致する
+        tl::Line loss0 = c; loss0.tanD = 0.0; loss0.sigma_Sm = 0.0;
+        const tl::Result rl0 = tl::analyze(loss0, 1.0e9);
+        check(rl0.z0Complex.imag() == 0.0
+                  && rel(rl0.z0Complex.real(), rl0.z0_ohm) < 1e-12,
+              "tline: a lossless line has a purely real Z0");
+        // 損失があると虚部は負 (誘導性の R' が効く) で、大きさは小さい
+        const std::complex<double> zc = r2.z0Complex;
+        check(zc.imag() < 0.0 && std::fabs(zc.imag()) < 0.05 * zc.real(),
+              "tline: loss makes Z0 slightly complex with a negative "
+              "imaginary part");
+        check(rel(zc.real(), r2.z0_ohm) < 1e-3,
+              "tline: the real part stays close to the lossless Z0 for a "
+              "low-loss line");
+    }
+
+    // ── 7) S パラメータ — 分布定数の恒等式 ────────────────────────────────
+    {
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 2.0; c.epsr = 1.0;
+        c.tanD = 0.0; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+
+        // 整合線路 (Z0 = Zref): 反射ゼロ・振幅 1・位相 = −beta*l
+        const double len = 100.0;
+        const tl::SParam m = tl::sParameters(r, len, r.z0_ohm);
+        check(m.valid && std::abs(m.s11) < 1e-12,
+              "tline: a matched line reflects nothing");
+        check(std::fabs(std::abs(m.s21) - 1.0) < 1e-12,
+              "tline: a lossless matched line passes everything");
+        const double phase = std::arg(m.s21);
+        const double want = -r.beta_radm * len * 1e-3;
+        check(std::fabs(std::remainder(phase - want, 2.0 * PI)) < 1e-9,
+              "tline: the phase of S21 is -beta*l");
+
+        // 半波長線路は Z0 に依らず透過する (整合していなくても)
+        const double half = 1000.0 * PI / r.beta_radm;
+        const tl::SParam h = tl::sParameters(r, half, 50.0);
+        check(std::abs(h.s11) < 1e-9 && std::fabs(std::abs(h.s21) - 1.0) < 1e-9,
+              "tline: a half-wave line is transparent whatever its Z0");
+
+        // 1/4 波長変成器: Zin = Z0^2/ZL。S11 から Zin を戻して確かめる
+        const double quarter = 0.5 * half;
+        const tl::SParam q = tl::sParameters(r, quarter, 50.0);
+        const std::complex<double> g = q.s11;
+        const std::complex<double> zin = 50.0 * (1.0 + g) / (1.0 - g);
+        check(rel(zin.real(), r.z0_ohm * r.z0_ohm / 50.0) < 1e-6
+                  && std::fabs(zin.imag()) < 1e-6 * std::fabs(zin.real()),
+              "tline: a quarter-wave section transforms 50 ohm into Z0^2/50");
+
+        // 損失があると |S11|^2 + |S21|^2 < 1 (エネルギーが減る)
+        tl::Line lossy = c; lossy.tanD = 0.02; lossy.sigma_Sm = 5.8e7;
+        const tl::Result lr = tl::analyze(lossy, 1.0e9);
+        const tl::SParam ls = tl::sParameters(lr, 500.0, lr.z0_ohm);
+        const double p = std::norm(ls.s11) + std::norm(ls.s21);
+        check(p < 1.0 - 1e-6, "tline: a lossy line does not conserve power");
+        const tl::SParam l0 = tl::sParameters(r, 500.0, r.z0_ohm);
+        check(std::fabs(std::norm(l0.s11) + std::norm(l0.s21) - 1.0) < 1e-12,
+              "tline: the lossless line does conserve it");
+
+        // 長さ 0 は素通し、不正な基準インピーダンスは結果を返さない
+        const tl::SParam z = tl::sParameters(r, 0.0, 50.0);
+        check(std::abs(z.s11) < 1e-15 && std::fabs(std::abs(z.s21) - 1.0) < 1e-15,
+              "tline: a zero-length section is a through");
+        check(!tl::sParameters(r, 100.0, 0.0).valid,
+              "tline: a non-positive reference impedance is rejected");
+        check(!tl::sParameters(tl::Result{}, 100.0, 50.0).valid,
+              "tline: an invalid line has no S-parameters");
+    }
+
+    // ── 8) .ofdx のラウンドトリップと旧ファイル互換 ───────────────────────
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "tline: temp dir");
+        const QString j = dir.path() + QStringLiteral("/tline.ofdx");
+
+        // 既定値のままならキー自体を書かない (旧 .ofdx とバイト一致)
+        {
+            Project a, b;
+            b.tline().epsr = TransmissionLineOpts{}.epsr;   // 既定値を明示代入
+            const QString ja = dir.path() + QStringLiteral("/def_a.ofdx");
+            const QString jb = dir.path() + QStringLiteral("/def_b.ofdx");
+            OfdxIO::save(ja, a);
+            OfdxIO::save(jb, b);
+            QFile fa(ja), fb(jb);
+            check(fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly)
+                      && fa.readAll() == fb.readAll(),
+                  "tline: default transmission-line settings are not written "
+                  "at all");
+            fa.seek(0);
+            check(!QString::fromUtf8(fa.readAll())
+                       .contains(QLatin1String("transmission_line")),
+                  "tline: no transmission_line key for a default project");
+        }
+
+        Project p;
+        TransmissionLineOpts &t = p.tline();
+        t.kind = 2; t.w_mm = 1.25; t.h_mm = 0.8;
+        t.a_mm = 0.45; t.b_mm = 1.5; t.d_mm = 4.0; t.dia_mm = 0.9;
+        t.slot_mm = 0.25; t.epsr = 2.2; t.tanD = 0.0009;
+        t.sigma_Sm = 4.1e7; t.length_mm = 120.0; t.freq_GHz = 6.5;
+        t.z0Ref_ohm = 75.0; t.ports = 4;
+        t.showVp = true; t.showVg = true; t.showDelay = true;
+        t.showBeta = false; t.showTouchstone = false;
+        t.z0FreqDep = false; t.z0ReIm = true;
+        check(OfdxIO::save(j, p), "tline: sidecar save");
+
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "tline: sidecar reload");
+        const TransmissionLineOpts &r2 = q.tline();
+        check(r2.kind == 2 && qFuzzyCompare(r2.a_mm, 0.45)
+                  && qFuzzyCompare(r2.b_mm, 1.5)
+                  && qFuzzyCompare(r2.epsr, 2.2)
+                  && qFuzzyCompare(r2.freq_GHz, 6.5)
+                  && qFuzzyCompare(r2.z0Ref_ohm, 75.0) && r2.ports == 4,
+              "tline: geometry and materials round-trip");
+        check(r2.showVp && r2.showVg && r2.showDelay && !r2.showBeta
+                  && !r2.showTouchstone && !r2.z0FreqDep && r2.z0ReIm,
+              "tline: the display selections round-trip");
+        // 同じ設定なら同じ結果になる (モデル → 計算まで一貫していること)
+        tl::Line la, lb;
+        la.kind = lb.kind = tl::Kind::Coax;
+        la.a_mm = p.tline().a_mm;  lb.a_mm = r2.a_mm;
+        la.b_mm = p.tline().b_mm;  lb.b_mm = r2.b_mm;
+        la.epsr = p.tline().epsr;  lb.epsr = r2.epsr;
+        check(tl::analyze(la, 1e9).z0_ohm == tl::analyze(lb, 1e9).z0_ohm,
+              "tline: the reloaded settings reproduce the same Z0");
+
+        // キーの無い旧ファイルは既定値のまま
+        {
+            const QString legacy = dir.path() + QStringLiteral("/legacy.ofdx");
+            QFile f(legacy);
+            check(f.open(QIODevice::WriteOnly), "tline: legacy sidecar written");
+            f.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"em\" }");
+            f.close();
+            Project z;
+            check(OfdxIO::load(legacy, z, &err), "tline: legacy sidecar reload");
+            const TransmissionLineOpts d;
+            check(z.tline().kind == d.kind && z.tline().epsr == d.epsr
+                      && z.tline().freq_GHz == d.freq_GHz
+                      && z.tline().showBeta == d.showBeta,
+                  "tline: a sidecar without the key leaves the defaults");
+        }
+        // clear() で既定値へ戻る
+        p.clear();
+        check(p.tline().kind == 0 && p.tline().epsr == 4.4,
+              "tline: clear() resets the transmission-line settings");
+    }
+}
+
 // ── 側路伝搬の経路合成 (core/FlankingTransmission) ─────────────────────────
 // 判定は **合成則そのものの恒等式**。R'w = −10log10(Σ10^(−R/10)) は
 //   - 同じ R の経路が N 本なら R − 10log10(N)
@@ -18558,6 +18893,7 @@ int main(int argc, char *argv[])
     testPhotometricIO();
     testOptimizer();
     testFlankingTransmission();
+    testTransmissionLine();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();
