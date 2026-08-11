@@ -153,6 +153,12 @@ private:
     // 物性値割当
     QButtonGroup   *m_mapMethod = nullptr;
     QComboBox      *m_mapDefault = nullptr;
+    // 取込メッシュの部品 (OBJ の g / o / usemtl) → 材料番号の割当表。
+    // 部品分けのあるファイルを読んだときだけ中身が入る
+    void            rebuildPartTable();   // 取込後に部品表を作り直す
+    void            runRefine();          // 細分化領域 → 実際の格子
+    QTableWidget   *m_mapTable = nullptr;
+    QLabel         *m_mapNote = nullptr;
     // 取込プレビュー
     QLabel         *m_prevTri = nullptr;
     QLabel         *m_prevSolid = nullptr;

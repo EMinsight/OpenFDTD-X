@@ -100,6 +100,8 @@ private:
     void updateDirectivity();
     // アレイページ: 素子配置 + 遅延 → 遠方界パターン (acoustics/ArrayDirectivity)
     void updateArray();
+    // 共通設定: 音源リストの位置と受音点から、距離・遅延・受音レベルを出す
+    void updateDrive();
     // 可聴化品質指標: 実測 RIR (OperaAcousticSettings::rirPath) を非同期分析
     void computeAuralQuality();
     void clearAuralQuality();    // 未算出状態 ("—" + 説明) へ戻す
@@ -119,6 +121,12 @@ private:
     QLabel       *m_srcModelNote = nullptr;  // 「計算へは渡されない」注記
     QLabel       *m_srcCountNote = nullptr;  // 有効音源数と負荷の注記
     QLineEdit    *m_baseSpl;
+    // 同時駆動の実計算 (距離補正の遅延 / クリップ余裕)
+    QCheckBox    *m_clipPrevent = nullptr;
+    QCheckBox    *m_distComp = nullptr;
+    QCheckBox    *m_coherence = nullptr;
+    QTableWidget *m_driveTable = nullptr;
+    QLabel       *m_driveSummary = nullptr;
     QLabel       *m_baseSplUnit;
 
     // signal

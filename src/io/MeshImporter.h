@@ -32,7 +32,23 @@ struct ImportedMesh {
     int              numTriangles = 0;
     double           bbox[6] = {0,0,0,0,0,0};   // xmin ymin zmin xmax ymax zmax
     double           surfaceArea = 0.0;
+
+    // ── 部品分け (OBJ の g / o / usemtl) ────────────────────────────────
+    // **2 つ以上に分かれたときだけ**埋まる。1 つしか無い (= 分かれていない)
+    // ファイルでは両方とも空にする — 「グループがある」ことに意味を持たせ、
+    // 単一部品のメッシュを扱う既存の経路を一切変えないため。
+    QStringList      groupNames;   // 空 = 部品分けなし
+    QVector<int>     triGroup;     // 三角形ごとのグループ添字 (空 = 同上)
+
+    bool hasGroups() const
+    {
+        return groupNames.size() >= 2 && triGroup.size() == numTriangles;
+    }
 };
+
+// group 番目のグループだけを取り出した新しいメッシュ (bbox / 面積は再計算)。
+// 範囲外や部品分けの無いメッシュには空メッシュ (numTriangles = 0) を返す。
+ImportedMesh subMeshOfGroup(const ImportedMesh &mesh, int group);
 
 class MeshImporter {
 public:

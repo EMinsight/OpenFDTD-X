@@ -48,5 +48,26 @@ Result energySum(const std::vector<double> &levels_db)
     return r;
 }
 
+SumResult coherentSum(const std::vector<double> &levels_db)
+{
+    SumResult r;
+    if (levels_db.empty()) return r;
+    double amp = 0.0;
+    for (double v : levels_db) {
+        if (!std::isfinite(v)) return r;
+        amp += std::pow(10.0, v / 20.0);
+    }
+    if (!(amp > 0.0) || !std::isfinite(amp)) return r;
+    r.total_db = 20.0 * std::log10(amp);
+    r.valid = true;
+    return r;
+}
+
+double spreadingLoss_db(double distance_m)
+{
+    if (!(distance_m > 0.0) || !std::isfinite(distance_m)) return 0.0;
+    return -20.0 * std::log10(distance_m);
+}
+
 } // namespace levelsum
 } // namespace ofd

@@ -75,6 +75,7 @@
 #include "optics/ParaxialTrace.h"
 #include "core/WaveformSpectrum.h"
 #include "core/LevelSum.h"
+#include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
@@ -11736,6 +11737,172 @@ static void testMeshImporterFormats()
         check(!MeshImporter::load(dir.filePath("does-not-exist.obj"), m, &err),
               "meshimp: a missing file fails");
     }
+
+    // ── OBJ の部品分け (g / o / usemtl) ────────────────────────────────────
+    // **2 つ以上に分かれているときだけ**グループとして扱う。1 つしか無い
+    // ファイルはこれまでどおり「部品分けなし」— 既存の経路を変えないため。
+    {
+        // 2 つの正方形を別グループに置く (下段 = base、上段 = lid)
+        const QByteArray two =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+            "g base\nf 1 2 3 4\n"
+            "g lid\nf 5 6 7 8\n";
+        check(write("two.obj", two), "meshimp: wrote a two-group OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("two.obj"), m, nullptr),
+              "meshimp: the two-group OBJ loads");
+        check(m.numTriangles == 4,
+              "meshimp: two quads are four triangles");
+        check(m.hasGroups(), "meshimp: it reports groups");
+        check(m.groupNames.size() == 2
+              && m.groupNames[0] == QLatin1String("base")
+              && m.groupNames[1] == QLatin1String("lid"),
+              "meshimp: the group names come from the g lines");
+        check(m.triGroup.size() == 4
+              && m.triGroup[0] == 0 && m.triGroup[1] == 0
+              && m.triGroup[2] == 1 && m.triGroup[3] == 1,
+              "meshimp: each triangle knows its group");
+
+        // 取り出したサブメッシュは三角形数・bbox・面積が正しい
+        const ImportedMesh base = subMeshOfGroup(m, 0);
+        const ImportedMesh lid  = subMeshOfGroup(m, 1);
+        check(base.numTriangles == 2 && lid.numTriangles == 2,
+              "meshimp: each group has two triangles");
+        check(base.name == QLatin1String("base")
+              && lid.name == QLatin1String("lid"),
+              "meshimp: the sub-mesh carries the group name");
+        check(std::fabs(base.surfaceArea - 1.0) < 1e-6
+              && std::fabs(lid.surfaceArea - 1.0) < 1e-6,
+              "meshimp: each unit square has area 1");
+        check(std::fabs(base.bbox[2]) < 1e-6
+              && std::fabs(base.bbox[5]) < 1e-6,
+              "meshimp: the base sits at z = 0");
+        check(std::fabs(lid.bbox[2] - 1.0) < 1e-6
+              && std::fabs(lid.bbox[5] - 1.0) < 1e-6,
+              "meshimp: the lid sits at z = 1");
+        check(std::fabs(base.surfaceArea + lid.surfaceArea - m.surfaceArea)
+                  < 1e-6,
+              "meshimp: the parts add up to the whole");
+        check(subMeshOfGroup(m, -1).numTriangles == 0
+              && subMeshOfGroup(m, 2).numTriangles == 0,
+              "meshimp: an out-of-range group is empty");
+    }
+    // usemtl でも分かれる / 同じ名前が離れて出てきたら 1 つにまとめる
+    {
+        const QByteArray mats =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\n"
+            "usemtl copper\nf 1 2 3\n"
+            "usemtl teflon\nf 5 6 7\n"
+            "usemtl copper\nf 1 3 4\n";
+        check(write("mats.obj", mats), "meshimp: wrote a usemtl OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("mats.obj"), m, nullptr),
+              "meshimp: the usemtl OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: usemtl splits the mesh in two");
+        check(m.groupNames[0] == QLatin1String("copper")
+              && m.groupNames[1] == QLatin1String("teflon"),
+              "meshimp: the material names are kept");
+        check(subMeshOfGroup(m, 0).numTriangles == 2,
+              "meshimp: the same name reappearing joins the same group");
+        check(subMeshOfGroup(m, 1).numTriangles == 1,
+              "meshimp: the other material keeps its single triangle");
+    }
+    // 1 グループしか無いファイルは「部品分けなし」に戻る (後方互換)
+    {
+        ImportedMesh one;
+        check(MeshImporter::load(dir.filePath("sq.obj"), one, nullptr),
+              "meshimp: the single-usemtl OBJ still loads");
+        check(!one.hasGroups() && one.groupNames.isEmpty()
+              && one.triGroup.isEmpty(),
+              "meshimp: one group means no grouping at all");
+        ImportedMesh stl;
+        check(MeshImporter::load(dir.filePath("sq.stl"), stl, nullptr),
+              "meshimp: STL still loads");
+        check(!stl.hasGroups(), "meshimp: STL has no groups");
+        check(subMeshOfGroup(stl, 0).numTriangles == 0,
+              "meshimp: asking a group of an ungrouped mesh gives nothing");
+    }
+    // 部品ごとにボクセル化して材料を分ける (GeometryTab の「名前で」経路)。
+    // 全体を 1 材料でボクセル化したときと **占有セル数が一致**することを見る
+    // (部品が重ならないので和集合は同じはず)。
+    {
+        // 離れた 2 つの立方体を別グループに置いた OBJ を書く
+        auto cubeObj = [](double x0, double y0, double z0, double s, int base) {
+            QByteArray o;
+            const double v[8][3] = {
+                { x0, y0, z0 }, { x0+s, y0, z0 }, { x0+s, y0+s, z0 },
+                { x0, y0+s, z0 }, { x0, y0, z0+s }, { x0+s, y0, z0+s },
+                { x0+s, y0+s, z0+s }, { x0, y0+s, z0+s } };
+            for (int i = 0; i < 8; ++i)
+                o += QStringLiteral("v %1 %2 %3\n")
+                         .arg(v[i][0]).arg(v[i][1]).arg(v[i][2]).toUtf8();
+            const int f[12][3] = {
+                {0,1,2},{0,2,3}, {4,6,5},{4,7,6}, {0,4,5},{0,5,1},
+                {1,5,6},{1,6,2}, {2,6,7},{2,7,3}, {3,7,4},{3,4,0} };
+            for (int i = 0; i < 12; ++i)
+                o += QStringLiteral("f %1 %2 %3\n")
+                         .arg(base + f[i][0]).arg(base + f[i][1])
+                         .arg(base + f[i][2]).toUtf8();
+            return o;
+        };
+        QByteArray two = "g left\n";
+        two += cubeObj(-0.75, -0.25, -0.25, 0.5, 1);
+        two += "g right\n";
+        two += cubeObj(0.25, -0.25, -0.25, 0.5, 9);
+        check(write("parts.obj", two), "meshimp: wrote a two-cube OBJ");
+
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("parts.obj"), m, nullptr),
+              "meshimp: the two-cube OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: the two cubes are two parts");
+
+        MeshAxis ax;
+        ax.nodes = { -1.0, 1.0 };
+        ax.divs  = { 20 };
+        // 部品ごとに別材料でボクセル化する (GUI がやることと同じ手順)
+        const ImportedMesh a = subMeshOfGroup(m, 0);
+        const ImportedMesh b = subMeshOfGroup(m, 1);
+        const VoxelResult ra = Voxelizer::voxelize(a, ax, ax, ax, 2);
+        const VoxelResult rb = Voxelizer::voxelize(b, ax, ax, ax, 5);
+        check(ra.ok && rb.ok, "meshimp: both parts voxelize");
+        check(ra.occupied > 0 && rb.occupied > 0,
+              "meshimp: both parts occupy cells");
+        for (const Geometry &g : ra.bricks)
+            check(g.materialId == 2, "meshimp: part A keeps material 2");
+        for (const Geometry &g : rb.bricks)
+            check(g.materialId == 5, "meshimp: part B keeps material 5");
+
+        // 全体を 1 材料で入れたときと占有セル数が一致する
+        const VoxelResult whole = Voxelizer::voxelize(m, ax, ax, ax, 2);
+        check(whole.ok, "meshimp: the whole mesh voxelizes");
+        check(ra.occupied + rb.occupied == whole.occupied,
+              "meshimp: per-part voxelization covers exactly the same cells");
+        // 2 つの立方体は同じ大きさなので占有も同じ
+        check(ra.occupied == rb.occupied,
+              "meshimp: the two equal cubes occupy the same number of cells");
+    }
+    // 名前が付く前の面は「(default)」グループになる
+    {
+        const QByteArray mixed =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\n"
+            "v 0 0 1\nv 1 0 1\nv 1 1 1\n"
+            "f 1 2 3\n"
+            "g later\nf 4 5 6\n";
+        check(write("mixed.obj", mixed), "meshimp: wrote a partly named OBJ");
+        ImportedMesh m;
+        check(MeshImporter::load(dir.filePath("mixed.obj"), m, nullptr),
+              "meshimp: the partly named OBJ loads");
+        check(m.hasGroups() && m.groupNames.size() == 2,
+              "meshimp: the unnamed faces get their own group");
+        check(m.groupNames[0] == QLatin1String("(default)"),
+              "meshimp: and it is called (default)");
+        check(m.triGroup[0] == 0 && m.triGroup[1] == 1,
+              "meshimp: the faces land in the right groups");
+    }
 }
 
 // GeometryTab「ジオメトリ検査」節の検出値の実体。期待値はコードからではなく
@@ -13771,6 +13938,165 @@ static void testParaxialTrace()
     }
 }
 
+// ── 細分化領域 → 非均一メッシュ (core/MeshRefine) ──────────────────────────
+// 本家の xmesh は元から非均一を表せるので、区間を割って分割数を増やすだけで
+// 細分化になる。**掛けていないときは入力とビット等価**であることが要 (絶対
+// 規則 2: 有効にしていない機能は出力を 1 バイトも変えない)。
+static void testMeshRefine()
+{
+    g_file = "mesh-refine";
+
+    // 0 … 1 を 10 分割した一様格子 (セル幅 0.1)
+    MeshAxis uni;
+    uni.nodes = { 0.0, 1.0 };
+    uni.divs  = { 10 };
+
+    auto sameAxis = [](const MeshAxis &a, const MeshAxis &b) {
+        if (a.nodes.size() != b.nodes.size() || a.divs != b.divs) return false;
+        for (int i = 0; i < a.nodes.size(); ++i)
+            if (a.nodes[i] != b.nodes[i]) return false;   // ビット等価
+        return true;
+    };
+
+    // 1) 掛けなければ何も変わらない (ビット等価)
+    {
+        const MeshRefineResult r = refineAxis(uni, {});
+        check(r.valid, "meshrefine: an empty span list is still valid");
+        check(sameAxis(r.axis, uni),
+              "meshrefine: no spans leaves the axis bit-identical");
+        check(r.cellsAfter == r.cellsBefore && r.cellsBefore == 10,
+              "meshrefine: and the cell count is unchanged");
+        check(std::fabs(r.maxStepRatio - 1.0) < 1e-12,
+              "meshrefine: a uniform axis has a step ratio of one");
+        // 比率 1 / 範囲外 / 幅 0 も同じ
+        check(sameAxis(refineAxis(uni, { { 0.4, 0.6, 1.0 } }).axis, uni),
+              "meshrefine: ratio 1 changes nothing");
+        check(sameAxis(refineAxis(uni, { { 2.0, 3.0, 3.0 } }).axis, uni),
+              "meshrefine: a span outside the domain changes nothing");
+        check(sameAxis(refineAxis(uni, { { 0.5, 0.5, 3.0 } }).axis, uni),
+              "meshrefine: a zero-width span changes nothing");
+        check(refineAxis(uni, { { 0.4, 0.6, 3.0 } }).spansApplied == 1,
+              "meshrefine: a real span is counted");
+    }
+
+    // 2) 内側だけ 3 倍に割る: 0.4 と 0.6 が節点になり、真ん中が 6 分割
+    {
+        const MeshRefineResult r = refineAxis(uni, { { 0.4, 0.6, 3.0 } });
+        check(r.valid && r.axis.isValid(), "meshrefine: the refined axis is valid");
+        check(r.axis.nodes.size() == 4
+              && std::fabs(r.axis.nodes[1] - 0.4) < 1e-12
+              && std::fabs(r.axis.nodes[2] - 0.6) < 1e-12,
+              "meshrefine: the span edges become mesh nodes");
+        check(r.axis.divs.size() == 3 && r.axis.divs[0] == 4
+              && r.axis.divs[1] == 6 && r.axis.divs[2] == 4,
+              "meshrefine: the inside is divided three times finer");
+        check(r.cellsBefore == 10 && r.cellsAfter == 14,
+              "meshrefine: 10 cells become 14");
+        check(std::fabs(r.minSpacingAfter - 0.1 / 3.0) < 1e-12,
+              "meshrefine: the finest cell is a third of the base");
+        // 端は 0.1、内側は 0.0333 → 隣接比は 3
+        check(std::fabs(r.maxStepRatio - 3.0) < 1e-9,
+              "meshrefine: the neighbouring cells differ by the ratio");
+        // 領域の外側のセル幅は変わっていない
+        const double outer = (r.axis.nodes[1] - r.axis.nodes[0]) / r.axis.divs[0];
+        check(std::fabs(outer - 0.1) < 1e-12,
+              "meshrefine: outside the span the cell size is untouched");
+        // 節点は単調増加 (格子として壊れていない)
+        for (int i = 0; i + 1 < r.axis.nodes.size(); ++i)
+            check(r.axis.nodes[i] < r.axis.nodes[i + 1],
+                  "meshrefine: the nodes stay sorted");
+    }
+
+    // 3) 領域が格子全体を覆えば、全部が ratio 倍になる
+    {
+        const MeshRefineResult r = refineAxis(uni, { { -1.0, 2.0, 2.0 } });
+        check(r.cellsAfter == 20, "meshrefine: covering everything doubles it");
+        check(std::fabs(r.maxStepRatio - 1.0) < 1e-12,
+              "meshrefine: and the mesh stays uniform (no step)");
+    }
+
+    // 4) 元が非均一でも、区間ごとのセル幅を保ったまま細分化する
+    {
+        MeshAxis nu;
+        nu.nodes = { 0.0, 0.5, 1.0 };
+        nu.divs  = { 5, 10 };            // 左は 0.1、右は 0.05
+        const MeshRefineResult r = refineAxis(nu, { { 0.2, 0.7, 2.0 } });
+        check(r.valid && r.axis.isValid(),
+              "meshrefine: a non-uniform axis refines");
+        // 0.2 と 0.7 が入って 4 区間になる
+        check(r.axis.nodes.size() == 5,
+              "meshrefine: both span edges are inserted");
+        // 細分化しない両端はセル幅そのまま
+        const double first = (r.axis.nodes[1] - r.axis.nodes[0]) / r.axis.divs[0];
+        const double last  = (r.axis.nodes.last() - r.axis.nodes[3])
+                             / r.axis.divs.last();
+        check(std::fabs(first - 0.1) < 1e-12,
+              "meshrefine: the coarse end keeps 0.1");
+        check(std::fabs(last - 0.05) < 1e-12,
+              "meshrefine: the fine end keeps 0.05");
+        check(r.cellsAfter > r.cellsBefore,
+              "meshrefine: refining adds cells");
+    }
+
+    // 5) 重なった領域は細かい方が勝つ
+    {
+        const MeshRefineResult r =
+            refineAxis(uni, { { 0.2, 0.8, 2.0 }, { 0.4, 0.6, 4.0 } });
+        check(r.valid && r.spansApplied == 2,
+              "meshrefine: both spans are applied");
+        // 0.4〜0.6 は 4 倍 (2 倍ではなく)
+        int mid = -1;
+        for (int i = 0; i + 1 < r.axis.nodes.size(); ++i)
+            if (std::fabs(r.axis.nodes[i] - 0.4) < 1e-9) mid = i;
+        check(mid >= 0 && r.axis.divs[mid] == 8,
+              "meshrefine: the finer of two overlapping spans wins");
+    }
+
+    // 6) 細分化した格子が .ofd を往復して同じに戻ること
+    //    (ここが通らないとカーネルへ細かい格子が届かない = 機能の意味が無い)
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "meshrefine: temp dir");
+        Project p;
+        p.mesh(0) = uni;
+        p.mesh(1) = uni;
+        p.mesh(2) = uni;
+        const MeshRefineResult r = refineAxis(uni, { { 0.4, 0.6, 3.0 } });
+        p.mesh(0) = r.axis;                     // X だけ細分化する
+        const QString path = td.filePath(QStringLiteral("refined.ofd"));
+        QString err;
+        check(OfdIO::save(path, p, &err), "meshrefine: the refined mesh saves");
+        Project q;
+        check(OfdIO::load(path, q, &err), "meshrefine: and loads back");
+        check(q.mesh(0).nodes.size() == r.axis.nodes.size()
+              && q.mesh(0).divs == r.axis.divs,
+              "meshrefine: the non-uniform X mesh survives the .ofd round trip");
+        for (int i = 0; i < r.axis.nodes.size(); ++i)
+            check(std::fabs(q.mesh(0).nodes[i] - r.axis.nodes[i]) < 1e-9,
+                  "meshrefine: the inserted nodes come back");
+        check(q.mesh(0).totalCells() == 14,
+              "meshrefine: the kernel would see 14 cells along X");
+        check(q.mesh(1).totalCells() == 10 && q.mesh(2).totalCells() == 10,
+              "meshrefine: the untouched axes are unchanged");
+    }
+
+    // 7) 壊れた格子からは何も作らない
+    {
+        MeshAxis bad;
+        check(!refineAxis(bad, { { 0.0, 1.0, 2.0 } }).valid,
+              "meshrefine: an empty axis is rejected");
+        bad.nodes = { 1.0, 0.0 };
+        bad.divs  = { 5 };
+        check(!refineAxis(bad, {}).valid,
+              "meshrefine: a decreasing axis is rejected");
+        MeshAxis zero;
+        zero.nodes = { 0.0, 1.0 };
+        zero.divs  = { 0 };
+        check(!refineAxis(zero, {}).valid,
+              "meshrefine: a zero-division axis is rejected");
+    }
+}
+
 // ── デシベルのエネルギー加算と寄与分析 (core/LevelSum) ─────────────────────
 // 判定はすべて閉形式: 等レベル n 個で +10·log10(n)、10 dB 下の源は
 // +0.414 dB、寄与率の総和は 1、除去効果 ΔL = −10·log10(1 − p)。
@@ -13858,7 +14184,49 @@ static void testLevelSum()
               "levelsum: a single source has no gap");
     }
 
-    // 6) 負のレベルや大きな差でも壊れない / 壊れた入力は作らない
+    // 6) 同相の合計 (振幅加算) と距離減衰 — 音源タブ「同時駆動の見積り」の実体
+    {
+        // 等レベル 2 源: 無相関で +3.01 dB、同相なら +6.02 dB
+        const ls::SumResult c2 = ls::coherentSum({ 70.0, 70.0 });
+        check(c2.valid && std::fabs(c2.total_db - (70.0 + 20.0 * std::log10(2.0)))
+                              < 1e-12,
+              "levelsum: two equal sources in phase add 6.02 dB");
+        const ls::Result e2 = ls::energySum({ 70.0, 70.0 });
+        check(std::fabs((c2.total_db - e2.total_db)
+                        - 10.0 * std::log10(2.0)) < 1e-12,
+              "levelsum: in phase is exactly 3.01 dB above uncorrelated "
+              "for two equal sources");
+        // n 個なら +20 log10(n)
+        for (int n : { 1, 3, 10 }) {
+            const ls::SumResult c = ls::coherentSum(std::vector<double>(n, 60.0));
+            check(c.valid && std::fabs(c.total_db
+                                       - (60.0 + 20.0 * std::log10(double(n))))
+                                 < 1e-12,
+                  "levelsum: n equal sources in phase add 20 log10(n)");
+        }
+        check(!ls::coherentSum({}).valid,
+              "levelsum: no sources means no in-phase total either");
+        check(!ls::coherentSum({ 1.0, -std::numeric_limits<double>::infinity() })
+                   .valid,
+              "levelsum: a non-finite level is rejected there too");
+
+        // 自由音場の逆二乗則: 距離 2 倍で −6.02 dB、1 m で 0 dB
+        check(std::fabs(ls::spreadingLoss_db(1.0)) < 1e-15,
+              "levelsum: there is no spreading loss at one metre");
+        check(std::fabs(ls::spreadingLoss_db(2.0) + 6.0206) < 1e-3,
+              "levelsum: doubling the distance costs 6.02 dB");
+        check(std::fabs(ls::spreadingLoss_db(10.0) + 20.0) < 1e-12,
+              "levelsum: ten metres is exactly -20 dB");
+        for (double d : { 2.0, 5.0, 17.3 })
+            check(std::fabs(ls::spreadingLoss_db(2.0 * d)
+                            - ls::spreadingLoss_db(d) + 6.0206) < 1e-3,
+                  "levelsum: every doubling costs the same 6.02 dB");
+        check(ls::spreadingLoss_db(0.0) == 0.0
+              && ls::spreadingLoss_db(-1.0) == 0.0,
+              "levelsum: a non-positive distance is not attenuated");
+    }
+
+    // 7) 負のレベルや大きな差でも壊れない / 壊れた入力は作らない
     {
         const ls::Result r = ls::energySum({ -10.0, -20.0 });
         check(r.valid && std::fabs(r.total_db
@@ -16551,6 +16919,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testMeshRefine();
     testLevelSum();
     testGdsGeometry();
     testWaveformSpectrum();
