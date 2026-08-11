@@ -13029,6 +13029,120 @@ static void testSpiceNetlist()
         check(approx(n.elements[2].value, 1e-12),
               "spice: 1p farad stays 1e-12 (the .ofd load value is in farads)");
     }
+
+    // ── 書き出し: 自前のリーダで読み直せること (往復) ──────────────────────
+    // 書き手と読み手が同じリポジトリにあるので、往復が通れば「書いたものが
+    // SPICE の文法として自分で解釈できる形」であることは保証できる。
+    {
+        SpiceSubckt sub;
+        sub.name = QStringLiteral("EXTRACTED");
+        sub.series = true;
+        sub.r_ohm = 12.5;
+        sub.l_h = 3.4e-9;
+        sub.c_f = 2.2e-12;
+        sub.comment = QStringLiteral("from the extraction");
+        const QString text = SpiceIO::buildSubckt(sub);
+        check(!text.isEmpty(), "spice-w: a subckt is produced");
+        check(text.contains(QStringLiteral(".subckt EXTRACTED 1 2"))
+              && text.contains(QStringLiteral(".ends EXTRACTED")),
+              "spice-w: it is a two-terminal subckt");
+        check(text.contains(QStringLiteral("* from the extraction")),
+              "spice-w: the comment records where it came from");
+        // 直列なので 1 → n1 → n2 → 2 と数珠つなぎになる
+        check(text.contains(QStringLiteral("R1 1 n1 12.5")),
+              "spice-w: the series chain starts at terminal 1");
+        check(text.contains(QStringLiteral("C3 n2 2 2.2e-12")),
+              "spice-w: and ends at terminal 2");
+
+        // **リーダは .subckt の中身を展開しない仕様**なので、書いたものを
+        // そのまま parse しても素子は出てこない (それが正しい振る舞い)。
+        // ここではまずその仕様どおりであることを確かめる。
+        const SpiceNetlist wrapped = SpiceIO::parse(text);
+        check(wrapped.elements.isEmpty() && wrapped.skippedSubckts == 1,
+              "spice-w: the reader skips the subckt body, as documented");
+        // そのうえで、中身の素子行が自前のリーダで解釈できる書式かを見る
+        // (.subckt / .ends の 2 行を外して読ませる)
+        QStringList body;
+        for (const QString &ln : text.split(QLatin1Char('\n'))) {
+            const QString t = ln.trimmed();
+            if (t.startsWith(QStringLiteral(".subckt"))
+                || t.startsWith(QStringLiteral(".ends"))) continue;
+            body << ln;
+        }
+        const SpiceNetlist back =
+            SpiceIO::parse(QStringLiteral("title\n")
+                           + body.join(QLatin1Char('\n')));
+        check(back.isValid() && back.elements.size() == 3,
+              "spice-w: the element lines parse back");
+        check(back.count(QLatin1Char('R')) == 1
+              && back.count(QLatin1Char('L')) == 1
+              && back.count(QLatin1Char('C')) == 1,
+              "spice-w: one of each element survives");
+        double gotR = 0, gotL = 0, gotC = 0;
+        for (const SpiceElement &e : back.elements) {
+            if (e.type == QLatin1Char('R')) gotR = e.value;
+            if (e.type == QLatin1Char('L')) gotL = e.value;
+            if (e.type == QLatin1Char('C')) gotC = e.value;
+        }
+        check(std::fabs(gotR - 12.5) < 1e-9
+              && std::fabs(gotL - 3.4e-9) < 1e-18
+              && std::fabs(gotC - 2.2e-12) < 1e-21,
+              "spice-w: the values survive the round trip");
+    }
+    // 並列は全素子が 1-2 間に並ぶ
+    {
+        SpiceSubckt sub;
+        sub.series = false;
+        sub.r_ohm = 50.0;
+        sub.c_f = 1e-12;
+        const QString text = SpiceIO::buildSubckt(sub);
+        check(text.contains(QStringLiteral("R1 1 2 50"))
+              && text.contains(QStringLiteral("C2 1 2 1e-12")),
+              "spice-w: a parallel subckt puts everything across 1-2");
+        check(!text.contains(QStringLiteral("n1")),
+              "spice-w: and needs no internal node");
+        const SpiceNetlist wrapped = SpiceIO::parse(text);
+        check(wrapped.skippedSubckts == 1,
+              "spice-w: the parallel subckt is skipped as a body too");
+    }
+    // 値が 0 以下の素子は書かない / 何も無ければ作らない
+    {
+        SpiceSubckt only;
+        only.r_ohm = 10.0;               // L と C は 0 のまま
+        const QString text = SpiceIO::buildSubckt(only);
+        check(text.contains(QStringLiteral("R1 1 2 10")),
+              "spice-w: a lone resistor spans the terminals");
+        check(!text.contains(QStringLiteral("L")) || text.count(QStringLiteral("L")) == 0,
+              "spice-w: no zero-valued inductor is written");
+        SpiceSubckt empty;
+        check(SpiceIO::buildSubckt(empty).isEmpty(),
+              "spice-w: nothing to write means no subckt at all");
+        check(!empty.hasAny(), "spice-w: and hasAny() says so");
+    }
+    // ファイルへ書いて読み直す
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "spice-w: temp dir");
+        SpiceSubckt sub;
+        sub.r_ohm = 1.0;
+        sub.l_h = 1e-9;
+        const QString path = td.filePath(QStringLiteral("sub.cir"));
+        QString err;
+        check(SpiceIO::writeSubckt(path, sub, &err), "spice-w: file written");
+        QFile rf(path);
+        check(rf.open(QIODevice::ReadOnly), "spice-w: the file reopens");
+        const QString written = QString::fromUtf8(rf.readAll());
+        check(written.contains(QStringLiteral("R1 1 n1 1"))
+              && written.contains(QStringLiteral("L2 n1 2 1e-09")),
+              "spice-w: the file holds the series chain");
+        check(SpiceIO::parse(written).skippedSubckts == 1,
+              "spice-w: and it is a well-formed subckt");
+        SpiceSubckt empty;
+        check(!SpiceIO::writeSubckt(td.filePath(QStringLiteral("e.cir")),
+                                    empty, &err),
+              "spice-w: an empty subckt is refused, not written");
+        check(!err.isEmpty(), "spice-w: with a reason");
+    }
 }
 
 // ── ネットリストの素子が .ofd の load 行として出ること ──────────────────────
