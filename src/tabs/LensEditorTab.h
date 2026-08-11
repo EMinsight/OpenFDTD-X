@@ -7,7 +7,8 @@
 //     (近軸オペランド EFFL/PIMH/ISFN と収差オペランド SPHA/COMA/ASTI/DIST を
 //      実計算。後者は 3 次収差 (ザイデル和) で、近軸追跡だけで決まる)
 //   - 3 次収差 (ザイデル) : 面ごとの寄与と総和 (optics/SeidelAberration)
-//   - 解析プロット起動ボタン (Spot / Ray Fan / MTF …)
+//   - 解析プロット : スポットダイアグラム・光線収差図・色収差の焦点移動を
+//     実光線追跡 (optics/RayTrace) で計算する。MTF 等の残り 5 種は未実装
 //   - 面テーブルから子午面 2D 光線追跡するレイアウトプレビュー
 // 光ドメイン選択時のみ表示される。面データはローカル状態 (モック忠実)。
 #pragma once
@@ -65,7 +66,6 @@ private:
     double m_epd = 12.0, m_field = 20.0;
 };
 
-// Merit Function の 1 オペランド。目標と重みは利用者が編集できる定義値、
 // スポットダイアグラム表示 (縦横同スケール + エアリー円)。
 // 散布図で縦横比が崩れると形の判断ができないので、MiniPlot ではなく
 // 専用に描く (レイファンは折れ線なので MiniPlot を使う)。
@@ -92,7 +92,8 @@ private:
     double m_airy = 0.0;
 };
 
-// 「値」は近軸追跡で計算できるものだけを埋める (収差は実光線追跡が必要)。
+// Merit Function の 1 オペランド。目標と重みは利用者が編集できる定義値、
+// 「値」は近軸追跡と 3 次収差で計算できるものだけを埋める。
 struct MeritOperand {
     QString code;      // EFFL / PIMH / ISFN / SPHA / COMA / ASTI / DIST
     QString label;     // 表示名
@@ -109,6 +110,8 @@ private slots:
     void retrace();                 // 面テーブル + 諸元 → プレビュー再追跡
     void runSpotDiagram();          // ⊙ スポットダイアグラム (実光線追跡)
     void runRayFan();               // 📐 レイファン (光線収差図)
+    void runChromatic();            // 🌈 色収差 (波長ごとの焦点移動)
+    void addWavelength();           // + 波長サンプルの追加
 
 private:
     void rebuildTable();            // m_rows → QTableWidget (行挿入/削除後)
@@ -118,8 +121,12 @@ private:
     void recomputeParaxial();       // 面テーブル → 近軸諸元 + 収差 + Merit
     // 面テーブル → 近軸面の並び (像面までの距離と屈折率仮定の銘柄も返す)。
     // 近軸諸元・3 次収差・実光線追跡が同じ表から系を作るための共通処理。
+    // lambda_um は屈折率を評価する波長 [µm]。**0 以下 = カタログの実測 nd
+    // (d 線)** で、これが既定。正の値なら Sellmeier 分散式で引き直す。
     std::vector<paraxial::Surface> collectSurfaces(double *imageDistance,
-                                                  QStringList *assumedGlass) const;
+                                                  QStringList *assumedGlass,
+                                                  double lambda_um = 0.0) const;
+    void rebuildWaveBadges();       // m_waves → 波長バッジの行
     double epdValue() const;
     double fieldValue() const;
 
@@ -135,6 +142,10 @@ private:
     QLineEdit    *m_epd, *m_field;
     QComboBox    *m_coord;
     LensLayoutView *m_layout;
+    // 波長サンプル [nm]。昇順・重複なし。プロジェクトには保存しない
+    // (このタブは面テーブルごとセッション内の状態)。
+    QVector<double> m_waves;
+    QWidget        *m_waveBadges = nullptr;
     // 解析プロット (実光線追跡)
     SpotDiagramView *m_spotView = nullptr;
     MiniPlot        *m_fanPlot = nullptr;

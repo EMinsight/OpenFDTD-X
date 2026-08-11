@@ -19,8 +19,10 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
@@ -29,7 +31,9 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace ofd;
@@ -67,8 +71,17 @@ const bool s_i18n = [] {
     I18n::reg("lde_field_unit",  "° (半角)",    "° (half angle)");
     I18n::reg("lde_waves",       "波長サンプル", "Wavelength samples");
     I18n::reg("lde_wave_add",    "+ 追加",      "+ Add");
-    I18n::reg("lde_wave_note",   "(プレビューは d 線のみ)",
-              "(preview traces the d line only)");
+    I18n::reg("lde_wave_note",
+              "(断面プレビューと 3 次収差は d 線。解析プロットは全波長を使います)",
+              "(the layout preview and the Seidel sums use the d line; the "
+              "analyses use every wavelength)");
+    I18n::reg("lde_wave_add_title", "波長サンプルの追加", "Add a wavelength");
+    I18n::reg("lde_wave_add_label", "波長 [nm]", "Wavelength [nm]");
+    I18n::reg("lde_wave_dup", "その波長は既に入っています。",
+              "That wavelength is already in the list.");
+    I18n::reg("lde_wave_tip",
+              "クリックで削除 (残り 1 本のときは消せません)",
+              "Click to remove (the last one cannot be removed)");
     I18n::reg("lde_coord",       "座標系",      "Coordinate system");
     I18n::reg("lde_coord_seq",   "順次光線追跡", "Sequential ray tracing");
     I18n::reg("lde_coord_nonseq","非順次 (LightTools/TracePro) (未実装)",
@@ -179,13 +192,13 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "MTF・包絡エネルギー・像面湾曲/歪曲図・色収差・波面 (Zernike) は"
-              "未実装です。スポットダイアグラムとレイファンは実光線追跡で"
-              "計算します。",
-              "MTF, encircled energy, field-curvature / distortion plots, "
-              "chromatic focal shift and the wavefront (Zernike) map are not "
-              "implemented. The spot diagram and the ray fan are computed by "
-              "real ray tracing.");
+              "MTF・包絡エネルギー・像面湾曲図・歪曲格子・波面 (Zernike) は"
+              "未実装です。スポットダイアグラム・レイファン・色収差は実光線"
+              "追跡で計算します。",
+              "MTF, encircled energy, the field-curvature plot, the distortion "
+              "grid and the wavefront (Zernike) map are not implemented. The "
+              "spot diagram, the ray fan and the chromatic focal shift are "
+              "computed by real ray tracing.");
     I18n::reg("lde_an_idle",
               "「スポットダイアグラム」または「レイファン」を押すと、面テーブルの"
               "系を実光線追跡して結果を描きます。",
@@ -211,19 +224,43 @@ const bool s_i18n = [] {
               "光線は「絞りを近軸で物体空間へ結像した入射瞳」へ向けて放ちます"
               "(実光線が絞りを通る位置まで反復して合わせてはいません)。"
               "面の有効半径を超えた光線はけられとして数え、全反射した光線は"
-              "捨てます。物体は無限遠、波長は 1 つ (色収差は含みません)。",
+              "捨てます。物体は無限遠。屈折率はカタログの値で、d 線は実測 nd、"
+              "他の波長は Sellmeier 分散式から求めます。",
               "Rays are aimed at the entrance pupil obtained by imaging the "
               "stop into object space paraxially (there is no iterative real "
               "ray aiming). Rays outside a surface's clear semi-diameter are "
               "counted as vignetted and totally reflected rays are dropped. "
-              "The object is at infinity and a single wavelength is used (no "
-              "chromatic aberration).");
+              "The object is at infinity. Refractive indices come from the "
+              "catalog: the measured nd at the d line and the Sellmeier "
+              "dispersion formula at every other wavelength.");
     I18n::reg("lde_an_defocus",
               "像面が近軸焦点から %1 mm ずれています — この結果は離焦が"
               "支配的です (近軸諸元の「像面デフォーカス」と同じ値)。",
               "The image plane is %1 mm away from the paraxial focus, so this "
               "result is dominated by defocus (the same number as \"image-plane "
               "defocus\" in the paraxial data).");
+    I18n::reg("lde_an_onaxis", "(軸上)", "(on axis)");
+    I18n::reg("lde_an_atfield", "(視野端)", "(edge of field)");
+    I18n::reg("lde_an_poly",
+              "%1 波長を合成したスポット (主波長の重心が基準): "
+              "軸上 RMS %2 µm、視野端 RMS %3 µm",
+              "Polychromatic spot over %1 wavelengths (referenced to the "
+              "primary centroid): on axis RMS %2 µm, edge of field RMS %3 µm");
+    I18n::reg("lde_an_focshift", "焦点移動", "Focal shift");
+    I18n::reg("lde_an_xwave", "波長 [nm]", "Wavelength [nm]");
+    I18n::reg("lde_an_yshift", "バックフォーカスのずれ [µm]",
+              "Back-focus shift [µm]");
+    I18n::reg("lde_an_chrom",
+              "主波長 %1 nm からのバックフォーカスのずれ — 選んだ波長での"
+              "最大 %2 µm",
+              "Back-focus shift from the primary wavelength %1 nm — at most "
+              "%2 µm over the chosen wavelengths");
+    I18n::reg("lde_an_lca",
+              "軸上色収差 (C 線 − F 線) = %1 µm。薄レンズなら f/V に等しく"
+              "なります (アッベ数の定義)。",
+              "Longitudinal chromatic aberration (C − F) = %1 µm. For a thin "
+              "lens this equals f/V, which is the definition of the Abbe "
+              "number.");
     I18n::reg("lde_an_xpupil", "正規化瞳座標", "Normalised pupil coordinate");
     I18n::reg("lde_an_yta", "横収差 [µm]", "Transverse aberration [µm]");
     I18n::reg("lde_an_tan_ax", "子午 (軸上)", "Tangential (axis)");
@@ -274,6 +311,25 @@ double indexAfter(const QString &glass)
     for (const Glass &c : GlassCatalog::all())
         if (c.name.compare(g, Qt::CaseInsensitive) == 0)
             return c.nd;
+    return 1.6;
+}
+
+// λ [µm] における屈折率。**lambda_um <= 0 は「カタログの実測 nd (d 線)」**
+// を意味する。Sellmeier は当てはめなので下位桁が動き (実測 nd と 7e-4 ずれる
+// 銘柄が実際にある)、d 線の既存表示を変えないためと、色収差の曲線を
+// 「全点 Sellmeier」で自己整合させるために、この 2 つを明示的に分けている。
+// 係数の無い銘柄は Glass::n が nd/vd の 1 次近似で代用する。カタログ外の
+// 銘柄は波長に依らず 1.6 と仮定する (分散が分からないので色収差を作らない)。
+double indexAfterAt(const QString &glass, double lambda_um)
+{
+    const QString g = glass.trimmed();
+    if (g.isEmpty() || g == QStringLiteral("-") || g == QString::fromUtf8("—")
+        || g.compare(QStringLiteral("AIR"), Qt::CaseInsensitive) == 0
+        || g == QString::fromUtf8("空気"))
+        return 1.0;
+    for (const Glass &c : GlassCatalog::all())
+        if (c.name.compare(g, Qt::CaseInsensitive) == 0)
+            return (lambda_um <= 0.0) ? c.nd : c.n(lambda_um);
     return 1.6;
 }
 
@@ -543,20 +599,25 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     fieldRow->addStretch(1);
     sSys->form()->addRow(I18n::tr("lde_field"), fieldRow);
 
+    // 波長サンプル — 既定は F / d / C の 3 本 (色消しの基準線)。
+    // 追加した波長は解析プロット (スポット・色収差) で実際に使う。
+    m_waves = { 486.1, 587.6, 656.3 };
     auto *waveRow = new QHBoxLayout();
     waveRow->setSpacing(4);
-    waveRow->addWidget(makeBadge("486.1nm (F)", "", sSys));
-    waveRow->addWidget(makeBadge("587.6nm (d)", "acc", sSys));
-    waveRow->addWidget(makeBadge("656.3nm (C)", "", sSys));
+    m_waveBadges = new QWidget(sSys);
+    auto *badgeBox = new QHBoxLayout(m_waveBadges);
+    badgeBox->setContentsMargins(0, 0, 0, 0);
+    badgeBox->setSpacing(4);
+    waveRow->addWidget(m_waveBadges);
     auto *waveAdd = new QPushButton(I18n::tr("lde_wave_add"), sSys);
     waveAdd->setFixedHeight(22);
-    // 波長追加は未実装 — 無効化して明示する (絶対規則 5)
-    tabhelp::markNotImplemented(waveAdd);
+    connect(waveAdd, &QPushButton::clicked, this, &LensEditorTab::addWavelength);
     waveRow->addWidget(waveAdd);
-    // 3 波長を並べているがプレビューのトレースは d 線単一
+    // 断面プレビューと 3 次収差は d 線単一 (解析プロットは全波長を使う)
     waveRow->addWidget(mutedLabel(I18n::tr("lde_wave_note"), sSys));
     waveRow->addStretch(1);
     sSys->form()->addRow(I18n::tr("lde_waves"), waveRow);
+    rebuildWaveBadges();
 
     m_coord = new QComboBox(sSys);
     m_coord->addItem(I18n::tr("lde_coord_seq"));
@@ -668,6 +729,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                             this, &LensEditorTab::runSpotDiagram);
         else if (i == 1) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runRayFan);
+        else if (i == 6) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runChromatic);
         else {
             tabhelp::markNotImplemented(b);
             b->setToolTip(I18n::tr("lde_an_why"));
@@ -925,7 +988,8 @@ double LensEditorTab::fieldValue() const
 // 各行の「厚さ」は次の面までの距離なので、最後の面の厚さが像面までの距離。
 std::vector<paraxial::Surface>
 LensEditorTab::collectSurfaces(double *imageDistance,
-                               QStringList *assumedGlass) const
+                               QStringList *assumedGlass,
+                               double lambda_um) const
 {
     std::vector<paraxial::Surface> surfs;
     if (imageDistance) *imageDistance = -1.0;
@@ -944,7 +1008,7 @@ LensEditorTab::collectSurfaces(double *imageDistance,
         bool tok = false;
         const double t = r.thick.toDouble(&tok);
         s.thickness = tok ? t : 0.0;
-        s.nAfter = indexAfter(r.glass);
+        s.nAfter = indexAfterAt(r.glass, lambda_um);
         if (assumedGlass && isUnknownGlass(r.glass)
             && !assumedGlass->contains(r.glass.trimmed()))
             *assumedGlass << r.glass.trimmed();
@@ -1208,6 +1272,20 @@ void SpotDiagramView::paintEvent(QPaintEvent *)
     }
 }
 
+// 波長 [nm] → 表示色 (可視域のおおよその色。判別のための着色で、
+// 測色的な正しさは求めていない)
+static QColor wavelengthColor(double nm)
+{
+    if (nm < 440.0) return QColor(0x7A, 0x33, 0xB8);   // 紫
+    if (nm < 490.0) return QColor(0x1F, 0x5F, 0xD0);   // 青
+    if (nm < 510.0) return QColor(0x00, 0x99, 0xA8);   // 青緑
+    if (nm < 560.0) return QColor(0x2E, 0x8B, 0x57);   // 緑
+    if (nm < 590.0) return QColor(0xB8, 0x32, 0x80);   // 主波長帯 (強調色)
+    if (nm < 640.0) return QColor(0xD2, 0x69, 0x1E);   // 橙
+    if (nm < 780.0) return QColor(0xC0, 0x30, 0x30);   // 赤
+    return QColor(0x88, 0x44, 0x44);                   // 近赤外
+}
+
 // 像面が近軸焦点からずれているときの注記。ずれによるボケ (|defocus|/(2F))
 // がエアリー半径を超えていれば、結果は収差ではなく離焦で決まっている。
 static QString defocusNote(const paraxial::SystemData &d, double airy)
@@ -1228,62 +1306,105 @@ void LensEditorTab::runSpotDiagram()
 {
     const double epd = epdValue();
     const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    // 波長ごとに屈折率を引き直して系を作る
+    auto systemAt = [&](double nm, double *imgDist) {
+        double id = -1.0;
+        const std::vector<paraxial::Surface> surfs =
+            collectSurfaces(&id, nullptr, nm * 1e-3);
+        raytrace::System sys;
+        sys.surfaces = raytrace::fromParaxial(surfs);
+        sys.imageDistance = (id >= 0.0)
+                                ? id
+                                : (surfs.empty() ? 0.0 : surfs.back().thickness);
+        if (imgDist) *imgDist = id;
+        return sys;
+    };
+
     double imageDistance = -1.0;
-    const std::vector<paraxial::Surface> surfs =
-        collectSurfaces(&imageDistance, nullptr);
-
-    raytrace::System sys;
-    sys.surfaces = raytrace::fromParaxial(surfs);
-    sys.imageDistance = (imageDistance >= 0.0)
-                            ? imageDistance
-                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
-
-    const raytrace::SpotResult axis = raytrace::spotDiagram(sys, epd, 0.0, 8);
-    const raytrace::SpotResult edge =
-        (field != 0.0) ? raytrace::spotDiagram(sys, epd, field, 8) : axis;
-    if (!axis.valid) {
+    const raytrace::System primarySys = systemAt(primary, &imageDistance);
+    const raytrace::SpotResult ref0 =
+        raytrace::spotDiagram(primarySys, epd, 0.0, 8);
+    if (!ref0.valid) {
         m_spotView->clear();
         m_spotView->setVisible(false);
         m_fanPlot->setVisible(false);
         m_anInfo->setText(I18n::tr("lde_an_fail"));
         return;
     }
+    const bool hasField = (field != 0.0);
+    const raytrace::SpotResult refF =
+        hasField ? raytrace::spotDiagram(primarySys, epd, field, 8) : ref0;
 
+    // 軸上と視野端をそれぞれ「主波長の重心」を基準にして重ねる。
+    // 波長ごとに自分の重心へ寄せると **色ずれそのものが消える**ので、
+    // 同じ視野の中では基準を 1 つに揃える。
     QVector<SpotDiagramView::Cloud> clouds;
-    auto toCloud = [](const raytrace::SpotResult &r, const QColor &col,
-                      const QString &label) {
-        SpotDiagramView::Cloud c;
-        c.color = col;
-        c.label = label;
-        c.centroid = QPointF(r.centroidX, r.centroidY);
-        for (int i = 0; i < r.traced; ++i)
-            c.pts.push_back(QPointF(r.x[i], r.y[i]));
-        return c;
-    };
-    clouds.push_back(toCloud(axis, QColor(0xB8, 0x32, 0x80),
-                             I18n::tr("lde_an_tan_ax")));
-    if (field != 0.0 && edge.valid)
-        clouds.push_back(toCloud(edge, QColor(0x00, 0x78, 0xD4),
-                                 I18n::tr("lde_an_tan_fld")));
+    int traced = 0, failed = 0;
+    double polyAx2 = 0.0, polyFl2 = 0.0;
+    int polyAxN = 0, polyFlN = 0;
+    for (int f = 0; f < (hasField ? 2 : 1); ++f) {
+        const double fld = (f == 0) ? 0.0 : field;
+        const raytrace::SpotResult &ref = (f == 0) ? ref0 : refF;
+        if (!ref.valid) continue;
+        for (double nm : m_waves) {
+            const raytrace::System sys = systemAt(nm, nullptr);
+            const raytrace::SpotResult r =
+                raytrace::spotDiagram(sys, epd, fld, 8);
+            traced += r.traced;
+            failed += r.failed;
+            if (!r.valid) continue;
+            SpotDiagramView::Cloud c;
+            c.color = wavelengthColor(nm);
+            c.centroid = QPointF(ref.centroidX, ref.centroidY);
+            c.label = QString::number(nm, 'f', 1) + QStringLiteral(" nm ")
+                      + ((f == 0) ? I18n::tr("lde_an_onaxis")
+                                  : I18n::tr("lde_an_atfield"));
+            for (int i = 0; i < r.traced; ++i) {
+                c.pts.push_back(QPointF(r.x[i], r.y[i]));
+                const double dx = r.x[i] - ref.centroidX;
+                const double dy = r.y[i] - ref.centroidY;
+                if (f == 0) { polyAx2 += dx * dx + dy * dy; ++polyAxN; }
+                else        { polyFl2 += dx * dx + dy * dy; ++polyFlN; }
+            }
+            clouds.push_back(c);
+        }
+    }
+    if (clouds.isEmpty()) {
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
 
-    // エアリー半径 1.22·λ·F/# (回折限界の目安)
-    const double lambda_mm = 587.6e-6;
+    // エアリー半径 1.22·λ·F/# (回折限界の目安 — 主波長で出す)
+    const std::vector<paraxial::Surface> pxs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
     const paraxial::SystemData d =
-        paraxial::analyze(surfs, imageDistance, epd, field);
+        paraxial::analyze(pxs, imageDistance, epd, field);
     const double airy = (d.valid && d.fnumber > 0.0)
-                            ? 1.22 * lambda_mm * d.fnumber : 0.0;
+                            ? 1.22 * primary * 1e-6 * d.fnumber : 0.0;
     m_spotView->setClouds(clouds, airy);
     m_spotView->setVisible(true);
     m_fanPlot->setVisible(false);
 
     const auto um = [](double mm) { return QString::number(mm * 1000.0, 'f', 2); };
     QString info = I18n::tr("lde_an_spot")
-                       .arg(um(axis.rmsRadius), um(axis.geoRadius),
+                       .arg(um(ref0.rmsRadius), um(ref0.geoRadius),
                             QString::number(field, 'g', 4),
-                            um(edge.valid ? edge.rmsRadius : 0.0),
-                            um(edge.valid ? edge.geoRadius : 0.0),
-                            QString::number(axis.traced + edge.traced),
-                            QString::number(axis.failed + edge.failed));
+                            um(refF.valid ? refF.rmsRadius : 0.0),
+                            um(refF.valid ? refF.geoRadius : 0.0),
+                            QString::number(traced),
+                            QString::number(failed));
+    if (m_waves.size() > 1 && polyAxN > 0)
+        info += QStringLiteral("\n")
+                + I18n::tr("lde_an_poly")
+                      .arg(QString::number(m_waves.size()),
+                           um(std::sqrt(polyAx2 / polyAxN)),
+                           (polyFlN > 0) ? um(std::sqrt(polyFl2 / polyFlN))
+                                         : QStringLiteral("—"));
     if (airy > 0.0)
         info += QStringLiteral("\n") + I18n::tr("lde_an_airy")
                                            .arg(um(airy),
@@ -1296,9 +1417,16 @@ void LensEditorTab::runRayFan()
 {
     const double epd = epdValue();
     const double field = fieldValue();
+    // レイファンは主波長 1 本で描く (波長を重ねると子午/球欠と混ざって
+    // 読めなくなる。色収差は「色収差」ボタンとスポットで見る)
+    double primary = -1.0;
+    for (double w : m_waves)
+        if (primary < 0.0
+            || std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
     double imageDistance = -1.0;
     const std::vector<paraxial::Surface> surfs =
-        collectSurfaces(&imageDistance, nullptr);
+        collectSurfaces(&imageDistance, nullptr,
+                        (primary > 0.0) ? primary * 1e-3 : 0.0);
 
     raytrace::System sys;
     sys.surfaces = raytrace::fromParaxial(surfs);
@@ -1357,4 +1485,151 @@ void LensEditorTab::runRayFan()
                           .arg(num(pAxis), QString::number(field, 'g', 4),
                                num(pTan), num(pSag))
                       + defocusNote(d, airy));
+}
+
+// ── 波長サンプル ──────────────────────────────────────────────────────────
+// バッジは押すと消せる (最後の 1 本は残す)。d 線に最も近いものを強調表示。
+void LensEditorTab::rebuildWaveBadges()
+{
+    if (!m_waveBadges) return;
+    auto *box = qobject_cast<QHBoxLayout *>(m_waveBadges->layout());
+    if (!box) return;
+    while (QLayoutItem *it = box->takeAt(0)) {
+        if (QWidget *w = it->widget()) w->deleteLater();
+        delete it;
+    }
+    std::sort(m_waves.begin(), m_waves.end());
+    // d 線に最も近い 1 本を主波長として強調する
+    int primary = 0;
+    for (int i = 1; i < m_waves.size(); ++i)
+        if (std::fabs(m_waves[i] - 587.6) < std::fabs(m_waves[primary] - 587.6))
+            primary = i;
+    for (int i = 0; i < m_waves.size(); ++i) {
+        const double nm = m_waves[i];
+        QString label = QString::number(nm, 'f', 1) + QStringLiteral("nm");
+        // 標準線には記号を添える (F/d/C は色消しの基準)
+        if (std::fabs(nm - 486.1) < 0.2) label += QStringLiteral(" (F)");
+        else if (std::fabs(nm - 587.6) < 0.2) label += QStringLiteral(" (d)");
+        else if (std::fabs(nm - 656.3) < 0.2) label += QStringLiteral(" (C)");
+        auto *b = new QPushButton(label, m_waveBadges);
+        b->setFlat(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(I18n::tr("lde_wave_tip"));
+        b->setFixedHeight(20);
+        QString ss = QStringLiteral("border-radius:8px; padding:1px 7px; "
+                                    "font-size:11px;");
+        ss += (i == primary)
+                  ? QStringLiteral("background:#B83280; color:white; "
+                                   "border:1px solid transparent;")
+                  : QStringLiteral("border:1px solid palette(mid);");
+        b->setStyleSheet(ss);
+        connect(b, &QPushButton::clicked, this, [this, nm] {
+            if (m_waves.size() <= 1) return;
+            m_waves.removeAll(nm);
+            rebuildWaveBadges();
+        });
+        box->addWidget(b);
+    }
+}
+
+void LensEditorTab::addWavelength()
+{
+    bool ok = false;
+    const double nm = QInputDialog::getDouble(
+        this, I18n::tr("lde_wave_add_title"), I18n::tr("lde_wave_add_label"),
+        550.0, 200.0, 20000.0, 1, &ok);
+    if (!ok) return;
+    for (double w : m_waves)
+        if (std::fabs(w - nm) < 0.05) {
+            QMessageBox::information(this, I18n::tr("lde_wave_add_title"),
+                                     I18n::tr("lde_wave_dup"));
+            return;
+        }
+    m_waves.push_back(nm);
+    rebuildWaveBadges();
+}
+
+// ── 色収差 (波長ごとの焦点移動) ────────────────────────────────────────────
+// 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
+// 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
+// 定義そのもの) になる — selftest でその恒等式を検証している。
+void LensEditorTab::runChromatic()
+{
+    if (m_waves.isEmpty()) return;
+    const double epd = epdValue();
+    const double field = fieldValue();
+
+    // 主波長 = d 線に最も近いもの
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    auto bflAt = [&](double nm) {
+        double imageDistance = -1.0;
+        const std::vector<paraxial::Surface> s =
+            collectSurfaces(&imageDistance, nullptr, nm * 1e-3);
+        const paraxial::SystemData d =
+            paraxial::analyze(s, imageDistance, epd, field);
+        return d.valid ? d.bfl : std::numeric_limits<double>::quiet_NaN();
+    };
+
+    const double ref = bflAt(primary);
+    if (!std::isfinite(ref)) {
+        m_spotView->setVisible(false);
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    // 連続曲線 (選んだ波長の範囲を少し広げて掃引) + 選んだ波長の点
+    double lo = m_waves.first(), hi = m_waves.last();
+    for (double w : m_waves) { lo = qMin(lo, w); hi = qMax(hi, w); }
+    if (hi - lo < 1.0) { lo -= 50.0; hi += 50.0; }
+    else { const double m = 0.08 * (hi - lo); lo -= m; hi += m; }
+    if (lo < 200.0) lo = 200.0;
+
+    MiniSeries curve;
+    curve.color = QColor(0x00, 0x78, 0xD4);
+    curve.label = I18n::tr("lde_an_focshift");
+    const int n = 81;
+    for (int i = 0; i < n; ++i) {
+        const double nm = lo + (hi - lo) * double(i) / double(n - 1);
+        const double v = bflAt(nm);
+        if (std::isfinite(v)) curve.pts.push_back(QPointF(nm, (v - ref) * 1000.0));
+    }
+    MiniSeries marks;
+    marks.color = QColor(0xB8, 0x32, 0x80);
+    marks.markers = true;
+    marks.label = I18n::tr("lde_waves");
+    double worst = 0.0;
+    for (double w : m_waves) {
+        const double v = bflAt(w);
+        if (!std::isfinite(v)) continue;
+        marks.pts.push_back(QPointF(w, (v - ref) * 1000.0));
+        worst = qMax(worst, std::fabs(v - ref));
+    }
+    if (curve.pts.isEmpty()) {
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+    m_fanPlot->setSeries({ curve, marks });
+    m_fanPlot->setLabels(I18n::tr("lde_an_xwave"), I18n::tr("lde_an_yshift"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    // F 線と C 線が入っていれば軸上色収差 (LCA) をそのまま出す
+    QString info = I18n::tr("lde_an_chrom")
+                       .arg(QString::number(primary, 'f', 1),
+                            QString::number(worst * 1000.0, 'f', 2));
+    double bF = std::numeric_limits<double>::quiet_NaN();
+    double bC = bF;
+    for (double w : m_waves) {
+        if (std::fabs(w - 486.1) < 0.2) bF = bflAt(w);
+        if (std::fabs(w - 656.3) < 0.2) bC = bflAt(w);
+    }
+    if (std::isfinite(bF) && std::isfinite(bC))
+        info += QStringLiteral("\n") + I18n::tr("lde_an_lca")
+                                          .arg(QString::number((bC - bF) * 1000.0,
+                                                               'f', 2));
+    m_anInfo->setText(info);
 }

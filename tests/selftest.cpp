@@ -14952,6 +14952,74 @@ static void testRayTrace()
     }
 }
 
+// ── 色収差 (波長ごとの焦点移動) ────────────────────────────────────────────
+// レンズエディタ「解析プロット → 色収差」の計算経路 (カタログの Sellmeier
+// 分散式 → 波長ごとの近軸追跡 → バックフォーカスの移動) を、アッベ数の
+// 定義から導いた **閉形式**と突き合わせる。
+//   単レンズ: φ(λ) = (n(λ)−1)·K → f_C − f_F = f_d/V · (n_d−1)²/((n_C−1)(n_F−1))
+//   教科書の f/V はこの右辺の 1 次近似 (N-BK7 で 0.6 % ずれる)
+static void testChromaticFocalShift()
+{
+    g_file = "chromatic";
+    namespace px = ofd::paraxial;
+
+    const ofd::Glass *bk = nullptr;
+    for (const ofd::Glass &g : ofd::GlassCatalog::all())
+        if (g.name == QStringLiteral("N-BK7")) bk = &g;
+    check(bk != nullptr && bk->hasSellmeier(),
+          "chromatic: N-BK7 is in the catalog with Sellmeier coefficients");
+    if (!bk) return;
+
+    const double nF = bk->n(0.4861);      // F 線 (486.1 nm)
+    const double nd = bk->n(0.58756);     // d 線 (587.56 nm)
+    const double nC = bk->n(0.6563);      // C 線 (656.3 nm)
+    check(nF > nd && nd > nC,
+          "chromatic: the index falls with wavelength (normal dispersion)");
+    // Sellmeier から出したアッベ数がカタログ記載値と一致する
+    const double V = (nd - 1.0) / (nF - nC);
+    check(std::fabs(V / bk->vd - 1.0) < 2e-3,
+          "chromatic: the Abbe number from the Sellmeier fit matches the "
+          "catalog vd");
+
+    // 薄い両凸レンズ (d 線で f' = 50 mm)
+    const double f = 50.0;
+    const double R = 2.0 * (nd - 1.0) * f;
+    auto bflAt = [&](double n) {
+        std::vector<px::Surface> s(2);
+        s[0].R = R;  s[0].thickness = 1e-6; s[0].nAfter = n; s[0].stop = true;
+        s[1].R = -R; s[1].thickness = 60.0; s[1].nAfter = 1.0;
+        return px::analyze(s, 60.0, 10.0, 0.0);
+    };
+    const px::SystemData dD = bflAt(nd);
+    check(dD.valid && std::fabs(dD.efl - f) < 1e-6,
+          "chromatic: the test singlet really is f' = 50 mm at the d line");
+    const double bF = bflAt(nF).bfl, bD = dD.bfl, bC = bflAt(nC).bfl;
+    check(bF < bD && bD < bC,
+          "chromatic: blue focuses closer than red (positive singlet)");
+
+    const double exact = f / V * (nd - 1.0) * (nd - 1.0)
+                         / ((nC - 1.0) * (nF - 1.0));
+    check(std::fabs((bC - bF) / exact - 1.0) < 1e-6,
+          "chromatic: the F-to-C back-focus spread matches the closed form "
+          "f/V * (nd-1)^2/((nC-1)(nF-1))");
+    // 教科書の f/V は 1 次近似 — 1 % 以内には入るが厳密ではない
+    const double approx = f / V;
+    check(std::fabs((bC - bF) / approx - 1.0) < 0.01
+          && std::fabs((bC - bF) / approx - 1.0) > 1e-4,
+          "chromatic: the textbook f/V is within 1 percent but is not exact "
+          "(it is the first-order form)");
+
+    // 分散の無い媒質 (空気) では波長を変えても何も動かない
+    {
+        std::vector<px::Surface> s(1);
+        s[0].R = 0.0; s[0].thickness = 10.0; s[0].nAfter = 1.0; s[0].stop = true;
+        const px::SystemData a = px::analyze(s, 10.0, 4.0, 0.0);
+        check(!a.valid || !(std::fabs(a.efl) < 1e30),
+              "chromatic: a flat air interface has no power (afocal), so there "
+              "is nothing to shift");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -17272,6 +17340,7 @@ int main(int argc, char *argv[])
     testWaveformSpectrum();
     testSeidelAberration();
     testRayTrace();
+    testChromaticFocalShift();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
