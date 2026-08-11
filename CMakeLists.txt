@@ -549,6 +549,8 @@ set_target_properties(openfdtd_x PROPERTIES
 add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/AcousticFdtdEstimator.cpp
     src/acoustics/core/AcousticMetrics.cpp
+    # ラインアレイ / サブアレイの遠方界指向性合成 (音源タブのアレイページ)
+    src/acoustics/core/ArrayDirectivity.cpp
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/ConvolutionEngine.cpp
     # 有理比ポリフェーズ Kaiser 窓 sinc リサンプラ (負債 #12) —
@@ -659,6 +661,7 @@ if(BUILD_TESTS)
 
     # C++ 単体テスト (各 tests/acoustics/test_*.cpp → 個別実行ファイル)
     set(OFDX_ACOUSTIC_TESTS
+        array
         bandfilter
         clarity
         clipping

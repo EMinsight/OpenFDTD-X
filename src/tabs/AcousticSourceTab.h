@@ -98,6 +98,8 @@ private:
     void loadWavPreview(const QString &path);
     // 選択された解析指向性モデルをポーラ図・帯域表・軸上特性へ反映
     void updateDirectivity();
+    // アレイページ: 素子配置 + 遅延 → 遠方界パターン (acoustics/ArrayDirectivity)
+    void updateArray();
     // 可聴化品質指標: 実測 RIR (OperaAcousticSettings::rirPath) を非同期分析
     void computeAuralQuality();
     void clearAuralQuality();    // 未算出状態 ("—" + 説明) へ戻す
@@ -144,6 +146,22 @@ private:
     QTableWidget *m_bandTable = nullptr;    // 帯域別指向性 (解析式 or "—")
     QLabel       *m_bandNote = nullptr;
     QLabel       *m_frNote = nullptr;       // 軸上周波数特性の状態注記
+
+    // array (ラインアレイ / サブアレイ)
+    QLineEdit    *m_arrElems = nullptr, *m_arrSpacing = nullptr;
+    QLineEdit    *m_arrSplay = nullptr;
+    QComboBox    *m_arrCurve = nullptr;
+    QCheckBox    *m_arrSteer = nullptr;
+    QLineEdit    *m_arrSteerDeg = nullptr;
+    QCheckBox    *m_arrGrating = nullptr;
+    QComboBox    *m_arrFreq = nullptr;
+    MiniPlot     *m_arrPlot = nullptr;
+    QTableWidget *m_arrTable = nullptr;
+    QLabel       *m_arrNote = nullptr;      // グレーティングローブの警告
+    QComboBox    *m_subLayout = nullptr;
+    QCheckBox    *m_subRev = nullptr;
+    QLineEdit    *m_subDelay = nullptr;
+    QLabel       *m_subInfo = nullptr;
 
     // aural
     QComboBox    *m_renderRate;
