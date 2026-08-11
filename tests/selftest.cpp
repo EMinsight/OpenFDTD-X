@@ -6875,6 +6875,43 @@ static void testCircuitExtraction()
                   && t2.contains(QLatin1String("capacitance = 1"))
                   && t2.contains(QLatin1String("retardation = 1")),
               "peec: enabled options are written");
+
+        // ── 抽出ページの入力が .peec に届くこと ──────────────────────────
+        // 画面は MHz と mm、.peec は Hz と分割数。単位の取り違えは桁で効く
+        // ので、ここで固定する (画面 → CircuitOpts → .peec の契約)。
+        c.fmin_Hz = 0.01e6;          // 画面の「0.01 MHz」
+        c.fmax_Hz = 100.0e6;         // 画面の「100 MHz」
+        c.fdiv    = 40;              // 画面の「40 点」
+        const QString t3 = CircuitIO::peecText(p).text;
+        check(t3.contains(QLatin1String("frequency = 10000 100000000 40")),
+              "peec: the MHz range and point count reach the frequency line");
+
+        // メッシュ分割幅 [mm] は bar の分割数になる。導体長 10 mm に対して
+        // 0.5 mm 幅なら 20 分割、2 mm 幅なら 5 分割
+        c.peecMesh_mm = 0.5;
+        const QString m1 = CircuitIO::peecText(p).text;
+        c.peecMesh_mm = 2.0;
+        const QString m2 = CircuitIO::peecText(p).text;
+        check(m1 != m2,
+              "peec: the mesh width changes the generated input");
+        auto lastBarNdiv = [](const QString &t) {
+            int best = -1;
+            for (const QString &line : t.split(QLatin1Char('\n'))) {
+                if (!line.startsWith(QLatin1String("bar = "))) continue;
+                const QStringList tk = line.split(QLatin1Char(' '),
+                                                  Qt::SkipEmptyParts);
+                if (!tk.isEmpty()) best = tk.last().toInt();
+            }
+            return best;
+        };
+        const int n1 = lastBarNdiv(m1), n2 = lastBarNdiv(m2);
+        check(n1 > 0 && n2 > 0 && n1 > n2,
+              "peec: a finer mesh gives more bar subdivisions");
+        // 0 や負の分割幅でも 1 分割は残る (0 除算・0 分割を作らない)
+        c.peecMesh_mm = 0.0;
+        check(lastBarNdiv(CircuitIO::peecText(p).text) >= 1,
+              "peec: a zero mesh width still yields at least one subdivision");
+        c.peecMesh_mm = 0.5;
     }
 
     // (d) 作れないときは理由を返して text は空 (黙って壊れた入力を出さない)
@@ -7057,6 +7094,98 @@ static void testCircuitExtraction()
               "circuit: PEEC home var");
         check(qstrcmp(Runner::homeVarFor(Kernel::FEM), "OPENFEM_HOME") == 0,
               "circuit: FEM home var");
+    }
+
+    // (h) 実カーネル統合 — GUI が作った .peec を **本物の peec に食わせる**。
+    // 「文字列に正しい行が入っている」だけでは、ソルバが受け付けるかは分から
+    // ない。ここは環境変数 OFDX_PEEC_BIN が指す実行ファイルで実際に解く。
+    //
+    // 期待値はコードの外にある: 角線 1 m × 10 mm × 1 mm・σ = 5.8e7 S/m の
+    // 直流抵抗は閉形式で R = 1/(σ·w·t) = 1/(5.8e7 × 1e-5) = 1.724138e-3 Ω。
+    // インダクタンスは OpenPEEC の検証サンプル data/sample/bar_single.peec の
+    // 記載値 L = 1.141093e-6 H を使う (どちらも GUI 側の計算ではない)。
+    {
+        g_file = "peec_e2e";
+        const QString bin = qEnvironmentVariable("OFDX_PEEC_BIN");
+        if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+            std::printf("  (peec integration skipped: set OFDX_PEEC_BIN "
+                        "to run)\n");
+        } else {
+            Project p;
+            p.general().title = QStringLiteral("bar");
+            p.materials().clear();
+            Material cu;
+            cu.esgm = 5.8e7;
+            p.materials().push_back(cu);
+            Geometry g;
+            g.materialId = 2;
+            g.shape = 1;
+            g.g[0] = -5e-3;   g.g[1] = 5e-3;      // 幅 10 mm
+            g.g[2] = -0.5e-3; g.g[3] = 0.5e-3;    // 厚さ 1 mm
+            g.g[4] = 0.0;     g.g[5] = 1.0;       // 長さ 1 m
+            p.geometries().push_back(g);
+            p.circuitPorts().clear();
+            CircuitPortRow port;
+            port.kind = CircuitPortRow::Lumped;
+            port.z2_m = 1.0;
+            p.circuitPorts().push_back(port);
+            // 抽出ページが書く値そのもの (画面の MHz / mm と同じ意味)
+            CircuitOpts &c = p.circuit();
+            c.fmin_Hz = 1e6; c.fmax_Hz = 1e6; c.fdiv = 0;
+            c.peecMesh_mm = 1000.0;
+            c.peecSkinEffect = false;
+            c.peecCapacitance = false;
+
+            const CircuitInput in = CircuitIO::peecText(p);
+            check(in.isValid(), "peec-e2e: the GUI produced an input");
+
+            QTemporaryDir dir;
+            check(dir.isValid(), "peec-e2e: temp dir");
+            const QString path = dir.filePath("bar.peec");
+            {
+                QFile f(path);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Text),
+                      "peec-e2e: write the .peec");
+                f.write(in.text.toUtf8());
+            }
+            QProcess pr;
+            pr.setWorkingDirectory(dir.path());
+            pr.start(bin, { QStringLiteral("bar.peec") });
+            check(pr.waitForFinished(300000), "peec-e2e: solver finished");
+            check(pr.exitStatus() == QProcess::NormalExit && pr.exitCode() == 0,
+                  "peec-e2e: solver exit code 0");
+            const QString out = QString::fromUtf8(pr.readAllStandardOutput());
+            check(out.contains(QLatin1String("normal end")),
+                  "peec-e2e: the solver accepted the GUI-generated input");
+
+            // zin.csv: port,frequency,Rin,Xin,Gin,Bin,Zabs
+            QFile zf(dir.filePath("zin.csv"));
+            QString zin;
+            if (zf.open(QIODevice::ReadOnly | QIODevice::Text))
+                zin = QString::fromUtf8(zf.readAll());
+            check(!zin.isEmpty(), "peec-e2e: zin.csv was produced");
+            double rin = 0.0, xin = 0.0, freq = 0.0;
+            for (const QString &line : zin.split(QLatin1Char('\n'))) {
+                const QStringList t = line.split(QLatin1Char(','));
+                if (t.size() < 4) continue;
+                bool okf = false;
+                const double f = t[1].toDouble(&okf);
+                if (!okf) continue;              // 見出し行
+                freq = f; rin = t[2].toDouble(); xin = t[3].toDouble();
+            }
+            check(std::fabs(freq - 1e6) < 1.0,
+                  "peec-e2e: the frequency line reached the solver");
+            // 直流抵抗の閉形式 R = 1/(sigma*w*t)
+            const double rExact = 1.0 / (5.8e7 * 0.01 * 0.001);
+            check(rin > 0 && std::fabs(rin / rExact - 1.0) < 1e-3,
+                  "peec-e2e: Rin matches the closed-form 1/(sigma*w*t)");
+            // L = X/(2 pi f) を OpenPEEC のサンプル記載値と比べる
+            const double lH = xin / (2.0 * 3.14159265358979323846 * freq);
+            check(std::fabs(lH / 1.141093e-6 - 1.0) < 0.01,
+                  "peec-e2e: the extracted L matches OpenPEEC's own sample "
+                  "value for this bar");
+        }
+        g_file = "circuit";
     }
 }
 
