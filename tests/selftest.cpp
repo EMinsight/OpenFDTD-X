@@ -12947,6 +12947,67 @@ static void testRadiatedEmission()
               && !groundEnhancement(EmcSite::OpenArea, d, 2.0, 0.0).valid,
               "radem: a non-positive distance, height or frequency is not "
               "computed");
+
+        // ── 偏波 (完全導体面の反射係数は水平 Γ = −1 / 垂直 Γ = +1) ──
+        // 既定は従来どおり水平偏波 (回帰の番人)
+        const GroundEnhancement h0 =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f, 0.8,
+                              EmcPolarization::Horizontal);
+        check(approx(h0.atHeightDb, oats.atHeightDb, 1e-12)
+                  && approx(h0.scanMaxDb, oats.scanMaxDb, 1e-12),
+              "radem: the default polarisation is horizontal (unchanged)");
+
+        // アンテナ高を 0 に近づけると行路差が消える。水平 (Γ = −1) は
+        // 打ち消して深いヌル、垂直 (Γ = +1) は同相で +6.02 dB になる。
+        // これは境界条件から厳密に決まる符号の違いそのもの。
+        {
+            const double tiny = 1e-4;
+            const GroundEnhancement gh =
+                groundEnhancement(EmcSite::OpenArea, d, tiny, f, 0.8,
+                                  EmcPolarization::Horizontal);
+            const GroundEnhancement gv =
+                groundEnhancement(EmcSite::OpenArea, d, tiny, f, 0.8,
+                                  EmcPolarization::Vertical);
+            check(gh.valid && gh.atHeightDb < -40.0,
+                  "radem: at grazing height the horizontal polarisation "
+                  "cancels against its image");
+            // 増分は自由空間 (距離 d) を基準にするので、斜距離
+            // d1 = sqrt(d² + h_eut²) との差も入る:
+            //   20·log10(2·d/d1) = 6.02 dB − 20·log10(d1/d)
+            const double d1 = std::sqrt(d * d + 0.8 * 0.8);
+            const double exact = 20.0 * std::log10(2.0 * d / d1);
+            check(gv.valid && approx(gv.atHeightDb, exact, 1e-2),
+                  "radem: at grazing height the vertical polarisation adds in "
+                  "phase (20log10(2d/d1), i.e. 6.02 dB less the slant-range "
+                  "term)");
+        }
+
+        // 「両偏波」は 2 つの大きい方 (規格の運用) — どちらも下回らない
+        bool bothIsMax = true;
+        for (double h = 1.0; h <= 4.0 + 1e-9; h += 0.05) {
+            const double hh = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Horizontal)
+                                  .atHeightDb;
+            const double vv = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Vertical)
+                                  .atHeightDb;
+            const double bb = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Both)
+                                  .atHeightDb;
+            if (!approx(bb, std::max(hh, vv), 1e-12)) bothIsMax = false;
+            if (bb > 6.0206 + 1e-6) bothIsMax = false;
+        }
+        check(bothIsMax,
+              "radem: both-polarisation takes the larger of the two and still "
+              "respects the 6.02 dB ceiling");
+
+        // 金属床を模擬しない設定は反射なし (サイト種別に依らない)
+        const GroundEnhancement nopec =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f, 0.8,
+                              EmcPolarization::Both, false);
+        check(nopec.valid && !nopec.applies && nopec.atHeightDb == 0.0,
+              "radem: without a conducting floor there is no ground reflection "
+              "even on an open area test site");
     }
 
     // 遠方界距離 2D²/λ と波長

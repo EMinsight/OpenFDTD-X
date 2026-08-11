@@ -35,7 +35,7 @@ double freeSpacePathLossDb(double dist_m, double freq_hz)
 
 // 2 波干渉。振幅比 |E/E0| = (λ/4π)·|e^{-jk d1}/d1 − |Γ|·e^{-jk d2}/d2|
 double twoRayPathLossDb(double dist_m, double hTx_m, double hRx_m,
-                        double freq_hz, double reflection)
+                        double freq_hz, double reflection, double gammaSign)
 {
     const double lam = wavelength(freq_hz);
     if (!(lam > 0.0) || !(dist_m > 0.0)) return 0.0;
@@ -44,9 +44,11 @@ double twoRayPathLossDb(double dist_m, double hTx_m, double hRx_m,
     rayLengths(dist_m, hTx_m, hRx_m, d1, d2);
     if (!(d1 > 0.0) || !(d2 > 0.0)) return 0.0;
     const double k = 2.0 * kPi / lam;
-    // Γ = −|Γ| (grazing 入射の完全反射は位相反転)
-    const double re = std::cos(k * d1) / d1 - reflection * std::cos(k * d2) / d2;
-    const double im = -std::sin(k * d1) / d1 + reflection * std::sin(k * d2) / d2;
+    // Γ = gammaSign·|Γ| — 既定の −1 は位相反転 (水平偏波 / grazing 入射)、
+    // +1 は完全導体面の垂直偏波
+    const double g = (gammaSign >= 0.0) ? reflection : -reflection;
+    const double re = std::cos(k * d1) / d1 + g * std::cos(k * d2) / d2;
+    const double im = -std::sin(k * d1) / d1 - g * std::sin(k * d2) / d2;
     const double amp = (lam / (4.0 * kPi)) * std::sqrt(re * re + im * im);
     if (!(amp > 0.0)) return kMaxPathLossDb;      // 完全なヌル (発散を切る)
     const double loss = -20.0 * std::log10(amp);

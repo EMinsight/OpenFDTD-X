@@ -56,20 +56,31 @@ double marginDb(double levelDbuVm, double limitDbuVm)
 
 GroundEnhancement groundEnhancement(EmcSite site, double distM,
                                     double antHeightM, double freqHz,
-                                    double eutHeightM)
+                                    double eutHeightM, EmcPolarization pol,
+                                    bool pecGround)
 {
     namespace prop = ofd::em::propagation;
     GroundEnhancement g;
     if (!(distM > 0.0) || !(freqHz > 0.0)) return g;
     if (!(antHeightM > 0.0) || !(eutHeightM > 0.0)) return g;
     g.valid = true;
-    g.applies = (site == EmcSite::OpenArea || site == EmcSite::SemiAnechoic);
+    g.applies = pecGround
+                && (site == EmcSite::OpenArea || site == EmcSite::SemiAnechoic);
     if (!g.applies) return g;          // 反射が無い = 増分 0
 
     const double fsl = prop::freeSpacePathLossDb(distM, freqHz);
+    // 完全導体面の反射係数: 水平 Γ = −1、垂直 Γ = +1
+    const auto one = [&](double hr, double sign) {
+        return fsl - prop::twoRayPathLossDb(distM, eutHeightM, hr, freqHz,
+                                            1.0, sign);
+    };
     const auto gain = [&](double hr) {
-        // 自由空間より損失が小さければ強め合っている = 正の増分
-        return fsl - prop::twoRayPathLossDb(distM, eutHeightM, hr, freqHz, 1.0);
+        switch (pol) {
+        case EmcPolarization::Vertical:   return one(hr, +1.0);
+        case EmcPolarization::Both:       return std::max(one(hr, -1.0),
+                                                          one(hr, +1.0));
+        default:                          return one(hr, -1.0);
+        }
     };
     g.atHeightDb = gain(antHeightM);
 

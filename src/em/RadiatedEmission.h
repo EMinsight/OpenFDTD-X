@@ -73,15 +73,25 @@ double groundReflectionMaxDb();
 //   - 受信アンテナは 1〜4 m を走査し、**その最大値**を測定値とする
 //     (同上)。`scanMaxDb` がその走査の最大、`atHeightDb` が画面で指定した
 //     高さでの値。
-//   - 反射係数は Γ = −1 (水平偏波の grazing 入射) を仮定する。垂直偏波では
-//     異なるが、規格の上限側を見る目的にはこれで足りる。
+//   - 反射係数は**完全導体面の値**を使う: 水平偏波 Γ = −1、垂直偏波 Γ = +1。
+//     これは境界条件から厳密に決まる (接線方向の電界が 0 / 法線方向の磁界が
+//     0)。規格は両偏波で測るので、Both は 2 つの大きい方を採る。
 //   - 全電波暗室にはグランド反射が無い (applies = false)。反射室
 //     (リバブレーション) は距離基準の測定ではないので同じく扱わない。
+//   - 金属床を模擬しない設定 (pecGround = false) も反射なしとして扱う。
 enum class EmcSite {
     OpenArea = 0,        // オープンサイト (OATS)
     SemiAnechoic = 1,    // 半電波暗室 (グランドプレーンあり)
     FullyAnechoic = 2,   // 全電波暗室 (反射なし)
     Reverberation = 3,   // 反射室
+};
+
+// 測定する偏波。規格 (CISPR 16-2-3 / ANSI C63.4) は水平・垂直の両方で測り、
+// 大きい方を測定値とするので Both が既定の運用に対応する。
+enum class EmcPolarization {
+    Horizontal = 0,   // 完全導体面で Γ = −1
+    Vertical   = 1,   // 完全導体面で Γ = +1
+    Both       = 2,   // 2 つの大きい方 (規格の運用)
 };
 
 struct GroundEnhancement {
@@ -92,10 +102,13 @@ struct GroundEnhancement {
 };
 
 // 試験配置から反射の増分を求める。距離・高さ・周波数が非正なら valid = false。
-// applies = false のサイトでは増分 0 を返す (0 dB は「反射が無い」の意味)。
+// applies = false のサイト (全電波暗室・反射室・金属床を模擬しない設定) では
+// 増分 0 を返す (0 dB は「反射が無い」の意味)。
 GroundEnhancement groundEnhancement(EmcSite site, double distM,
                                     double antHeightM, double freqHz,
-                                    double eutHeightM = 0.8);
+                                    double eutHeightM = 0.8,
+                                    EmcPolarization pol = EmcPolarization::Horizontal,
+                                    bool pecGround = true);
 
 // 遠方界 (Fraunhofer) 距離 2D²/λ [m]。D は放射体の最大寸法 [m]。
 // D ≤ 0 または λ ≤ 0 なら 0 を返す。
