@@ -42,6 +42,22 @@ struct Result {
 // 有限でない値が混ざっていたら valid = false (「それらしい合計」を作らない)。
 Result energySum(const std::vector<double> &levels_db);
 
+// **同相で重なったときの上限** (最悪ケース)。振幅で足すので
+//   L = 20·log10( Σ 10^(Lᵢ/20) )
+// 等レベル 2 源で +6.02 dB (無相関なら +3.01 dB)。クリップ余裕の見積りは
+// こちらで取る — 無相関の合計だけを見ていると、たまたま位相が揃ったときに
+// 割れる。
+struct SumResult {
+    bool   valid = false;
+    double total_db = 0.0;
+};
+SumResult coherentSum(const std::vector<double> &levels_db);
+
+// 自由音場の点音源の距離減衰 (逆二乗則): 1 m 基準からの差 [dB]
+//   ΔL(d) = −20·log10(d / 1 m)
+// 距離が 2 倍で −6.02 dB。d <= 0 は 0 を返す (減衰させない)。
+double spreadingLoss_db(double distance_m);
+
 } // namespace levelsum
 } // namespace ofd
 

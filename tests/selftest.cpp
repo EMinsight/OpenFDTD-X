@@ -14024,7 +14024,49 @@ static void testLevelSum()
               "levelsum: a single source has no gap");
     }
 
-    // 6) 負のレベルや大きな差でも壊れない / 壊れた入力は作らない
+    // 6) 同相の合計 (振幅加算) と距離減衰 — 音源タブ「同時駆動の見積り」の実体
+    {
+        // 等レベル 2 源: 無相関で +3.01 dB、同相なら +6.02 dB
+        const ls::SumResult c2 = ls::coherentSum({ 70.0, 70.0 });
+        check(c2.valid && std::fabs(c2.total_db - (70.0 + 20.0 * std::log10(2.0)))
+                              < 1e-12,
+              "levelsum: two equal sources in phase add 6.02 dB");
+        const ls::Result e2 = ls::energySum({ 70.0, 70.0 });
+        check(std::fabs((c2.total_db - e2.total_db)
+                        - 10.0 * std::log10(2.0)) < 1e-12,
+              "levelsum: in phase is exactly 3.01 dB above uncorrelated "
+              "for two equal sources");
+        // n 個なら +20 log10(n)
+        for (int n : { 1, 3, 10 }) {
+            const ls::SumResult c = ls::coherentSum(std::vector<double>(n, 60.0));
+            check(c.valid && std::fabs(c.total_db
+                                       - (60.0 + 20.0 * std::log10(double(n))))
+                                 < 1e-12,
+                  "levelsum: n equal sources in phase add 20 log10(n)");
+        }
+        check(!ls::coherentSum({}).valid,
+              "levelsum: no sources means no in-phase total either");
+        check(!ls::coherentSum({ 1.0, -std::numeric_limits<double>::infinity() })
+                   .valid,
+              "levelsum: a non-finite level is rejected there too");
+
+        // 自由音場の逆二乗則: 距離 2 倍で −6.02 dB、1 m で 0 dB
+        check(std::fabs(ls::spreadingLoss_db(1.0)) < 1e-15,
+              "levelsum: there is no spreading loss at one metre");
+        check(std::fabs(ls::spreadingLoss_db(2.0) + 6.0206) < 1e-3,
+              "levelsum: doubling the distance costs 6.02 dB");
+        check(std::fabs(ls::spreadingLoss_db(10.0) + 20.0) < 1e-12,
+              "levelsum: ten metres is exactly -20 dB");
+        for (double d : { 2.0, 5.0, 17.3 })
+            check(std::fabs(ls::spreadingLoss_db(2.0 * d)
+                            - ls::spreadingLoss_db(d) + 6.0206) < 1e-3,
+                  "levelsum: every doubling costs the same 6.02 dB");
+        check(ls::spreadingLoss_db(0.0) == 0.0
+              && ls::spreadingLoss_db(-1.0) == 0.0,
+              "levelsum: a non-positive distance is not attenuated");
+    }
+
+    // 7) 負のレベルや大きな差でも壊れない / 壊れた入力は作らない
     {
         const ls::Result r = ls::energySum({ -10.0, -20.0 });
         check(r.valid && std::fabs(r.total_db

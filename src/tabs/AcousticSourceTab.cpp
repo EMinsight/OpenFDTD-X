@@ -2,6 +2,7 @@
 #include "AcousticSourceTab.h"
 #include "../core/Project.h"
 #include "../acoustics/core/ArrayDirectivity.h"
+#include "../core/LevelSum.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../audio/AudioEditEngine.h"
 #include "../widgets/MiniPlot.h"
@@ -211,6 +212,49 @@ const bool s_i18n = [] {
     I18n::reg("asrc_dist_comp", "距離自動補正",
               "Automatic distance compensation");
     I18n::reg("asrc_phase", "位相", "Phase");
+    // ── 同時駆動の見積り ──────────────────────────────────────────────
+    I18n::reg("asrc_drive_section", "同時駆動の見積り (受音点での距離・遅延・レベル)",
+              "Driving them together (distance, delay and level at the "
+              "receiver)");
+    I18n::reg("asrc_drive_hint",
+              "有効な音源と 1 番目の有効な受音点の位置から、直接音の距離・"
+              "到達時刻・受音レベルを求めます。レベルは各音源の「基準SPL @1m」"
+              "から自由音場の逆二乗則 −20·log10(d) で引いた値で、室の反射は"
+              "含みません (直接音のみ)。上の 3 つのチェックがここに効きます。",
+              "From the positions of the enabled sources and the first enabled "
+              "receiver: direct-sound distance, arrival time and level. The "
+              "level is each source's reference SPL at 1 m less the free-field "
+              "inverse-square loss -20 log10(d); room reflections are not "
+              "included (direct sound only). The three check boxes above act "
+              "here.");
+    I18n::reg("asrc_dr_src",    "音源",           "Source");
+    I18n::reg("asrc_dr_dist",   "距離 [m]",       "Distance [m]");
+    I18n::reg("asrc_dr_arrive", "到達 [ms]",      "Arrival [ms]");
+    I18n::reg("asrc_dr_delay",  "補正遅延 [ms]",  "Alignment delay [ms]");
+    I18n::reg("asrc_dr_level",  "受音レベル [dB]", "Level at receiver [dB]");
+    I18n::reg("asrc_dr_none",
+              "有効な音源、または有効な受音点がありません。",
+              "There is no enabled source, or no enabled receiver.");
+    I18n::reg("asrc_dr_sum",
+              "受音点 %1 での直接音の合計: 無相関で %2 dB / 同相なら %3 dB "
+              "(最大の 1 本は %4 dB)。",
+              "Direct sound at receiver %1: %2 dB if uncorrelated, %3 dB if in "
+              "phase (the loudest single source is %4 dB).");
+    I18n::reg("asrc_dr_clip",
+              " 同時駆動でクリップさせないには、同相で重なる最悪ケースを見て "
+              "各音源を %1 dB 下げる必要があります。",
+              " To stay clip-free when driven together, allowing for the "
+              "worst case where they add in phase, each source needs %1 dB of "
+              "trim.");
+    I18n::reg("asrc_dr_nodelay",
+              " 距離自動補正が切ってあるので、到達時刻は最大 %1 ms ずれます。",
+              " Distance compensation is off, so the arrivals differ by up to "
+              "%1 ms.");
+    I18n::reg("asrc_dr_aligned",
+              " 補正遅延を入れると全音源の直接音が %1 ms で揃います "
+              "(一番遠い音源に合わせます)。",
+              " With the alignment delays every direct sound arrives together "
+              "at %1 ms (matched to the most distant source).");
     I18n::reg("asrc_coherence", "音源間相互コヒーレンス",
               "Inter-source mutual coherence");
     // signal
@@ -631,10 +675,15 @@ const bool s_i18n = [] {
     I18n::reg("asrc_q_refl_n", "%1 個", "%1 events");
     I18n::reg("asrc_q_lf_need", "2ch 測定が必要 (ISO 3382-1)",
               "needs 2-channel measurement (ISO 3382-1)");
-    I18n::reg("asrc_uw_norm", "正規化・遅延・位相のチェック",
+    I18n::reg("asrc_uw_norm",
+              "正規化・遅延・位相のチェックの、ソルバ入力への反映 "
+              "(.ofd に対応キーがありません)",
               "the normalisation / delay / phase check boxes");
-    I18n::reg("asrc_uw_norm_ok", "基準 SPL",
-              "the reference SPL");
+    I18n::reg("asrc_uw_norm_ok",
+              "基準 SPL と、下の「同時駆動の見積り」(3 つのチェックはここに"
+              "効きます)",
+              "the reference SPL and the estimate below, which the three check "
+              "boxes drive");
     I18n::reg("asrc_uw_array",
               "このページの設定 (ソルバ入力に対応するキーがありません)。"
               "画面の「合成された指向性」は、この設定から GUI が実計算した"
@@ -1157,21 +1206,51 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     splRow->addWidget(m_baseSplUnit);
     splRow->addStretch(1);
     sc->form()->addRow(I18n::tr("asrc_base_spl"), splRow);
-    auto *clip = new QCheckBox(I18n::tr("asrc_clip_prevent"), sc);
-    clip->setChecked(true);
-    sc->form()->addRow(I18n::tr("asrc_normalize"), clip);
-    auto *dist = new QCheckBox(I18n::tr("asrc_dist_comp"), sc);
-    dist->setChecked(true);
-    sc->form()->addRow(I18n::tr("asrc_delay"), dist);
-    auto *coh = new QCheckBox(I18n::tr("asrc_coherence"), sc);
-    sc->form()->addRow(I18n::tr("asrc_phase"), coh);
-    // 正規化/遅延/位相のチェックはどこにも読まれない — 注記 (基準SPLのみ有効)
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("asrc_uw_norm"), I18n::tr("asrc_uw_norm_ok")));
+    m_clipPrevent = new QCheckBox(I18n::tr("asrc_clip_prevent"), sc);
+    m_clipPrevent->setChecked(true);
+    sc->form()->addRow(I18n::tr("asrc_normalize"), m_clipPrevent);
+    m_distComp = new QCheckBox(I18n::tr("asrc_dist_comp"), sc);
+    m_distComp->setChecked(true);
+    sc->form()->addRow(I18n::tr("asrc_delay"), m_distComp);
+    m_coherence = new QCheckBox(I18n::tr("asrc_coherence"), sc);
+    sc->form()->addRow(I18n::tr("asrc_phase"), m_coherence);
+    // 3 つのチェックは下の「同時駆動の見積り」で実際に効く。ソルバ入力へは
+    // 渡らない (.ofd に対応キーが無い) ので、そこだけ未反映として書く
+    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("asrc_uw_norm"),
+                                               I18n::tr("asrc_uw_norm_ok")));
     v->addWidget(sc);
+
+    // ── 同時駆動の見積り (受音点での距離・遅延・レベル) ────────────────────
+    auto *sd2 = new SectionBox(I18n::tr("asrc_drive_section"), page);
+    auto *dhint = new QLabel(I18n::tr("asrc_drive_hint"), sd2);
+    dhint->setWordWrap(true);
+    sd2->vbox()->addWidget(dhint);
+    m_driveTable = new QTableWidget(0, 5, sd2);
+    m_driveTable->setHorizontalHeaderLabels({ I18n::tr("asrc_dr_src"),
+                                              I18n::tr("asrc_dr_dist"),
+                                              I18n::tr("asrc_dr_arrive"),
+                                              I18n::tr("asrc_dr_delay"),
+                                              I18n::tr("asrc_dr_level") });
+    m_driveTable->verticalHeader()->setVisible(false);
+    m_driveTable->verticalHeader()->setDefaultSectionSize(24);
+    m_driveTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_driveTable->horizontalHeader()->setSectionResizeMode(0,
+                                                           QHeaderView::Stretch);
+    m_driveTable->setMinimumHeight(150);
+    sd2->vbox()->addWidget(m_driveTable);
+    m_driveSummary = new QLabel(sd2);
+    m_driveSummary->setWordWrap(true);
+    sd2->vbox()->addWidget(m_driveSummary);
+    v->addWidget(sd2);
     v->addStretch(1);
 
     connect(m_baseSpl, &QLineEdit::editingFinished, this,
             [this] { apply(); });
+    for (QCheckBox *c : { m_clipPrevent, m_distComp, m_coherence })
+        connect(c, &QCheckBox::toggled, this, [this](bool) { updateDrive(); });
+    // 音源リストや受音点が変われば作り直す
+    connect(m_p, &Project::changed, this, [this] { updateDrive(); });
+    updateDrive();
     return page;
 }
 
@@ -1794,6 +1873,100 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
 // 周波数特性は値を出さない ("—" / 空グラフ) — 偽の数値を出さない (絶対規則 5)。
 // ── アレイページ: 設定 → 遠方界パターン (acoustics/ArrayDirectivity) ────────
 // ソルバは要らない。素子位置と遅延が決まれば遠方界は和で書ける。
+// ── 同時駆動の見積り ────────────────────────────────────────────────────────
+// 有効な音源と 1 番目の有効な受音点から、直接音の距離・到達時刻・受音レベルを
+// 出す。室の反射は含まない (直接音のみ — 画面にもそう書いてある)。
+void AcousticSourceTab::updateDrive()
+{
+    if (!m_driveTable || !m_driveSummary) return;
+    const double c = 343.0;                 // 20 °C の空気
+
+    // 受音点: 有効な先頭 1 点
+    const QVector<ReceiverRow> &rx = m_p->acoustic().receivers;
+    int ri = -1;
+    for (int i = 0; i < rx.size(); ++i)
+        if (rx[i].enabled) { ri = i; break; }
+
+    struct Row { QString name; double dist, arrive, level; };
+    QVector<Row> rows;
+    if (ri >= 0) {
+        for (const AcousticSourceRow &s : m_p->acoustic().sources) {
+            if (!s.enabled) continue;
+            const double dx = s.x_m - rx[ri].x;
+            const double dy = s.y_m - rx[ri].y;
+            const double dz = s.z_m - rx[ri].z;
+            const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            Row r;
+            r.name = s.name.isEmpty() ? QStringLiteral("—") : s.name;
+            r.dist = d;
+            r.arrive = d / c * 1000.0;      // [ms]
+            r.level = s.level_dB + levelsum::spreadingLoss_db(d);
+            rows.push_back(r);
+        }
+    }
+    if (rows.isEmpty()) {
+        m_driveTable->setRowCount(0);
+        m_driveSummary->setText(I18n::tr("asrc_dr_none"));
+        return;
+    }
+
+    // 距離補正: 一番遠い音源に合わせて他を遅らせる (負の遅延は作れない)
+    double maxArrive = rows[0].arrive;
+    for (const Row &r : rows) maxArrive = std::max(maxArrive, r.arrive);
+    const bool align = m_distComp && m_distComp->isChecked();
+
+    auto item = [](const QString &t, bool right) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        if (right) it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return it;
+    };
+    m_driveTable->setRowCount(rows.size());
+    std::vector<double> levels;
+    for (int i = 0; i < rows.size(); ++i) {
+        const Row &r = rows[i];
+        m_driveTable->setItem(i, 0, item(r.name, false));
+        m_driveTable->setItem(i, 1, item(QString::number(r.dist, 'f', 2), true));
+        m_driveTable->setItem(i, 2,
+                              item(QString::number(r.arrive, 'f', 2), true));
+        m_driveTable->setItem(i, 3,
+                              item(align ? QString::number(maxArrive - r.arrive,
+                                                           'f', 2)
+                                         : QStringLiteral("—"), true));
+        m_driveTable->setItem(i, 4,
+                              item(QString::number(r.level, 'f', 1), true));
+        levels.push_back(r.level);
+    }
+
+    const levelsum::Result inc = levelsum::energySum(levels);
+    const levelsum::SumResult coh = levelsum::coherentSum(levels);
+    double loudest = levels[0];
+    for (double v : levels) loudest = std::max(loudest, v);
+
+    QString msg = I18n::tr("asrc_dr_sum")
+                      .arg(rx[ri].name.isEmpty() ? QString::number(ri + 1)
+                                                 : rx[ri].name,
+                           QString::number(inc.total_db, 'f', 1),
+                           QString::number(coh.total_db, 'f', 1),
+                           QString::number(loudest, 'f', 1));
+    // クリップ防止: 位相が揃った最悪ケースで 1 本ぶんへ収める余裕を出す
+    if (m_clipPrevent && m_clipPrevent->isChecked() && coh.valid) {
+        const double trim = coh.total_db - loudest;
+        if (trim > 0.05)
+            msg += I18n::tr("asrc_dr_clip").arg(QString::number(trim, 'f', 1));
+    }
+    if (align)
+        msg += I18n::tr("asrc_dr_aligned")
+                   .arg(QString::number(maxArrive, 'f', 2));
+    else if (rows.size() >= 2) {
+        double minArrive = rows[0].arrive;
+        for (const Row &r : rows) minArrive = std::min(minArrive, r.arrive);
+        msg += I18n::tr("asrc_dr_nodelay")
+                   .arg(QString::number(maxArrive - minArrive, 'f', 2));
+    }
+    m_driveSummary->setText(msg);
+}
+
 void AcousticSourceTab::updateArray()
 {
     if (!m_arrPlot || !m_arrTable) return;
