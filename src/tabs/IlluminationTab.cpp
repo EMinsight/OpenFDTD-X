@@ -2,6 +2,7 @@
 #include "IlluminationTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../optics/IlluminationTrace.h"
 #include "../optics/SourceSpectrum.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -21,7 +22,9 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QVector>
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 using namespace ofd;
 
@@ -154,9 +157,6 @@ const bool s_i18n = [] {
     I18n::reg("ilm_b_ler", "K = 683·∫S·V(λ)dλ / ∫S dλ",
               "K = 683·∫S·V(λ)dλ / ∫S dλ");
     I18n::reg("ilm_b_input", "入力値 (光源仕様)", "Input value (source spec)");
-    I18n::reg("ilm_b_needray",
-              "レイトレース (配光計算) が必要 — 未実装",
-              "Requires a ray trace (intensity distribution) — not implemented");
     I18n::reg("ilm_b_needtcs",
               "CIE 13.3 試験色 R1..R8 の分光反射率データが必要 — 未実装",
               "Requires the CIE 13.3 test-colour reflectance data (R1..R8) — "
@@ -174,11 +174,14 @@ const bool s_i18n = [] {
               "(e.g. monochromatic light)");
     I18n::reg("ilm_photo_note",
               "▸ 測色量は上のスペクトルモデルから計算した結果。"
-              "「—」の行はレイトレース・分光反射率データ (未実装) が必要な量で、"
-              "値を推定して表示することはしない。",
+              "配光量は上のレイトレース幾何を非順次モンテカルロで追跡した結果。"
+              "「—」の行は分光反射率データ・波長分解の追跡・輝度分布 (いずれも未実装) "
+              "が必要な量で、値を推定して表示することはしない。",
               "▸ The colorimetric quantities are computed from the spectrum model "
-              "above. Rows showing “—” need ray tracing or spectral reflectance data "
-              "(not implemented); no estimated numbers are shown for them.");
+              "above; the photometric ones come from a non-sequential Monte Carlo "
+              "trace of the ray-trace geometry. Rows showing “—” need spectral "
+              "reflectance data, a wavelength-resolved trace or a luminance "
+              "distribution (none implemented); no estimated numbers are shown.");
     I18n::reg("ilm_btn_polar", "🗺 配光曲線 (極座標)",
               "🗺 Intensity distribution (polar)");
     I18n::reg("ilm_btn_cie",   "🎨 CIE色度図", "🎨 CIE chromaticity diagram");
@@ -191,10 +194,82 @@ const bool s_i18n = [] {
               "照明設計ソフト向け (書出は未実装)。",
               "▸ IES LM-63 / EULUMDAT (.ldt) export targets lighting design tools "
               "such as DIALux and AGi32 (export is not implemented).");
-    I18n::reg("ilm_uw_optics", "面の反射モデルの選択 (レイトレーサ本体が未実装のため)",
-              "the surface reflection model (the ray tracer itself is not implemented)");
-    I18n::reg("ilm_uw_optics_ok", "光学系の構成そのもの (プロジェクトに保存されます)",
-              "the optical layout itself (saved with the project)");
+    I18n::reg("ilm_uw_optics",
+              "TIRレンズ・導光板・蛍光体散乱の 3 要素と、面の反射モデルのうち "
+              "「BSDF実測」(いずれも追跡モデルに入っていません)",
+              "the TIR lens, light guide and phosphor scattering, and the "
+              "“measured BSDF” surface model (none of them are in the traced model)");
+    I18n::reg("ilm_uw_optics_ok",
+              "面の反射モデル「鏡面 / 拡散 / ABG」と、リフレクタ・拡散板・評価面の"
+              "寸法 — 下の非順次レイトレースに入り、配光量 (全光束・光学効率・"
+              "ビーム角・均斉度) になります",
+              "the “specular / diffuse / ABG” surface models and the reflector, "
+              "diffuser and target dimensions — they feed the non-sequential ray "
+              "trace below and produce the photometric quantities (flux, "
+              "efficiency, beam angle, uniformity)");
+
+    // 非順次レイトレース (optics/IlluminationTrace) の入力と結果
+    I18n::reg("ilm_tr_sec", "レイトレース幾何 / Ray-trace geometry",
+              "Ray-trace geometry");
+    I18n::reg("ilm_tr_refl", "リフレクタ (回転放物面) 焦点距離 / 開口半径 / 反射率",
+              "Reflector (paraboloid) focal length / rim radius / reflectance");
+    I18n::reg("ilm_tr_diff", "拡散板 位置 z / 半径 / 透過率",
+              "Diffuser position z / radius / transmittance");
+    I18n::reg("ilm_tr_abg", "ABG 係数 A / B / g", "ABG coefficients A / B / g");
+    I18n::reg("ilm_tr_target", "評価面 距離 / 半幅", "Target plane distance / half-width");
+    I18n::reg("ilm_tr_chip", "LEDチップ 一辺", "LED chip side");
+    I18n::reg("ilm_mm", "mm", "mm");
+    I18n::reg("ilm_tr_hint",
+              "▸ 光源を焦点に置いた回転放物面。開口半径は R > 2f が要る "
+              "(R ≤ 2f では縁が焦点より下に来て光線を捕まえられない)。"
+              "評価面は系より遠くに置く。BSDF(Δβ) = A/(B + Δβ^g)。",
+              "▸ A paraboloid with the source at its focus. The rim radius must "
+              "satisfy R > 2f (at R ≤ 2f the rim sits below the focus and "
+              "intercepts nothing). The target plane must be beyond the system. "
+              "BSDF(Δβ) = A/(B + Δβ^g).");
+    I18n::reg("ilm_m_iaxis", "軸上光度", "Axial intensity");
+    I18n::reg("ilm_m_ecenter", "評価面 中心照度", "Target-plane centre illuminance");
+    I18n::reg("ilm_b_ray", "非順次モンテカルロ・レイトレース (光線 %1 本)",
+              "Non-sequential Monte Carlo ray trace (%1 rays)");
+    I18n::reg("ilm_b_ray_stat",
+              "レイトレース — セルあたりの光線が足りず統計誤差が大きい (光線数を増やす)",
+              "Ray trace — too few rays per cell for a meaningful figure "
+              "(increase the ray count)");
+    I18n::reg("ilm_b_ray_beam",
+              "レイトレース — 中心光度の半分へ落ちる角度が無い (視野内に半値点なし)",
+              "Ray trace — the intensity never falls to half of its axial value");
+    I18n::reg("ilm_b_needwl",
+              "波長分解のレイトレースが必要 (現在の追跡は波長を追わない) — 未実装",
+              "Requires a wavelength-resolved ray trace (the current tracer does "
+              "not follow wavelength) — not implemented");
+    // 追跡できない理由 (絶対規則 5: 値を出さずに理由を出す)
+    I18n::reg("ilm_no_raydata",
+              "光源モデル「レイデータ (実測)」— ファイル取込が未実装。"
+              "「ランバート面」か「LEDチップ」なら追跡します",
+              "Source model “ray data (measured)” — the file import is not "
+              "implemented. “Lambertian surface” or “LED chip” will trace");
+    I18n::reg("ilm_no_bsdf",
+              "面の反射モデル「BSDF実測」— 測定データが無い。"
+              "「鏡面 / 拡散 / ABGモデル」なら追跡します",
+              "Surface model “measured BSDF” — no measured data. "
+              "“Specular / diffuse / ABG” will trace");
+    I18n::reg("ilm_no_elem",
+              "TIRレンズ・導光板・蛍光体散乱は追跡モデルに入っていない "
+              "(チェックを外すと追跡します)",
+              "The TIR lens, light guide and phosphor scattering are not in the "
+              "traced model (clear them to trace)");
+    I18n::reg("ilm_no_focal", "リフレクタの焦点距離が 0 以下",
+              "The reflector focal length must be positive");
+    I18n::reg("ilm_no_radius",
+              "リフレクタの開口半径は R > 2f が要る (拡散板の半径は 0 より大きく)",
+              "The reflector rim radius must satisfy R > 2f (and the diffuser "
+              "radius must be positive)");
+    I18n::reg("ilm_no_target", "評価面は系より遠くへ置く (距離・半幅が 0 以下)",
+              "The target plane must be beyond the system (distance and "
+              "half-width must be positive)");
+    I18n::reg("ilm_no_flux", "光束 (または LEDチップ寸法) が 0 以下",
+              "The luminous flux (or the LED chip size) must be positive");
+    I18n::reg("ilm_no_rays", "光線数が 0 以下", "The ray count must be positive");
     return true;
 }();
 
@@ -523,9 +598,32 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
                                 I18n::tr("ilm_sf_bsdf"),
                                 I18n::tr("ilm_sf_abg") }, sOpt);
     sOpt->form()->addRow(I18n::tr("ilm_surface"), sfRow);
-    // 光学系の構成は保存されるがレイトレースは未実装 (配光量は表で「—」)
+    // TIRレンズ・導光板・蛍光体・BSDF実測は追跡モデルに無い (絶対規則 5)
     sOpt->vbox()->addWidget(tabhelp::unwiredNote(sOpt, I18n::tr("ilm_uw_optics"), I18n::tr("ilm_uw_optics_ok")));
     v->addWidget(sOpt);
+
+    // ── レイトレース幾何 / Ray-trace geometry ──────────────────────────────
+    auto *sTr = new SectionBox(I18n::tr("ilm_tr_sec"), body);
+    const QString mm = I18n::tr("ilm_mm");
+    m_reflF   = numEdit(70, sTr); m_reflR  = numEdit(70, sTr); m_reflRho = numEdit(70, sTr);
+    m_diffZ   = numEdit(70, sTr); m_diffR  = numEdit(70, sTr); m_diffTau = numEdit(70, sTr);
+    m_abgA    = numEdit(70, sTr); m_abgB   = numEdit(70, sTr); m_abgG    = numEdit(70, sTr);
+    m_tgtD    = numEdit(70, sTr); m_tgtW   = numEdit(70, sTr); m_chip    = numEdit(70, sTr);
+    sTr->form()->addRow(I18n::tr("ilm_tr_refl"),
+                        paramRow(sTr, { m_reflF, m_reflR, m_reflRho },
+                                 { mm, mm, QString() }));
+    sTr->form()->addRow(I18n::tr("ilm_tr_diff"),
+                        paramRow(sTr, { m_diffZ, m_diffR, m_diffTau },
+                                 { mm, mm, QString() }));
+    sTr->form()->addRow(I18n::tr("ilm_tr_abg"),
+                        paramRow(sTr, { m_abgA, m_abgB, m_abgG },
+                                 { QString(), QString(), QString() }));
+    sTr->form()->addRow(I18n::tr("ilm_tr_target"),
+                        paramRow(sTr, { m_tgtD, m_tgtW }, { mm, mm }));
+    sTr->form()->addRow(I18n::tr("ilm_tr_chip"),
+                        paramRow(sTr, { m_chip }, { mm }));
+    sTr->vbox()->addWidget(hintLabel(I18n::tr("ilm_tr_hint"), sTr));
+    v->addWidget(sTr);
 
     // ── 測光・測色 / Photometry & color ─────────────────────────────────────
     auto *sPh = new SectionBox(I18n::tr("ilm_photo_sec"), body);
@@ -568,6 +666,10 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     // ── 配線 ────────────────────────────────────────────────────────────────
+    for (QLineEdit *e : { m_reflF, m_reflR, m_reflRho, m_diffZ, m_diffR,
+                          m_diffTau, m_abgA, m_abgB, m_abgG,
+                          m_tgtD, m_tgtW, m_chip })
+        connect(e, &QLineEdit::editingFinished, this, &IlluminationTab::onEdited);
     for (QLineEdit *e : { m_rayFile, m_flux, m_rays,
                           m_bluePeak, m_blueFwhm, m_phosPeak, m_phosFwhm,
                           m_phosRatio, m_rPeak, m_rFwhm, m_rRatio,
@@ -628,6 +730,19 @@ void IlluminationTab::apply()
     o.cctTol_K    = readNum(m_cctTol, o.cctTol_K);
     o.duvTol      = readNum(m_duvTol, o.duvTol);
 
+    o.reflFocal_mm  = readNum(m_reflF, o.reflFocal_mm);
+    o.reflRadius_mm = readNum(m_reflR, o.reflRadius_mm);
+    o.reflReflect   = readNum(m_reflRho, o.reflReflect);
+    o.diffZ_mm      = readNum(m_diffZ, o.diffZ_mm);
+    o.diffRadius_mm = readNum(m_diffR, o.diffRadius_mm);
+    o.diffTrans     = readNum(m_diffTau, o.diffTrans);
+    o.abgA          = readNum(m_abgA, o.abgA);
+    o.abgB          = readNum(m_abgB, o.abgB);
+    o.abgG          = readNum(m_abgG, o.abgG);
+    o.targetDist_mm = readNum(m_tgtD, o.targetDist_mm);
+    o.targetHalf_mm = readNum(m_tgtW, o.targetHalf_mm);
+    o.chipSize_mm   = readNum(m_chip, o.chipSize_mm);
+
     m_p->touch();
 }
 
@@ -672,6 +787,19 @@ void IlluminationTab::refresh()
     m_cctTol->setText(fmt(o.cctTol_K, 1));
     m_duvTol->setText(fmt(o.duvTol, 4));
 
+    m_reflF->setText(fmt(o.reflFocal_mm, 2));
+    m_reflR->setText(fmt(o.reflRadius_mm, 2));
+    m_reflRho->setText(fmt(o.reflReflect, 3));
+    m_diffZ->setText(fmt(o.diffZ_mm, 2));
+    m_diffR->setText(fmt(o.diffRadius_mm, 2));
+    m_diffTau->setText(fmt(o.diffTrans, 3));
+    m_abgA->setText(QString::number(o.abgA, 'g', 4));
+    m_abgB->setText(QString::number(o.abgB, 'g', 4));
+    m_abgG->setText(fmt(o.abgG, 2));
+    m_tgtD->setText(fmt(o.targetDist_mm, 1));
+    m_tgtW->setText(fmt(o.targetHalf_mm, 1));
+    m_chip->setText(fmt(o.chipSize_mm, 3));
+
     m_updating = false;
     updateSpectrumPage();
     recompute();
@@ -689,8 +817,60 @@ void IlluminationTab::updateSpectrumPage()
     m_spectrumStack->setCurrentIndex(qBound(0, m_spectrum->currentIndex(), 3));
 }
 
-// スペクトルモデル → 測色量。値はすべて optics/Colorimetry の計算結果で、
-// 配光・分光反射率データが要る量は「—」のまま (絶対規則 5)。
+// IlluminationOpts → 非順次レイトレースの系。追跡が成り立たないときは
+// 「なぜ計算しないのか」を利用者へそのまま出せる I18n キーを返す (絶対規則 5)。
+static const char *buildTraceScene(const IlluminationOpts &o,
+                                   ofd::illum::Scene *sc, long long *nRays)
+{
+    using namespace ofd::illum;
+
+    // 追跡モデルに入っていない選択 — 値を出さずに理由を返す
+    if (o.srcModel == 1) return "ilm_no_raydata";      // レイデータ (実測)
+    if (o.surface == 2)  return "ilm_no_bsdf";         // BSDF 実測
+    if (o.tirLens || o.lightGuide || o.phosphor) return "ilm_no_elem";
+
+    Scatter model = Scatter::Specular;
+    if (o.surface == 1)      model = Scatter::Lambertian;
+    else if (o.surface == 3) model = Scatter::ABG;
+
+    Scene &s = *sc;
+    s.source.kind = (o.srcModel == 2) ? Source::Chip : Source::Point;
+    s.source.size_mm = o.chipSize_mm;
+    s.source.flux_lm = o.flux_lm;
+
+    s.reflector.enabled = o.reflector;
+    s.reflector.focal_mm = o.reflFocal_mm;
+    s.reflector.radius_mm = o.reflRadius_mm;
+    s.reflector.reflectance = o.reflReflect;
+    s.reflector.model = model;
+    s.reflector.abg = { o.abgA, o.abgB, o.abgG };
+
+    s.diffuser.enabled = o.diffuser;
+    s.diffuser.z_mm = o.diffZ_mm;
+    s.diffuser.radius_mm = o.diffRadius_mm;
+    s.diffuser.transmittance = o.diffTrans;
+    // 拡散板の「鏡面」は素通し (散乱しない透明板) の意味になる
+    s.diffuser.model = model;
+    s.diffuser.abg = { o.abgA, o.abgB, o.abgG };
+
+    s.target.distance_mm = o.targetDist_mm;
+    s.target.half_mm = o.targetHalf_mm;
+
+    // 編集のたびに追跡するので本数は打ち切る (根拠欄に実際の本数を出す)
+    const double want = (o.rays > 0.0) ? o.rays : 0.0;
+    *nRays = static_cast<long long>(std::min(want, 200000.0));
+
+    const char *b = traceBlocker(s, *nRays);
+    if (b == nullptr) return nullptr;
+    if (std::strcmp(b, "rays") == 0)   return "ilm_no_rays";
+    if (std::strcmp(b, "flux") == 0)   return "ilm_no_flux";
+    if (std::strcmp(b, "focal") == 0)  return "ilm_no_focal";
+    if (std::strcmp(b, "radius") == 0) return "ilm_no_radius";
+    return "ilm_no_target";
+}
+
+// スペクトルモデル → 測色量、レイトレース → 配光量。
+// 分光反射率データ・波長分解の追跡・輝度分布が要る量は「—」のまま (絶対規則 5)。
 void IlluminationTab::recompute()
 {
     const IlluminationOpts &o = m_p->illumination();
@@ -758,10 +938,48 @@ void IlluminationTab::recompute()
     rows.push_back(uncomputed(I18n::tr("ilm_m_ra"), I18n::tr("ilm_b_needtcs")));
     rows.push_back(uncomputed(I18n::tr("ilm_m_tm30"), I18n::tr("ilm_b_needtm30")));
 
-    // レイトレース (配光) が要る量 (未実装)
-    for (const char *key : { "ilm_m_flux", "ilm_m_eff", "ilm_m_beam",
-                             "ilm_m_unif", "ilm_m_uvspread" })
-        rows.push_back(uncomputed(I18n::tr(key), I18n::tr("ilm_b_needray")));
+    // ── 配光量 = 非順次レイトレース (optics/IlluminationTrace) の実計算 ────
+    illum::Scene scene;
+    long long nRays = 0;
+    if (const char *why = buildTraceScene(o, &scene, &nRays)) {
+        for (const char *key : { "ilm_m_flux", "ilm_m_eff", "ilm_m_beam",
+                                 "ilm_m_unif", "ilm_m_iaxis", "ilm_m_ecenter" })
+            rows.push_back(uncomputed(I18n::tr(key), I18n::tr(why)));
+    } else {
+        const illum::Result t = illum::trace(scene, nRays);
+        const QString basis = I18n::tr("ilm_b_ray").arg(nRays);
+        rows.push_back(computed(I18n::tr("ilm_m_flux"),
+                                fmt(t.fluxOut_lm, 1) + QString::fromUtf8(" lm"),
+                                basis));
+        rows.push_back(computed(I18n::tr("ilm_m_eff"),
+                                fmt(100.0 * t.efficiency, 1)
+                                    + QString::fromUtf8(" %"),
+                                basis));
+        if (t.beamValid)
+            rows.push_back(computed(I18n::tr("ilm_m_beam"),
+                                    fmt(t.beamAngleFwhm_deg, 1)
+                                        + QString::fromUtf8(" °"),
+                                    basis));
+        else
+            rows.push_back(uncomputed(I18n::tr("ilm_m_beam"),
+                                      I18n::tr("ilm_b_ray_beam")));
+        if (t.uniformityValid)
+            rows.push_back(computed(I18n::tr("ilm_m_unif"),
+                                    fmt(t.uniformityMinAvg, 3), basis));
+        else
+            rows.push_back(uncomputed(I18n::tr("ilm_m_unif"),
+                                      I18n::tr("ilm_b_ray_stat")));
+        rows.push_back(computed(I18n::tr("ilm_m_iaxis"),
+                                fmt(t.axialIntensity_cd, 1)
+                                    + QString::fromUtf8(" cd"),
+                                basis));
+        rows.push_back(computed(I18n::tr("ilm_m_ecenter"),
+                                fmt(t.illumCenter_lx, 1)
+                                    + QString::fromUtf8(" lx"),
+                                basis));
+    }
+    // 色ムラは波長分解の追跡が、UGR は輝度分布が要る (どちらも未実装)
+    rows.push_back(uncomputed(I18n::tr("ilm_m_uvspread"), I18n::tr("ilm_b_needwl")));
     rows.push_back(uncomputed(I18n::tr("ilm_m_ugr"), I18n::tr("ilm_b_needugr")));
 
     m_photoTable->clearContents();

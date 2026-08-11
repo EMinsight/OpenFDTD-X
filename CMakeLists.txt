@@ -308,6 +308,11 @@ set(CORE_SOURCES
     src/optics/RayTrace.cpp
     src/optics/RayTrace.h
 
+    # 非順次 (照明系) モンテカルロ・レイトレーサ — Qt 非依存。
+    # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体
+    src/optics/IlluminationTrace.cpp
+    src/optics/IlluminationTrace.h
+
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp

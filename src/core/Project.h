@@ -278,6 +278,21 @@ struct IlluminationOpts {
     // 設計目標 (判定バッジのしきい値)
     double  cctTarget_K = 5000.0, cctTol_K = 300.0;
     double  duvTol = 0.006;
+
+    // 非順次レイトレース (optics/IlluminationTrace) の幾何。長さは mm。
+    // リフレクタは焦点に光源を置いた回転放物面で、開口半径は R > 2f が要る
+    // (R ≤ 2f だと開口の縁が焦点より下に来て光線を 1 本も捕まえられない)。
+    double  reflFocal_mm  = 5.0;    // 焦点距離 f
+    double  reflRadius_mm = 20.0;   // 開口半径 R
+    double  reflReflect   = 0.90;   // 反射率 ρ
+    double  diffZ_mm      = 25.0;   // 拡散板の位置 z
+    double  diffRadius_mm = 25.0;   // 拡散板の半径
+    double  diffTrans     = 0.85;   // 透過率 τ
+    // Harvey–Shack ABG: BSDF(Δβ) = A/(B + Δβ^g)
+    double  abgA = 0.02, abgB = 1.0e-4, abgG = 2.0;
+    double  targetDist_mm = 1000.0; // 評価面の距離 D
+    double  targetHalf_mm = 500.0;  // 評価面の半幅 W
+    double  chipSize_mm   = 1.0;    // LED チップの一辺 (srcModel = 2)
 };
 
 // ── 室内音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────

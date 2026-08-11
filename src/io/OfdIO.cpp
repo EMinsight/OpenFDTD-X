@@ -1114,7 +1114,19 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                 {"targets", QJsonObject{
                     {"cct_k", i.cctTarget_K},
                     {"cct_tol_k", i.cctTol_K},
-                    {"duv_tol", i.duvTol} }} };
+                    {"duv_tol", i.duvTol} }},
+                // 非順次レイトレースの幾何 (追加キー)
+                {"trace", QJsonObject{
+                    {"reflector_focal_mm", i.reflFocal_mm},
+                    {"reflector_radius_mm", i.reflRadius_mm},
+                    {"reflector_reflectance", i.reflReflect},
+                    {"diffuser_z_mm", i.diffZ_mm},
+                    {"diffuser_radius_mm", i.diffRadius_mm},
+                    {"diffuser_transmittance", i.diffTrans},
+                    {"abg_a", i.abgA}, {"abg_b", i.abgB}, {"abg_g", i.abgG},
+                    {"target_distance_mm", i.targetDist_mm},
+                    {"target_half_mm", i.targetHalf_mm},
+                    {"chip_size_mm", i.chipSize_mm} }} };
         };
         const QJsonObject cur = toJson(p.illumination());
         if (cur != toJson(IlluminationOpts{})) root["illumination"] = cur;
@@ -1733,6 +1745,20 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         i.cctTarget_K = tg.value("cct_k").toDouble(i.cctTarget_K);
         i.cctTol_K = tg.value("cct_tol_k").toDouble(i.cctTol_K);
         i.duvTol = tg.value("duv_tol").toDouble(i.duvTol);
+        // レイトレース幾何 — キーが無い旧ファイルは既定値のまま
+        const QJsonObject tr = ij["trace"].toObject();
+        i.reflFocal_mm = tr.value("reflector_focal_mm").toDouble(i.reflFocal_mm);
+        i.reflRadius_mm = tr.value("reflector_radius_mm").toDouble(i.reflRadius_mm);
+        i.reflReflect = tr.value("reflector_reflectance").toDouble(i.reflReflect);
+        i.diffZ_mm = tr.value("diffuser_z_mm").toDouble(i.diffZ_mm);
+        i.diffRadius_mm = tr.value("diffuser_radius_mm").toDouble(i.diffRadius_mm);
+        i.diffTrans = tr.value("diffuser_transmittance").toDouble(i.diffTrans);
+        i.abgA = tr.value("abg_a").toDouble(i.abgA);
+        i.abgB = tr.value("abg_b").toDouble(i.abgB);
+        i.abgG = tr.value("abg_g").toDouble(i.abgG);
+        i.targetDist_mm = tr.value("target_distance_mm").toDouble(i.targetDist_mm);
+        i.targetHalf_mm = tr.value("target_half_mm").toDouble(i.targetHalf_mm);
+        i.chipSize_mm = tr.value("chip_size_mm").toDouble(i.chipSize_mm);
     }
     return true;
 }

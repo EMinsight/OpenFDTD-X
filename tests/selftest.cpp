@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
@@ -15299,6 +15300,274 @@ static void testChromaticFocalShift()
     }
 }
 
+// ── 非順次レイトレース (optics/IlluminationTrace) ──────────────────────────
+// 判定はすべて **閉形式で分かっている解**との比較で、数値の丸写しではない:
+//   1) ランバート点光源: I(θ) = I0 cosθ, I0 = Φ/π, FWHM = 120° (cosθ = 1/2)
+//   2) 評価面の照度: E = I0 cos⁴θ/D² (余弦四乗則) — セル平均まで数値積分して比較
+//   3) 焦点に光源を置いた回転放物面は**厳密に視準される**。捕捉率は開口だけで
+//      決まり ((u²−1)/(u²+1))², u = R/2f (u = 2 で 0.36) — 幾何の厳密解
+//   4) 反射率 ρ の吸収は (1−ρ)×捕捉率、光束収支 Φ_out + Φ_abs = Φ_in
+//   5) 拡散反射にすると視準が壊れ、広角へ光束が回る (鏡面との対比)
+//   6) 円板 (拡散板) の捕捉率は sin²(半頂角)、透過率 τ の吸収は (1−τ)×捕捉率
+//   7) ABG の累積分布は g = 2 で F = ln(1+Δβ²/B)/ln(1+Δβmax²/B) の閉形式
+//   8) 同じ入力からはビット単位で同じ結果 (準乱数 + ハッシュ乱数で状態を持たない)
+static void testIlluminationTrace()
+{
+    g_file = "illumtrace";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+    // ビン k の光束 [lm] = 強度 [cd] × 立体角 [sr] (強度は光束から作った量なので
+    // 逆算になるが、立体角の重みが正しいことの検算を兼ねる)
+    auto binFlux = [&](const il::Result &r, int k) {
+        const int n = static_cast<int>(r.intensity_cd.size());
+        const double a0 = PI * k / n, a1 = PI * (k + 1) / n;
+        return r.intensity_cd[static_cast<size_t>(k)]
+             * 2.0 * PI * (std::cos(a0) - std::cos(a1));
+    };
+    auto fluxBeyond = [&](const il::Result &r, double degFrom) {
+        const int n = static_cast<int>(r.intensity_cd.size());
+        double s = 0.0;
+        for (int k = 0; k < n; ++k)
+            if (180.0 * k / n >= degFrom) s += binFlux(r, k);
+        return s;
+    };
+
+    const double PHI = 1000.0;          // 光源光束 [lm]
+    const double I0 = PHI / PI;         // ランバート面の軸上光度 [cd]
+
+    // ── 1) 光学系なしのランバート点光源 ────────────────────────────────────
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    {
+        const il::Result r = il::trace(bare, 200000);
+        check(r.valid, "illumtrace: a bare Lambertian source traces");
+        // 吸収体が無いので光束は 1 lm も減らない
+        check(std::fabs(r.fluxOut_lm - PHI) < 1e-6 * PHI,
+              "illumtrace: with nothing to absorb, all the flux leaves");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - r.fluxIn_lm) < 1e-9 * PHI,
+              "illumtrace: the flux budget closes (out + absorbed = in)");
+        check(std::fabs(r.efficiency - 1.0) < 1e-9,
+              "illumtrace: efficiency is 1 when nothing absorbs");
+
+        // 先頭ビンは I(θ) = I0 cosθ の立体角平均なので I0·(1+cosΔ)/2 になる
+        const double dth = PI / static_cast<double>(r.intensity_cd.size());
+        const double expect = I0 * 0.5 * (1.0 + std::cos(dth));
+        check(rel(r.axialIntensity_cd, expect) < 3e-3,
+              "illumtrace: the axial intensity is the solid-angle average of "
+              "I0 cos(theta) with I0 = flux/pi");
+
+        // 半値は cosθ = 1/2 → θ = 60°、全角 120°
+        check(r.beamValid, "illumtrace: a Lambertian source has a half-power angle");
+        check(std::fabs(r.beamAngleFwhm_deg - 120.0) < 0.5,
+              "illumtrace: a Lambertian beam angle is 120 deg (cos = 1/2)");
+
+        // 放射は +z 半球だけ。90° より後ろへは 1 lm も出ない
+        check(fluxBeyond(r, 90.0) < 1e-9,
+              "illumtrace: a Lambertian emitter puts no flux behind itself");
+
+        // ビンごとの光束を全部足すと光源光束に戻る
+        double sum = 0.0;
+        for (int k = 0; k < static_cast<int>(r.intensity_cd.size()); ++k)
+            sum += binFlux(r, k);
+        check(rel(sum, PHI) < 1e-8,
+              "illumtrace: the binned intensity integrates back to the flux");
+    }
+
+    // ── 2) 余弦四乗則 (評価面の照度) ───────────────────────────────────────
+    // E(x,y) = I0 cos⁴θ / D²。セルは有限面積なので、比較する側もセル平均を
+    // 数値積分して作る (点の値と比べると数 % ずれ、判定の意味が薄れる)。
+    {
+        const il::Result r = il::trace(bare, 2000000);
+        check(r.valid && r.cells == 11, "illumtrace: the target grid is 11x11");
+        const double D = 1000.0, W = 1000.0;
+        const double cw = 2.0 * W / r.cells;
+        auto cellAverage = [&](int ix, int iy) {
+            const int ns = 21;
+            double acc = 0.0;
+            for (int a = 0; a < ns; ++a)
+                for (int b = 0; b < ns; ++b) {
+                    const double x = -W + cw * (ix + (a + 0.5) / ns);
+                    const double y = -W + cw * (iy + (b + 0.5) / ns);
+                    const double c = D / std::sqrt(x * x + y * y + D * D);
+                    // D は mm なので lx にするため m² へ直す
+                    acc += I0 * c * c * c * c / ((D * 1e-3) * (D * 1e-3));
+                }
+            return acc / (ns * ns);
+        };
+        const int mid = r.cells / 2;
+        check(rel(r.illumCenter_lx, cellAverage(mid, mid)) < 1.5e-2,
+              "illumtrace: the on-axis illuminance is I0/D^2 (cell-averaged)");
+        const double off = r.illuminance_lx[static_cast<size_t>(mid) * r.cells
+                                            + static_cast<size_t>(mid + 3)];
+        check(rel(off, cellAverage(mid + 3, mid)) < 2.5e-2,
+              "illumtrace: off-axis follows the cosine-fourth law");
+        // cos³ / cos² と取り違えていないこと (比が 10% 以上違う)
+        const double ratio = off / r.illumCenter_lx;
+        const double xc = -W + cw * (mid + 3.5);
+        const double c = D / std::sqrt(xc * xc + D * D);
+        check(rel(ratio, c * c * c * c) < 4e-2,
+              "illumtrace: the off-axis ratio is cos^4, not cos^3 or cos^2");
+        check(rel(ratio, c * c * c) > 8e-2,
+              "illumtrace: cos^3 would be measurably different (the test can "
+              "tell them apart)");
+    }
+
+    // ── 3) 回転放物面リフレクタ + 完全鏡面 ────────────────────────────────
+    // 焦点に置いた点光源は厳密に視準される。捕捉率は u = R/2f だけで決まる。
+    il::Scene para = bare;
+    para.reflector.enabled = true;
+    para.reflector.focal_mm = 5.0;
+    para.reflector.radius_mm = 20.0;      // u = 2
+    para.reflector.reflectance = 1.0;
+    para.reflector.model = il::Scatter::Specular;
+    const double uu = para.reflector.radius_mm / (2.0 * para.reflector.focal_mm);
+    const double cosAlpha = (uu * uu - 1.0) / (uu * uu + 1.0);   // 3/5
+    const double collected = cosAlpha * cosAlpha;                // 0.36
+    {
+        const il::Result r = il::trace(para, 200000);
+        check(r.valid, "illumtrace: the paraboloid reflector traces");
+        check(std::fabs(collected - 0.36) < 1e-12,
+              "illumtrace: R = 4f collects ((u^2-1)/(u^2+1))^2 = 0.36 of the "
+              "hemisphere");
+        check(rel(r.fluxOut_lm, PHI) < 1e-8,
+              "illumtrace: a perfect mirror absorbs nothing");
+
+        // 先頭ビン = 視準された分 + 直接光のうち θ < 1° の分 (sin²1°)
+        const double dth1 = PI / static_cast<double>(r.intensity_cd.size());
+        const double expect = PHI * (collected + std::sin(dth1) * std::sin(dth1));
+        check(rel(binFlux(r, 0), expect) < 5e-3,
+              "illumtrace: the collected flux comes out collimated (first bin)");
+
+        // 直接光は θ < α = 53.13° に収まり、反射光は θ = 0。その外は空
+        const double alphaDeg = std::acos(cosAlpha) * 180.0 / PI;
+        check(std::fabs(alphaDeg - 53.130102) < 1e-5,
+              "illumtrace: the rim half-angle is 53.13 deg for u = 2");
+        check(fluxBeyond(r, 54.0) < 1e-3 * PHI,
+              "illumtrace: nothing leaves beyond the rim angle (the mirror "
+              "turns every intercepted ray onto the axis)");
+    }
+
+    // ── 4) 反射率 — 吸収は (1−ρ) × 捕捉率 ─────────────────────────────────
+    {
+        il::Scene s = para;
+        s.reflector.reflectance = 0.85;
+        const il::Result r = il::trace(s, 200000);
+        check(r.valid, "illumtrace: a lossy mirror traces");
+        check(rel(r.fluxAbsorbed_lm, 0.15 * collected * PHI) < 5e-3,
+              "illumtrace: absorption is (1-rho) times the intercepted flux");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - PHI) < 1e-9 * PHI,
+              "illumtrace: the flux budget still closes with absorption");
+        check(rel(r.efficiency, 1.0 - 0.15 * collected) < 5e-3,
+              "illumtrace: optical efficiency is 1 - (1-rho) x intercepted");
+    }
+
+    // ── 5) 拡散反射にすると視準が壊れる (面の反射モデルが効いている証拠) ──
+    {
+        il::Scene s = para;
+        s.reflector.model = il::Scatter::Lambertian;
+        const il::Result r = il::trace(s, 200000);
+        const il::Result m = il::trace(para, 200000);
+        check(r.valid, "illumtrace: a diffuse reflector traces");
+        check(r.fluxAbsorbed_lm < 1e-3 * PHI,
+              "illumtrace: a diffuse but lossless reflector still conserves flux");
+        check(binFlux(r, 0) < 0.1 * binFlux(m, 0),
+              "illumtrace: diffuse reflection destroys the collimation that the "
+              "specular model produces");
+        check(fluxBeyond(r, 54.0) > 0.01 * PHI,
+              "illumtrace: diffuse reflection sends flux past the rim angle, "
+              "where the specular model sends none");
+    }
+
+    // ── 6) 拡散板 — 円板の捕捉率 sin²(半頂角) と透過率 ────────────────────
+    {
+        il::Scene s = bare;
+        s.diffuser.enabled = true;
+        s.diffuser.z_mm = 25.0;
+        s.diffuser.radius_mm = 25.0;      // 半頂角 45° → sin² = 1/2
+        s.diffuser.transmittance = 0.70;
+        s.diffuser.model = il::Scatter::Lambertian;
+        const il::Result r = il::trace(s, 200000);
+        check(r.valid, "illumtrace: the diffuser plate traces");
+        check(rel(r.fluxAbsorbed_lm, 0.30 * 0.5 * PHI) < 5e-3,
+              "illumtrace: a disk of half-angle 45 deg intercepts sin^2(45) = "
+              "1/2 of the flux, and (1-tau) of that is absorbed");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - PHI) < 1e-9 * PHI,
+              "illumtrace: the flux budget closes through the diffuser");
+    }
+
+    // ── 7) ABG の累積分布 (g = 2 の閉形式) ────────────────────────────────
+    {
+        const double dmax = 2.0;
+        for (double B : { 1.0e-4, 1.0e-6 }) {
+            il::AbgParams p; p.A = 0.02; p.B = B; p.g = 2.0;
+            const il::AbgSampler smp(p, dmax);
+            check(smp.valid(), "illumtrace: the ABG sampler builds");
+            const double den = std::log(1.0 + dmax * dmax / B);
+            for (double d : { 0.01, 0.05, 0.2, 1.0 }) {
+                const double exact = std::log(1.0 + d * d / B) / den;
+                check(std::fabs(smp.cdf(d) - exact) < 2e-4,
+                      "illumtrace: the tabulated ABG CDF matches the g = 2 "
+                      "closed form ln(1+db^2/B)/ln(1+dbmax^2/B)");
+            }
+            // 中央値も閉形式で出る: Δβ² = B(sqrt(1+dmax²/B) − 1)
+            const double med = std::sqrt(B * (std::sqrt(1.0 + dmax * dmax / B) - 1.0));
+            check(rel(smp.sample(0.5), med) < 1e-2,
+                  "illumtrace: the sampled median scatter angle matches the "
+                  "closed form");
+            // 逆関数法の往復
+            for (double u : { 0.1, 0.5, 0.9 })
+                check(std::fabs(smp.cdf(smp.sample(u)) - u) < 1e-3,
+                      "illumtrace: sample() and cdf() are inverses");
+        }
+        // B を小さくすると散乱は鋭くなる (鏡面へ漸近する)
+        il::AbgParams a1; a1.B = 1.0e-4;
+        il::AbgParams a2; a2.B = 1.0e-6;
+        check(il::AbgSampler(a2).sample(0.5) < il::AbgSampler(a1).sample(0.5),
+              "illumtrace: a smaller B narrows the ABG scatter lobe");
+        // 不正な係数はサンプラを作らない (既定の鏡面へ落ちる)
+        il::AbgParams bad; bad.A = 0.0;
+        check(!il::AbgSampler(bad).valid(),
+              "illumtrace: A = 0 is not a usable ABG model");
+    }
+
+    // ── 8) 再現性と不正入力 ───────────────────────────────────────────────
+    {
+        il::Scene s = para;
+        s.reflector.model = il::Scatter::ABG;      // 乱数を最も多く使う経路
+        const il::Result a = il::trace(s, 50000);
+        const il::Result b = il::trace(s, 50000);
+        check(a.valid && b.valid, "illumtrace: the ABG reflector traces");
+        check(a.fluxOut_lm == b.fluxOut_lm && a.fluxTarget_lm == b.fluxTarget_lm,
+              "illumtrace: the same scene gives bit-identical flux");
+        bool same = a.intensity_cd.size() == b.intensity_cd.size();
+        for (size_t k = 0; same && k < a.intensity_cd.size(); ++k)
+            same = (a.intensity_cd[k] == b.intensity_cd[k]);
+        check(same, "illumtrace: the whole intensity distribution is reproducible");
+    }
+    {
+        check(!il::trace(bare, 0).valid, "illumtrace: zero rays is not a result");
+        il::Scene s = bare; s.source.flux_lm = 0.0;
+        check(!il::trace(s, 1000).valid, "illumtrace: zero flux is not a result");
+        check(std::string(il::traceBlocker(s, 1000)) == "flux",
+              "illumtrace: the blocker names the flux");
+        il::Scene t = para; t.reflector.radius_mm = 10.0;   // R = 2f
+        check(std::string(il::traceBlocker(t, 1000)) == "radius",
+              "illumtrace: a rim at the focus height catches nothing (R > 2f)");
+        il::Scene v = para; v.target.distance_mm = 1.0;     // 系の内側
+        check(std::string(il::traceBlocker(v, 1000)) == "target",
+              "illumtrace: a target plane inside the system is rejected");
+        check(il::traceBlocker(para, 1000) == nullptr,
+              "illumtrace: a valid scene has no blocker");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -15541,6 +15810,16 @@ static void testDisplayIlluminationSettings()
         i.phosPeak_nm = 585.0;
         i.phosFwhm_nm = 120.0;
         i.phosRatio = 0.8;
+        i.reflFocal_mm = 7.5;
+        i.reflRadius_mm = 32.0;
+        i.reflReflect = 0.95;
+        i.diffZ_mm = 40.0;
+        i.diffRadius_mm = 35.0;
+        i.diffTrans = 0.72;
+        i.abgA = 0.05; i.abgB = 2.5e-5; i.abgG = 1.8;
+        i.targetDist_mm = 2500.0;
+        i.targetHalf_mm = 900.0;
+        i.chipSize_mm = 0.6;
         i.rPeak_nm = 625.0; i.rFwhm_nm = 18.0; i.rRatio = 1.5;
         i.gPeak_nm = 530.0; i.gFwhm_nm = 30.0; i.gRatio = 1.2;
         i.bPeak_nm = 465.0; i.bFwhm_nm = 24.0; i.bRatio = 0.9;
@@ -15635,6 +15914,14 @@ static void testDisplayIlluminationSettings()
             check(!i.reflector && i.tirLens && !i.diffuser && i.lightGuide &&
                   !i.phosphor && i.surface == 3,
                   "dispillum: illumination optics round-trip");
+            check(nearlyEq(i.reflFocal_mm, 7.5) && nearlyEq(i.reflRadius_mm, 32.0) &&
+                  nearlyEq(i.reflReflect, 0.95) && nearlyEq(i.diffZ_mm, 40.0) &&
+                  nearlyEq(i.diffRadius_mm, 35.0) && nearlyEq(i.diffTrans, 0.72),
+                  "dispillum: ray-trace reflector / diffuser geometry round-trip");
+            check(nearlyEq(i.abgA, 0.05) && nearlyEq(i.abgB, 2.5e-5) &&
+                  nearlyEq(i.abgG, 1.8) && nearlyEq(i.targetDist_mm, 2500.0) &&
+                  nearlyEq(i.targetHalf_mm, 900.0) && nearlyEq(i.chipSize_mm, 0.6),
+                  "dispillum: ABG coefficients and target plane round-trip");
             check(nearlyEq(i.bluePeak_nm, 455.0) && nearlyEq(i.blueFwhm_nm, 25.0) &&
                   nearlyEq(i.phosPeak_nm, 585.0) &&
                   nearlyEq(i.phosFwhm_nm, 120.0) && nearlyEq(i.phosRatio, 0.8),
@@ -15698,6 +15985,13 @@ static void testDisplayIlluminationSettings()
                   i.bluePeak_nm == 450.0 && i.phosPeak_nm == 570.0 &&
                   i.cctTarget_K == 5000.0,
                   "dispillum: legacy file leaves illumination defaults");
+            // "trace" キーが無い旧ファイルはレイトレース幾何も既定値のまま
+            check(i.reflFocal_mm == 5.0 && i.reflRadius_mm == 20.0 &&
+                  i.reflReflect == 0.90 && i.diffZ_mm == 25.0 &&
+                  i.diffTrans == 0.85 && i.abgB == 1.0e-4 &&
+                  i.targetDist_mm == 1000.0 && i.chipSize_mm == 1.0,
+                  "dispillum: a sidecar without the trace key leaves the "
+                  "ray-trace geometry at its defaults");
         }
     }
 
@@ -15736,6 +16030,9 @@ static void testDisplayIlluminationSettings()
               "dispillum: clear() resets display_optics");
         check(p.illumination().spectrum == 0 && p.illumination().flux_lm == 1200.0,
               "dispillum: clear() resets illumination");
+        check(p.illumination().reflRadius_mm == 20.0 &&
+              p.illumination().targetHalf_mm == 500.0,
+              "dispillum: clear() resets the ray-trace geometry");
     }
 }
 
@@ -17620,6 +17917,7 @@ int main(int argc, char *argv[])
     testWaveformSpectrum();
     testSeidelAberration();
     testRayTrace();
+    testIlluminationTrace();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();
