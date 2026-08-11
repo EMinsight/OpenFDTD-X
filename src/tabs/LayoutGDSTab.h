@@ -5,15 +5,18 @@
 //   - DRC: 線幅・間隔・密度を投影フットプリントから実計算する
 //     (曲率半径・パッド間隔は対応データがモデルに無いので「対象外」)
 //   - FDTD-IC 連携 (選択領域のみ FDTD、残りは S パラメータライブラリ)
+//   - GDS の取込 → 選択レイヤーを直方体ユニットへ変換 (io/GdsGeometry)
 // KLayout / SiEPIC PDK / RSoft CAD 風。光ドメイン選択時のみ表示される。
-// GDS ファイルの取込・書き出し自体は未実装 (ボタンは無効化)。
 #pragma once
 #include <QScrollArea>
+
+#include "../io/GdsGeometry.h"
 #include <QString>
 #include <QVector>
 
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QLineEdit;
 class QTableWidget;
 
@@ -45,7 +48,8 @@ public:
 
 private slots:
     void exportGds();         // Footprint → GDSII (BOUNDARY)
-    void importGds();         // GDSII → 内容の要約 (形状取込は未対応)
+    void importGds();         // GDSII → 内容の要約 + ライブラリの保持
+    void convertToGeometry(); // 取り込んだ GDS の選択レイヤ → 形状ユニット
 
 private:
     void refreshLayout();     // 形状 → セル一覧 + DRC を作り直す
@@ -59,6 +63,11 @@ private:
     QTableWidget *m_layers, *m_cells, *m_drc;
     QLabel       *m_cellsSkipped = nullptr;  // 除外ユニット数の注記
     QLabel       *m_ioStatus = nullptr;      // GDS 入出力の結果表示
+    // 取り込んだ GDS (「形状へ変換」で使う)。空なら未取込
+    GdsLibrary    m_lib;
+    QString       m_libPath;
+    QPushButton  *m_convertBtn = nullptr;
+    QLabel       *m_convertStatus = nullptr;
     // 直前の投影 (Project::changed の度に DRC を回さないためのキャッシュ)
     QVector<Footprint> m_lastFoots;
     int          m_lastSkipped = -1;

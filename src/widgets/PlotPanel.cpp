@@ -1,6 +1,7 @@
 // PlotPanel.cpp
 #include "PlotPanel.h"
 #include "../core/Project.h"
+#include "../core/WaveformSpectrum.h"
 #include "../em/Reflection.h"
 #include "../I18n.h"
 
@@ -11,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSettings>
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -38,6 +40,34 @@ const bool s_i18n = [] {
         "No post-processing tables yet (enable items on Post-Proc (1)/(2) and "
         "run to produce feed.log / point.log / far0d.log / near1d.log)");
     ofd::I18n::reg("ppb_post_logy", "対数 Y 軸", "Log Y axis");
+    ofd::I18n::reg("ppb_post_spec", "スペクトル", "Spectrum");
+    ofd::I18n::reg("ppb_post_spec_tip",
+                   "時間波形 (feed.log / point.log) を窓関数つき DFT で"
+                   "周波数領域へ移して表示します。縦軸は最大を 0 dB とした"
+                   "相対値です (校正が無いため絶対値は出しません)。",
+                   "Transforms the time waveform (feed.log / point.log) with a "
+                   "windowed DFT. The vertical axis is relative to the maximum "
+                   "(no absolute level is shown — there is no calibration).");
+    ofd::I18n::reg("ppb_post_apod_off",   "端の処理なし", "No end taper");
+    ofd::I18n::reg("ppb_post_apod_start", "開始をテーパ", "Taper the start");
+    ofd::I18n::reg("ppb_post_apod_end",   "終了をテーパ", "Taper the end");
+    ofd::I18n::reg("ppb_post_apod_both",  "両端をテーパ", "Taper both ends");
+    ofd::I18n::reg("pp_spec_title", "%1 のスペクトル", "Spectrum of %1");
+    ofd::I18n::reg("pp_spec_nodata",
+                   "スペクトルを作れません (時間列が等間隔でないか、"
+                   "波形が全て 0 です)",
+                   "No spectrum can be made (the time column is not uniform, "
+                   "or the waveform is all zeros)");
+    ofd::I18n::reg("pp_spec_decimated",
+                   "※ 読込時に %1 行を %2 点へ間引いたため、折返し周波数は "
+                   "%3 まで下がっています (これより上は見えません)",
+                   "* %1 rows were decimated to %2 points on load, so the "
+                   "Nyquist frequency is only %3 - nothing above that is "
+                   "visible");
+    ofd::I18n::reg("pp_spec_info",
+                   "標本 %1 点 → FFT %2 点、分解能 %3、等価雑音帯域幅 %4 bin",
+                   "%1 samples -> %2-point FFT, resolution %3, equivalent "
+                   "noise bandwidth %4 bins");
     ofd::I18n::reg("pp_post_decimated",
                    "※ %1 行を %2 点へ等間隔に間引いて読み込みました",
                    "* decimated on load: %1 rows -> %2 points (uniform)");
@@ -138,8 +168,44 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     m_tableSel->setVisible(false);
     m_logY = new QCheckBox(I18n::tr("ppb_post_logy"), this);
     m_logY->setVisible(false);
+    // 時間波形 → スペクトル (窓関数つき)
+    m_spectrum = new QCheckBox(I18n::tr("ppb_post_spec"), this);
+    m_spectrum->setVisible(false);
+    m_spectrum->setToolTip(I18n::tr("ppb_post_spec_tip"));
+    m_winSel = new QComboBox(this);
+    {
+        const bool en = I18n::instance().lang() == QStringLiteral("en");
+        for (const audioedit::WindowInfo &wi : audioedit::windowInfos())
+            m_winSel->addItem(QString::fromUtf8(en ? wi.nameEn : wi.nameJa));
+    }
+    // 既定は Hann (漏れ抑制と分解能のバランスが取れた定番)
+    m_winSel->setCurrentIndex(1);
+    m_winSel->setVisible(false);
+    m_apodSel = new QComboBox(this);
+    m_apodSel->addItem(I18n::tr("ppb_post_apod_off"));
+    m_apodSel->addItem(I18n::tr("ppb_post_apod_start"));
+    m_apodSel->addItem(I18n::tr("ppb_post_apod_end"));
+    m_apodSel->addItem(I18n::tr("ppb_post_apod_both"));
+    m_apodSel->setCurrentIndex(
+        QSettings().value(QStringLiteral("post/apodization"), 0).toInt());
+    m_apodSel->setVisible(false);
     btnRow->addWidget(m_tableSel);
     btnRow->addWidget(m_logY);
+    btnRow->addWidget(m_spectrum);
+    btnRow->addWidget(m_winSel);
+    btnRow->addWidget(m_apodSel);
+    connect(m_spectrum, &QCheckBox::toggled, this, [this](bool) {
+        updateModeButtons();
+        update();
+    });
+    connect(m_winSel, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { update(); });
+    connect(m_apodSel, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int i) {
+                // モニタータブの apodization と同じ設定を共有する
+                QSettings().setValue(QStringLiteral("post/apodization"), i);
+                update();
+            });
     btnRow->addStretch(1);
     m_csvBtn = new QToolButton(this);
     m_csvBtn->setText(QStringLiteral("CSV"));
@@ -276,7 +342,14 @@ void PlotPanel::updateModeButtons()
     // 表選択と対数軸はポスト表モードのときだけ意味がある
     const bool post = (m_mode == PostLog) && hasPostTables();
     m_tableSel->setVisible(post);
-    m_logY->setVisible(post);
+    // 時間波形の表ならスペクトルへ切り替えられる。スペクトル表示中は
+    // 対数 Y (線形量むけ) を出さない — 縦軸は既に dB なので意味が無い
+    const bool timeTable = post && currentTableIsTime();
+    m_spectrum->setVisible(timeTable);
+    const bool spec = timeTable && m_spectrum->isChecked();
+    m_winSel->setVisible(spec);
+    m_apodSel->setVisible(spec);
+    m_logY->setVisible(post && !spec);
 }
 
 void PlotPanel::setRunResults(const QVector<FeedSweep> &sweeps,
@@ -674,12 +747,155 @@ void PlotPanel::paintFarPattern(QPainter &p, const QRectF &plot,
 // 同じ表に並ぶので、**縦軸は列ごとに自分の最小最大へ正規化**して重ねる。
 // 共通の縦軸に押し込むと桁の小さい列が潰れて「出ていない」ように見える。
 // 各列のレンジは凡例に数値で書くので、読み取りに必要な情報は失われない。
+// 周波数を読みやすい単位で書く (Hz / kHz / MHz / GHz)
+static QString freqLabel(double hz)
+{
+    const double a = std::fabs(hz);
+    if (a >= 1e9) return QString::number(hz / 1e9, 'g', 4) + QStringLiteral(" GHz");
+    if (a >= 1e6) return QString::number(hz / 1e6, 'g', 4) + QStringLiteral(" MHz");
+    if (a >= 1e3) return QString::number(hz / 1e3, 'g', 4) + QStringLiteral(" kHz");
+    return QString::number(hz, 'g', 4) + QStringLiteral(" Hz");
+}
+
+// 時間波形の表を窓関数つきスペクトルとして描く。
+// 縦軸は最大 0 dB の相対値 (校正が無いので絶対値は出さない)。
+void PlotPanel::paintPostSpectrum(QPainter &p, const QRectF &plot,
+                                  const PostTable &t)
+{
+    const std::vector<double> tv(t.x.begin(), t.x.end());
+    const std::vector<audioedit::WindowInfo> &infos = audioedit::windowInfos();
+    const int wi = qBound(0, m_winSel->currentIndex(), int(infos.size()) - 1);
+    const audioedit::WindowKind win = infos[std::size_t(wi)].kind;
+    const wavespec::Apodization apod =
+        static_cast<wavespec::Apodization>(qBound(0, m_apodSel->currentIndex(), 3));
+
+    // 全列を変換してから描く (共通の周波数軸を使う)
+    QVector<wavespec::Result> specs;
+    double fmax = 0.0;
+    for (int c = 0; c < t.y.size(); ++c) {
+        const std::vector<double> yv(t.y[c].begin(), t.y[c].end());
+        const wavespec::Result r =
+            wavespec::waveformSpectrum(tv, yv, win, apod, 0.1);
+        specs.push_back(r);
+        if (r.valid) fmax = std::max(fmax, r.freqHz.back());
+    }
+    bool any = false;
+    for (const wavespec::Result &r : specs) any = any || r.valid;
+    if (!any || fmax <= 0.0) {
+        p.drawText(plot, Qt::AlignCenter, I18n::tr("pp_spec_nodata"));
+        return;
+    }
+
+    QString head = I18n::tr("pp_spec_title").arg(t.sourceFile);
+    if (!t.title.isEmpty()) head += QStringLiteral("  ") + t.title;
+    p.drawText(QPointF(plot.left(), plot.top() - 8), head);
+
+    const double dbLo = -80.0, dbHi = 3.0;
+    auto toX = [&](double f) { return plot.left() + plot.width() * f / fmax; };
+    auto toY = [&](double db) {
+        const double v = qBound(dbLo, db, dbHi);
+        return plot.bottom() - plot.height() * (v - dbLo) / (dbHi - dbLo);
+    };
+
+    // 目盛 (縦: 20 dB ごと)
+    p.setPen(QPen(QColor(0, 0, 0, 40), 1, Qt::DotLine));
+    for (double db = dbHi - 20.0; db > dbLo; db -= 20.0)
+        p.drawLine(QPointF(plot.left(), toY(db)), QPointF(plot.right(), toY(db)));
+
+    const QColor colors[6] = { QColor("#C42B1C"), QColor("#0078D4"),
+                               QColor("#2E8B57"), QColor("#C08030"),
+                               QColor("#8A2BE2"), QColor("#008080") };
+    qreal legendY = plot.top() + 16;
+    for (int c = 0; c < specs.size(); ++c) {
+        const wavespec::Result &r = specs[c];
+        if (!r.valid) continue;
+        const QColor cc = colors[c % 6];
+        p.setPen(QPen(cc, 2));
+        QPainterPath path;
+        // 画素より点が多いときは 1 画素ごとの最大値を使う
+        // (スペクトルの山を間引きで消さない)
+        const int px = qMax(1, int(plot.width()));
+        const int n = int(r.db.size());
+        int i = 0;
+        bool first = true;
+        for (int b = 0; b < px && i < n; ++b) {
+            const int end = qMax(i + 1, int(qint64(n) * (b + 1) / px));
+            double best = -1e300;
+            for (int k = i; k < end && k < n; ++k) best = std::max(best, r.db[std::size_t(k)]);
+            const double x = plot.left() + plot.width() * b / double(px);
+            const QPointF pt(x, toY(best));
+            if (first) { path.moveTo(pt); first = false; }
+            else path.lineTo(pt);
+            i = end;
+        }
+        p.drawPath(path);
+        // 凡例 + ピーク周波数
+        p.setPen(cc);
+        QString name = (c < t.yNames.size()) ? t.yNames[c]
+                                             : QStringLiteral("y%1").arg(c + 1);
+        if (r.hasPeak)
+            name += QStringLiteral("  (peak ") + freqLabel(r.peakFreqHz)
+                    + QStringLiteral(")");
+        p.drawText(QPointF(plot.left() + 8, legendY), name);
+        legendY += 14;
+    }
+
+    // 軸ラベル: 周波数範囲と、窓の効き具合 (ENBW) を出す
+    p.setPen(palette().text().color());
+    p.drawText(QPointF(plot.left(), plot.bottom() + 16),
+               QStringLiteral("0 … %1").arg(freqLabel(fmax)));
+    const wavespec::Result *ref = nullptr;
+    for (const wavespec::Result &r : specs) if (r.valid) { ref = &r; break; }
+    if (ref) {
+        const QString info =
+            I18n::tr("pp_spec_info")
+                .arg(QString::number(ref->nUsed), QString::number(ref->nFft),
+                     freqLabel(ref->dfHz),
+                     QString::number(ref->enbwBins, 'f', 2));
+        p.drawText(QPointF(plot.left(), plot.bottom() + 30), info);
+    }
+    // 読み込み時に間引いていたら、標本化周波数 (= ナイキスト) がその分
+    // 下がっていることを言う。黙って折り返した結果を見せない
+    if (t.decimated()) {
+        p.setPen(QColor("#B45309"));
+        p.drawText(QPointF(plot.left(), plot.bottom() + 44),
+                   I18n::tr("pp_spec_decimated")
+                       .arg(QString::number(t.totalRows),
+                            QString::number(t.x.size()),
+                            freqLabel(fmax)));
+    }
+}
+
+// 選択中の表の x 列が時間か。ofd_post は "time[sec]" と書く (feed.log /
+// point.log)。周波数掃引の表 (far0d.log 等) は "frequency[Hz]"。
+bool PlotPanel::currentTableIsTime() const
+{
+    if (m_tables.isEmpty() || !m_tableSel) return false;
+    const int idx = qBound(0, m_tableSel->currentIndex(),
+                           int(m_tables.size()) - 1);
+    const PostTable &t = m_tables[idx];
+    if (!t.isValid() || t.x.size() < 8) return false;
+    const QString x = t.xName.toLower();
+    return x.contains(QStringLiteral("time")) || x.contains(QStringLiteral("[sec]"));
+}
+
+bool PlotPanel::spectrumActive() const
+{
+    return m_spectrum && m_spectrum->isChecked() && currentTableIsTime();
+}
+
 void PlotPanel::paintPostTable(QPainter &p, const QRectF &plot)
 {
     const int idx = qBound(0, m_tableSel->currentIndex(),
                            int(m_tables.size()) - 1);
     const PostTable &t = m_tables[idx];
     if (!t.isValid()) return;
+
+    // ── 時間波形 → スペクトル ────────────────────────────────────────────
+    if (spectrumActive()) {
+        paintPostSpectrum(p, plot, t);
+        return;
+    }
 
     QString head = I18n::tr("pp_post_title").arg(t.sourceFile);
     if (!t.title.isEmpty()) head += QStringLiteral("  ") + t.title;

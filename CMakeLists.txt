@@ -97,6 +97,11 @@ set(CORE_SOURCES
     src/core/AimDirection.cpp
     src/core/AimDirection.h
 
+    # デシベル量のエネルギー加算と寄与分析 (車内音響の騒音源の寄与) —
+    # Qt 非依存。selftest から解析値 (等レベル 2 源で +3.01 dB 等) と照合する
+    src/core/LevelSum.cpp
+    src/core/LevelSum.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h
@@ -232,6 +237,10 @@ set(CORE_SOURCES
     # 方針のため自前実装 — selftest が REAL8 のビット列と往復を検証する
     src/io/GdsIO.cpp
     src/io/GdsIO.h
+    # GDS の多角形 → FDTD の直方体 (水平スラブ分解 + 押し出し)。
+    # LayoutGDSTab の「FDTD へ渡す」の実体で、selftest から面積保存を検証する
+    src/io/GdsGeometry.cpp
+    src/io/GdsGeometry.h
 
     src/kernel/Runner.cpp
     src/kernel/Runner.h
@@ -293,6 +302,12 @@ set(CORE_SOURCES
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp
     src/audio/AudioEditEngine.h
+
+    # 時間波形 → 窓関数つきスペクトル (ofd_post の feed.log / point.log を
+    # 周波数領域で見るための後処理) — Qt 非依存。窓は AudioEditEngine の
+    # ライブラリ、FFT は音響コアのものを使う (再実装しない)
+    src/core/WaveformSpectrum.cpp
+    src/core/WaveformSpectrum.h
 )
 
 set(GUI_SOURCES

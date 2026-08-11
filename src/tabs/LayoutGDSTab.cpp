@@ -146,8 +146,58 @@ const bool s_i18n = [] {
               "Other cells use the S-parameter library");
     I18n::reg("gds_fdtd_rerun", "🔍 選択範囲をFDTDで再解析",
               "🔍 Re-analyze selection with FDTD");
-    I18n::reg("gds_uw_top", "トップセル・単位・グリッドの設定",
-              "the top cell, unit and grid settings");
+    I18n::reg("gds_col_z0",    "z 下端 [µm]", "z bottom [um]");
+    I18n::reg("gds_col_thick", "厚さ [µm]",   "thickness [um]");
+    I18n::reg("gds_col_mat",   "材料#",       "Material #");
+    I18n::reg("gds_stack_note",
+              "▸ z 下端 / 厚さ / 材料番号は「形状へ変換」で使います (編集可)。"
+              "既定値は一般的な SOI 光導波路の目安で、特定 PDK の値ではありません "
+              "— 使う PDK の断面に合わせて直してください。厚さ 0 の行は変換しません。"
+              "材料番号は 0 = 空気 / 1 = PEC / 2 以降は物性値タブの材料です。",
+              "The z bottom / thickness / material number are used by the "
+              "conversion below (editable). The defaults are typical of an SOI "
+              "waveguide, not any particular PDK - set them to match the cross "
+              "section you are using. Rows with zero thickness are not "
+              "converted. Material 0 = air, 1 = PEC, 2 and up are the "
+              "materials in the Materials tab.");
+    I18n::reg("gds_convert", "選択レイヤを形状へ変換",
+              "Convert the selected layers to geometry");
+    I18n::reg("gds_convert_tip",
+              "取り込んだ GDS の多角形を軸平行な矩形へ分解し、レイヤーの "
+              "z 範囲で押し出して直方体ユニットにします。既存の形状には"
+              "追加され、置き換えはしません。",
+              "Splits the polygons of the imported GDS into axis-aligned "
+              "rectangles and extrudes them over the layer's z range as box "
+              "units. They are appended to the existing geometry, not "
+              "replacing it.");
+    I18n::reg("gds_convert_none",
+              "先に「GDS 取込」でファイルを読み込んでください。",
+              "Import a GDS file first.");
+    I18n::reg("gds_convert_nolayer",
+              "厚さが 0 より大きく、チェックの入ったレイヤーがありません。",
+              "No checked layer has a thickness greater than zero.");
+    I18n::reg("gds_convert_empty",
+              "選択したレイヤーに多角形がありませんでした "
+              "(取り込んだレイヤー番号を確認してください)。",
+              "The selected layers contain no polygons - check the layer "
+              "numbers that were imported.");
+    I18n::reg("gds_convert_ok",
+              "多角形 %1 個 → 直方体 %2 個を追加しました (底面積 %3 µm²)。",
+              "Added %2 boxes from %1 polygons (footprint %3 um2).");
+    I18n::reg("gds_convert_slant",
+              " ※ %1 個の多角形に斜辺がありました — 形は階段近似です "
+              "(面積は保存されます)。",
+              " * %1 polygons had slanted edges - their shape is a staircase "
+              "approximation (the area is preserved).");
+    I18n::reg("gds_convert_oversize",
+              " ※ 取り込んだ範囲 (%1 × %2 µm) がチップサイズ (%3 × %4 µm) を"
+              "超えています。",
+              " * the imported extent (%1 x %2 um) is larger than the chip "
+              "size (%3 x %4 um).");
+    I18n::reg("gds_uw_top", "PDK の選択とグリッド (表示のみ — チップサイズは"
+                            "変換した形状の収まり判定に使います)",
+              "the PDK choice and grid (display only; the chip size is used to "
+              "check that the converted geometry fits)");
     I18n::reg("gds_uw_fdtd", "FDTD へ渡す対象の選択チェック",
               "the check boxes selecting what is handed to FDTD");
     return true;
@@ -292,41 +342,62 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
 
     // レイヤー / Layers
     auto *sLay = new SectionBox(I18n::tr("gds_layers_section"), body);
-    m_layers = new QTableWidget(8, 5, sLay);
+    m_layers = new QTableWidget(8, 8, sLay);
     m_layers->setHorizontalHeaderLabels({
         "", I18n::tr("gds_col_layer"), I18n::tr("gds_col_gdsnum"),
-        I18n::tr("gds_col_use"), I18n::tr("gds_col_color") });
+        I18n::tr("gds_col_use"), I18n::tr("gds_col_z0"),
+        I18n::tr("gds_col_thick"), I18n::tr("gds_col_mat"),
+        I18n::tr("gds_col_color") });
     m_layers->verticalHeader()->setVisible(false);
-    m_layers->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // z 範囲と材料番号だけは編集できるようにする (変換に使うため)
+    m_layers->setEditTriggers(QAbstractItemView::DoubleClicked
+                              | QAbstractItemView::EditKeyPressed);
     m_layers->setColumnWidth(0, 26);
-    m_layers->setColumnWidth(4, 40);
+    m_layers->setColumnWidth(7, 40);
     m_layers->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_layers->setMinimumHeight(250);
-    const struct { const char *name, *gds, *useKey, *color; } layers[8] = {
-        { "Si",       "1/0",  "gds_use_si",     "#3B82F6" },
-        { "Si_etch1", "2/0",  "gds_use_etch1",  "#1E40AF" },
-        { "Si_etch2", "3/0",  "gds_use_etch2",  "#1E3A8A" },
-        { "Metal1",   "11/0", "gds_use_metal",  "#FBBF24" },
-        { "Via1",     "12/0", "gds_use_via",    "#F59E0B" },
-        { "Heater",   "21/0", "gds_use_heater", "#EF4444" },
-        { "Pad",      "31/0", "gds_use_pad",    "#10B981" },
-        { "Text",     "99/0", "gds_use_text",   "#6B7280" },
+    // z0 / 厚さ [µm] と材料番号の既定値は **一般的な SOI 光導波路の目安**で、
+    // 特定 PDK の値ではない (画面にもそう書く)。0 厚は「変換しない」。
+    const struct {
+        const char *name, *gds, *useKey, *color, *z0, *thick;
+        int mat;
+    } layers[8] = {
+        { "Si",       "1/0",  "gds_use_si",     "#3B82F6", "0",    "0.22", 2 },
+        { "Si_etch1", "2/0",  "gds_use_etch1",  "#1E40AF", "0",    "0.13", 2 },
+        { "Si_etch2", "3/0",  "gds_use_etch2",  "#1E3A8A", "0",    "0.07", 2 },
+        { "Metal1",   "11/0", "gds_use_metal",  "#FBBF24", "1.0",  "0.5",  1 },
+        { "Via1",     "12/0", "gds_use_via",    "#F59E0B", "0.22", "0.78", 1 },
+        { "Heater",   "21/0", "gds_use_heater", "#EF4444", "0.8",  "0.2",  1 },
+        { "Pad",      "31/0", "gds_use_pad",    "#10B981", "1.5",  "1.0",  1 },
+        { "Text",     "99/0", "gds_use_text",   "#6B7280", "0",    "0",    0 },
     };
     for (int i = 0; i < 8; ++i) {
         m_layers->setItem(i, 0, checkItem(true));
-        m_layers->setItem(i, 1, new QTableWidgetItem(
-            QString::fromUtf8(layers[i].name)));
-        auto *gd = new QTableWidgetItem(QString::fromUtf8(layers[i].gds));
+        auto ro = [](const QString &t) {
+            auto *it = new QTableWidgetItem(t);
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            return it;
+        };
+        m_layers->setItem(i, 1, ro(QString::fromUtf8(layers[i].name)));
+        auto *gd = ro(QString::fromUtf8(layers[i].gds));
         gd->setFont(mono);
         m_layers->setItem(i, 2, gd);
-        m_layers->setItem(i, 3, new QTableWidgetItem(
-            I18n::tr(layers[i].useKey)));
+        m_layers->setItem(i, 3, ro(I18n::tr(layers[i].useKey)));
+        auto num = [](const QString &t) {
+            auto *it = new QTableWidgetItem(t);
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            return it;
+        };
+        m_layers->setItem(i, 4, num(QString::fromUtf8(layers[i].z0)));
+        m_layers->setItem(i, 5, num(QString::fromUtf8(layers[i].thick)));
+        m_layers->setItem(i, 6, num(QString::number(layers[i].mat)));
         auto *col = new QTableWidgetItem;
         col->setBackground(QColor(layers[i].color));
         col->setFlags(Qt::ItemIsEnabled);
-        m_layers->setItem(i, 4, col);
+        m_layers->setItem(i, 7, col);
     }
     sLay->vbox()->addWidget(m_layers);
+    sLay->vbox()->addWidget(mutedLabel(I18n::tr("gds_stack_note"), sLay));
     v->addWidget(sLay);
 
     // 配置済みセル / Placed cells — プロジェクトの形状ユニットの XY 投影
@@ -378,6 +449,20 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     sDrc->vbox()->addWidget(mutedLabel(I18n::tr("gds_io_note"), sDrc));
     connect(btnExport, &QPushButton::clicked, this, &LayoutGDSTab::exportGds);
     connect(btnImport, &QPushButton::clicked, this, &LayoutGDSTab::importGds);
+    // 取り込んだ GDS → 形状ユニット (取込前は押せない)
+    auto *convRow = new QHBoxLayout();
+    m_convertBtn = new QPushButton(I18n::tr("gds_convert"), sDrc);
+    m_convertBtn->setToolTip(I18n::tr("gds_convert_tip"));
+    m_convertBtn->setEnabled(false);
+    connect(m_convertBtn, &QPushButton::clicked, this,
+            &LayoutGDSTab::convertToGeometry);
+    convRow->addWidget(m_convertBtn);
+    convRow->addStretch(1);
+    sDrc->vbox()->addLayout(convRow);
+    m_convertStatus = new QLabel(sDrc);
+    m_convertStatus->setWordWrap(true);
+    m_convertStatus->setStyleSheet("font-size:11px;");
+    sDrc->vbox()->addWidget(m_convertStatus);
     v->addWidget(sDrc);
 
     // FDTD-IC 連携 / FDTD ↔ IC layout
@@ -631,6 +716,86 @@ void LayoutGDSTab::exportGds()
 // 中身を要約して出す。**形状としては取り込まない** — Project の形状モデルは
 // 直方体・球などのパラメトリック立体で、任意多角形を受ける型が無いため。
 // 「読めたが取り込めない」ことを隠さない (絶対規則 5)。
+// 取り込んだ GDS の選択レイヤ → 直方体ユニット (io/GdsGeometry)。
+// 既存の形状には**追加**する (置き換えない — 利用者の作ったものを消さない)。
+void LayoutGDSTab::convertToGeometry()
+{
+    if (m_lib.structures.isEmpty()) {
+        m_convertStatus->setText(I18n::tr("gds_convert_none"));
+        return;
+    }
+    // チェックが入っていて厚みのある行を押し出し条件にする
+    QVector<GdsLayerExtrude> layers;
+    for (int r = 0; r < m_layers->rowCount(); ++r) {
+        const QTableWidgetItem *chk = m_layers->item(r, 0);
+        if (!chk || chk->checkState() != Qt::Checked) continue;
+        // "1/0" の左側が GDS レイヤー番号
+        const QTableWidgetItem *num = m_layers->item(r, 2);
+        if (!num) continue;
+        bool okL = false;
+        const int layer =
+            num->text().section(QLatin1Char('/'), 0, 0).trimmed().toInt(&okL);
+        if (!okL) continue;
+        bool okZ = false, okT = false;
+        const double z0 = m_layers->item(r, 4)->text().trimmed().toDouble(&okZ);
+        const double th = m_layers->item(r, 5)->text().trimmed().toDouble(&okT);
+        if (!okZ || !okT || !(th > 0.0)) continue;
+        GdsLayerExtrude e;
+        e.layer = layer;
+        e.z0_m = z0 * 1e-6;               // 表は µm
+        e.z1_m = (z0 + th) * 1e-6;
+        e.materialId = m_layers->item(r, 6)->text().trimmed().toInt();
+        e.name = m_layers->item(r, 1)->text();
+        layers.push_back(e);
+    }
+    if (layers.isEmpty()) {
+        m_convertStatus->setText(I18n::tr("gds_convert_nolayer"));
+        return;
+    }
+
+    const GdsToGeometryResult res = gdsToGeometry(m_lib, QString(), layers);
+    if (res.units.isEmpty()) {
+        m_convertStatus->setText(I18n::tr("gds_convert_empty"));
+        return;
+    }
+
+    // 追加して外接範囲を測る (チップサイズとの比較に使う)
+    double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    bool first = true;
+    QVector<Geometry> &geo = m_p->geometries();
+    for (const Geometry &g : res.units) {
+        geo.push_back(g);
+        if (first) {
+            x0 = g.g[0]; x1 = g.g[1]; y0 = g.g[2]; y1 = g.g[3];
+            first = false;
+        } else {
+            x0 = qMin(x0, g.g[0]); x1 = qMax(x1, g.g[1]);
+            y0 = qMin(y0, g.g[2]); y1 = qMax(y1, g.g[3]);
+        }
+    }
+    m_p->touch();
+
+    QString msg = I18n::tr("gds_convert_ok")
+                      .arg(res.polygons)
+                      .arg(res.rects)
+                      .arg(QString::number(res.totalArea_m2 * 1e12, 'f', 3));
+    if (res.nonManhattan > 0)
+        msg += I18n::tr("gds_convert_slant").arg(res.nonManhattan);
+    // チップサイズ (µm) に収まっているか
+    bool okW = false, okH = false;
+    const double cw = m_chipW->text().trimmed().toDouble(&okW);
+    const double ch = m_chipH->text().trimmed().toDouble(&okH);
+    const double w = (x1 - x0) * 1e6, h = (y1 - y0) * 1e6;
+    if (okW && okH && cw > 0 && ch > 0 && (w > cw || h > ch))
+        msg += I18n::tr("gds_convert_oversize")
+                   .arg(QString::number(w, 'f', 3),
+                        QString::number(h, 'f', 3),
+                        QString::number(cw, 'f', 0),
+                        QString::number(ch, 'f', 0));
+    m_convertStatus->setText(msg);
+    refreshLayout();
+}
+
 void LayoutGDSTab::importGds()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -642,8 +807,14 @@ void LayoutGDSTab::importGds()
     QString err;
     if (!GdsIO::load(path, lib, &err)) {
         m_ioStatus->setText(err);
+        m_convertBtn->setEnabled(false);
         return;
     }
+    // 「形状へ変換」で使うので保持する
+    m_lib = lib;
+    m_libPath = path;
+    m_convertBtn->setEnabled(lib.polygonCount() > 0);
+    m_convertStatus->clear();
     // レイヤーごとの多角形数と全体の外接矩形
     QMap<int, int> perLayer;
     double x0 = 0, x1 = 0, y0 = 0, y1 = 0;

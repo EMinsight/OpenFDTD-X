@@ -14,6 +14,7 @@
 // selftest から解析解と直接突き合わせる (GUI に式を書かない)。
 #pragma once
 #include <QScrollArea>
+#include <QVector>
 
 class QCheckBox;
 class QComboBox;
@@ -39,6 +40,10 @@ private slots:
 
 private:
     QWidget *buildCarSources();
+    // 現在の対象の騒音源 (チェックボックス + 既定レベル) を並べ直す
+    void rebuildNoiseTable();
+    // チェックの入った源のレベルからエネルギー加算で寄与を出す
+    void updateNoiseSum();
     QWidget *buildEvSources();
     QWidget *buildTrainSources();
     QWidget *buildAircraftSources();
@@ -54,6 +59,11 @@ private:
     QCheckBox *m_evMotor, *m_evInverter, *m_evRoad, *m_evGear;
     QCheckBox *m_trRolling, *m_trTunnel, *m_trHvac;
     QCheckBox *m_acTbl, *m_acEngine, *m_acPressure;
+    // 騒音源の寄与 (core/LevelSum)。レベルは利用者が入力する目安値で、
+    // 校正された測定値ではない
+    QTableWidget *m_noiseTable = nullptr;
+    QLabel       *m_noiseSummary = nullptr;
+    QVector<QCheckBox *> m_noiseChecks;   // 表の行に対応するチェック
 
     // 車室モデル / cabin model
     QLineEdit *m_cadFile;
