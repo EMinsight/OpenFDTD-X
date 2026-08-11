@@ -590,6 +590,9 @@ add_library(ofdx_acoustic_core STATIC
     # 指数掃引正弦波 (ESS) の生成と逆畳み込み (Farina 2000) —
     # 実測 IR 取り込みの入口。線形応答と高調波を時間軸で分離する
     src/acoustics/core/SweepDeconvolution.cpp
+    # 可聴化のドライ音源として使う帯域制限クリック (窓関数法) —
+    # 無響の音声/音楽素材は同梱できないので、こちらで作れる音源を用意する
+    src/acoustics/core/TestSignal.cpp
     # 建築遮音 (質量則/コインシデンス, ISO 717, ASTM E413, ASHRAE, STI) —
     # SoundproofTab の計算実体。selftest から規格の不変量と直接突き合わせる
     src/acoustics/core/SoundInsulation.cpp
@@ -692,6 +695,7 @@ if(BUILD_TESTS)
         formant
         inr
         sweep
+        testsignal
         reflections
         reverberation
         vocal
