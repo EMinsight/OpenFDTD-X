@@ -2,6 +2,7 @@
 #include "GeometryTab.h"
 #include "../core/Project.h"
 #include "../io/MeshImporter.h"
+#include "../core/MeshRefine.h"
 #include "../io/Voxelizer.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/UnitNav.h"
@@ -465,6 +466,54 @@ const Tr kTr[] = {
     { "geoc_ref_autocheck", "自動チェック", "Auto check" },
     { "geoc_ref_showviol", "違反箇所を赤表示", "Highlight violations in red" },
     { "geoc_ref_run", "▶ 自動細分化", "▶ Auto-refine" },
+    { "geoc_ref_run_tip",
+      "細分化領域の表にある有効な領域を、実際の格子 (xmesh/ymesh/zmesh) へ"
+      "適用します。領域の端が節点になり、内側の分割数が比率倍になります。"
+      "本家の xmesh は元から非均一を表せるので、これはそのまま .ofd に載ります。",
+      "Applies the enabled rows of the refined-region table to the actual mesh "
+      "(xmesh / ymesh / zmesh): the region edges become mesh nodes and the "
+      "divisions inside are multiplied by the ratio. The upstream xmesh key is "
+      "non-uniform already, so this goes straight into the .ofd." },
+    { "geoc_ref_confirm_title", "自動細分化", "Auto-refine" },
+    { "geoc_ref_confirm",
+      "格子を細分化します。\n\n"
+      "  セル数   %1 → %2  (%3 倍)\n"
+      "  最小セル %4 → %5 mm\n"
+      "  隣接セル比 (最大) %6\n\n"
+      "元の格子には戻せません (保存前ならファイルを開き直せます)。"
+      "続けますか?",
+      "The mesh will be refined.\n\n"
+      "  cells      %1 -> %2  (x%3)\n"
+      "  smallest   %4 -> %5 mm\n"
+      "  neighbour ratio (max) %6\n\n"
+      "This cannot be undone (reopen the file if you have not saved). "
+      "Continue?" },
+    { "geoc_ref_step_warn",
+      "\n\n※ 隣接セル比が %1 です。2 を超えると境目で数値反射が無視できなく"
+      "なります — 遷移幅を持たせるか、比率を下げてください。",
+      "\n\n* The neighbouring cell ratio is %1. Above 2 the numerical "
+      "reflection at the step is no longer negligible - grade the transition "
+      "or lower the ratio." },
+    { "geoc_ref_done",
+      "細分化しました: セル数 %1 → %2 (%3 倍)、最小セル %4 mm、隣接セル比 %5",
+      "Refined: %1 -> %2 cells (x%3), smallest cell %4 mm, neighbour ratio %5" },
+    { "geoc_ref_noregion",
+      "有効な細分化領域がありません (下の表で追加してください)。",
+      "There is no enabled refined region - add one in the table below." },
+    { "geoc_ref_nochange",
+      "格子は変わりませんでした (領域が範囲外か、比率が 1 です)。",
+      "The mesh did not change (the regions are outside the domain, or the "
+      "ratio is 1)." },
+    { "geoc_ref_subgrid_why",
+      "サブグリッド法は本家カーネルが対応していないため選べません "
+      "(.ofd の格子は 1 段の非均一メッシュだけを表せます)。",
+      "Subgridding is unavailable because the upstream kernel does not support "
+      "it - the .ofd mesh can only express a single non-uniform grid." },
+    { "geoc_ref_amr_why",
+      "AMR (適応細分化) は解の途中経過を見て格子を変える方式で、"
+      "カーネル側の対応が要るため選べません。",
+      "AMR changes the mesh while the solution evolves, which needs kernel "
+      "support - unavailable here." },
     // セル増加は「細分化領域」表の定義と現在の基本格子から数えた実際の値。
     // 格子そのものは変わらない (細分化エンジン未実装) ので机上値と明記する。
     { "geoc_ref_growth_fmt",
@@ -1750,9 +1799,21 @@ QWidget *GeometryTab::buildRefineSection()
     // 細分化はエンジン未実装 — 設定はどこにも反映されない
     s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("geoc_uw_refine")));
 
+    // サブグリッド / AMR はカーネル側の対応が要る — 理由を添えて無効化する
+    if (m_refMethod) {
+        const QList<QAbstractButton *> mb = m_refMethod->buttons();
+        if (mb.size() >= 3) {
+            mb[1]->setEnabled(false);
+            mb[1]->setToolTip(I18n::tr("geoc_ref_subgrid_why"));
+            mb[2]->setEnabled(false);
+            mb[2]->setToolTip(I18n::tr("geoc_ref_amr_why"));
+        }
+    }
+
     auto *rr = new QHBoxLayout();
     auto *refineBtn = new QPushButton(I18n::tr("geoc_ref_run"), s);
-    tabhelp::markNotImplemented(refineBtn);   // 細分化エンジンは未実装
+    refineBtn->setToolTip(I18n::tr("geoc_ref_run_tip"));
+    connect(refineBtn, &QPushButton::clicked, this, &GeometryTab::runRefine);
     rr->addWidget(refineBtn);
     m_refBadge = makeBadge(QString(), kMuted, s);
     rr->addWidget(m_refBadge);
@@ -1766,6 +1827,78 @@ QWidget *GeometryTab::buildRefineSection()
 // 利用者の入力データなので実データとして持ち、「セル増」は現在の基本格子
 // (xmesh/ymesh/zmesh) から数えた見積りを表示する。細分化の実行そのものは
 // 未実装で、格子・.ofd の出力は一切変わらない (注記で明示)。
+// ── 自動細分化: 細分化領域の表 → 実際の格子 ──────────────────────────────
+void GeometryTab::runRefine()
+{
+    // 有効な領域を軸ごとの区間へばらす
+    QVector<RefineSpan> spans[3];
+    for (const RefineRegion &g : m_p->refineRegions()) {
+        if (!g.enabled) continue;
+        if (!(g.ratio > 0.0)) continue;
+        for (int a = 0; a < 3; ++a) {
+            RefineSpan sp;
+            sp.lo = std::min(g.min_m[a], g.max_m[a]);
+            sp.hi = std::max(g.min_m[a], g.max_m[a]);
+            sp.ratio = g.ratio;
+            spans[a].push_back(sp);
+        }
+    }
+    bool any = false;
+    for (int a = 0; a < 3; ++a) any = any || !spans[a].isEmpty();
+    if (!any) {
+        QMessageBox::information(this, I18n::tr("geoc_ref_confirm_title"),
+                                 I18n::tr("geoc_ref_noregion"));
+        return;
+    }
+
+    MeshRefineResult res[3];
+    qint64 before = 1, after = 1;
+    double step = 1.0, minBefore = 1e308, minAfter = 1e308;
+    for (int a = 0; a < 3; ++a) {
+        res[a] = refineAxis(m_p->mesh(a), spans[a]);
+        if (!res[a].valid) {
+            QMessageBox::warning(this, I18n::tr("geoc_ref_confirm_title"),
+                                 I18n::tr("geoc_ref_nochange"));
+            return;
+        }
+        before *= res[a].cellsBefore;
+        after  *= res[a].cellsAfter;
+        step = std::max(step, res[a].maxStepRatio);
+        minBefore = std::min(minBefore, res[a].minSpacingBefore);
+        minAfter  = std::min(minAfter, res[a].minSpacingAfter);
+    }
+    if (after == before) {
+        QMessageBox::information(this, I18n::tr("geoc_ref_confirm_title"),
+                                 I18n::tr("geoc_ref_nochange"));
+        return;
+    }
+
+    // 3 軸に掛かるとセル数は比率の 3 乗で効く。押す前に実数で見せる
+    QString msg = I18n::tr("geoc_ref_confirm")
+                      .arg(groupNum(before), groupNum(after),
+                           QString::number(double(after) / double(before),
+                                           'f', 1),
+                           QString::number(minBefore * 1e3, 'g', 4),
+                           QString::number(minAfter * 1e3, 'g', 4),
+                           QString::number(step, 'f', 2));
+    if (step > 2.0)
+        msg += I18n::tr("geoc_ref_step_warn").arg(QString::number(step, 'f', 2));
+    if (QMessageBox::question(this, I18n::tr("geoc_ref_confirm_title"), msg,
+                              QMessageBox::Ok | QMessageBox::Cancel,
+                              QMessageBox::Cancel) != QMessageBox::Ok)
+        return;
+
+    for (int a = 0; a < 3; ++a) m_p->mesh(a) = res[a].axis;
+    m_p->touch();
+    refresh();
+    m_refBadge->setText(I18n::tr("geoc_ref_done")
+                            .arg(groupNum(before), groupNum(after),
+                                 QString::number(double(after) / double(before),
+                                                 'f', 1),
+                                 QString::number(minAfter * 1e3, 'g', 4),
+                                 QString::number(step, 'f', 2)));
+}
+
 QWidget *GeometryTab::buildRefinedRegionsSection()
 {
     auto *s = new SectionBox(I18n::tr("geoc_regions_section"));

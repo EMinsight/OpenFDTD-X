@@ -75,6 +75,7 @@
 #include "optics/ParaxialTrace.h"
 #include "core/WaveformSpectrum.h"
 #include "core/LevelSum.h"
+#include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
@@ -13937,6 +13938,165 @@ static void testParaxialTrace()
     }
 }
 
+// ── 細分化領域 → 非均一メッシュ (core/MeshRefine) ──────────────────────────
+// 本家の xmesh は元から非均一を表せるので、区間を割って分割数を増やすだけで
+// 細分化になる。**掛けていないときは入力とビット等価**であることが要 (絶対
+// 規則 2: 有効にしていない機能は出力を 1 バイトも変えない)。
+static void testMeshRefine()
+{
+    g_file = "mesh-refine";
+
+    // 0 … 1 を 10 分割した一様格子 (セル幅 0.1)
+    MeshAxis uni;
+    uni.nodes = { 0.0, 1.0 };
+    uni.divs  = { 10 };
+
+    auto sameAxis = [](const MeshAxis &a, const MeshAxis &b) {
+        if (a.nodes.size() != b.nodes.size() || a.divs != b.divs) return false;
+        for (int i = 0; i < a.nodes.size(); ++i)
+            if (a.nodes[i] != b.nodes[i]) return false;   // ビット等価
+        return true;
+    };
+
+    // 1) 掛けなければ何も変わらない (ビット等価)
+    {
+        const MeshRefineResult r = refineAxis(uni, {});
+        check(r.valid, "meshrefine: an empty span list is still valid");
+        check(sameAxis(r.axis, uni),
+              "meshrefine: no spans leaves the axis bit-identical");
+        check(r.cellsAfter == r.cellsBefore && r.cellsBefore == 10,
+              "meshrefine: and the cell count is unchanged");
+        check(std::fabs(r.maxStepRatio - 1.0) < 1e-12,
+              "meshrefine: a uniform axis has a step ratio of one");
+        // 比率 1 / 範囲外 / 幅 0 も同じ
+        check(sameAxis(refineAxis(uni, { { 0.4, 0.6, 1.0 } }).axis, uni),
+              "meshrefine: ratio 1 changes nothing");
+        check(sameAxis(refineAxis(uni, { { 2.0, 3.0, 3.0 } }).axis, uni),
+              "meshrefine: a span outside the domain changes nothing");
+        check(sameAxis(refineAxis(uni, { { 0.5, 0.5, 3.0 } }).axis, uni),
+              "meshrefine: a zero-width span changes nothing");
+        check(refineAxis(uni, { { 0.4, 0.6, 3.0 } }).spansApplied == 1,
+              "meshrefine: a real span is counted");
+    }
+
+    // 2) 内側だけ 3 倍に割る: 0.4 と 0.6 が節点になり、真ん中が 6 分割
+    {
+        const MeshRefineResult r = refineAxis(uni, { { 0.4, 0.6, 3.0 } });
+        check(r.valid && r.axis.isValid(), "meshrefine: the refined axis is valid");
+        check(r.axis.nodes.size() == 4
+              && std::fabs(r.axis.nodes[1] - 0.4) < 1e-12
+              && std::fabs(r.axis.nodes[2] - 0.6) < 1e-12,
+              "meshrefine: the span edges become mesh nodes");
+        check(r.axis.divs.size() == 3 && r.axis.divs[0] == 4
+              && r.axis.divs[1] == 6 && r.axis.divs[2] == 4,
+              "meshrefine: the inside is divided three times finer");
+        check(r.cellsBefore == 10 && r.cellsAfter == 14,
+              "meshrefine: 10 cells become 14");
+        check(std::fabs(r.minSpacingAfter - 0.1 / 3.0) < 1e-12,
+              "meshrefine: the finest cell is a third of the base");
+        // 端は 0.1、内側は 0.0333 → 隣接比は 3
+        check(std::fabs(r.maxStepRatio - 3.0) < 1e-9,
+              "meshrefine: the neighbouring cells differ by the ratio");
+        // 領域の外側のセル幅は変わっていない
+        const double outer = (r.axis.nodes[1] - r.axis.nodes[0]) / r.axis.divs[0];
+        check(std::fabs(outer - 0.1) < 1e-12,
+              "meshrefine: outside the span the cell size is untouched");
+        // 節点は単調増加 (格子として壊れていない)
+        for (int i = 0; i + 1 < r.axis.nodes.size(); ++i)
+            check(r.axis.nodes[i] < r.axis.nodes[i + 1],
+                  "meshrefine: the nodes stay sorted");
+    }
+
+    // 3) 領域が格子全体を覆えば、全部が ratio 倍になる
+    {
+        const MeshRefineResult r = refineAxis(uni, { { -1.0, 2.0, 2.0 } });
+        check(r.cellsAfter == 20, "meshrefine: covering everything doubles it");
+        check(std::fabs(r.maxStepRatio - 1.0) < 1e-12,
+              "meshrefine: and the mesh stays uniform (no step)");
+    }
+
+    // 4) 元が非均一でも、区間ごとのセル幅を保ったまま細分化する
+    {
+        MeshAxis nu;
+        nu.nodes = { 0.0, 0.5, 1.0 };
+        nu.divs  = { 5, 10 };            // 左は 0.1、右は 0.05
+        const MeshRefineResult r = refineAxis(nu, { { 0.2, 0.7, 2.0 } });
+        check(r.valid && r.axis.isValid(),
+              "meshrefine: a non-uniform axis refines");
+        // 0.2 と 0.7 が入って 4 区間になる
+        check(r.axis.nodes.size() == 5,
+              "meshrefine: both span edges are inserted");
+        // 細分化しない両端はセル幅そのまま
+        const double first = (r.axis.nodes[1] - r.axis.nodes[0]) / r.axis.divs[0];
+        const double last  = (r.axis.nodes.last() - r.axis.nodes[3])
+                             / r.axis.divs.last();
+        check(std::fabs(first - 0.1) < 1e-12,
+              "meshrefine: the coarse end keeps 0.1");
+        check(std::fabs(last - 0.05) < 1e-12,
+              "meshrefine: the fine end keeps 0.05");
+        check(r.cellsAfter > r.cellsBefore,
+              "meshrefine: refining adds cells");
+    }
+
+    // 5) 重なった領域は細かい方が勝つ
+    {
+        const MeshRefineResult r =
+            refineAxis(uni, { { 0.2, 0.8, 2.0 }, { 0.4, 0.6, 4.0 } });
+        check(r.valid && r.spansApplied == 2,
+              "meshrefine: both spans are applied");
+        // 0.4〜0.6 は 4 倍 (2 倍ではなく)
+        int mid = -1;
+        for (int i = 0; i + 1 < r.axis.nodes.size(); ++i)
+            if (std::fabs(r.axis.nodes[i] - 0.4) < 1e-9) mid = i;
+        check(mid >= 0 && r.axis.divs[mid] == 8,
+              "meshrefine: the finer of two overlapping spans wins");
+    }
+
+    // 6) 細分化した格子が .ofd を往復して同じに戻ること
+    //    (ここが通らないとカーネルへ細かい格子が届かない = 機能の意味が無い)
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "meshrefine: temp dir");
+        Project p;
+        p.mesh(0) = uni;
+        p.mesh(1) = uni;
+        p.mesh(2) = uni;
+        const MeshRefineResult r = refineAxis(uni, { { 0.4, 0.6, 3.0 } });
+        p.mesh(0) = r.axis;                     // X だけ細分化する
+        const QString path = td.filePath(QStringLiteral("refined.ofd"));
+        QString err;
+        check(OfdIO::save(path, p, &err), "meshrefine: the refined mesh saves");
+        Project q;
+        check(OfdIO::load(path, q, &err), "meshrefine: and loads back");
+        check(q.mesh(0).nodes.size() == r.axis.nodes.size()
+              && q.mesh(0).divs == r.axis.divs,
+              "meshrefine: the non-uniform X mesh survives the .ofd round trip");
+        for (int i = 0; i < r.axis.nodes.size(); ++i)
+            check(std::fabs(q.mesh(0).nodes[i] - r.axis.nodes[i]) < 1e-9,
+                  "meshrefine: the inserted nodes come back");
+        check(q.mesh(0).totalCells() == 14,
+              "meshrefine: the kernel would see 14 cells along X");
+        check(q.mesh(1).totalCells() == 10 && q.mesh(2).totalCells() == 10,
+              "meshrefine: the untouched axes are unchanged");
+    }
+
+    // 7) 壊れた格子からは何も作らない
+    {
+        MeshAxis bad;
+        check(!refineAxis(bad, { { 0.0, 1.0, 2.0 } }).valid,
+              "meshrefine: an empty axis is rejected");
+        bad.nodes = { 1.0, 0.0 };
+        bad.divs  = { 5 };
+        check(!refineAxis(bad, {}).valid,
+              "meshrefine: a decreasing axis is rejected");
+        MeshAxis zero;
+        zero.nodes = { 0.0, 1.0 };
+        zero.divs  = { 0 };
+        check(!refineAxis(zero, {}).valid,
+              "meshrefine: a zero-division axis is rejected");
+    }
+}
+
 // ── デシベルのエネルギー加算と寄与分析 (core/LevelSum) ─────────────────────
 // 判定はすべて閉形式: 等レベル n 個で +10·log10(n)、10 dB 下の源は
 // +0.414 dB、寄与率の総和は 1、除去効果 ΔL = −10·log10(1 − p)。
@@ -16759,6 +16919,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testMeshRefine();
     testLevelSum();
     testGdsGeometry();
     testWaveformSpectrum();

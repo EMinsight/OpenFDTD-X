@@ -102,6 +102,11 @@ set(CORE_SOURCES
     src/core/LevelSum.cpp
     src/core/LevelSum.h
 
+    # 細分化領域 → 非均一メッシュ (xmesh/ymesh/zmesh の区間を割って分割数を
+    # 増やす)。GeometryTab「自動細分化」の実体で、selftest から検証する
+    src/core/MeshRefine.cpp
+    src/core/MeshRefine.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h
