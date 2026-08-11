@@ -124,6 +124,12 @@ set(CORE_SOURCES
     src/core/TransmissionLine.cpp
     src/core/TransmissionLine.h
 
+    # 受光器 (フォトダイオード) の雑音収支 (ショット / 熱 / RIN) — Qt 非依存。
+    # SchematicTab「ノイズ・温度効果」の計算実体で、selftest から定義式と
+    # 漸近形 (RIN 支配の SNR 頭打ち) を検証する
+    src/core/ReceiverNoise.cpp
+    src/core/ReceiverNoise.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h

@@ -78,6 +78,7 @@
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
 #include "core/FlankingTransmission.h"
+#include "core/ReceiverNoise.h"
 #include "core/TransmissionLine.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
@@ -15661,6 +15662,139 @@ static void testIlluminationTrace()
     }
 }
 
+// ── 受光器の雑音収支 (core/ReceiverNoise) ──────────────────────────────────
+// 判定は **定義式そのもの**と、そこから出る漸近形:
+//   ショット 2qIB / 熱 4kTB/R_L / RIN rin(RP)²B  — 手計算で確かめられる
+//   帯域 2 倍で全項 2 倍 → SNR は 3.01 dB 悪化
+//   高パワー極限は RIN が支配して SNR → 1/(rin·B) で頭打ち
+//   熱雑音は **絶対温度**に比例する (0 ℃ でゼロにならない)
+static void testReceiverNoise()
+{
+    g_file = "rxnoise";
+    namespace rn = ofd::rxnoise;
+
+    const double Q = 1.602176634e-19, KB = 1.380649e-23;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    rn::Receiver rx;                 // 既定: R=0.9, P=1mW, 50Ω, 25℃, 1GHz
+    const rn::Noise n = rn::analyze(rx);
+    check(n.valid, "rxnoise: the default receiver analyses");
+    check(rel(n.signalCurrent_A, 0.9e-3) < 1e-12,
+          "rxnoise: the signal photocurrent is R*P");
+    check(rel(n.photocurrent_A, 0.9e-3 + 1e-9) < 1e-12,
+          "rxnoise: the dark current adds to the total photocurrent");
+
+    // 各項が定義式そのものであること
+    check(rel(n.shot_A2, 2.0 * Q * n.photocurrent_A * rx.bandwidth_Hz) < 1e-12,
+          "rxnoise: the shot noise is 2qIB");
+    check(rel(n.thermal_A2,
+              4.0 * KB * (25.0 + 273.15) * rx.bandwidth_Hz / 50.0) < 1e-12,
+          "rxnoise: the thermal noise is 4kTB/R_L with T in kelvin");
+    check(rel(n.rin_A2, std::pow(10.0, -15.5) * 0.9e-3 * 0.9e-3
+                            * rx.bandwidth_Hz) < 1e-12,
+          "rxnoise: the RIN term is rin*(RP)^2*B");
+    check(rel(n.total_A2, n.shot_A2 + n.thermal_A2 + n.rin_A2) < 1e-12
+              && rel(n.rms_A, std::sqrt(n.total_A2)) < 1e-12,
+          "rxnoise: the terms add as variances");
+    check(rel(n.snr_dB, 10.0 * std::log10(n.signalCurrent_A * n.signalCurrent_A
+                                          / n.total_A2)) < 1e-12,
+          "rxnoise: SNR is the signal power over the total noise power");
+
+    // 熱雑音: 絶対温度に比例し、負荷抵抗に反比例する
+    {
+        rn::Receiver a = rx; a.temperature_C = -273.15 + 298.15 * 2.0;
+        check(rel(rn::analyze(a).thermal_A2, 2.0 * n.thermal_A2) < 1e-9,
+              "rxnoise: doubling the absolute temperature doubles the thermal "
+              "noise");
+        rn::Receiver z = rx; z.temperature_C = 0.0;
+        check(rn::analyze(z).thermal_A2 > 0.0,
+              "rxnoise: 0 degC is not zero thermal noise (kelvin, not celsius)");
+        rn::Receiver r2 = rx; r2.loadResistance_ohm = 100.0;
+        check(rel(rn::analyze(r2).thermal_A2, 0.5 * n.thermal_A2) < 1e-12,
+              "rxnoise: the thermal noise falls as 1/R_L");
+        check(rel(rn::analyze(r2).shot_A2, n.shot_A2) < 1e-12,
+              "rxnoise: the load resistance does not touch the shot noise");
+    }
+    // パワー依存: ショットは I に比例、熱は不変、RIN は P² に比例
+    {
+        rn::Receiver p2 = rx; p2.opticalPower_W = 2.0e-3;
+        const rn::Noise m = rn::analyze(p2);
+        check(rel(m.shot_A2 / n.shot_A2, 2.0) < 1e-5,
+              "rxnoise: the shot noise doubles with the photocurrent");
+        check(rel(m.thermal_A2, n.thermal_A2) < 1e-12,
+              "rxnoise: the thermal noise does not depend on the light");
+        check(rel(m.rin_A2, 4.0 * n.rin_A2) < 1e-12,
+              "rxnoise: the RIN term goes as the square of the power");
+    }
+    // 帯域: 全項が B に比例 → SNR はちょうど 3.01 dB 悪化
+    {
+        rn::Receiver b2 = rx; b2.bandwidth_Hz = 2.0e9;
+        const rn::Noise m = rn::analyze(b2);
+        check(rel(m.total_A2, 2.0 * n.total_A2) < 1e-12,
+              "rxnoise: every term is proportional to the bandwidth");
+        check(std::fabs((n.snr_dB - m.snr_dB) - 10.0 * std::log10(2.0)) < 1e-9,
+              "rxnoise: doubling the bandwidth costs exactly 3.01 dB of SNR");
+    }
+    // 項の入切: 外した項がちょうど抜ける
+    {
+        rn::Receiver only = rx;
+        only.thermal = false; only.rin = false;
+        const rn::Noise m = rn::analyze(only);
+        check(m.thermal_A2 == 0.0 && m.rin_A2 == 0.0
+                  && rel(m.shot_A2, n.shot_A2) < 1e-12,
+              "rxnoise: switching a term off removes exactly that term");
+        // ショット雑音限界の SNR = R P/(2qB) — 定義から出る閉形式
+        check(rel(m.snr_dB, 10.0 * std::log10(0.9e-3 / (2.0 * Q * 1.0e9)))
+                  < 2e-6,
+              "rxnoise: the shot-noise-limited SNR is R*P/(2qB)");
+    }
+    // 高パワー極限では RIN が支配して SNR が頭打ちになる
+    {
+        rn::Receiver hi = rx; hi.opticalPower_W = 10.0;   // 10 W
+        const rn::Noise m = rn::analyze(hi);
+        const double lim = rn::rinLimitedSnrDb(rx.rin_dBHz, rx.bandwidth_Hz);
+        check(rel(m.snr_dB, lim) < 1e-3,
+              "rxnoise: at high power the SNR saturates at the RIN limit "
+              "1/(rin*B)");
+        check(std::fabs(lim - (155.0 - 90.0)) < 1e-9,
+              "rxnoise: that limit is -RIN - 10log10(B) = 65 dB here");
+        // さらに強くしても改善しない (頭打ちであることの直接確認)
+        rn::Receiver hi2 = hi; hi2.opticalPower_W = 100.0;
+        check(std::fabs(rn::analyze(hi2).snr_dB - m.snr_dB) < 1e-3,
+              "rxnoise: ten times more light buys nothing once RIN dominates");
+    }
+    // NEP: 全雑音を感度で割った等価入力パワー密度
+    {
+        check(rel(n.nep_W_rtHz,
+                  std::sqrt(n.total_A2 / rx.bandwidth_Hz) / rx.responsivity_A_W)
+                  < 1e-12,
+              "rxnoise: NEP is the input-referred noise density");
+    }
+    // 不正な設定
+    {
+        rn::Receiver b0 = rx; b0.bandwidth_Hz = 0.0;
+        check(!rn::analyze(b0).valid, "rxnoise: zero bandwidth is not a result");
+        rn::Receiver r0 = rx; r0.loadResistance_ohm = 0.0;
+        check(!rn::analyze(r0).valid, "rxnoise: zero load is not a result");
+        rn::Receiver s0 = rx; s0.responsivity_A_W = 0.0;
+        check(!rn::analyze(s0).valid,
+              "rxnoise: a photodiode with no responsivity is not a result");
+        rn::Receiver t0 = rx; t0.temperature_C = -300.0;
+        check(!rn::analyze(t0).valid,
+              "rxnoise: below absolute zero there is no thermal noise to speak "
+              "of");
+        rn::Receiver none = rx;
+        none.shot = none.thermal = none.rin = false;
+        const rn::Noise m = rn::analyze(none);
+        check(m.valid && m.total_A2 == 0.0 && !m.snrValid,
+              "rxnoise: with every term off there is no SNR to report");
+        check(rn::rinLimitedSnrDb(-155.0, 0.0) == 0.0,
+              "rxnoise: the RIN limit needs a bandwidth");
+    }
+}
+
 // ── 伝送線路の準 TEM 解析 (core/TransmissionLine) ──────────────────────────
 // 判定は **厳密解が分かっている形状** (同軸・平行 2 線・等角写像で解ける
 // ストリップライン / CPW) と、近似式でも成り立つ極限で行う:
@@ -18894,6 +19028,7 @@ int main(int argc, char *argv[])
     testOptimizer();
     testFlankingTransmission();
     testTransmissionLine();
+    testReceiverNoise();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();

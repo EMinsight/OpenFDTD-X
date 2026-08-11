@@ -1,6 +1,7 @@
 // SchematicTab.cpp
 #include "SchematicTab.h"
 #include "../core/Project.h"
+#include "../core/ReceiverNoise.h"
 #include "../optics/PhotonicCircuit.h"
 #include "../widgets/MiniPlot.h"
 #include <QDoubleSpinBox>
@@ -13,6 +14,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QStandardItemModel>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFrame>
@@ -144,12 +146,65 @@ const bool s_i18n = [] {
     I18n::reg("sch_rin",     "RIN (相対強度雑音)",   "RIN (relative intensity noise)");
     I18n::reg("sch_phase",   "位相雑音",             "Phase noise");
     I18n::reg("sch_temp",    "温度",                 "Temperature");
-    I18n::reg("sch_to_shift", "熱光学シフトを自動適用 (未実装)",
-              "Apply thermo-optic shift automatically (not implemented)");
-    I18n::reg("sch_uw_sim", "回路シミュレーションの設定 (解析モードほか)",
-              "the circuit-simulation settings (analysis mode and the rest)");
-    I18n::reg("sch_uw_thermo", "温度と熱光学シフトの設定",
-              "the temperature and thermo-optic shift settings");
+    // 熱光学シフトは以前から runCircuitSim() が実際に適用していた。
+    // ラベルの「(未実装)」は逆向きの誤記だったので外す (棚卸しの
+    // 「動くものを未実装と書けば利用者はその機能に到達できない」)。
+    I18n::reg("sch_to_shift", "熱光学シフトを自動適用",
+              "Apply the thermo-optic shift automatically");
+    I18n::reg("sch_uw_sim",
+              "シミュレーションモードのうち「時間領域」「混合」"
+              "(素子応答は周波数掃引で解いているため — 時間領域には"
+              "インパルス応答の畳み込みが要ります)",
+              "the “time domain” and “mixed” simulation modes (the element "
+              "response is solved as a frequency sweep; the time domain needs "
+              "an impulse-response convolution)");
+    I18n::reg("sch_uw_sim_ok",
+              "「周波数領域」— 下の「素子応答」がこのモードの計算です",
+              "“frequency domain” — the element response below is that mode");
+    I18n::reg("sch_uw_thermo",
+              "位相雑音 (干渉計の遅延とレーザ線幅から強度雑音へ換算する"
+              "モデルが要ります)",
+              "phase noise (converting it to intensity noise needs the "
+              "interferometer delay and the laser linewidth)");
+    I18n::reg("sch_uw_thermo_ok",
+              "温度と熱光学シフト (素子応答の共振波長に効きます) と、"
+              "ショット / 熱 / RIN の雑音項 (下の雑音収支になります)",
+              "the temperature and thermo-optic shift (they move the resonance "
+              "in the element response) and the shot / thermal / RIN terms "
+              "(they make up the noise budget below)");
+
+    // 受光器の雑音収支
+    I18n::reg("sch_rx_sec", "受光器の雑音収支", "Receiver noise budget");
+    I18n::reg("sch_rx_power", "受光パワー [mW]", "Received power [mW]");
+    I18n::reg("sch_rx_resp", "受光感度 [A/W]", "Responsivity [A/W]");
+    I18n::reg("sch_rx_load", "負荷抵抗 [Ω]", "Load resistance [ohm]");
+    I18n::reg("sch_rx_bw", "帯域 [GHz]", "Bandwidth [GHz]");
+    I18n::reg("sch_rx_rin", "RIN [dB/Hz]", "RIN [dB/Hz]");
+    I18n::reg("sch_rx_fmt",
+              "光電流 %1 mA / 雑音電流 %2 nA(rms) / SNR %3 dB / NEP %4 pW/√Hz\n"
+              "内訳: ショット %5 / 熱 %6 / RIN %7 (電力比)",
+              "Photocurrent %1 mA / noise current %2 nA(rms) / SNR %3 dB / "
+              "NEP %4 pW/rtHz\nBreakdown: shot %5 / thermal %6 / RIN %7 "
+              "(power ratio)");
+    I18n::reg("sch_rx_nosnr",
+              "雑音項がすべて外れているので SNR は出せません "
+              "(ショット / 熱 / RIN のどれかを選んでください)",
+              "Every noise term is switched off, so there is no SNR to report "
+              "(select shot, thermal or RIN)");
+    I18n::reg("sch_rx_bad",
+              "受光器の設定が不正です (感度・負荷抵抗・帯域は正の値、"
+              "温度は絶対零度より上)",
+              "The receiver settings are not valid (responsivity, load and "
+              "bandwidth must be positive and the temperature above absolute "
+              "zero)");
+    I18n::reg("sch_rx_note",
+              "▸ ショット 2qIB・熱 4kTB/R_L・RIN rin(RP)²B の定義式そのもの。"
+              "温度は上の欄 (熱雑音は絶対温度に比例します)。アバランシェ増倍と"
+              "増幅器雑音は含みません。",
+              "▸ Shot 2qIB, thermal 4kTB/R_L and RIN rin(RP)^2B, straight from "
+              "the definitions. The temperature comes from the field above "
+              "(thermal noise scales with the absolute temperature). Avalanche "
+              "gain and amplifier noise are not included.");
     return true;
 }();
 
@@ -208,8 +263,15 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_mode->addItem(I18n::tr("sch_mode_time"));
     m_mode->addItem(I18n::tr("sch_mode_mixed"));
     m_mode->setCurrentIndex(0);              // mock: value="freq"
+    // 素子応答は周波数掃引で解いている。時間領域 / 混合はその実体が無いので
+    // 選べるように見せない (絶対規則 5)。
+    for (int i = 1; i <= 2; ++i)
+        if (auto *item = qobject_cast<QStandardItemModel *>(m_mode->model())
+                             ->item(i))
+            item->setEnabled(false);
     sSim->form()->addRow(I18n::tr("sch_mode"), m_mode);
-    sSim->form()->addRow(tabhelp::unwiredNote(sSim, I18n::tr("sch_uw_sim")));
+    sSim->form()->addRow(tabhelp::unwiredNote(sSim, I18n::tr("sch_uw_sim"),
+                                              I18n::tr("sch_uw_sim_ok")));
     v->addWidget(sSim);
 
     // ── 要素ライブラリ / Element library (3列グリッドのカード) ─────────────
@@ -413,12 +475,54 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_toShift = new QCheckBox(I18n::tr("sch_to_shift"), sNo);
     m_toShift->setChecked(true);
     sNo->form()->addRow(m_toShift);
-    sNo->form()->addRow(tabhelp::unwiredNote(sNo, I18n::tr("sch_uw_thermo")));
+    // 位相雑音だけは強度雑音への換算モデルが無い (絶対規則 5)
+    m_phase->setEnabled(false);
+    sNo->form()->addRow(tabhelp::unwiredNote(sNo, I18n::tr("sch_uw_thermo"),
+                                             I18n::tr("sch_uw_thermo_ok")));
     v->addWidget(sNo);
+
+    // ── 受光器の雑音収支 (core/ReceiverNoise) ──────────────────────────────
+    auto *sRx = new SectionBox(I18n::tr("sch_rx_sec"), body);
+    auto mkEdit = [sRx](const char *initial) {
+        auto *e = new QLineEdit(QString::fromLatin1(initial), sRx);
+        e->setMaximumWidth(90);
+        return e;
+    };
+    m_rxPower = mkEdit("1.0");
+    m_rxResp  = mkEdit("0.9");
+    m_rxLoad  = mkEdit("50");
+    m_rxBw    = mkEdit("1.0");
+    m_rxRin   = mkEdit("-155");
+    sRx->form()->addRow(I18n::tr("sch_rx_power"), m_rxPower);
+    sRx->form()->addRow(I18n::tr("sch_rx_resp"), m_rxResp);
+    sRx->form()->addRow(I18n::tr("sch_rx_load"), m_rxLoad);
+    sRx->form()->addRow(I18n::tr("sch_rx_bw"), m_rxBw);
+    sRx->form()->addRow(I18n::tr("sch_rx_rin"), m_rxRin);
+    m_rxResult = new QLabel(sRx);
+    m_rxResult->setWordWrap(true);
+    sRx->vbox()->addWidget(m_rxResult);
+    sRx->vbox()->addWidget(mutedLabel(I18n::tr("sch_rx_note"), sRx));
+    v->addWidget(sRx);
+
+    // 雑音項のチェック・温度・受光器の設定はすべて雑音収支へ入る。
+    // 温度は熱光学シフト (素子応答) にも効くので両方を更新する。
+    for (QCheckBox *c : { m_shot, m_thermal, m_rin })
+        connect(c, &QCheckBox::toggled, this,
+                [this](bool) { updateNoiseBudget(); });
+    for (QLineEdit *e : { m_rxPower, m_rxResp, m_rxLoad, m_rxBw, m_rxRin })
+        connect(e, &QLineEdit::editingFinished, this,
+                [this] { updateNoiseBudget(); });
+    connect(m_temp, &QLineEdit::editingFinished, this, [this] {
+        runCircuitSim();        // 熱光学シフト
+        updateNoiseBudget();    // 熱雑音
+    });
+    connect(m_toShift, &QCheckBox::toggled, this,
+            [this](bool) { runCircuitSim(); });
 
     v->addStretch(1);
     // 全セクションを組み立ててから初回の応答を出す (熱光学シフト込み)
     runCircuitSim();
+    updateNoiseBudget();
 
     setWidget(body);
     setWidgetResizable(true);
@@ -597,4 +701,47 @@ void SchematicTab::refreshNetPath()
                             .arg(chain, QString::fromStdString(p.note)));
     }
     m_netPath->setText(lines.join(QLatin1Char('\n')));
+}
+
+// ── 受光器の雑音収支 ───────────────────────────────────────────────────────
+// 「ノイズ・温度効果」のチェックと温度、下の受光器の設定から
+// core/ReceiverNoise で計算する。位相雑音だけはモデルが無いので数えない。
+void SchematicTab::updateNoiseBudget()
+{
+    if (!m_rxResult) return;
+    rxnoise::Receiver rx;
+    auto num = [](QLineEdit *e, double fallback) {
+        bool ok = false;
+        const double v = e->text().trimmed().toDouble(&ok);
+        return ok ? v : fallback;
+    };
+    rx.opticalPower_W = num(m_rxPower, 1.0) * 1.0e-3;   // mW → W
+    rx.responsivity_A_W = num(m_rxResp, 0.9);
+    rx.loadResistance_ohm = num(m_rxLoad, 50.0);
+    rx.bandwidth_Hz = num(m_rxBw, 1.0) * 1.0e9;         // GHz → Hz
+    rx.rin_dBHz = num(m_rxRin, -155.0);
+    rx.temperature_C = num(m_temp, kToRefTemp_C);
+    rx.shot = m_shot->isChecked();
+    rx.thermal = m_thermal->isChecked();
+    rx.rin = m_rin->isChecked();
+
+    const rxnoise::Noise n = rxnoise::analyze(rx);
+    if (!n.valid) {
+        m_rxResult->setText(I18n::tr("sch_rx_bad"));
+        return;
+    }
+    if (!n.snrValid) {
+        m_rxResult->setText(I18n::tr("sch_rx_nosnr"));
+        return;
+    }
+    auto frac = [&n](double part) {
+        return QString::number(n.total_A2 > 0.0 ? part / n.total_A2 : 0.0,
+                               'f', 3);
+    };
+    m_rxResult->setText(I18n::tr("sch_rx_fmt")
+        .arg(QString::number(n.photocurrent_A * 1.0e3, 'g', 4),
+             QString::number(n.rms_A * 1.0e9, 'g', 4),
+             QString::number(n.snr_dB, 'f', 1),
+             QString::number(n.nep_W_rtHz * 1.0e12, 'g', 3),
+             frac(n.shot_A2), frac(n.thermal_A2), frac(n.rin_A2)));
 }
