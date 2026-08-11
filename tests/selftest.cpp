@@ -4918,6 +4918,40 @@ static void testRcwaCore()
         check(Runner::kernelForProject(p) == Kernel::RCWA,
               "fmm: kernel resolves to orcwa (RCWA)");
 
+        // ── 4 つのソルバ選択がそれぞれ正しいカーネルと入力になること ──────
+        // 光ソルバのクロスバリデーションは「solver を差し替えて書き出し →
+        // その solver のカーネルを起動」で回る。選択がカーネル入力に届いて
+        // いないと、別のソルバを走らせたつもりで同じものを走らせてしまう
+        // (回路タブの渦電流でまさにそれが起きていた)。
+        {
+            const struct { OpticalSolver s; Kernel k; const char *head; }
+            kCases[] = {
+                { OpticalSolver::FDTD, Kernel::FDTD, "OpenFDTD 4 2\n" },
+                { OpticalSolver::RCWA, Kernel::RCWA, "OpenRCWA 4 2\n" },
+                { OpticalSolver::BPM,  Kernel::BPM,  "OpenFDTD 4 2\n" },
+                { OpticalSolver::FMM,  Kernel::RCWA, "OpenRCWA 4 2\n" },
+            };
+            // RCWA / FMM のヘッダ切替は層スタックが妥当なときだけ起きる
+            o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                                RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+            bool allKernel = true, allHead = true;
+            for (const auto &c : kCases) {
+                o.solver = c.s;
+                if (Runner::kernelForProject(p) != c.k) allKernel = false;
+                if (!OfdIO::serialize(p).startsWith(QLatin1String(c.head)))
+                    allHead = false;
+            }
+            check(allKernel,
+                  "optical: every solver choice resolves to its own kernel "
+                  "(FDTD/BPM to their own, RCWA and FMM to orcwa)");
+            check(allHead,
+                  "optical: every solver choice writes the header its kernel "
+                  "parses");
+            o.rcwaLayerList.clear();
+            o.solver = OpticalSolver::FMM;
+        }
+
         // 層スタックが空なら従来出力とバイト一致 (実行前ゲートは
         // MainWindow 側で警告するため、書き出しは何も加えない)
         o.rcwaLayerList.clear();
