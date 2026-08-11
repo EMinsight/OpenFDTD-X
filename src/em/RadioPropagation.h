@@ -103,6 +103,56 @@ double arrayGainDb(int elements);
 // Nt = Nr = 1 なら shannonCapacity と一致する。
 double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx);
 
+// ── 環境別の経験式 (見通し外を含む) ────────────────────────────────────────
+//
+// 上の Friis / 2 波は見通し内の解析モデルで、市街地の建物回折や屋内の壁透過は
+// 表せない。ここでは**公刊の経験式**を実装する。経験式は測定データの当てはめ
+// なので、**適用範囲の外では使ってはならない** — 範囲判定を別関数で出し、
+// GUI 側で警告できるようにしてある (黙って外挿しない)。
+//
+//   [9]  Y. Okumura et al., Rev. Elec. Commun. Lab. 16, 825 (1968) と
+//        M. Hata, "Empirical formula for propagation loss in land mobile
+//        radio services", IEEE Trans. Veh. Technol. 29(3), 317-325 (1980)。
+//        奥村-秦 (Okumura-Hata) の市街地・郊外・開放地の式。
+//   [10] COST Action 231 Final Report, "Digital mobile radio towards future
+//        generation systems", EUR 18957 (1999), §4.1.2 (COST-231 Hata)。
+//        1500-2000 MHz への拡張。
+//   [11] ITU-R P.1238-11 (2023) — 屋内の距離損失係数モデル
+//        L = 20log10(f[MHz]) + N·log10(d[m]) − 28 + Lf。
+
+// 対数距離モデル L = L_fs(d0) + 10·n·log10(d/d0) [dB] ([2] §4.11.3)。
+// n = 2 なら自由空間と厳密に一致する (この恒等式を selftest で検証している)。
+double logDistancePathLossDb(double dist_m, double freq_hz, double exponent,
+                             double d0_m = 1.0);
+
+// ITU-R P.1238 屋内 ([11])。distCoef は距離損失係数 N (自由空間は 20、
+// 屋内オフィスの代表値は 30)。floorLossDb は階層貫通損 Lf [dB]。
+double indoorP1238PathLossDb(double dist_m, double freq_hz, double distCoef,
+                             double floorLossDb = 0.0);
+
+// 奥村-秦 ([9])。hb = 基地局高 [m]、hm = 移動局高 [m]。
+// largeCity = true で大都市の移動局高補正 a(hm) を使う。
+double hataUrbanPathLossDb(double dist_m, double freq_hz,
+                           double hb_m, double hm_m, bool largeCity = false);
+// 郊外  = 市街地 − 2·[log10(f_MHz/28)]² − 5.4        ([9] 定義式)
+double hataSuburbanPathLossDb(double dist_m, double freq_hz,
+                              double hb_m, double hm_m);
+// 開放地 = 市街地 − 4.78·(log10 f)² + 18.33·log10 f − 40.94   ([9] 定義式)
+double hataOpenPathLossDb(double dist_m, double freq_hz,
+                          double hb_m, double hm_m);
+// COST-231 Hata ([10])。cityCorrectionDb は都市補正 C (中小都市/郊外 = 0、
+// 大都市 = 3 dB)。
+double cost231HataPathLossDb(double dist_m, double freq_hz,
+                             double hb_m, double hm_m,
+                             double cityCorrectionDb = 0.0,
+                             bool largeCity = false);
+
+// 適用範囲の判定 (経験式の外挿を黙って行わないため)。
+//   奥村-秦    : f 150-1500 MHz, hb 30-200 m, hm 1-10 m, d 1-20 km
+//   COST-231   : f 1500-2000 MHz, 他は同じ
+bool hataApplicable(double dist_m, double freq_hz, double hb_m, double hm_m);
+bool cost231Applicable(double dist_m, double freq_hz, double hb_m, double hm_m);
+
 // 受信電力のカバレッジ格子 (受信点を「格子」にしたときの表示の実体)。
 //
 // 送信点を格子の中心に置き、受信点を水平面 (x, y) 上へ並べて 2 波モデルで

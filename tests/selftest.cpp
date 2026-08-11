@@ -10938,6 +10938,140 @@ static void testSolverSelection()
           "sel: zero range yields 0 (not computed)");
 }
 
+// ── 環境別の経験式 (奥村-秦 / COST-231 / ITU-R P.1238 / 対数距離) ──────────
+// 判定は原典の**定義式そのもの**との突き合わせと、独立実装との一致:
+//   - 対数距離 n = 2 は Friis と厳密一致 (別実装どうしの交差検証)
+//   - P.1238 の N = 20 は自由空間 (定数 −28 の丸めぶんだけずれる)
+//   - 郊外・開放地は市街地からの定義式で決まる
+//   - 距離の傾きは (44.9 − 6.55·log10 hb) dB/decade
+//   - 基地局高を 2 倍にすると d = 1 km でちょうど 13.82·log10(2) dB 下がる
+static void testEmpiricalPropagation()
+{
+    g_file = "propmodel";
+    namespace pr = ofd::em::propagation;
+
+    // 1) 対数距離モデル n = 2 == 自由空間 (どの距離でも厳密に一致)
+    {
+        const double f = 2.4e9;
+        for (double d : { 1.0, 10.0, 137.0, 5000.0 }) {
+            const double a = pr::logDistancePathLossDb(d, f, 2.0);
+            const double b = pr::freeSpacePathLossDb(d, f);
+            check(std::fabs(a - b) < 1e-9,
+                  "propmodel: the log-distance model with n = 2 is exactly the "
+                  "free-space loss");
+        }
+        // n = 4 なら距離 10 倍で 40 dB 増える (定義)
+        const double l1 = pr::logDistancePathLossDb(10.0, f, 4.0);
+        const double l2 = pr::logDistancePathLossDb(100.0, f, 4.0);
+        check(std::fabs((l2 - l1) - 40.0) < 1e-9,
+              "propmodel: n = 4 adds exactly 40 dB per decade of distance");
+    }
+
+    // 2) ITU-R P.1238 の N = 20 は自由空間 (定数 −28 の丸めぶん 0.44 dB だけ差)
+    {
+        const double f = 2.0e9;
+        for (double d : { 5.0, 20.0, 60.0 }) {
+            const double p = pr::indoorP1238PathLossDb(d, f, 20.0);
+            const double fs = pr::freeSpacePathLossDb(d, f);
+            check(std::fabs(p - fs) < 0.5,
+                  "propmodel: P.1238 with N = 20 reduces to free space "
+                  "(within the rounding of its -28 constant)");
+        }
+        // 距離損失係数がそのまま dB/decade になる
+        const double a = pr::indoorP1238PathLossDb(10.0, f, 30.0);
+        const double b = pr::indoorP1238PathLossDb(100.0, f, 30.0);
+        check(std::fabs((b - a) - 30.0) < 1e-9,
+              "propmodel: the P.1238 distance coefficient N is the loss per "
+              "decade in dB");
+        // 階層貫通損はそのまま足される
+        check(std::fabs(pr::indoorP1238PathLossDb(10.0, f, 30.0, 15.0)
+                        - (a + 15.0)) < 1e-9,
+              "propmodel: the floor penetration loss adds directly");
+    }
+
+    // 3) 奥村-秦 — 郊外・開放地は市街地からの定義式
+    {
+        const double f = 900e6, hb = 30.0, hm = 1.5, d = 5000.0;
+        const double u = pr::hataUrbanPathLossDb(d, f, hb, hm);
+        const double su = pr::hataSuburbanPathLossDb(d, f, hb, hm);
+        const double op = pr::hataOpenPathLossDb(d, f, hb, hm);
+        const double lf = std::log10(f / 1e6);
+        const double t = std::log10(f / 1e6 / 28.0);
+        check(std::fabs(su - (u - 2.0 * t * t - 5.4)) < 1e-9,
+              "propmodel: Hata suburban = urban - 2*[log10(f/28)]^2 - 5.4");
+        check(std::fabs(op - (u - 4.78 * lf * lf + 18.33 * lf - 40.94)) < 1e-9,
+              "propmodel: Hata open = urban - 4.78*(log f)^2 + 18.33*log f "
+              "- 40.94");
+        check(u > su && su > op,
+              "propmodel: urban loses more than suburban, suburban more than "
+              "open country");
+
+        // 距離の傾きは (44.9 - 6.55*log10 hb) dB/decade
+        const double slope = pr::hataUrbanPathLossDb(10000.0, f, hb, hm)
+                             - pr::hataUrbanPathLossDb(1000.0, f, hb, hm);
+        check(std::fabs(slope - (44.9 - 6.55 * std::log10(hb))) < 1e-9,
+              "propmodel: the Hata distance slope is (44.9 - 6.55*log10 hb) "
+              "dB per decade");
+        // d = 1 km では距離項が消えるので、基地局高 2 倍の効果は
+        // ちょうど 13.82*log10(2) dB
+        const double h1 = pr::hataUrbanPathLossDb(1000.0, f, 30.0, hm);
+        const double h2 = pr::hataUrbanPathLossDb(1000.0, f, 60.0, hm);
+        check(std::fabs((h1 - h2) - 13.82 * std::log10(2.0)) < 1e-9,
+              "propmodel: at 1 km, doubling the base-station height gains "
+              "exactly 13.82*log10(2) dB");
+
+        // 代表例 (f = 900 MHz, hb = 30 m, hm = 1.5 m, d = 1 km) の回帰値
+        check(std::fabs(h1 - 126.40) < 0.05,
+              "propmodel: the canonical Hata case (900 MHz / 30 m / 1.5 m / "
+              "1 km) gives 126.4 dB");
+
+        // 大都市補正は移動局高補正 a(hm) の差だけ市街地損を動かす
+        const double big = pr::hataUrbanPathLossDb(d, f, hb, hm, true);
+        check(std::fabs(big - u) > 1e-6 && big < u + 5.0,
+              "propmodel: the large-city mobile-height correction shifts the "
+              "urban loss");
+    }
+
+    // 4) COST-231 は同じ距離・高さ依存で定数だけが違う。都市補正は +3 dB
+    {
+        const double f = 1.8e9, hb = 30.0, hm = 1.5, d = 5000.0;
+        const double a = pr::cost231HataPathLossDb(d, f, hb, hm, 0.0);
+        const double b = pr::cost231HataPathLossDb(d, f, hb, hm, 3.0);
+        check(std::fabs((b - a) - 3.0) < 1e-9,
+              "propmodel: the COST-231 metropolitan correction adds 3 dB");
+        const double slope = pr::cost231HataPathLossDb(10000.0, f, hb, hm)
+                             - pr::cost231HataPathLossDb(1000.0, f, hb, hm);
+        check(std::fabs(slope - (44.9 - 6.55 * std::log10(hb))) < 1e-9,
+              "propmodel: COST-231 keeps the Hata distance slope");
+    }
+
+    // 5) 適用範囲の判定 (経験式を黙って外挿しない)
+    {
+        check(pr::hataApplicable(5000.0, 900e6, 30.0, 1.5),
+              "propmodel: a 900 MHz / 30 m / 1.5 m / 5 km link is inside the "
+              "Hata range");
+        check(!pr::hataApplicable(5000.0, 2.4e9, 30.0, 1.5),
+              "propmodel: 2.4 GHz is outside the Hata frequency range");
+        check(!pr::hataApplicable(100.0, 900e6, 30.0, 1.5),
+              "propmodel: 100 m is below the 1 km lower limit of Hata");
+        check(!pr::hataApplicable(5000.0, 900e6, 5.0, 1.5),
+              "propmodel: a 5 m base station is below the Hata height range");
+        check(pr::cost231Applicable(5000.0, 1.8e9, 30.0, 1.5)
+                  && !pr::cost231Applicable(5000.0, 900e6, 30.0, 1.5),
+              "propmodel: COST-231 covers 1.5-2 GHz, not 900 MHz");
+    }
+
+    // 6) 不正入力は 0 を返す (「それらしい損失」を作らない)
+    {
+        check(pr::hataUrbanPathLossDb(0.0, 900e6, 30.0, 1.5) == 0.0
+                  && pr::hataUrbanPathLossDb(1000.0, 0.0, 30.0, 1.5) == 0.0
+                  && pr::indoorP1238PathLossDb(0.0, 2e9, 30.0) == 0.0
+                  && pr::logDistancePathLossDb(-1.0, 2e9, 2.0) == 0.0,
+              "propmodel: non-positive distance or frequency returns 0, not a "
+              "plausible-looking number");
+    }
+}
+
 // ── 電波伝搬モデル (src/em/RadioPropagation) ────────────────────────────────
 // 期待値はテスト側に独立に書く:
 //   ITU-R P.525 の 32.44 + 20log10(f[MHz]) + 20log10(d[km])、
@@ -17399,6 +17533,7 @@ int main(int argc, char *argv[])
     testSarMetrics();
     testSolverSelection();
     testRadioPropagation();
+    testEmpiricalPropagation();
     testDispersionFit();
     testBendWaveguide();
     testMeshImporterFormats();
