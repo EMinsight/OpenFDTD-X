@@ -59,6 +59,18 @@ bool isConductor(const Project &p, int materialId)
     return p.materials()[idx].esgm > 0.0;
 }
 
+// 導体の導電率 [S/m]。PEC は有限値を持たないので、.ofe の conductorsigma
+// (σ > 0 を要求する) には銅の値を入れる。σ = 0 を書くとカーネルが弾く。
+double conductorSigma(const Project &p, int materialId)
+{
+    constexpr double kCopper = 5.8e7;
+    if (materialId == 1) return kCopper;          // PEC → 銅で代用
+    const int idx = materialId - 2;
+    if (idx < 0 || idx >= p.materials().size()) return kCopper;
+    const double sg = p.materials()[idx].esgm;
+    return (sg > 0.0) ? sg : kCopper;
+}
+
 // 直方体 (shape 1) の 6 パラメータ = x1 x2 y1 y2 z1 z2
 struct Box { double lo[3], hi[3]; };
 
@@ -314,9 +326,20 @@ CircuitInput CircuitIO::femText(const Project &p)
         emitBox("conductor", (i == refIndex) ? 0 : nextId++, conductors[i].box);
 
     out << "analysis = " << c.femAnalysis << "\n";
-    // 伝送線路解析 (C / L / Z0) は線路軸 tline を要求する。
+    // 導体の導電率 (analysis R / F / A / E が読む)。無いと
+    // 「*** analysis F requires conductorsigma for conductor N」で止まる。
+    if (usesSigma) {
+        int sigId = 1;
+        for (int i = 0; i < conductors.size(); ++i) {
+            const int id = (i == refIndex) ? 0 : sigId++;
+            const double sg = conductorSigma(p, conductors[i].g->materialId);
+            out << "conductorsigma = " << id << " " << num(sg) << "\n";
+        }
+    }
+    // 伝送線路解析 (C / L / Z0) と 2 次元渦電流 (F) は線路軸 tline を要求する。
     // 断面 2 次元モデルなので「分割が 1 の軸」= 線路軸。
-    if (an.contains(QLatin1Char('C')) || an.contains(QLatin1Char('L'))) {
+    if (an.contains(QLatin1Char('C')) || an.contains(QLatin1Char('L'))
+        || an.contains(QLatin1Char('F'))) {
         static const char kAxis[3] = { 'X', 'Y', 'Z' };
         int lineAxis = -1;
         for (int a = 0; a < 3; ++a) {
@@ -332,6 +355,11 @@ CircuitInput CircuitIO::femText(const Project &p)
         }
         out << "tline = " << kAxis[lineAxis] << "\n";
     }
+    // 動作周波数。**.ofe は掃引を持たない**ので単一値 (掃引下端) を書く。
+    // 渦電流 (F / A) は Freq > 0 が必須で、無いと解けない。
+    // C / L だけの解析では従来どおり書かない (tanδ 項が入って結果が変わるため)。
+    if (an.contains(QLatin1Char('F')) || an.contains(QLatin1Char('A')))
+        out << "frequency = " << num(std::max(0.0, c.fmin_Hz)) << "\n";
     out << "voltage = " << num(c.femVoltage_V) << "\n";
     out << "end\n";
 
