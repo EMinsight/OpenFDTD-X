@@ -88,6 +88,10 @@ private:
     QLineEdit *m_peecFmin = nullptr;    // 周波数範囲 [MHz]
     QLineEdit *m_peecFmax = nullptr;
     QLineEdit *m_peecFdiv = nullptr;    // 分割数
+    // FEM ページ (準静的 / 渦電流) → CircuitOpts::femAnalysis / 周波数
+    QCheckBox *m_femqRlgc = nullptr;    // RLGC → analysis に R を足す
+    QLineEdit *m_femwFmin = nullptr;    // 周波数範囲 [GHz] (下端 = 動作周波数)
+    QLineEdit *m_femwFmax = nullptr;
     QLabel         *m_estimate;         // 推定計算時間
     QPushButton    *m_runExtract = nullptr;
     QLabel         *m_extractStatus = nullptr;

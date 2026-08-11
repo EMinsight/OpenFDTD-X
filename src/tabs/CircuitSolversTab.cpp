@@ -215,6 +215,12 @@ const bool s_i18n = [] {
     I18n::reg("cir_peec_freq_unit", "MHz (対数 40点)", "MHz (40 log points)");
     I18n::reg("cir_peec_freq_mhz", "MHz ·", "MHz ·");
     I18n::reg("cir_peec_freq_div", "点 (対数掃引)", "points (log sweep)");
+    I18n::reg("cir_femw_single_note",
+              "▸ .ofe は周波数掃引を持たないため、範囲の下端を動作周波数として "
+              "1 点だけ解きます (渦電流解析は frequency キーが必須です)。",
+              "▸ The .ofe format has no frequency sweep, so the lower end of "
+              "the range is solved as the single operating frequency (the eddy "
+              "current analysis requires the frequency key).");
     I18n::reg("cir_peec_lp_tip",
               "部分インダクタンス Lp は PEEC の手法そのものなので常に計算されます "
               "(切れません)",
@@ -316,18 +322,22 @@ const bool s_i18n = [] {
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
     I18n::reg("cir_exp_h5", "💾 HDF5 保存", "💾 Save HDF5");
     I18n::reg("cir_exp_fdtd", "→ FDTDポートへ適用", "→ Apply to FDTD ports");
-    I18n::reg("cir_uw_extract", "FEM ページ (準静的 / 渦電流) の設定",
-              "the FEM pages (quasi-static / eddy current)");
+    I18n::reg("cir_uw_extract",
+              "メッシュ方式 (自動/手動)・tanδ・周波数点数・適応メッシュ・掃引方式",
+              "the mesh mode (auto/manual), tan-delta, point count, adaptive "
+              "mesh and sweep method");
     I18n::reg("cir_uw_extract_ok",
-              "PEEC ページのメッシュ分割・部分容量 Cp・抵抗 (表皮効果)・"
-              "遅延/準静的・周波数範囲と分割数 (.peec へ書かれます)。"
+              "ソルバ選択 (解析種別)・PEEC のメッシュ分割/Cp/表皮効果/遅延/"
+              "周波数範囲と分割数・FEM の RLGC と周波数範囲 "
+              "(.peec / .ofe へ書かれます)。"
               "「抽出実行」そのものも動きます — 導体はジオメトリタブの直方体から、"
               "ポートは下のポート表から作られます",
-              "the mesh division, partial capacitance Cp, resistance (skin "
-              "effect), retarded/quasi-static choice and the frequency range "
-              "and point count on the PEEC page (written into the .peec). "
-              "Run extraction itself also works - conductors come from the "
-              "boxes on the Geometry tab and ports from the port table below");
+              "the solver choice (analysis type), the PEEC mesh division, Cp, "
+              "skin effect, retardation and frequency range/points, and the "
+              "FEM RLGC choice and frequency range (written into the .peec / "
+              ".ofe). Run extraction itself also works - conductors come from "
+              "the boxes on the Geometry tab and ports from the port table "
+              "below");
     I18n::reg("cir_uw_spice", "SPICE 共シミュレーションの設定",
               "the SPICE co-simulation settings");
     return true;
@@ -419,6 +429,8 @@ CircuitSolversTab::CircuitSolversTab(Project *project, QWidget *parent)
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
 
+    connect(m_solver, &QComboBox::currentIndexChanged,
+            this, [this] { applyExtract(); });
     connect(m_solver, &QComboBox::currentIndexChanged,
             this, &CircuitSolversTab::solverChanged);
     solverChanged(0);                    // 既定 "peec"
@@ -547,6 +559,26 @@ void CircuitSolversTab::applyExtract()
     c.peecCapacitance = m_peecCp->isChecked();
     c.peecSkinEffect  = m_peecR->isChecked();
     c.peecRetardation = m_peecRpeec->isChecked();
+
+    // ── ソルバ選択 → 解析種別 ────────────────────────────────────────────
+    // ここが無いと、渦電流 FEM を選んでも .ofe には analysis = C L が書かれ、
+    // 渦電流解析は 1 度も走らない (選択が黙って捨てられていた)。
+    const int kind = m_solver ? m_solver->currentIndex() : 0;
+    c.solver = kind;
+    if (kind == 1) {                          // 準静的 FEM
+        c.femAnalysis = (m_femqRlgc && m_femqRlgc->isChecked())
+                            ? QStringLiteral("C L R")
+                            : QStringLiteral("C L");
+    } else if (kind == 2) {                   // 渦電流 FEM
+        c.femAnalysis = QStringLiteral("F");
+        // .ofe は単一周波数。範囲の下端 [GHz] を動作周波数に使う
+        const double g0 = m_femwFmin ? m_femwFmin->text().trimmed().toDouble(&ok)
+                                     : 0.0;
+        if (ok && g0 > 0.0) c.fmin_Hz = g0 * 1e9;
+        const double g1 = m_femwFmax ? m_femwFmax->text().trimmed().toDouble(&ok)
+                                     : 0.0;
+        if (ok && g1 > 0.0) c.fmax_Hz = g1 * 1e9;
+    }
     m_p->touch();
 }
 
@@ -564,6 +596,10 @@ void CircuitSolversTab::refreshExtract()
     m_peecR->setChecked(c.peecSkinEffect);
     m_peecRpeec->setChecked(c.peecRetardation);
     m_peecQuasi->setChecked(!c.peecRetardation);
+    if (m_femqRlgc)
+        m_femqRlgc->setChecked(c.femAnalysis.toUpper().contains(QLatin1Char('R')));
+    if (m_femwFmin) m_femwFmin->setText(QString::number(c.fmin_Hz * 1e-9, 'g', 6));
+    if (m_femwFmax) m_femwFmax->setText(QString::number(c.fmax_Hz * 1e-9, 'g', 6));
     m_updating = prev;
 }
 
@@ -754,11 +790,14 @@ QWidget *CircuitSolversTab::buildFemqPage()
     mesh->addItem(I18n::tr("cir_mesh_manual"));
     form->addRow(I18n::tr("cir_femq_mesh"), mesh);
 
+    m_femqRlgc = check(I18n::tr("cir_femq_rlgc"), true, page);
     auto *row = new QHBoxLayout();
-    row->addWidget(check(I18n::tr("cir_femq_rlgc"), true, page));
+    row->addWidget(m_femqRlgc);
     row->addWidget(check(I18n::tr("cir_femq_tand"), true, page));
     row->addStretch(1);
     form->addRow(row);
+    connect(m_femqRlgc, &QCheckBox::toggled, this,
+            &CircuitSolversTab::applyExtract);
 
     auto *ptRow = new QHBoxLayout();
     ptRow->addWidget(numEdit("20", 70, page));
@@ -784,13 +823,23 @@ QWidget *CircuitSolversTab::buildFemwPage()
     sweep->setCurrentIndex(1);                   // 既定 "interp"
     form->addRow(I18n::tr("cir_femw_sweep"), sweep);
 
+    m_femwFmin = numEdit("0.1", 70, page);
+    m_femwFmax = numEdit("20", 70, page);
     auto *rangeRow = new QHBoxLayout();
-    rangeRow->addWidget(numEdit("0.1", 70, page));
+    rangeRow->addWidget(m_femwFmin);
     rangeRow->addWidget(new QLabel("〜", page));
-    rangeRow->addWidget(numEdit("20", 70, page));
+    rangeRow->addWidget(m_femwFmax);
     rangeRow->addWidget(new QLabel("GHz", page));
     rangeRow->addStretch(1);
     form->addRow(I18n::tr("cir_range"), rangeRow);
+    // .ofe は掃引を持たない — 下端を動作周波数として使うことを明示する
+    auto *fnote = new QLabel(I18n::tr("cir_femw_single_note"), page);
+    fnote->setWordWrap(true);
+    fnote->setStyleSheet("font-size:11px; color:palette(mid);");
+    form->addRow(fnote);
+    for (QLineEdit *e : { m_femwFmin, m_femwFmax })
+        connect(e, &QLineEdit::editingFinished, this,
+                &CircuitSolversTab::applyExtract);
     return page;
 }
 

@@ -7045,7 +7045,33 @@ static void testCircuitExtraction()
         check(r2.text.contains(QLatin1String("material = 1 58000000"))
                   && !r2.text.contains(QLatin1String("tline")),
               "ofe: analysis R keeps sigma and needs no tline");
+        // σ を読む解析は conductorsigma を要求する (無いとカーネルが止まる)
+        check(r2.text.contains(QLatin1String("conductorsigma = 0 "))
+                  && r2.text.contains(QLatin1String("conductorsigma = 1 ")),
+              "ofe: analysis R emits conductorsigma for every conductor");
+
+        // ── 渦電流 (analysis = F) が実際に解ける形になること ──────────────
+        // F は tline と frequency と conductorsigma の 3 つを要求する。
+        // 以前はどれも書いていなかったので、渦電流を選ぶと .ofe が 1 度も
+        // 走らなかった (カーネルが "requires the ... key" で止まっていた)。
+        p.circuit().femAnalysis = QStringLiteral("F");
+        p.circuit().fmin_Hz = 1e8;
+        const CircuitInput rf = CircuitIO::femText(p);
+        check(rf.text.contains(QLatin1String("analysis = F")),
+              "ofe: the eddy-current analysis is written");
+        check(rf.text.contains(QLatin1String("tline = ")),
+              "ofe: analysis F emits the line axis it requires");
+        check(rf.text.contains(QLatin1String("frequency = 100000000")),
+              "ofe: analysis F emits the operating frequency it requires");
+        check(rf.text.contains(QLatin1String("conductorsigma = 0 ")),
+              "ofe: analysis F emits conductorsigma");
+        // C / L だけの解析では frequency を書かない (tanδ 項で結果が変わる)
+        p.circuit().femAnalysis = QStringLiteral("C L");
+        check(!CircuitIO::femText(p).text.contains(QLatin1String("frequency")),
+              "ofe: a C/L-only analysis still writes no frequency line");
+
         // 基準導体を決められないときは理由を出す
+        p.circuit().femAnalysis = QStringLiteral("C L");
         p.circuitPorts().clear();
         const CircuitInput r3 = CircuitIO::femText(p);
         check(r3.isValid()
@@ -7184,6 +7210,104 @@ static void testCircuitExtraction()
             check(std::fabs(lH / 1.141093e-6 - 1.0) < 0.01,
                   "peec-e2e: the extracted L matches OpenPEEC's own sample "
                   "value for this bar");
+        }
+        g_file = "circuit";
+    }
+
+    // (i) 実カーネル統合 (OpenFEM) — **渦電流 (analysis = F) が実際に走ること**。
+    // これは以前まったく動かなかった経路で、生成した .ofe には F が要求する
+    // tline / frequency / conductorsigma のどれも入っていなかった。
+    // ここでは「ソルバが最後まで解けたか」を本物の ofe で確かめる。
+    {
+        g_file = "ofe_e2e";
+        const QString bin = qEnvironmentVariable("OFDX_OFE_BIN");
+        if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+            std::printf("  (ofe integration skipped: set OFDX_OFE_BIN "
+                        "to run)\n");
+        } else {
+            // 断面 2 次元の 2 導体 (基準 + 信号)。線路軸は分割 1 の Z
+            Project p;
+            p.general().title = QStringLiteral("eddy");
+            p.mesh(0).nodes = { -2e-3, 2e-3 }; p.mesh(0).divs = { 16 };
+            p.mesh(1).nodes = { 0.0, 1e-3 };   p.mesh(1).divs = { 8 };
+            p.mesh(2).nodes = { 0.0, 1e-3 };   p.mesh(2).divs = { 1 };
+            p.materials().clear();
+            Material cu;
+            cu.esgm = 5.8e7;
+            p.materials().push_back(cu);
+            auto addBox = [&p](double x0, double x1, double y0, double y1) {
+                Geometry g;
+                g.materialId = 2;              // σ > 0 = 導体
+                g.shape = 1;
+                g.g[0] = x0; g.g[1] = x1;
+                g.g[2] = y0; g.g[3] = y1;
+                g.g[4] = 0.0; g.g[5] = 1e-3;
+                p.geometries().push_back(g);
+            };
+            addBox(-2e-3, 2e-3, 0.0, 125e-6);        // 基準導体 (下)
+            addBox(-0.5e-3, 0.5e-3, 750e-6, 875e-6); // 信号導体 (上)
+            p.circuitPorts().clear();
+            CircuitPortRow port;
+            port.kind = CircuitPortRow::Lumped;
+            port.x1_m = 0.0;   port.y1_m = 800e-6; port.z1_m = 0.0;
+            port.x2_m = 0.0;   port.y2_m = 60e-6;  port.z2_m = 0.0;
+            p.circuitPorts().push_back(port);
+            // 画面で「渦電流 FEM」を選んだのと同じ状態
+            CircuitOpts &c = p.circuit();
+            c.solver = 2;
+            c.femAnalysis = QStringLiteral("F");
+            c.fmin_Hz = 1e8;
+
+            const CircuitInput in = CircuitIO::femText(p);
+            check(in.isValid(), "ofe-e2e: the GUI produced an .ofe");
+
+            QTemporaryDir dir;
+            check(dir.isValid(), "ofe-e2e: temp dir");
+            {
+                QFile f(dir.filePath("eddy.ofe"));
+                check(f.open(QIODevice::WriteOnly | QIODevice::Text),
+                      "ofe-e2e: write the .ofe");
+                f.write(in.text.toUtf8());
+            }
+            QProcess pr;
+            pr.setWorkingDirectory(dir.path());
+            pr.start(bin, { QStringLiteral("eddy.ofe") });
+            check(pr.waitForFinished(300000), "ofe-e2e: solver finished");
+            const QString sout = QString::fromUtf8(pr.readAllStandardOutput());
+            QFile lg(dir.filePath("ofe.log"));
+            QString log;
+            if (lg.open(QIODevice::ReadOnly | QIODevice::Text))
+                log = QString::fromUtf8(lg.readAll());
+            // 以前の生成物はここで "requires the ... key" で止まっていた
+            check(!sout.contains(QLatin1String("requires the"))
+                      && !log.contains(QLatin1String("requires the")),
+                  "ofe-e2e: no missing-key error (tline / frequency / "
+                  "conductorsigma are all present)");
+            check(pr.exitStatus() == QProcess::NormalExit && pr.exitCode() == 0,
+                  "ofe-e2e: solver exit code 0");
+            check(log.contains(QLatin1String("Analysis = F")),
+                  "ofe-e2e: the kernel really ran the eddy-current analysis");
+            check(log.contains(QLatin1String("Frequency = 1.000000e+08")),
+                  "ofe-e2e: the operating frequency from the GUI reached it");
+            // 表皮深さ delta = sqrt(2/(omega mu sigma)) — 100 MHz の銅で約 6.6 um
+            const int at = log.indexOf(QLatin1String("skin depth"));
+            check(at >= 0, "ofe-e2e: the skin depth is reported");
+            if (at >= 0) {
+                // "skin depth = 6.6086e-04 [m]" — '=' の次の 1 トークンだけ取る
+                // (QString::toDouble は厳密なので "[m]" が混ざると 0 になる)
+                const QString tail = log.mid(at, 60);
+                const int eq = tail.indexOf(QLatin1Char('='));
+                const QStringList tk = tail.mid(eq + 1)
+                        .split(QRegularExpression(QStringLiteral("\\s+")),
+                               Qt::SkipEmptyParts);
+                const double delta = tk.isEmpty() ? 0.0 : tk.first().toDouble();
+                // 独立に計算した値 (mu0 = 4e-7 pi, sigma = 5.8e7, f = 1e8)
+                const double pi = 3.14159265358979323846;
+                const double want = std::sqrt(2.0 / (2.0 * pi * 1e8
+                                    * (4e-7 * pi) * 5.8e7));
+                check(delta > 0 && std::fabs(delta / want - 1.0) < 0.02,
+                      "ofe-e2e: the skin depth matches sqrt(2/(omega mu sigma))");
+            }
         }
         g_file = "circuit";
     }
