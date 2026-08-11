@@ -67,6 +67,7 @@ private:
 
     // 車室モデル / cabin model
     QLineEdit *m_cadFile;
+    QLabel    *m_cadInfo = nullptr;   // 取込結果 (三角形数・外接直方体)
     QCheckBox *m_absRoof, *m_absCarpet, *m_absDoor, *m_absSeat;
 
     // 車室音響モード / cabin acoustic modes (直方体近似)

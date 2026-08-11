@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 #include "../acoustics/core/RoomModes.h"
+#include "../io/MeshImporter.h"
 #include "../core/LevelSum.h"
 
 #include <QCheckBox>
@@ -17,6 +18,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTableWidget>
@@ -99,6 +101,35 @@ const bool s_i18n = [] {
     I18n::reg("cab_modal", "固有モードを計算する",
               "Compute the eigenmodes");
     I18n::reg("cab_absorb", "吸音内装", "Interior absorption");
+    I18n::reg("cab_cad_load",
+              "取り込んだ形状の外接直方体を車室寸法に使いますか?\n\n"
+              "  三角形 %1 枚\n"
+              "  L × W × H = %2 × %3 × %4 m\n\n"
+              "下の寸法 (%5 × %6 × %7 m) を置き換えて音響モードを計算し直します。",
+              "Use the bounding box of the imported model as the cabin size?\n\n"
+              "  %1 triangles\n"
+              "  L x W x H = %2 x %3 x %4 m\n\n"
+              "This replaces the dimensions below (%5 x %6 x %7 m) and "
+              "recomputes the acoustic modes.");
+    I18n::reg("cab_cad_title", "3Dモデルの取込", "Import a 3D model");
+    I18n::reg("cab_cad_fail", "読み込めませんでした: %1",
+              "Could not read it: %1");
+    I18n::reg("cab_cad_flat",
+              "外接直方体の厚みが 0 の軸があるため寸法に使えません "
+              "(平面的なモデルです)。",
+              "One axis of the bounding box has zero extent, so it cannot be "
+              "used as a size (the model is flat).");
+    I18n::reg("cab_cad_step",
+              "STEP / IGES は読めません (CAD カーネルが要ります)。"
+              "STL / OBJ / PLY へ変換してから取り込んでください。",
+              "STEP / IGES cannot be read (that needs a CAD kernel). Convert "
+              "to STL / OBJ / PLY first.");
+    I18n::reg("cab_cad_done",
+              "%1 から寸法を取りました (三角形 %2 枚、L×W×H = %3 × %4 × %5 m)。"
+              "外接直方体なので、実際の車室より大きめに出ます。",
+              "Dimensions taken from %1 (%2 triangles, L x W x H = "
+              "%3 x %4 x %5 m). It is a bounding box, so it is larger than the "
+              "real cabin.");
     I18n::reg("cab_abs_roof", "ルーフライナー", "Roof liner");
     I18n::reg("cab_abs_carpet", "カーペット", "Carpet");
     I18n::reg("cab_abs_door", "ドアトリム", "Door trim");
@@ -261,10 +292,14 @@ const bool s_i18n = [] {
               "下の「騒音源の寄与」(チェックした源のレベルを合成しています)",
               "the contribution table below, which sums the levels of the "
               "ticked sources");
-    I18n::reg("cab_uw_cad", "CAD ファイルの指定と吸音内装のチェック",
-              "the CAD file and the absorbing-trim check boxes");
-    I18n::reg("cab_uw_cad_ok", "下の音響モード計算 (寸法入力から算出しています)",
-              "the modal calculation below (computed from the dimensions)");
+    I18n::reg("cab_uw_cad", "吸音内装のチェック (吸音率のデータが要ります)",
+              "the absorbing-trim check boxes (they need absorption "
+              "coefficient data)");
+    I18n::reg("cab_uw_cad_ok",
+              "3D モデル (STL / OBJ / PLY の外接直方体を寸法に使います) と、"
+              "下の音響モード計算",
+              "the 3D model (the bounding box of an STL / OBJ / PLY becomes "
+              "the size) and the modal calculation below");
     return true;
 }();
 
@@ -455,8 +490,10 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     sc->form()->addRow(I18n::tr("cab_absorb"),
                        checkRow({ m_absRoof, m_absCarpet, m_absDoor,
                                   m_absSeat }));
-    // CAD ファイル・吸音内装のチェックはまだどこにも読まれない
-    // (下の音響モード計算は寸法入力のみを使う)
+    m_cadInfo = makeHint(QString(), sc);
+    sc->vbox()->addWidget(m_cadInfo);
+    // 吸音内装のチェックはまだどこにも読まれない (3D モデルは取り込んで
+    // 外接直方体を寸法に使う — 下の音響モード計算へ効く)
     sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("cab_uw_cad"), I18n::tr("cab_uw_cad_ok")));
     v->addWidget(sc);
 
@@ -547,11 +584,57 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     // 3D モデルの参照ボタンのみ実配線 (隣の QLineEdit にパスを反映)
+    // 3D モデルを実際に読み、外接直方体を車室寸法として使う
+    // (ジオメトリタブと同じ io/MeshImporter を通す)
     connect(cadBrowse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
-            this, I18n::tr("cab_cad"), QString(),
-            "3D model (*.step *.stp *.iges *.igs *.stl *.obj);;All files (*)");
-        if (!path.isEmpty()) m_cadFile->setText(path);
+            this, I18n::tr("cab_cad"), m_cadFile->text(),
+            MeshImporter::fileDialogFilter());
+        if (path.isEmpty()) return;
+        m_cadFile->setText(path);
+
+        // STEP / IGES は CAD カーネルが要る — 読めないことを明示する
+        const QString ext = QFileInfo(path).suffix().toLower();
+        if (ext == QLatin1String("step") || ext == QLatin1String("stp")
+            || ext == QLatin1String("iges") || ext == QLatin1String("igs")) {
+            QMessageBox::information(this, I18n::tr("cab_cad_title"),
+                                     I18n::tr("cab_cad_step"));
+            return;
+        }
+        ImportedMesh mesh;
+        QString err;
+        if (!MeshImporter::load(path, mesh, &err)) {
+            QMessageBox::warning(this, I18n::tr("cab_cad_title"),
+                                 I18n::tr("cab_cad_fail").arg(err));
+            return;
+        }
+        const double L = mesh.bbox[3] - mesh.bbox[0];
+        const double W = mesh.bbox[4] - mesh.bbox[1];
+        const double H = mesh.bbox[5] - mesh.bbox[2];
+        if (!(L > 0.0) || !(W > 0.0) || !(H > 0.0)) {
+            QMessageBox::warning(this, I18n::tr("cab_cad_title"),
+                                 I18n::tr("cab_cad_flat"));
+            return;
+        }
+        auto num = [](double v) { return QString::number(v, 'f', 3); };
+        const QString msg = I18n::tr("cab_cad_load")
+                                .arg(QString::number(mesh.numTriangles),
+                                     num(L), num(W), num(H),
+                                     m_dimL->text(), m_dimW->text(),
+                                     m_dimH->text());
+        if (QMessageBox::question(this, I18n::tr("cab_cad_title"), msg,
+                                  QMessageBox::Ok | QMessageBox::Cancel,
+                                  QMessageBox::Cancel) != QMessageBox::Ok)
+            return;
+        m_dimL->setText(num(L));
+        m_dimW->setText(num(W));
+        m_dimH->setText(num(H));
+        updateModes();
+        if (m_cadInfo)
+            m_cadInfo->setText(I18n::tr("cab_cad_done")
+                                   .arg(QFileInfo(path).fileName(),
+                                        QString::number(mesh.numTriangles),
+                                        num(L), num(W), num(H)));
     });
     connect(m_vehicle, &QComboBox::currentIndexChanged, this, [this](int i) {
         // ローカル state のみ (Project に対応フィールド無し → 永続化しない)
