@@ -993,10 +993,14 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
     {
         auto toJson = [](const QVector<AnalysisGroupRow> &rows) {
             QJsonArray a;
-            for (const AnalysisGroupRow &r : rows)
-                a.append(QJsonObject{
-                    {"enabled", r.enabled}, {"name", r.name},
-                    {"monitors", r.monitors}, {"output", r.output} });
+            for (const AnalysisGroupRow &r : rows) {
+                QJsonObject o{ {"enabled", r.enabled}, {"name", r.name},
+                               {"monitors", r.monitors}, {"output", r.output} };
+                // スクリプトは指定されたときだけ書く (未指定なら従来と
+                // バイト一致 — 絶対規則 2)
+                if (!r.script.isEmpty()) o["script"] = r.script;
+                a.append(o);
+            }
             return a;
         };
         const QJsonArray cur = toJson(p.analysisGroups());
@@ -1596,6 +1600,7 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             r.name = o.value("name").toString();
             r.monitors = o.value("monitors").toString();
             r.output = o.value("output").toString();
+            r.script = o.value("script").toString();
             grps.push_back(r);
         }
     } else {

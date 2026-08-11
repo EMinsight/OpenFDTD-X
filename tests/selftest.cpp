@@ -13488,6 +13488,56 @@ static void testAnalysisGroups()
         }
     }
 
+    // 1b) スクリプトのパス (追加キー) — 未指定なら .ofdx に書かない
+    {
+        Project p;
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_agrp_scr_XXXXXX.ofdx");
+        if (f.open()) {
+            // 既定 (スクリプト未指定) では行を編集しても "script" が出ない
+            p.analysisGroups()[0].name = QStringLiteral("edited");
+            check(OfdxIO::save(f.fileName(), p), "aggrp: save without script");
+            QFile jf(f.fileName());
+            check(jf.open(QIODevice::ReadOnly), "aggrp: reopen without script");
+            const QString text = QString::fromUtf8(jf.readAll());
+            check(!text.contains(QStringLiteral("\"script\"")),
+                  "aggrp: an unset script writes no key at all");
+            jf.close();
+
+            // 指定すると往復する
+            p.analysisGroups()[0].script = QStringLiteral("/tmp/report.py");
+            check(OfdxIO::save(f.fileName(), p), "aggrp: save with script");
+            Project q;
+            check(OfdxIO::load(f.fileName(), q), "aggrp: load with script");
+            check(q.analysisGroups()[0].script
+                      == QLatin1String("/tmp/report.py"),
+                  "aggrp: the script path round-trips");
+            check(q.analysisGroups()[1].script.isEmpty(),
+                  "aggrp: the other rows stay without a script");
+            // 旧ファイル (script キー無し) を読むと空になる
+            QFile jf2(f.fileName());
+            check(jf2.open(QIODevice::ReadOnly), "aggrp: reopen with script");
+            QJsonObject root = QJsonDocument::fromJson(jf2.readAll()).object();
+            jf2.close();
+            QJsonArray arr = root["analysis_groups"].toArray();
+            QJsonObject o0 = arr[0].toObject();
+            o0.remove(QStringLiteral("script"));
+            arr[0] = o0;
+            root["analysis_groups"] = arr;
+            QFile jf3(f.fileName());
+            check(jf3.open(QIODevice::WriteOnly | QIODevice::Truncate),
+                  "aggrp: rewrite without the script key");
+            jf3.write(QJsonDocument(root).toJson());
+            jf3.close();
+            Project r;
+            check(OfdxIO::load(f.fileName(), r), "aggrp: load the older shape");
+            check(r.analysisGroups()[0].script.isEmpty(),
+                  "aggrp: a file without the key gives an empty script");
+            check(r.analysisGroups()[0].name == QLatin1String("edited"),
+                  "aggrp: and the other fields still load");
+        }
+    }
+
     // 2) .ofdx ラウンドトリップ (a)
     {
         Project p1;

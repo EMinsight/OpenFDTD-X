@@ -14,6 +14,14 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QElapsedTimer>
+#include <QFileInfo>
+#include <QFontDatabase>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
@@ -64,10 +72,56 @@ const bool s_i18n = [] {
     ofd::I18n::reg("ag_input_monitors", "入力モニター", "Input monitors");
     ofd::I18n::reg("ag_script", "解析スクリプト", "Analysis script");
     ofd::I18n::reg("ag_create_btn", "作成", "Create");
-    I18n::reg("ag_uw_lang", "スクリプト言語の選択 (実行が未実装のため)",
-              "the script language (running scripts is not implemented)");
-    I18n::reg("ag_uw_lang_ok", "作成したグループの一覧そのもの (.ofdx に保存されます)",
-              "the group list itself (saved to .ofdx)");
+    I18n::reg("ag_col_script", "スクリプト", "Script");
+    I18n::reg("ag_pick", "📁 スクリプトを選択…", "📁 Choose script…");
+    I18n::reg("ag_pick_tip",
+              "選択した行に実行するスクリプトを割り当てます。パスは "
+              ".ofdx に保存されます (未指定なら書き込まれません)。",
+              "Assigns a script to the selected row. The path is saved in the "
+              ".ofdx (nothing is written when it is unset).");
+    I18n::reg("ag_run", "▶ 実行", "▶ Run");
+    I18n::reg("ag_run_tip",
+              "選択した行のスクリプトを実行します。作業ディレクトリは "
+              "プロジェクトのフォルダで、引数に .ofd のパスとグループ名を"
+              "渡します。標準出力・標準エラーは下のログに出ます。",
+              "Runs the script of the selected row. The working directory is "
+              "the project folder; the .ofd path and the group name are passed "
+              "as arguments. stdout and stderr appear in the log below.");
+    I18n::reg("ag_run_norow", "行を選択してください。", "Select a row first.");
+    I18n::reg("ag_run_noscript",
+              "この行にはスクリプトが割り当てられていません "
+              "(「スクリプトを選択…」で指定してください)。",
+              "This row has no script assigned - use “Choose script…”.");
+    I18n::reg("ag_run_gone",
+              "スクリプトが見つかりません: %1",
+              "The script is missing: %1");
+    I18n::reg("ag_run_lsf",
+              "LSF は Lumerical のスクリプト言語で、実行には Lumerical 本体が"
+              "要ります。ここから実行できるのは Python (.py) だけです。",
+              "LSF is Lumerical's scripting language and needs Lumerical "
+              "itself. Only Python (.py) can be run from here.");
+    I18n::reg("ag_run_nopython",
+              "Python が見つかりません (python3 / python のどちらも PATH に"
+              "ありません)。",
+              "No Python found - neither python3 nor python is on the PATH.");
+    I18n::reg("ag_run_busy", "実行中です。", "A script is already running.");
+    I18n::reg("ag_run_start", "▶ %1 %2", "▶ %1 %2");
+    I18n::reg("ag_run_done", "— 終了コード %1 (%2 秒)",
+              "- exit code %1 (%2 s)");
+    I18n::reg("ag_run_crash", "— 異常終了しました", "- the process crashed");
+    I18n::reg("ag_run_nosave",
+              "プロジェクトが未保存です。先に保存してください "
+              "(スクリプトへ渡す .ofd のパスが決まりません)。",
+              "The project has not been saved yet - save it first so there is "
+              "a .ofd path to pass to the script.");
+    I18n::reg("ag_uw_lang",
+              "スクリプト言語の選択のうち LSF (Lumerical 本体が要ります)",
+              "the LSF option of the script language (it needs Lumerical "
+              "itself)");
+    I18n::reg("ag_uw_lang_ok",
+              "作成したグループの一覧と、割り当てた Python スクリプトの実行",
+              "the list of created groups and running the Python "
+              "script assigned to a row");
     return true;
 }();
 
@@ -92,7 +146,8 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     auto *sg = new SectionBox(I18n::tr("ag_registered"), body);
     m_groups = new QTableWidget(0, 5, sg);
     m_groups->setHorizontalHeaderLabels({ "", I18n::tr("ag_col_name"),
-        I18n::tr("ag_col_monitors"), I18n::tr("ag_col_output"), "" });
+        I18n::tr("ag_col_monitors"), I18n::tr("ag_col_output"),
+        I18n::tr("ag_col_script"), "" });
     m_groups->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_groups->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     m_groups->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
@@ -152,6 +207,26 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     sc->vbox()->addLayout(crow);
     // 作成したグループは一覧 (.ofdx) に入るが、スクリプト言語の選択は
     // どこにも読まれない (実行が未実装のため)
+    // スクリプトの割当と実行 (選択行が対象)
+    auto *srow = new QHBoxLayout();
+    m_pickBtn = new QPushButton(I18n::tr("ag_pick"), sc);
+    m_pickBtn->setToolTip(I18n::tr("ag_pick_tip"));
+    connect(m_pickBtn, &QPushButton::clicked, this,
+            &AnalysisGroupsTab::pickScript);
+    m_runBtn = new QPushButton(I18n::tr("ag_run"), sc);
+    m_runBtn->setToolTip(I18n::tr("ag_run_tip"));
+    connect(m_runBtn, &QPushButton::clicked, this,
+            &AnalysisGroupsTab::runScript);
+    srow->addWidget(m_pickBtn);
+    srow->addWidget(m_runBtn);
+    srow->addStretch(1);
+    sc->vbox()->addLayout(srow);
+    m_runLog = new QPlainTextEdit(sc);
+    m_runLog->setReadOnly(true);
+    m_runLog->setMaximumBlockCount(5000);   // 長時間実行でも青天井にしない
+    m_runLog->setFixedHeight(140);
+    m_runLog->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    sc->vbox()->addWidget(m_runLog);
     sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("ag_uw_lang"), I18n::tr("ag_uw_lang_ok")));
     v->addWidget(sc);
 
@@ -192,6 +267,106 @@ void AnalysisGroupsTab::addGroup(const QString &name, const QString &monitors)
 }
 
 // 一覧 (ウィジェット) → モデル
+// 選択行にスクリプトを割り当てる。パスは .ofdx へ入る (未指定なら書かれない)
+void AnalysisGroupsTab::pickScript()
+{
+    const int row = m_groups->currentRow();
+    QVector<AnalysisGroupRow> &grps = m_p->analysisGroups();
+    if (row < 0 || row >= grps.size()) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_norow"));
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("ag_pick"), QFileInfo(grps[row].script).absolutePath(),
+        QStringLiteral("Python (*.py);;All files (*)"));
+    if (path.isEmpty()) return;
+    grps[row].script = path;
+    m_p->touch();
+    rebuildGroups();
+}
+
+// 選択行のスクリプトを走らせる。作業ディレクトリはプロジェクトのフォルダで、
+// 引数に .ofd のパスとグループ名を渡す (スクリプト側はこれを起点に結果
+// ファイルを読む)。実行できるのは Python だけ — LSF は Lumerical が要る。
+void AnalysisGroupsTab::runScript()
+{
+    if (m_proc && m_proc->state() != QProcess::NotRunning) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_busy"));
+        return;
+    }
+    const int row = m_groups->currentRow();
+    const QVector<AnalysisGroupRow> &grps = m_p->analysisGroups();
+    if (row < 0 || row >= grps.size()) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_norow"));
+        return;
+    }
+    if (m_script && m_script->currentText() == QLatin1String("LSF")) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_lsf"));
+        return;
+    }
+    const QString script = grps[row].script;
+    if (script.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_noscript"));
+        return;
+    }
+    if (!QFileInfo::exists(script)) {
+        QMessageBox::warning(this, I18n::tr("ag_run"),
+                             I18n::tr("ag_run_gone").arg(script));
+        return;
+    }
+    // .ofd のパスが無いとスクリプトが何を読めばよいか分からない
+    const QString ofd = m_p->filePath();
+    if (ofd.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("ag_run"),
+                                 I18n::tr("ag_run_nosave"));
+        return;
+    }
+    // Python を探す (python3 → python の順)
+    QString python = QStandardPaths::findExecutable(QStringLiteral("python3"));
+    if (python.isEmpty())
+        python = QStandardPaths::findExecutable(QStringLiteral("python"));
+    if (python.isEmpty()) {
+        QMessageBox::warning(this, I18n::tr("ag_run"),
+                             I18n::tr("ag_run_nopython"));
+        return;
+    }
+
+    if (!m_proc) m_proc = new QProcess(this);
+    m_proc->setWorkingDirectory(QFileInfo(ofd).absolutePath());
+    m_proc->setProcessChannelMode(QProcess::MergedChannels);
+    disconnect(m_proc, nullptr, this, nullptr);
+    connect(m_proc, &QProcess::readyReadStandardOutput, this, [this] {
+        m_runLog->appendPlainText(
+            QString::fromLocal8Bit(m_proc->readAllStandardOutput()).trimmed());
+    });
+    auto *timer = new QElapsedTimer;
+    timer->start();
+    connect(m_proc, &QProcess::finished, this,
+            [this, timer](int code, QProcess::ExitStatus st) {
+                m_runLog->appendPlainText(
+                    st == QProcess::CrashExit
+                        ? I18n::tr("ag_run_crash")
+                        : I18n::tr("ag_run_done")
+                              .arg(QString::number(code),
+                                   QString::number(timer->elapsed() / 1000.0,
+                                                   'f', 1)));
+                delete timer;
+                m_runBtn->setEnabled(true);
+            });
+
+    const QStringList args{ script, ofd, grps[row].name };
+    m_runLog->appendPlainText(I18n::tr("ag_run_start")
+                                  .arg(QFileInfo(python).fileName(),
+                                       args.join(QLatin1Char(' '))));
+    m_runBtn->setEnabled(false);
+    m_proc->start(python, args);
+}
+
 void AnalysisGroupsTab::applyGroups()
 {
     if (m_updating) return;
@@ -230,6 +405,13 @@ void AnalysisGroupsTab::rebuildGroups()
         m_groups->setItem(i, 1, nm);
         m_groups->setItem(i, 2, new QTableWidgetItem(grps[i].monitors));
         m_groups->setItem(i, 3, new QTableWidgetItem(grps[i].output));
+        // スクリプトは読取専用 (「スクリプトを選択…」で設定する)
+        auto *sc = new QTableWidgetItem(
+            grps[i].script.isEmpty() ? QStringLiteral("—")
+                                     : QFileInfo(grps[i].script).fileName());
+        sc->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        sc->setToolTip(grps[i].script);
+        m_groups->setItem(i, 4, sc);
         auto *delBtn = new QPushButton(I18n::tr("ag_del"), m_groups);
         // 削除するとこのボタン自身 (セルウィジェット) が消えるので、クリック
         // ハンドラから抜けた後に実行する (自分のイベント中に破棄しない)
@@ -242,13 +424,13 @@ void AnalysisGroupsTab::rebuildGroups()
                 rebuildGroups();
             });
         });
-        m_groups->setCellWidget(i, 4, delBtn);
+        m_groups->setCellWidget(i, 5, delBtn);
     }
     // ＋ グループを追加… 行 (クリックで 1 行追加)
     auto *ck = new QTableWidgetItem;
     ck->setFlags(Qt::ItemIsEnabled);
     m_groups->setItem(n, 0, ck);
-    m_groups->setSpan(n, 1, 1, 4);
+    m_groups->setSpan(n, 1, 1, 5);
     auto *add = new QTableWidgetItem(I18n::tr("ag_add_row"));
     add->setFlags(add->flags() & ~Qt::ItemIsEditable);
     add->setToolTip(I18n::tr("ag_add_row_tip"));
