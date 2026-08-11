@@ -81,6 +81,7 @@
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
 #include "em/MieSphere.h"
+#include "em/PatternMetrics.h"
 #include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
@@ -8374,6 +8375,26 @@ static void testOfdIntegration(const QString &sampleDir)
             check(std::fabs(fs.vPerM - std::sqrt(30.0 * gLin * pW) / dM)
                       < 1e-12,
                   "far1d: the predicted field matches sqrt(30 G P)/d");
+
+            // ── パターン指標を実カーネル出力に当てる ───────────────────
+            // 半波長ダイポールの E 面 3 dB 幅は **78°** (教科書値)。
+            // far1d.log は 5° 刻みなので、内挿込みで ±4° を許容する。
+            // 8 の字なので前後比は 0 dB、反対側のローブは同じ高さ。
+            if (!cuts.isEmpty()) {
+                const FarPattern &c0 = cuts.first();
+                const std::vector<double> dv(c0.deg.begin(), c0.deg.end());
+                const std::vector<double> bv(c0.eAbsDb.begin(),
+                                             c0.eAbsDb.end());
+                const em::PatternMetrics pm = em::patternMetrics(dv, bv);
+                check(pm.hasPeak
+                      && std::fabs(pm.peakDb - peak) < 1e-9,
+                      "far1d: the metric peak agrees with the direct maximum");
+                check(pm.hasHpbw && std::fabs(pm.hpbwDeg - 78.0) < 4.0,
+                      "far1d: the measured 3 dB width matches the textbook "
+                      "78 degrees for a half-wave dipole");
+                check(pm.hasFb && std::fabs(pm.fbDb) < 0.5,
+                      "far1d: the dipole pattern is front-back symmetric");
+            }
         }
         g_file = "ofd_integration";
     }
@@ -14605,6 +14626,109 @@ static void testCourantTimestep()
 //       使う ka = 3.0 / a = 0.05 m の値 (後方 4.0901e-03 / 前方 8.4797e-02 m²)
 // (a) は級数の低次項が正しいこと、(b) は共鳴領域まで含めて正しいことを見る。
 // 片方だけでは足りない — (a) は n = 1 項でほぼ決まり、(b) は 9 項ほど効く。
+// ── 遠方界パターンの指標 (em/PatternMetrics) ───────────────────────────────
+//
+// 期待値は**教科書値**で、コードの外にある:
+//   (a) 一様励振の線状開口 (sinc パターン) の第一サイドローブ = −13.26 dB
+//       — 開口分布が一様なときの古典的な値 (Balanis §12.4 / Kraus)
+//   (b) 半波長ダイポールの半値幅 = 78°
+//       — E 面パターン cos(π/2·cosθ)/sinθ の −3 dB 全幅 (Balanis §4.6)
+// どちらも「実装がそれらしい形を返す」ではなく、**特定の数値**を要求する。
+static void testPatternMetrics()
+{
+    g_file = "pattern-metrics";
+    using ofd::em::patternMetrics;
+    const double pi = 3.14159265358979323846;
+
+    // (a) 一様線状開口: E(θ) ∝ sinc(u), u = (πL/λ)·sinθ。L/λ = 10
+    //     u が sinθ の関数なので **θ = 180° にも同じ主ビームが立つ**。
+    //     ここで見たいのは 1 本の主ビームとその外側なので、後ろ半分は
+    //     −60 dB の床にする (背面を塞いだ開口に相当)。
+    {
+        std::vector<double> deg, db;
+        const double L = 10.0;                   // 開口長 / 波長
+        for (int i = 0; i < 3600; ++i) {         // 0.1° 刻みで 1 周
+            const double d = i * 0.1;
+            double a = d;                        // −180..180 へ畳む
+            if (a > 180.0) a -= 360.0;
+            deg.push_back(d);
+            if (std::fabs(a) > 90.0) { db.push_back(-60.0); continue; }
+            const double th = a * pi / 180.0;
+            const double u = pi * L * std::sin(th);
+            const double e = (std::fabs(u) < 1e-12) ? 1.0 : std::sin(u) / u;
+            db.push_back(20.0 * std::log10(std::max(1e-12, std::fabs(e))));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasPeak && std::fabs(m.peakDb) < 1e-6,
+              "pattern: the sinc peak is 0 dB at broadside");
+        check(m.hasSll, "pattern: a side lobe is found outside the main beam");
+        // 一様開口の第一サイドローブ = −13.26 dB (教科書値)
+        check(std::fabs(m.sllDb + 13.26) < 0.2,
+              "pattern: the uniform-aperture side-lobe level is -13.26 dB");
+        // 3 dB 幅 ≈ 0.886·λ/L [rad] = 5.08° (L/λ = 10)
+        check(m.hasHpbw && std::fabs(m.hpbwDeg - 5.08) < 0.2,
+              "pattern: the 3 dB width matches 0.886*lambda/L");
+    }
+
+    // (b) 半波長ダイポール: E(θ) = cos(π/2·cosθ)/sinθ。HPBW = 78°
+    {
+        std::vector<double> deg, db;
+        for (int i = 0; i < 3600; ++i) {
+            const double d = i * 0.1;
+            const double th = d * pi / 180.0;
+            const double s = std::sin(th);
+            const double e = (std::fabs(s) < 1e-9)
+                                 ? 0.0
+                                 : std::cos(0.5 * pi * std::cos(th)) / s;
+            deg.push_back(d);
+            db.push_back(20.0 * std::log10(std::max(1e-12, std::fabs(e))));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasHpbw && std::fabs(m.hpbwDeg - 78.0) < 1.0,
+              "pattern: the half-wave dipole HPBW is 78 degrees");
+        // ダイポールは 90° と 270° が同じ強さ → 前後比 0 dB
+        check(m.hasFb && std::fabs(m.fbDb) < 0.05,
+              "pattern: a symmetric pattern has 0 dB front-to-back");
+        // 8 の字なので反対側にも同じ大きさのローブがある。
+        // 「サイドローブが無い」ではなく「0 dB のローブがある」が正しい
+        check(m.hasSll && std::fabs(m.sllDb) < 0.05,
+              "pattern: the figure-of-eight back lobe is reported at 0 dB");
+    }
+
+    // (c) 前後比が正しく出る非対称パターン (前方 0 dB / 後方 −20 dB)
+    {
+        std::vector<double> deg, db;
+        for (int i = 0; i < 360; ++i) {
+            const double d = i;
+            const double th = d * pi / 180.0;
+            // (1 + cosθ)/2 のカージオイド。0° で 1、180° で 0 に近づく
+            const double e = std::max(1e-3, 0.5 * (1.0 + std::cos(th)));
+            deg.push_back(d);
+            db.push_back(20.0 * std::log10(e));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasPeak && std::fabs(m.peakDeg) < 1e-9,
+              "pattern: the cardioid peaks at 0 degrees");
+        check(m.hasFb && m.fbDb > 40.0,
+              "pattern: the cardioid has a large front-to-back ratio");
+        // ローブが 1 つしかないので SLL は出さない。2 つのヌルがパターン全体を
+        // 囲っているときに「外側」を歩くとピークへ戻ってしまう — その場合は
+        // サイドローブ無しとする (最初の実装はここでピークを拾って落ちた)
+        check(!m.hasSll,
+              "pattern: a single-lobe pattern reports no side lobe");
+    }
+
+    // (d) 壊れた入力からは何も作らない
+    {
+        check(!patternMetrics({}, {}).hasPeak,
+              "pattern: an empty pattern has no metrics");
+        check(!patternMetrics({ 0.0, 1.0 }, { 0.0, 0.0 }).hasPeak,
+              "pattern: fewer than three points is not a pattern");
+        check(!patternMetrics({ 0.0, 1.0, 2.0 }, { 0.0, 0.0 }).hasPeak,
+              "pattern: mismatched lengths are rejected");
+    }
+}
+
 static void testMieSphere()
 {
     g_file = "mie";
@@ -15647,6 +15771,7 @@ int main(int argc, char *argv[])
     testOptimizeFom();
     testCourantTimestep();
     testPostTables();
+    testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
     testPostPrereq();

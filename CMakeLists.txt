@@ -151,6 +151,8 @@ set(CORE_SOURCES
     # ScatteringTab が <kernel>.log の cross section を表示するのに使う
     src/em/MieSphere.cpp
     src/em/MieSphere.h
+    src/em/PatternMetrics.cpp
+    src/em/PatternMetrics.h
     src/em/RadarCrossSection.cpp
     src/em/RadarCrossSection.h
 
