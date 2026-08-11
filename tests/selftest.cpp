@@ -73,6 +73,7 @@
 #include "optics/SourceSpectrum.h"
 #include "optics/DisplayMetrics.h"
 #include "optics/ParaxialTrace.h"
+#include "core/WaveformSpectrum.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -8492,6 +8493,64 @@ static void testOfdIntegration(const QString &sampleDir)
                     check(t.x.size() > 2 && t.x.first() == 0.0
                           && t.x.last() > t.x.first(),
                           "post-e2e: time starts at 0 and increases");
+
+                    // ── 実波形 → スペクトル (core/WaveformSpectrum) ─────
+                    // **等間隔判定の許容幅がここで決まる**: ofd_post の
+                    // time 列は 6 桁の指数表記なので、丸めだけで隣り合う差が
+                    // 0.1 % ほど揺れる。最初 1e-6 で判定していて実データが
+                    // 全て弾かれた — その閾値へ戻されないよう実測で固定する。
+                    {
+                        const int n = t.x.size();
+                        const double dtAvg = (t.x.last() - t.x.first())
+                                             / double(n - 1);
+                        double worst = 0.0;
+                        for (int i = 1; i < n; ++i)
+                            worst = std::max(worst,
+                                             std::fabs((t.x[i] - t.x[i - 1])
+                                                       - dtAvg) / dtAvg);
+                        check(worst > 1e-6,
+                              "post-e2e: the printed time column really does "
+                              "wobble more than 1e-6 (rounding)");
+                        check(worst < 0.02,
+                              "post-e2e: but it stays inside the 2 percent "
+                              "uniformity window");
+
+                        const std::vector<double> tv(t.x.begin(), t.x.end());
+                        const int vi = t.yNames.indexOf(QStringLiteral("V[V]"));
+                        check(vi >= 0, "post-e2e: the V column is found");
+                        const std::vector<double> yv(t.y[vi].begin(),
+                                                     t.y[vi].end());
+                        const wavespec::Result sp =
+                            wavespec::waveformSpectrum(
+                                tv, yv, ofd::audioedit::WindowKind::Hann);
+                        check(sp.valid,
+                              "spectrum-e2e: the real feed waveform "
+                              "transforms");
+                        check(std::fabs(sp.dtSec - dtAvg) < 1e-9 * dtAvg,
+                              "spectrum-e2e: dt comes from the time column");
+                        check(std::fabs(sp.fsHz - 1.0 / dtAvg) < 1.0,
+                              "spectrum-e2e: fs = 1/dt");
+                        check(sp.nFft >= sp.nUsed
+                              && (sp.nFft & (sp.nFft - 1)) == 0,
+                              "spectrum-e2e: zero padded to a power of two");
+                        check(std::fabs(sp.enbwBins - 1.5) < 0.02
+                              && std::fabs(sp.coherentGain - 0.5) < 0.02,
+                              "spectrum-e2e: the Hann window really was "
+                              "applied to the real waveform");
+                        // 励振は 2〜3 GHz を覆うガウシアンパルスなので、
+                        // 解析帯域は十分な振幅を持ち、その 6 倍の周波数では
+                        // はっきり落ちている
+                        auto levelAt = [&](double f) {
+                            const int k = int(f / sp.dfHz + 0.5);
+                            return (k >= 0 && k < int(sp.db.size()))
+                                       ? sp.db[std::size_t(k)] : -999.0;
+                        };
+                        check(levelAt(3.0e9) > -20.0,
+                              "spectrum-e2e: the excitation covers 3 GHz");
+                        check(levelAt(3.0e9) > levelAt(18.0e9) + 15.0,
+                              "spectrum-e2e: and rolls off well above the "
+                              "analysis band");
+                    }
                 }
                 if (t.xName == QLatin1String("frequency[Hz]")
                     && t.sourceFile == QLatin1String("feed.log")) {
@@ -13710,6 +13769,186 @@ static void testParaxialTrace()
     }
 }
 
+// ── 時間波形 → 窓関数つきスペクトル (core/WaveformSpectrum) ────────────────
+// 判定の出所は F. J. Harris, "On the Use of Windows for Harmonic Analysis
+// with the Discrete Fourier Transform", Proc. IEEE 66(1), 1978 の表 1
+// (コヒーレント利得と等価雑音帯域幅) と、正弦波の DFT の初等的な性質。
+static void testWaveformSpectrum()
+{
+    g_file = "spectrum";
+    namespace sp = ofd::wavespec;
+    using ofd::audioedit::WindowKind;
+    const double pi = 3.14159265358979323846;
+
+    // 標本化 fs = 1 MHz、1024 点。ビン間隔は fs/1024 = 976.5625 Hz。
+    const int N = 1024;
+    const double fs = 1.0e6, dt = 1.0 / fs;
+    auto makeSine = [&](double freq) {
+        std::vector<double> t, y;
+        for (int i = 0; i < N; ++i) {
+            t.push_back(i * dt);
+            y.push_back(std::sin(2.0 * pi * freq * i * dt));
+        }
+        return std::make_pair(t, y);
+    };
+
+    // 1) ビン中心の正弦波はその周波数にピークが立つ (ゼロ詰め無し = 1024 点)
+    {
+        const double f0 = 64.0 * fs / N;           // ちょうど 64 番目のビン
+        const auto tv = makeSine(f0);
+        const sp::Result r = sp::waveformSpectrum(tv.first, tv.second,
+                                                  WindowKind::Rect);
+        check(r.valid, "spectrum: a uniformly sampled sine is transformed");
+        check(r.nFft == N, "spectrum: 1024 points need no zero padding");
+        check(std::fabs(r.fsHz - fs) < 1e-6, "spectrum: fs comes from dt");
+        check(std::fabs(r.dfHz - fs / N) < 1e-9, "spectrum: df = fs/N");
+        check(r.hasPeak && std::fabs(r.peakFreqHz - f0) < 1e-6,
+              "spectrum: the peak lands exactly on the excited bin");
+        check(int(r.freqHz.size()) == N / 2 + 1,
+              "spectrum: a one-sided spectrum has N/2+1 points");
+        check(std::fabs(r.freqHz.back() - fs / 2.0) < 1e-6,
+              "spectrum: it ends at the Nyquist frequency");
+        check(std::fabs(r.db[std::size_t(N / 2)] + 0.0) >= 0.0,
+              "spectrum: the Nyquist bin exists");
+        // ビン中心なので漏れが無い: 隣のビンは桁違いに低い
+        check(r.db[63] < -100.0 && r.db[65] < -100.0,
+              "spectrum: a bin-centred sine does not leak (rectangular)");
+    }
+
+    // 2) 窓のコヒーレント利得と等価雑音帯域幅 (Harris 1978 表 1)
+    {
+        const auto tv = makeSine(64.0 * fs / N);
+        struct Case { WindowKind w; double cg; double enbw; const char *name; };
+        const Case cases[] = {
+            { WindowKind::Rect,     1.0,    1.0,    "rectangular" },
+            { WindowKind::Hann,     0.5,    1.5,    "Hann" },
+            { WindowKind::Hamming,  0.54,   1.36,   "Hamming" },
+            { WindowKind::Blackman, 0.42,   1.73,   "Blackman" },
+        };
+        for (const Case &c : cases) {
+            const sp::Result r = sp::waveformSpectrum(tv.first, tv.second, c.w);
+            check(r.valid, "spectrum: the window is applied");
+            check(std::fabs(r.coherentGain - c.cg) < 0.01,
+                  "spectrum: the coherent gain matches the textbook value");
+            check(std::fabs(r.enbwBins - c.enbw) < 0.02,
+                  "spectrum: the equivalent noise bandwidth matches Harris");
+        }
+    }
+
+    // 3) 窓は漏れを抑える: ビンの真ん中 (最悪) の正弦波で遠方を比べる
+    {
+        const double f0 = (64.0 + 0.5) * fs / N;   // ビン間のちょうど中央
+        const auto tv = makeSine(f0);
+        auto farLevel = [&](WindowKind w) {
+            const sp::Result r = sp::waveformSpectrum(tv.first, tv.second, w);
+            double worst = -1e300;
+            for (std::size_t k = 0; k < r.db.size(); ++k)
+                if (std::fabs(double(k) - 64.5) > 10.0)
+                    worst = std::max(worst, r.db[k]);
+            return worst;
+        };
+        const double rect = farLevel(WindowKind::Rect);
+        const double hann = farLevel(WindowKind::Hann);
+        const double blk  = farLevel(WindowKind::Blackman);
+        check(rect > -30.0, "spectrum: a rectangular window leaks badly");
+        check(hann < rect - 20.0,
+              "spectrum: a Hann window cuts the leakage by over 20 dB");
+        check(blk < hann,
+              "spectrum: Blackman is quieter still far from the peak");
+    }
+
+    // 4) apodization (端のテーパ) は掛けた側だけを触る
+    {
+        const std::size_t n = 101;
+        // Off はどこも 1
+        for (std::size_t i = 0; i < n; ++i)
+            check(sp::taperValue(sp::Apodization::Off, 0.2, i, n) == 1.0,
+                  "spectrum: apodization off leaves every sample alone");
+        // Start: 先頭 0、末尾はそのまま
+        check(std::fabs(sp::taperValue(sp::Apodization::Start, 0.2, 0, n))
+                  < 1e-15,
+              "spectrum: a start taper begins at zero");
+        check(sp::taperValue(sp::Apodization::Start, 0.2, n - 1, n) == 1.0,
+              "spectrum: a start taper does not touch the tail");
+        check(std::fabs(sp::taperValue(sp::Apodization::End, 0.2, n - 1, n))
+                  < 1e-15,
+              "spectrum: an end taper finishes at zero");
+        check(sp::taperValue(sp::Apodization::End, 0.2, 0, n) == 1.0,
+              "spectrum: an end taper does not touch the head");
+        check(std::fabs(sp::taperValue(sp::Apodization::Both, 0.2, 0, n))
+                      < 1e-15
+                  && std::fabs(sp::taperValue(sp::Apodization::Both, 0.2,
+                                              n - 1, n)) < 1e-15,
+              "spectrum: both ends taper to zero");
+        // 真ん中は常に 1 (テーパ長は全長の 20 %)
+        check(sp::taperValue(sp::Apodization::Both, 0.2, n / 2, n) == 1.0,
+              "spectrum: the middle is untouched");
+        // テーパ率 0 は「掛けない」と厳密に同じ
+        for (std::size_t i = 0; i < n; ++i)
+            check(sp::taperValue(sp::Apodization::Both, 0.0, i, n) == 1.0,
+                  "spectrum: a zero taper fraction is a no-op");
+    }
+
+    // 5) 端の過渡を落とすと、切り捨てによる裾が下がる
+    //    (窓は Rect のままにして apodization だけの効果を見る)
+    {
+        const double f0 = (64.0 + 0.5) * fs / N;
+        const auto tv = makeSine(f0);
+        auto farLevel = [&](sp::Apodization a) {
+            const sp::Result r = sp::waveformSpectrum(tv.first, tv.second,
+                                                      WindowKind::Rect, a, 0.25);
+            double worst = -1e300;
+            for (std::size_t k = 0; k < r.db.size(); ++k)
+                if (std::fabs(double(k) - 64.5) > 10.0)
+                    worst = std::max(worst, r.db[k]);
+            return worst;
+        };
+        check(farLevel(sp::Apodization::Both) < farLevel(sp::Apodization::Off) - 15.0,
+              "spectrum: tapering both ends lowers the truncation skirt");
+        check(farLevel(sp::Apodization::Start) < farLevel(sp::Apodization::Off),
+              "spectrum: tapering one end already helps");
+    }
+
+    // 6) ゼロ詰め: 分解能 (df) は上がるが、ピークの位置は動かない
+    {
+        const double f0 = 64.0 * fs / N;
+        const auto tv = makeSine(f0);
+        const sp::Result a = sp::waveformSpectrum(tv.first, tv.second,
+                                                  WindowKind::Rect);
+        const sp::Result b = sp::waveformSpectrum(tv.first, tv.second,
+                                                  WindowKind::Rect,
+                                                  sp::Apodization::Off, 0.1,
+                                                  4 * N);
+        check(b.valid && b.nFft == 4 * N, "spectrum: zero padding is applied");
+        check(std::fabs(b.dfHz - a.dfHz / 4.0) < 1e-9,
+              "spectrum: zero padding divides df by four");
+        check(std::fabs(b.peakFreqHz - a.peakFreqHz) < 1e-6,
+              "spectrum: zero padding does not move the peak");
+    }
+
+    // 7) 壊れた入力からは何も作らない
+    {
+        std::vector<double> t, y;
+        for (int i = 0; i < 16; ++i) { t.push_back(i * dt); y.push_back(1.0); }
+        check(!sp::waveformSpectrum({}, {}).valid,
+              "spectrum: an empty waveform has no spectrum");
+        check(!sp::waveformSpectrum(t, std::vector<double>(4, 0.0)).valid,
+              "spectrum: mismatched lengths are rejected");
+        std::vector<double> zero(t.size(), 0.0);
+        check(!sp::waveformSpectrum(t, zero).valid,
+              "spectrum: an all-zero waveform has no peak to normalise to");
+        // 等間隔でない時間列は拒否する (「それらしいスペクトル」を作らない)
+        std::vector<double> tb = t;
+        tb[8] += 0.3 * dt;
+        check(!sp::waveformSpectrum(tb, y).valid,
+              "spectrum: a non-uniform time column is rejected");
+        std::vector<double> tr = t;
+        std::reverse(tr.begin(), tr.end());
+        check(!sp::waveformSpectrum(tr, y).valid,
+              "spectrum: a decreasing time column is rejected");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -16024,6 +16263,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testWaveformSpectrum();
     testSeidelAberration();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();

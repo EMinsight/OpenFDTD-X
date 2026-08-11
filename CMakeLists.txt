@@ -293,6 +293,12 @@ set(CORE_SOURCES
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp
     src/audio/AudioEditEngine.h
+
+    # 時間波形 → 窓関数つきスペクトル (ofd_post の feed.log / point.log を
+    # 周波数領域で見るための後処理) — Qt 非依存。窓は AudioEditEngine の
+    # ライブラリ、FFT は音響コアのものを使う (再実装しない)
+    src/core/WaveformSpectrum.cpp
+    src/core/WaveformSpectrum.h
 )
 
 set(GUI_SOURCES

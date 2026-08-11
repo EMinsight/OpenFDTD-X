@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QSettings>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTableWidget>
@@ -120,8 +121,17 @@ const bool s_i18n = [] {
                    "Pressure time response at one point");
     ofd::I18n::reg("mon_ac_d_plane", "面上 周波数領域 音圧",
                    "Frequency-domain pressure on a plane");
-    I18n::reg("mon_uw_sync", "同期・レコーダ・apodization の設定",
-              "the synchronisation, recorder and apodization settings");
+    I18n::reg("mon_uw_sync", "同期とレコーダ (位相 / 振幅 / DFT) の設定",
+              "the synchronisation and recorder (phase / amplitude / DFT) "
+              "settings");
+    I18n::reg("mon_apod_wired",
+              "この選択は結果プロットの「ポスト表 → スペクトル」で使われます "
+              "(時間波形の端の過渡を落としてから DFT します)。カーネルの "
+              ".ofd には対応キーが無いのでソルバ側へは渡りません。",
+              "This choice is used by the results plot (post tables -> "
+              "spectrum): the ends of the time waveform are tapered before the "
+              "DFT. There is no matching key in the kernel .ofd, so it does not "
+              "reach the solver.");
     I18n::reg("mon_uw_sync_ok", "サンプリング周波数 (音響設定へ反映されます)",
               "the sampling frequency (applied to the acoustic settings)");
     return true;
@@ -266,6 +276,18 @@ MonitorsTab::MonitorsTab(Project *project, QWidget *parent)
     ah->addWidget(new QLabel(I18n::tr("mon_apod_hint"), m_apodRow));
     ah->addStretch(1);
     m_settings->form()->addRow("apodization", m_apodRow);
+    // apodization は結果プロットのスペクトル表示と共有する (QSettings)。
+    // .ofd に対応キーが無いのでプロジェクトには保存しない — セッション設定。
+    m_apod->setCurrentIndex(
+        QSettings().value(QStringLiteral("post/apodization"), 0).toInt());
+    connect(m_apod, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [](int i) {
+                QSettings().setValue(QStringLiteral("post/apodization"), i);
+            });
+    auto *apodNote = new QLabel(I18n::tr("mon_apod_wired"), m_settings);
+    apodNote->setWordWrap(true);
+    apodNote->setStyleSheet("color:#7A7A7A; font-size:11px;");
+    m_settings->vbox()->addWidget(apodNote);
 
     // 同期/レコーダ/apodization はどこにも読まれない
     // (サンプリング周波数のみ AcousticOpts へ反映される)

@@ -81,6 +81,8 @@ private:
     void paintFarPattern(QPainter &p, const QRectF &plot,
                          const QColor &accent);
     void paintPostTable(QPainter &p, const QRectF &plot);
+    void paintPostSpectrum(QPainter &p, const QRectF &plot,
+                           const PostTable &t);
 
     Project *m_project;
     Domain   m_domain = Domain::EM;
@@ -93,6 +95,15 @@ private:
                 *m_btnFar = nullptr, *m_btnPost = nullptr;
     QComboBox   *m_tableSel = nullptr;   // PostLog モードの表選択
     QCheckBox   *m_logY = nullptr;       // PostLog モードの対数 Y 軸
+    // 時間波形の表 (feed.log / point.log) をスペクトルで見るための一式。
+    // 窓は解析窓、apodization は記録の端のテーパ (モニタータブと同じ意味で、
+    // 選択は QSettings "post/apodization" で共有する)
+    QCheckBox   *m_spectrum = nullptr;
+    QComboBox   *m_winSel = nullptr;
+    QComboBox   *m_apodSel = nullptr;
+    // 現在選んでいる表が時間波形か (x 列が時間か) を判定する
+    bool currentTableIsTime() const;
+    bool spectrumActive() const;
 
     QVector<int>    m_steps;
     QVector<double> m_eAvg, m_hAvg;

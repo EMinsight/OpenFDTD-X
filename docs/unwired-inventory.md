@@ -178,7 +178,7 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 
 | 未反映の内容 | 反映されるもの | 区分 | 実装に要るもの |
 |---|---|---|---|
-| 同期・レコーダ・apodization の設定 | サンプリング周波数 (音響設定へ反映されます) | **C** | 記録の間引き・窓関数は GUI 側の後処理 |
+| 同期とレコーダ (位相 / 振幅 / DFT) の設定 | サンプリング周波数 (音響設定へ反映されます) と apodization (結果プロットの「ポスト表 → スペクトル」で、時間波形の端のテーパとして使われます) | **C** | 2026-08-11 に apodization を配線 (core/WaveformSpectrum)。同期とレコーダは .ofd に対応キーが無い |
 
 ### MultiphysicsTab
 
