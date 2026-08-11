@@ -232,6 +232,10 @@ set(CORE_SOURCES
     # 方針のため自前実装 — selftest が REAL8 のビット列と往復を検証する
     src/io/GdsIO.cpp
     src/io/GdsIO.h
+    # GDS の多角形 → FDTD の直方体 (水平スラブ分解 + 押し出し)。
+    # LayoutGDSTab の「FDTD へ渡す」の実体で、selftest から面積保存を検証する
+    src/io/GdsGeometry.cpp
+    src/io/GdsGeometry.h
 
     src/kernel/Runner.cpp
     src/kernel/Runner.h

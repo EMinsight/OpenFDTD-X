@@ -74,6 +74,7 @@
 #include "optics/DisplayMetrics.h"
 #include "optics/ParaxialTrace.h"
 #include "core/WaveformSpectrum.h"
+#include "io/GdsGeometry.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -13769,6 +13770,191 @@ static void testParaxialTrace()
     }
 }
 
+// ── GDS 多角形 → 直方体ジオメトリ (io/GdsGeometry) ─────────────────────────
+// 中心となる不変条件は **面積の厳密な保存**。頂点 y の間では多角形の幅が
+// y の 1 次式なので、中点で測った幅の積分は厳密になる (中点則は 1 次式に
+// 対して厳密)。したがって斜辺があっても面積は合う — 合わないのは形だけで、
+// そこは manhattan フラグで呼び出し側へ伝える。
+static void testGdsGeometry()
+{
+    g_file = "gds-geom";
+
+    auto poly = [](int layer, std::initializer_list<double> xs,
+                   std::initializer_list<double> ys) {
+        GdsPolygon p;
+        p.layer = layer;
+        for (double v : xs) p.x_m.push_back(v);
+        for (double v : ys) p.y_m.push_back(v);
+        return p;
+    };
+
+    // 1) 長方形は 1 個の矩形になる (分割しない)
+    {
+        const GdsPolygon r = poly(1, { 0, 2, 2, 0, 0 }, { 0, 0, 1, 1, 0 });
+        const GdsDecompose d = decomposePolygon(r);
+        check(d.valid && d.manhattan, "gds-geom: a rectangle is Manhattan");
+        check(d.rects.size() == 1, "gds-geom: and stays a single rectangle");
+        check(std::fabs(d.polygonArea - 2.0) < 1e-15,
+              "gds-geom: the shoelace area is 2");
+        check(std::fabs(d.rectArea - d.polygonArea) < 1e-15,
+              "gds-geom: the decomposition preserves the area exactly");
+        check(std::fabs(d.rects[0].x0) < 1e-15
+              && std::fabs(d.rects[0].x1 - 2.0) < 1e-15
+              && std::fabs(d.rects[0].y0) < 1e-15
+              && std::fabs(d.rects[0].y1 - 1.0) < 1e-15,
+              "gds-geom: the rectangle keeps its corners");
+    }
+
+    // 2) L 字 (直交多角形) — 面積が厳密に一致し、矩形は 2 個
+    //    (0,0)-(2,0)-(2,1)-(1,1)-(1,2)-(0,2)  面積 = 4 − 1 = 3
+    {
+        const GdsPolygon l = poly(1, { 0, 2, 2, 1, 1, 0 },
+                                     { 0, 0, 1, 1, 2, 2 });
+        const GdsDecompose d = decomposePolygon(l);
+        check(d.valid && d.manhattan, "gds-geom: an L shape is Manhattan");
+        check(std::fabs(d.polygonArea - 3.0) < 1e-12,
+              "gds-geom: the L shape has area 3");
+        check(std::fabs(d.rectArea - 3.0) < 1e-12,
+              "gds-geom: the L decomposition preserves the area");
+        check(d.rects.size() == 2,
+              "gds-geom: two rectangles are enough for an L");
+    }
+
+    // 3) U 字 — 凹みが 1 段あるので 3 個 (縦の結合が効いていることの確認)
+    //    (0,0)-(3,0)-(3,2)-(2,2)-(2,1)-(1,1)-(1,2)-(0,2)  面積 = 6 − 1 = 5
+    {
+        const GdsPolygon u = poly(1, { 0, 3, 3, 2, 2, 1, 1, 0 },
+                                     { 0, 0, 2, 2, 1, 1, 2, 2 });
+        const GdsDecompose d = decomposePolygon(u);
+        check(d.valid && d.manhattan, "gds-geom: a U shape is Manhattan");
+        check(std::fabs(d.rectArea - 5.0) < 1e-12,
+              "gds-geom: the U decomposition preserves the area");
+        check(d.rects.size() == 3,
+              "gds-geom: a U needs three rectangles");
+        // 生成した矩形は互いに重ならない (重なると材料が二重に置かれる)
+        for (int a = 0; a < d.rects.size(); ++a)
+            for (int b = a + 1; b < d.rects.size(); ++b) {
+                const GdsRect &p1 = d.rects[a], &p2 = d.rects[b];
+                const double ox = std::min(p1.x1, p2.x1) - std::max(p1.x0, p2.x0);
+                const double oy = std::min(p1.y1, p2.y1) - std::max(p1.y0, p2.y0);
+                check(!(ox > 1e-12 && oy > 1e-12),
+                      "gds-geom: the rectangles do not overlap");
+            }
+    }
+
+    // 4) 斜辺があっても **面積は厳密**。形は階段近似になるので旗が立つ。
+    //    三角形 (0,0)-(1,0)-(0,1) の面積は 0.5
+    {
+        const GdsPolygon t = poly(1, { 0, 1, 0 }, { 0, 0, 1 });
+        const GdsDecompose d = decomposePolygon(t);
+        check(d.valid, "gds-geom: a triangle is decomposed");
+        check(!d.manhattan, "gds-geom: but it is flagged as not Manhattan");
+        check(std::fabs(d.polygonArea - 0.5) < 1e-15,
+              "gds-geom: the triangle area is 0.5");
+        check(std::fabs(d.rectArea - 0.5) < 1e-12,
+              "gds-geom: the midpoint slab rule keeps the area exact even "
+              "with a slanted edge");
+    }
+    {   // 台形 (斜辺 1 本) も同じく面積は厳密
+        const GdsPolygon tz = poly(1, { 0, 4, 3, 1 }, { 0, 0, 2, 2 });
+        const GdsDecompose d = decomposePolygon(tz);
+        check(d.valid && !d.manhattan, "gds-geom: a trapezoid is slanted");
+        check(std::fabs(d.rectArea - d.polygonArea) < 1e-12,
+              "gds-geom: the trapezoid area survives the decomposition");
+        check(std::fabs(d.polygonArea - 6.0) < 1e-12,
+              "gds-geom: (its area is 6)");
+    }
+
+    // 5) 退化した入力からは何も作らない
+    {
+        check(!decomposePolygon(poly(1, { 0, 1 }, { 0, 0 })).valid,
+              "gds-geom: two points are not a polygon");
+        check(!decomposePolygon(poly(1, { 0, 1, 2 }, { 0, 0, 0 })).valid,
+              "gds-geom: a zero-area sliver is rejected");
+        check(!decomposePolygon(GdsPolygon()).valid,
+              "gds-geom: an empty polygon is rejected");
+    }
+
+    // 6) 押し出し: レイヤーごとの z 範囲で直方体になる
+    {
+        GdsLibrary lib;
+        lib.name = QStringLiteral("TEST");
+        GdsStructure st;
+        st.name = QStringLiteral("TOP");
+        st.polygons.push_back(poly(1, { 0, 2e-6, 2e-6, 0 },
+                                      { 0, 0, 1e-6, 1e-6 }));
+        st.polygons.push_back(poly(2, { 0, 1e-6, 1e-6, 0 },
+                                      { 0, 0, 1e-6, 1e-6 }));
+        lib.structures.push_back(st);
+
+        QVector<GdsLayerExtrude> layers;
+        GdsLayerExtrude a; a.layer = 1; a.z0_m = 0.0; a.z1_m = 220e-9;
+        a.materialId = 3; a.name = QStringLiteral("Si");
+        layers.push_back(a);
+        const GdsToGeometryResult r =
+            gdsToGeometry(lib, QStringLiteral("TOP"), layers);
+        check(r.polygons == 1,
+              "gds-geom: only the selected layer is converted");
+        check(r.rects == 1 && r.units.size() == 1,
+              "gds-geom: it becomes one box");
+        check(r.units[0].shape == 1, "gds-geom: the shape code is a box");
+        check(r.units[0].materialId == 3,
+              "gds-geom: the layer's material is used");
+        check(std::fabs(r.units[0].g[1] - 2e-6) < 1e-18
+              && std::fabs(r.units[0].g[3] - 1e-6) < 1e-18,
+              "gds-geom: the XY extent comes from the polygon");
+        check(std::fabs(r.units[0].g[4]) < 1e-18
+              && std::fabs(r.units[0].g[5] - 220e-9) < 1e-18,
+              "gds-geom: the Z extent comes from the layer");
+        check(std::fabs(r.totalArea_m2 - 2e-12) < 1e-24,
+              "gds-geom: the footprint area is reported");
+        check(r.units[0].name.startsWith(QStringLiteral("Si")),
+              "gds-geom: the generated unit is named after the layer");
+
+        // 厚みの無いレイヤー指定は無視する (z1 <= z0)
+        QVector<GdsLayerExtrude> flat;
+        GdsLayerExtrude f; f.layer = 1; f.z0_m = 0.0; f.z1_m = 0.0;
+        flat.push_back(f);
+        check(gdsToGeometry(lib, QStringLiteral("TOP"), flat).units.isEmpty(),
+              "gds-geom: a zero-thickness layer produces nothing");
+        // 知らないトップセル名を渡しても落ちない (最初の構造を使う)
+        check(!gdsToGeometry(lib, QStringLiteral("NOPE"), layers).units.isEmpty(),
+              "gds-geom: an unknown top cell falls back to the first structure");
+        check(gdsToGeometry(GdsLibrary(), QString(), layers).units.isEmpty(),
+              "gds-geom: an empty library produces nothing");
+    }
+
+    // 7) 実ファイル経由: 書いて読み直したものが同じ形状になる
+    //    (GdsIO の往復と組み合わせて、経路全体を通す)
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "gds-geom: temp dir");
+        GdsLibrary lib;
+        GdsStructure st;
+        st.name = QStringLiteral("CELL");
+        // L 字 (µm オーダー) を 1 枚
+        st.polygons.push_back(poly(7, { 0, 2e-6, 2e-6, 1e-6, 1e-6, 0 },
+                                      { 0, 0, 1e-6, 1e-6, 2e-6, 2e-6 }));
+        lib.structures.push_back(st);
+        const QString path = dir.filePath(QStringLiteral("l.gds"));
+        QString err;
+        check(GdsIO::save(path, lib, &err), "gds-geom: the GDS is written");
+        GdsLibrary back;
+        check(GdsIO::load(path, back, &err), "gds-geom: and read back");
+
+        QVector<GdsLayerExtrude> layers;
+        GdsLayerExtrude a; a.layer = 7; a.z0_m = 0.0; a.z1_m = 100e-9;
+        layers.push_back(a);
+        const GdsToGeometryResult r = gdsToGeometry(back, QString(), layers);
+        check(r.rects == 2, "gds-geom: the round-tripped L is two boxes");
+        // 面積 = 3 µm² (1 nm 格子への丸めぶんだけ許容する)
+        check(std::fabs(r.totalArea_m2 - 3e-12) < 1e-20,
+              "gds-geom: the footprint survives the file round trip");
+        check(r.nonManhattan == 0,
+              "gds-geom: and it is still Manhattan after the round trip");
+    }
+}
+
 // ── 時間波形 → 窓関数つきスペクトル (core/WaveformSpectrum) ────────────────
 // 判定の出所は F. J. Harris, "On the Use of Windows for Harmonic Analysis
 // with the Discrete Fourier Transform", Proc. IEEE 66(1), 1978 の表 1
@@ -16263,6 +16449,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testGdsGeometry();
     testWaveformSpectrum();
     testSeidelAberration();
     testDisplayIlluminationSettings();
