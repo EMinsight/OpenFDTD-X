@@ -10,7 +10,8 @@
 //   - 解析プロット : スポットダイアグラム・光線収差図・色収差の焦点移動を
 //     実光線追跡 (optics/RayTrace) で計算する。MTF 等の残り 5 種は未実装
 //   - 面テーブルから子午面 2D 光線追跡するレイアウトプレビュー
-// 光ドメイン選択時のみ表示される。面データはローカル状態 (モック忠実)。
+// 光ドメイン選択時のみ表示される。面データは Project (.ofdx) に保存し、
+// 光解析タブの「光学系定義」節と共有する (既定のままなら保存しない)。
 #pragma once
 #include <QColor>
 #include <QPointF>
@@ -21,6 +22,7 @@
 
 #include <vector>
 
+#include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
 
 class QComboBox;
@@ -33,18 +35,9 @@ namespace ofd {
 class MiniPlot;
 class Project;
 
-// 1面ぶんの行データ (mock の rows と同フィールド。数値も文字列で保持し
-// "Infinity" / "-" をそのまま表現する)
-struct LensSurface {
-    bool    enabled = true;
-    QString type;      // OBJ / STD / STO / ASP / BIN / EVN / HOL / FRE / IMG
-    QString R;         // 曲率半径 [mm] ("Infinity" 可)
-    QString thick;     // 厚さ [mm]
-    QString glass;     // ガラス名 / AIR / -
-    QString semiD;     // 半径 [mm]
-    QString conic;     // コーニック定数
-    QString comment;
-};
+// 1面ぶんの行データ。**実体は core/Project の LensSurfaceRow** —
+// 面テーブルはプロジェクト (.ofdx) に保存し、光解析タブとも共有する。
+using LensSurface = LensSurfaceRow;
 
 // 面テーブルから描くレンズ断面 + 子午光線追跡プレビュー (QPainter)
 class LensLayoutView : public QWidget {
@@ -127,6 +120,8 @@ private:
                                                   QStringList *assumedGlass,
                                                   double lambda_um = 0.0) const;
     void rebuildWaveBadges();       // m_waves → 波長バッジの行
+    void loadRowsFromProject();     // .ofdx の面テーブル (空なら既定値)
+    void pushRowsToProject();       // 編集結果を .ofdx へ (既定のままなら書かない)
     double epdValue() const;
     double fieldValue() const;
 
@@ -143,7 +138,7 @@ private:
     QComboBox    *m_coord;
     LensLayoutView *m_layout;
     // 波長サンプル [nm]。昇順・重複なし。プロジェクトには保存しない
-    // (このタブは面テーブルごとセッション内の状態)。
+    // (解析の見方の設定であって設計データではないため)。
     QVector<double> m_waves;
     QWidget        *m_waveBadges = nullptr;
     // 解析プロット (実光線追跡)

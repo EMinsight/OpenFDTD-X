@@ -14770,6 +14770,90 @@ static void testWaveformSpectrum()
     }
 }
 
+// ── レンズ面テーブルの .ofdx 永続化 (optical.lens.surfaces) ────────────────
+// io-compat の規則どおり (a) ラウンドトリップ、(b) 旧ファイルは既定値、
+// および「既定のままなら 1 バイトも増えない」ことを検証する。
+static void testLensSurfacePersistence()
+{
+    g_file = "lenssurf";
+
+    // 既定値そのものが妥当か (レンズエディタと光解析タブの初期表示)
+    const QVector<LensSurfaceRow> def = defaultLensSurfaces();
+    check(def.size() == 9 && def.first().type == QStringLiteral("OBJ")
+              && def.last().type == QStringLiteral("IMG"),
+          "lenssurf: the default example is a 9-row table from OBJ to IMG");
+    int stops = 0;
+    for (const LensSurfaceRow &r : def)
+        if (r.type == QStringLiteral("STO")) ++stops;
+    check(stops == 1, "lenssurf: the default example has exactly one stop");
+
+    // (b') 触っていないプロジェクトの .ofdx にキーが出ない
+    {
+        Project p;
+        const QString j = btyTmpPath("lens_default.ofdx");
+        OfdxIO::save(j, p);
+        QFile f(j);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: default sidecar written");
+        const QByteArray raw = f.readAll();
+        f.close();
+        check(!raw.contains("\"lens\""),
+              "lenssurf: an untouched project writes no lens key at all");
+    }
+
+    // (a) ラウンドトリップ — 文字列のまま ("Infinity" / "-" も含めて) 戻る
+    {
+        Project p;
+        QVector<LensSurfaceRow> rows = defaultLensSurfaces();
+        rows[2].R = QStringLiteral("51.123");
+        rows[2].glass = QStringLiteral("N-BK7");
+        rows[3].enabled = false;
+        rows[4].comment = QString::fromUtf8("測定した曲率");
+        rows.last().semiD = QStringLiteral("8.25");
+        p.optical().lensSurfaces = rows;
+        const QString j = btyTmpPath("lens_rt.ofdx");
+        OfdxIO::save(j, p);
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "lenssurf: sidecar reload");
+        const QVector<LensSurfaceRow> &got = q.optical().lensSurfaces;
+        check(got.size() == rows.size(), "lenssurf: row count round-trip");
+        bool same = got.size() == rows.size();
+        for (int i = 0; same && i < got.size(); ++i) same = (got[i] == rows[i]);
+        check(same, "lenssurf: every field round-trips verbatim "
+                    "(Infinity / - / comments / enabled flag)");
+    }
+
+    // (b) 旧ファイル (lens キーが無い .ofdx) は空のまま = 既定の設計例
+    {
+        Project p;
+        p.optical().lensSurfaces = defaultLensSurfaces();
+        const QString j = btyTmpPath("lens_old.ofdx");
+        OfdxIO::save(j, p);
+        // "lens" ブロックを取り除いた旧世代のファイルを作る
+        QFile f(j);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: sidecar written");
+        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        QJsonObject root = doc.object();
+        QJsonObject opt = root.value("optical").toObject();
+        check(opt.contains("lens"),
+              "lenssurf: an edited table does write the lens key");
+        opt.remove("lens");
+        root["optical"] = opt;
+        const QString j2 = btyTmpPath("lens_old2.ofdx");
+        QFile g(j2);
+        check(g.open(QIODevice::WriteOnly), "lenssurf: legacy sidecar written");
+        g.write(QJsonDocument(root).toJson());
+        g.close();
+        Project q;
+        QString err;
+        check(OfdxIO::load(j2, q, &err), "lenssurf: legacy sidecar reload");
+        check(q.optical().lensSurfaces.isEmpty(),
+              "lenssurf: a sidecar without the lens key leaves the table empty "
+              "(= the default example)");
+    }
+}
+
 // ── 実光線追跡 (optics/RayTrace) ───────────────────────────────────────────
 // 判定はすべて **厳密に分かっている解**との比較で、数値の丸写しではない:
 //   1) 球面の非点収差ゼロ点 (アプラナート点) — 開口いくらでも厳密に一点へ
@@ -17340,6 +17424,7 @@ int main(int argc, char *argv[])
     testWaveformSpectrum();
     testSeidelAberration();
     testRayTrace();
+    testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();

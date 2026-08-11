@@ -60,6 +60,8 @@ private:
     //  丸ごと出力しないので、カーネルには不正な設定が渡らない)。
     QStringList applyRcwaTable();
     void        refreshRcwaTable();
+    void        refreshOpticalSystem();  // 面データ表 (レンズエディタと共有)
+    void        updateGeoMethodView();   // 解法 → 波動ソルバー設定の有効・無効
 
     Project   *m_p;
     bool       m_updating = false;

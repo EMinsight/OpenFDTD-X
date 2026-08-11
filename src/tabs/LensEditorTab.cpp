@@ -528,18 +528,8 @@ void LensLayoutView::paintEvent(QPaintEvent *)
 LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
 {
-    // 初期値: Cooke triplet (mock と同一)
-    m_rows = {
-        { true, "OBJ", "Infinity", "Infinity", "AIR",     "-",    "0", QString::fromUtf8("Object") },
-        { true, "STO", "Infinity", "5.00",     "AIR",     "6.00", "0", QString::fromUtf8("Stop") },
-        { true, "STD", "50.230",   "3.260",    "N-LAK10", "7.10", "0", QString::fromUtf8("L1 front") },
-        { true, "STD", "-83.430",  "1.250",    "AIR",     "7.05", "0", QString::fromUtf8("L1 back") },
-        { true, "STD", "-39.270",  "1.000",    "N-SF10",  "6.30", "0", QString::fromUtf8("L2 front (neg)") },
-        { true, "STD", "40.500",   "5.300",    "AIR",     "6.30", "0", QString::fromUtf8("L2 back") },
-        { true, "STD", "83.430",   "3.260",    "N-LAK10", "7.50", "0", QString::fromUtf8("L3 front") },
-        { true, "STD", "-50.230",  "42.100",   "AIR",     "7.50", "0", QString::fromUtf8("L3 back") },
-        { true, "IMG", "Infinity", "-",        "-",       "7.65", "0", QString::fromUtf8("Image plane") },
-    };
+    // 面データはプロジェクト (.ofdx) から。空なら既定の設計例 (Cooke triplet)
+    loadRowsFromProject();
 
     auto *body = new QWidget(this);
     auto *v = new QVBoxLayout(body);
@@ -770,6 +760,13 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
 
+    // 別ファイルを開いたら面テーブルを読み直す (タブはモデルの View)
+    connect(project, &Project::loaded, this, [this] {
+        loadRowsFromProject();
+        rebuildTable();
+        retrace();
+    });
+
     connect(m_table, &QTableWidget::cellChanged, this, [this](int row, int) {
         if (m_updating) return;
         if (row < 0 || row >= m_rows.size()) return;
@@ -963,6 +960,7 @@ void LensEditorTab::retrace()
     double field = m_field->text().toDouble(&ok);
     if (!ok) field = 20.0;
     m_layout->setSystem(m_rows, epd, field);
+    pushRowsToProject();      // 編集後の状態を保存 (既定のままなら書かない)
     recomputeParaxial();
 }
 
@@ -1632,4 +1630,22 @@ void LensEditorTab::runChromatic()
                                           .arg(QString::number((bC - bF) * 1000.0,
                                                                'f', 2));
     m_anInfo->setText(info);
+}
+
+// ── 面テーブルの永続化 (.ofdx "optical.lens.surfaces") ─────────────────────
+// 空 = 既定の設計例。**既定のままなら書かない**ので、触っていない
+// プロジェクトの .ofdx は 1 バイトも変わらない (CLAUDE.md 絶対規則 2)。
+void LensEditorTab::loadRowsFromProject()
+{
+    const QVector<LensSurfaceRow> &src = m_p->optical().lensSurfaces;
+    m_rows = src.isEmpty() ? defaultLensSurfaces() : src;
+}
+
+void LensEditorTab::pushRowsToProject()
+{
+    QVector<LensSurfaceRow> &dst = m_p->optical().lensSurfaces;
+    if (dst == m_rows) return;
+    if (dst.isEmpty() && m_rows == defaultLensSurfaces()) return;  // 既定のまま
+    dst = m_rows;
+    m_p->touch();
 }

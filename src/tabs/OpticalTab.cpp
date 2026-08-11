@@ -102,8 +102,28 @@ const bool s_i18nOptRay = [] {
               "微細構造はFDTDで精密解析、遠方伝搬はRayで高速化",
               "Fine structures are solved by FDTD; far-field propagation is "
               "accelerated by ray tracing");
-    I18n::reg("optm_uw_method", "解法 (波動 / 幾何) の選択",
-              "the choice of method (wave / geometrical)");
+    I18n::reg("optm_uw_method",
+              "ハイブリッド (波動 + 幾何) の連携そのもの",
+              "the wave + geometrical hybrid coupling itself");
+    I18n::reg("optm_uw_method_ok",
+              "解法の選択 — 幾何光学を選ぶと下の波動ソルバーの設定を無効化し、"
+              "順次光線追跡 (レンズエディタタブ) へ誘導します",
+              "the choice of method — picking geometrical optics disables the "
+              "wave-solver settings below and points at the sequential ray "
+              "trace in the lens editor tab");
+    I18n::reg("optm_geo_wave_off",
+              "幾何光学ではこの下の波動ソルバー (FDTD / RCWA / BPM / FMM) は"
+              "使いません。順次光線追跡はレンズエディタタブの「解析プロット」"
+              "で行います (外部カーネルは起動しません)。",
+              "Geometrical optics does not use the wave solvers below (FDTD / "
+              "RCWA / BPM / FMM). Sequential ray tracing is done under "
+              "\"Analyses\" in the lens editor tab; no external kernel is "
+              "launched.");
+    I18n::reg("optm_surf_shared",
+              "面データはレンズエディタタブの面テーブルそのものです "
+              "(ここは表示のみ。編集するとプロジェクトに保存されます)。",
+              "The surface data is the lens editor tab's own table (shown "
+              "read-only here; edits there are saved with the project).");
     I18n::reg("optm_uw_ray",
               "この節のレイトレース設定 (拡散反射・重要度サンプリング・偏光を"
               "扱う非順次レイトレーサが未実装のため)。順次光線追跡 "
@@ -334,20 +354,6 @@ QHBoxLayout *hrow(std::initializer_list<QWidget *> ws)
 }
 
 // 光学系定義テーブルの行データ (mock の <tbody> そのまま)
-struct SurfaceRow {
-    const char *typeKey;
-    const char *r;
-    const char *thick;
-    const char *mat;
-    bool        stop;
-};
-const SurfaceRow kSurfaces[] = {
-    { "optray_sph",  "52.5",  "8.0",  "BK7",  false },
-    { "optray_sph",  "-43.3", "2.5",  "F2",   false },
-    { "optray_stop", "∞",     "15.0", "—",    true  },
-    { "optray_asph", "28.4",  "6.0",  "SF11", false },
-};
-
 QTableWidgetItem *alignedItem(const QString &text, Qt::Alignment a)
 {
     auto *it = new QTableWidgetItem(text);
@@ -388,7 +394,8 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_geoHint = mutedLabel(I18n::tr("optm_geo_hint_fdtd"), ss);
     ss->vbox()->addWidget(m_geoHint);
     // 解法 (波動/幾何) の選択はローカル state のみで計算へは渡らない
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("optm_uw_method")));
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("optm_uw_method"),
+                                               I18n::tr("optm_uw_method_ok")));
 
     // per-method parameter pages
     m_solverStack = new QStackedWidget(ss);
@@ -784,8 +791,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     // ── 光学系定義 / Optical system ────────────────────────────────────────
     // レンズ面データ (mock の q-table) + 収差解析オプション。
     auto *ssys = new SectionBox(I18n::tr("optray_sys_section"), body);
-    const int nSurf = int(sizeof(kSurfaces) / sizeof(kSurfaces[0]));
-    m_optSysTable = new QTableWidget(nSurf, 6, ssys);
+    m_optSysTable = new QTableWidget(0, 6, ssys);
     m_optSysTable->setHorizontalHeaderLabels(
         { "#", I18n::tr("optray_col_type"), "R [mm]",
           I18n::tr("optray_col_thick"), I18n::tr("optray_col_mat"),
@@ -794,28 +800,17 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
         QHeaderView::Stretch);
     m_optSysTable->verticalHeader()->setVisible(false);
     m_optSysTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_optSysTable->setMinimumHeight(nSurf * 30 + 42);
-    for (int r = 0; r < nSurf; ++r) {
-        const SurfaceRow &s = kSurfaces[r];
-        m_optSysTable->setItem(r, 0,
-                               alignedItem(QString::number(r + 1),
-                                           Qt::AlignRight));
-        m_optSysTable->setItem(r, 1, new QTableWidgetItem(I18n::tr(s.typeKey)));
-        m_optSysTable->setItem(r, 2, alignedItem(s.r, Qt::AlignRight));
-        m_optSysTable->setItem(r, 3, alignedItem(s.thick, Qt::AlignRight));
-        m_optSysTable->setItem(r, 4, new QTableWidgetItem(QString(s.mat)));
-        m_optSysTable->setItem(r, 5,
-                               alignedItem(s.stop ? "●" : "—", Qt::AlignHCenter));
-    }
     ssys->vbox()->addWidget(m_optSysTable);
+    refreshOpticalSystem();      // 面データはレンズエディタと同じモデル
     m_optSeidel   = makeCheck(I18n::tr("optray_seidel"), true, ssys);
     m_optSpot     = makeCheck(I18n::tr("optray_spot"), true, ssys);
     m_optMtf      = makeCheck(I18n::tr("optray_mtf"), false, ssys);
     m_optRayAberr = makeCheck(I18n::tr("optray_ray_aberr"), false, ssys);
     ssys->vbox()->addLayout(
         hrow({ m_optSeidel, m_optSpot, m_optMtf, m_optRayAberr }));
-    // 面データは固定の設計例。3 次収差 (Seidel) の実計算はレンズエディタ
-    // タブにあるので、そこへ誘導する (この節のチェックはローカル state)。
+    // 面データはレンズエディタタブと同じモデル (.ofdx に保存される)。
+    // 実計算 (3 次収差・スポット・光線収差図) もそちらにあるので誘導する。
+    ssys->vbox()->addWidget(mutedLabel(I18n::tr("optm_surf_shared"), ssys));
     ssys->vbox()->addWidget(mutedLabel(I18n::tr("optm_seidel_where"), ssys));
     ssys->vbox()->addWidget(tabhelp::unwiredNote(ssys, I18n::tr("optm_uw_surf")));
     v->addWidget(ssys);
@@ -923,7 +918,9 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
                       : (i == 2) ? "optm_geo_hint_hybrid"
                                  : "optm_geo_hint_fdtd";
         m_geoHint->setText(I18n::tr(k));
+        updateGeoMethodView();
     });
+    updateGeoMethodView();
     // ポート数を変えたら入力/出力ポート番号の上限も追従させる
     connect(m_spPorts, &QSpinBox::valueChanged, this, [this](int n) {
         m_spPortIn->setMaximum(std::max(1, n));
@@ -937,6 +934,7 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
         QVector<RcwaLayer> &ls = m_p->optical().rcwaLayerList;
         ls.push_back(ls.isEmpty() ? RcwaLayer{} : ls.last());
         refreshRcwaTable();
+    refreshOpticalSystem();
         apply();
     });
     connect(m_rcwaDel, &QPushButton::clicked, this, [this] {
@@ -1154,6 +1152,7 @@ void OpticalTab::refresh()
     m_rcwaPy->setText(QString::number(o.rcwaPeriodY, 'g', 8));
     m_rcwaLayers->setValue(o.rcwaLayers);
     refreshRcwaTable();
+    refreshOpticalSystem();
     m_rcwaWarn->setVisible(false);
     m_bpmAlgo->setCurrentIndex(o.bpmAlgorithm);
     m_bpmDz->setText(QString::number(o.bpmDz, 'g', 8));
@@ -1479,4 +1478,51 @@ void OpticalTab::exportSparam()
             .arg(d.freqHz.size())
             .arg(QString::number(d.freqHz.first(), 'g', 6),
                  QString::number(d.freqHz.last(), 'g', 6)));
+}
+
+// ── 光学系定義テーブル (レンズエディタと同じ面データの表示) ────────────────
+// 出典は Project::optical().lensSurfaces。空なら既定の設計例 (Cooke triplet)
+// を出す — レンズエディタの初期表示と同じものになる。
+void OpticalTab::refreshOpticalSystem()
+{
+    if (!m_optSysTable) return;
+    const QVector<LensSurfaceRow> &src = m_p->optical().lensSurfaces;
+    const QVector<LensSurfaceRow> rows =
+        src.isEmpty() ? defaultLensSurfaces() : src;
+    m_optSysTable->setRowCount(rows.size());
+    m_optSysTable->setMinimumHeight(rows.size() * 30 + 42);
+    for (int r = 0; r < rows.size(); ++r) {
+        const LensSurfaceRow &s = rows[r];
+        m_optSysTable->setItem(r, 0,
+                               alignedItem(QString::number(r + 1),
+                                           Qt::AlignRight));
+        m_optSysTable->setItem(r, 1, new QTableWidgetItem(s.type));
+        m_optSysTable->setItem(r, 2, alignedItem(s.R, Qt::AlignRight));
+        m_optSysTable->setItem(r, 3, alignedItem(s.thick, Qt::AlignRight));
+        m_optSysTable->setItem(r, 4, new QTableWidgetItem(s.glass));
+        m_optSysTable->setItem(
+            r, 5, alignedItem(s.type == QStringLiteral("STO")
+                                  ? QString::fromUtf8("●")
+                                  : QString::fromUtf8("—"),
+                              Qt::AlignHCenter));
+        // 無効行はグレーで出す (行を隠すとテーブルと面テーブルが食い違う)
+        if (!s.enabled)
+            for (int c = 0; c < 6; ++c)
+                if (auto *it = m_optSysTable->item(r, c))
+                    it->setForeground(QBrush(QColor(0x88, 0x88, 0x88)));
+    }
+}
+
+// 解法 (波動 / 幾何 / ハイブリッド) → 波動ソルバー設定の有効・無効。
+// 幾何光学では外部カーネルを起動しないので、波動側の設定を触れなくして
+// 理由を出す (設定できるのに効かない状態を作らない)。
+void OpticalTab::updateGeoMethodView()
+{
+    if (!m_geoMethod || !m_solver || !m_solverStack) return;
+    const bool wave = (m_geoMethod->currentIndex() != 1);
+    m_solver->setEnabled(wave);
+    m_solverStack->setEnabled(wave);
+    const QString why = wave ? QString() : I18n::tr("optm_geo_wave_off");
+    m_solver->setToolTip(why);
+    m_solverStack->setToolTip(why);
 }
