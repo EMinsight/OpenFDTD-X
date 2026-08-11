@@ -15,6 +15,9 @@ class QComboBox;
 class QLineEdit;
 class QListWidget;
 class QTableWidget;
+class QPushButton;
+class QPlainTextEdit;
+class QProcess;
 
 namespace ofd {
 
@@ -33,6 +36,8 @@ private:
     void applyGroups();          // 表 → Project::analysisGroups()
     void rebuildGroups();        // Project::analysisGroups() → 表
     void rebuildMonitorChoices();// Project::monitors() → 候補リスト
+    void pickScript();           // 選択行にスクリプトファイルを設定する
+    void runScript();            // 選択行のスクリプトを QProcess で実行する
 
     Project      *m_p;
     bool          m_updating = false;
@@ -42,6 +47,11 @@ private:
     QListWidget  *m_monitors;
     QStringList   m_monNames;    // 候補リストの現在の中身 (再構築の抑制用)
     QComboBox    *m_script;
+    // スクリプト実行 (QProcess)。実行中は多重起動させない
+    QPushButton  *m_pickBtn = nullptr;
+    QPushButton  *m_runBtn = nullptr;
+    QPlainTextEdit *m_runLog = nullptr;
+    QProcess     *m_proc = nullptr;
 };
 
 } // namespace ofd

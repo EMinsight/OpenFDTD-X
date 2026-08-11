@@ -84,7 +84,7 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 
 | 未反映の内容 | 反映されるもの | 区分 | 実装に要るもの |
 |---|---|---|---|
-| スクリプト言語の選択 (実行が未実装のため) | 作成したグループの一覧そのもの (.ofdx に保存されます) | **C** | スクリプト実行は GUI 側 (QProcess) |
+| スクリプト言語の選択のうち LSF (Lumerical 本体が要ります) | 作成したグループの一覧と、行に割り当てた Python スクリプトの実行 (作業ディレクトリはプロジェクトのフォルダ、引数に .ofd のパスとグループ名を渡し、出力をログに出します) | **C**/**B** | 2026-08-11 に実行を配線 (QProcess + .ofdx の script キー)。LSF は Lumerical が無いと動かない |
 
 ### AntennaCharTab
 

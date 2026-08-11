@@ -725,12 +725,16 @@ struct AnalysisGroupRow {
     QString name;      // 例 "Antenna patterns"
     QString monitors;  // 含まれるモニター (自由記述, 例 "6 box monitors")
     QString output;    // 出力 (自由記述, 例 "遠方界・ゲイン・効率")
+    // 実行するスクリプトのパス (.ofdx "analysis_groups[].script" — 追加キー)。
+    // **空のときは .ofdx に書かない**ので、使わない限り出力はバイト一致のまま。
+    QString script;
 };
 
 inline bool operator==(const AnalysisGroupRow &a, const AnalysisGroupRow &b)
 {
     return a.enabled == b.enabled && a.name == b.name
-        && a.monitors == b.monitors && a.output == b.output;
+        && a.monitors == b.monitors && a.output == b.output
+        && a.script == b.script;
 }
 
 // 新規プロジェクト / .ofdx 欠落時の既定行 (ドメイン別の「初期値」)。
