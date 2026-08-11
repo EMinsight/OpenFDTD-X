@@ -4,8 +4,9 @@
 //   - システム諸元 (入射瞳径 / 視野 / 波長サンプル / 座標系)
 //   - 近軸諸元 : 面テーブルから y-nu 近軸追跡で焦点距離・主点・F 値等を実計算
 //   - Merit Function (FoM) オペランド表 + 最適化ボタン
-//     (近軸オペランド EFFL/PIMH/ISFN は実計算。収差オペランドは実光線追跡が
-//      必要なため値を出さず「—」)
+//     (近軸オペランド EFFL/PIMH/ISFN と収差オペランド SPHA/COMA/ASTI/DIST を
+//      実計算。後者は 3 次収差 (ザイデル和) で、近軸追跡だけで決まる)
+//   - 3 次収差 (ザイデル) : 面ごとの寄与と総和 (optics/SeidelAberration)
 //   - 解析プロット起動ボタン (Spot / Ray Fan / MTF …)
 //   - 面テーブルから子午面 2D 光線追跡するレイアウトプレビュー
 // 光ドメイン選択時のみ表示される。面データはローカル状態 (モック忠実)。
@@ -77,7 +78,7 @@ private:
     void syncRowFromTable(int row); // QTableWidget → m_rows (セル編集後)
     void applyStopHighlight();      // STO 行の背景ハイライト
     void rebuildMeritTable();       // m_fom → Merit 表 (目標/重みは編集可能)
-    void recomputeParaxial();       // 面テーブル → 近軸諸元 + Merit の値列
+    void recomputeParaxial();       // 面テーブル → 近軸諸元 + 収差 + Merit
 
     Project      *m_p;
     bool          m_updating = false;
@@ -87,6 +88,7 @@ private:
     QTableWidget *m_table;
     QTableWidget *m_merit = nullptr;
     QTableWidget *m_paraxial = nullptr;
+    QTableWidget *m_seidel = nullptr;
     QLineEdit    *m_epd, *m_field;
     QComboBox    *m_coord;
     LensLayoutView *m_layout;

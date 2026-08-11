@@ -286,6 +286,8 @@ set(CORE_SOURCES
     # LensEditorTab の近軸諸元 / EFFL・PIMH・ISFN オペランドの計算実体
     src/optics/ParaxialTrace.cpp
     src/optics/ParaxialTrace.h
+    src/optics/SeidelAberration.cpp
+    src/optics/SeidelAberration.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

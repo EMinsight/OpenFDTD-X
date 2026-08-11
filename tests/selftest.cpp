@@ -73,6 +73,7 @@
 #include "optics/SourceSpectrum.h"
 #include "optics/DisplayMetrics.h"
 #include "optics/ParaxialTrace.h"
+#include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
 #include "em/RadioPropagation.h"
@@ -13709,6 +13710,182 @@ static void testParaxialTrace()
     }
 }
 
+// ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
+// 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
+//   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
+//   S_IV = H²φ/n / S_V = 0 (曲げに依らない)、同心面で Ā = 0 → S_II=S_III=S_V=0、
+//   絞り移動で S_I と S_IV は不変 (Seidel の絞り移動式)、ダミー平面は無寄与。
+static void testSeidelAberration()
+{
+    g_file = "seidel";
+    namespace px = ofd::paraxial;
+    namespace sd = ofd::seidel;
+
+    const double ng = 1.5, f = 100.0, phi = 1.0 / f;
+    // 曲率 c1 / c2 の薄レンズ (厚み ~0)。最終面を絞りとする = 絞り密着。
+    auto thinLens = [&](double c1, double c2, bool stopAtLens) {
+        std::vector<px::Surface> s(2);
+        s[0].R = (c1 != 0.0) ? 1.0 / c1 : 0.0;
+        s[0].thickness = 1e-6;
+        s[0].nAfter = ng;
+        s[1].R = (c2 != 0.0) ? 1.0 / c2 : 0.0;
+        s[1].thickness = 0.0;
+        s[1].nAfter = 1.0;
+        s[1].stop = stopAtLens;
+        return s;
+    };
+    const double cEq = phi / (2.0 * (ng - 1.0));       // 両凸 (等曲率)
+
+    // 1) 単レンズのペッツバール半径は −n·f (Kingslake §10)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        check(r.valid, "seidel: an equiconvex singlet is analysed");
+        check(r.hasField && std::fabs(r.lagrange) > 0.0,
+              "seidel: a non-zero field gives a non-zero Lagrange invariant");
+        check(r.hasPetzval
+              && std::fabs(r.petzvalRadius / (-ng * f) - 1.0) < 1e-9,
+              "seidel: the Petzval radius of a singlet is -n*f");
+        const double H2 = r.lagrange * r.lagrange;
+        // 厚み 0 は数値上作れないので 1e-6 mm にしてある。恒等式は
+        // 「薄レンズの極限」なので相対 1e-6 で判定する (厚みを 10 倍
+        // 薄くすると差も 10 分の 1 になることは手で確認済み)。
+        check(std::fabs(r.sIII / (H2 * phi) - 1.0) < 1e-6,
+              "seidel: with the stop in contact S_III = H^2 * power");
+        check(std::fabs(r.sIV / (H2 * phi / ng) - 1.0) < 1e-6,
+              "seidel: S_IV = H^2 * power / n");
+        check(std::fabs(r.sV) < 1e-6 * std::fabs(r.sIII),
+              "seidel: a thin lens with the stop in contact has no distortion");
+    }
+
+    // 2) 曲げ (bending) を変えても S_III / S_IV / S_V は動かず、S_I だけ動く。
+    //    しかも最小は端ではなく内側にある (= 単レンズの best form)。
+    {
+        auto c2of = [&](double c1) { return c1 - phi / (ng - 1.0); };
+        double sIIIref = 0.0, sIVref = 0.0;
+        double sI[4] = { 0, 0, 0, 0 };
+        const double bends[4] = { 0.0, 0.5 * cEq, 1.5 * cEq, 2.0 * cEq };
+        for (int i = 0; i < 4; ++i) {
+            const sd::Result r =
+                sd::analyze(thinLens(bends[i], c2of(bends[i]), true), 20.0, 5.0);
+            check(r.valid, "seidel: a bent singlet is analysed");
+            sI[i] = r.sI;
+            if (i == 0) { sIIIref = r.sIII; sIVref = r.sIV; }
+            check(std::fabs(r.sIII - sIIIref) < 1e-6 * std::fabs(sIIIref)
+                  && std::fabs(r.sIV - sIVref) < 1e-6 * std::fabs(sIVref),
+                  "seidel: astigmatism and Petzval do not depend on bending");
+            check(std::fabs(r.sV) < 1e-6 * std::fabs(sIIIref),
+                  "seidel: distortion stays zero through the bending");
+        }
+        check(sI[2] < sI[0] && sI[2] < sI[3] && sI[2] < sI[1],
+              "seidel: spherical aberration has an interior minimum "
+              "(the best-form singlet)");
+        check(sI[0] > 3.0 * sI[2],
+              "seidel: the worst bending is several times the best form");
+    }
+
+    // 3) 平凸レンズは **凸面を平行光側へ向けた方が球面収差が小さい** (教科書)
+    {
+        const double cPc = phi / (ng - 1.0);
+        const double convexFirst =
+            sd::analyze(thinLens(cPc, 0.0, true), 20.0, 0.0).sI;
+        const double flatFirst =
+            sd::analyze(thinLens(0.0, -cPc, true), 20.0, 0.0).sI;
+        check(convexFirst > 0.0 && flatFirst > convexFirst * 3.0,
+              "seidel: a plano-convex lens is best used convex to the "
+              "collimated beam");
+    }
+
+    // 4) 同心面 (絞りが曲率中心にある) では Ā = 0 → コマ・非点・歪曲が消える
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 0.0;   s[0].thickness = 50.0; s[0].nAfter = 1.0;
+        s[0].stop = true;                       // 絞り (平面ダミー)
+        s[1].R = -50.0; s[1].thickness = 0.0;  s[1].nAfter = 1.5;
+        const sd::Result r = sd::analyze(s, 20.0, 5.0);
+        check(r.valid, "seidel: a concentric surface is analysed");
+        check(std::fabs(r.sII) < 1e-12 && std::fabs(r.sIII) < 1e-12
+              && std::fabs(r.sV) < 1e-12,
+              "seidel: a concentric surface has no coma, astigmatism or "
+              "distortion");
+        check(std::fabs(r.sIV) > 1e-6 && std::fabs(r.sI) > 1e-6,
+              "seidel: it still has spherical aberration and Petzval "
+              "curvature");
+    }
+
+    // 5) 絞り移動: S_I と S_IV は不変。S_II / S_III は絞り移動式に従って動く
+    //    (S_II* = S_II + E·S_I, S_III* = S_III + 2E·S_II + E²·S_I)
+    {
+        const sd::Result at = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        std::vector<px::Surface> shifted = thinLens(cEq, -cEq, false);
+        px::Surface dummy;
+        dummy.R = 0.0; dummy.thickness = 30.0; dummy.nAfter = 1.0;
+        dummy.stop = true;
+        shifted.insert(shifted.begin(), dummy);
+        const sd::Result sh = sd::analyze(shifted, 20.0, 5.0);
+        check(sh.valid && std::fabs(sh.sI - at.sI) < 1e-12,
+              "seidel: spherical aberration does not move with the stop");
+        check(std::fabs(sh.sIV - at.sIV) < 1e-12,
+              "seidel: the Petzval sum does not move with the stop");
+        check(std::fabs(sh.lagrange - at.lagrange) < 1e-12,
+              "seidel: the Lagrange invariant is unchanged");
+        const double E = (sh.sII - at.sII) / at.sI;
+        check(std::fabs(E) > 1e-6, "seidel: the stop really moved");
+        const double pred = at.sIII + 2.0 * E * at.sII + E * E * at.sI;
+        check(std::fabs(sh.sIII - pred) < 1e-12,
+              "seidel: astigmatism follows the stop-shift equation");
+    }
+
+    // 6) 屈折率が変わらないダミー平面は 1 バイトも動かさない
+    {
+        const sd::Result base = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        std::vector<px::Surface> withDummy = thinLens(cEq, -cEq, true);
+        px::Surface dummy;
+        dummy.R = 0.0; dummy.thickness = 7.0; dummy.nAfter = 1.0;
+        withDummy.insert(withDummy.begin(), dummy);
+        const sd::Result r = sd::analyze(withDummy, 20.0, 5.0);
+        check(std::fabs(r.sI - base.sI) < 1e-15
+              && std::fabs(r.sII - base.sII) < 1e-15
+              && std::fabs(r.sIII - base.sIII) < 1e-15
+              && std::fabs(r.sIV - base.sIV) < 1e-15
+              && std::fabs(r.sV - base.sV) < 1e-15,
+              "seidel: a dummy plane in the same medium contributes nothing");
+    }
+
+    // 7) 視野が 0 なら H = 0 — 球面収差以外は恒等的に 0 (「値が無い」ではない)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 0.0);
+        check(r.valid && !r.hasField, "seidel: zero field is flagged");
+        check(std::fabs(r.sI) > 1e-6, "seidel: spherical survives a zero field");
+        check(r.sII == 0.0 && r.sIII == 0.0 && r.sIV == 0.0 && r.sV == 0.0,
+              "seidel: every field-dependent term vanishes at zero field");
+    }
+
+    // 8) 波長換算 (Welford の正規化 W = S_I/8 + S_II/2 + …)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        const double lam = 587.6e-6;                 // d 線 [mm]
+        const sd::Waves w = sd::toWaves(r, lam);
+        check(w.valid, "seidel: the wave conversion is available");
+        check(std::fabs(w.spherical - r.sI / (8.0 * lam)) < 1e-9,
+              "seidel: spherical in waves is S_I/(8 lambda)");
+        check(std::fabs(w.astigmatism - r.sIII / (2.0 * lam)) < 1e-9,
+              "seidel: astigmatism in waves is S_III/(2 lambda)");
+        const sd::Waves w2 = sd::toWaves(r, 2.0 * lam);
+        check(std::fabs(w2.spherical * 2.0 - w.spherical) < 1e-9,
+              "seidel: doubling the wavelength halves the wave count");
+        check(!sd::toWaves(r, 0.0).valid,
+              "seidel: a zero wavelength is rejected, not divided by");
+    }
+
+    // 9) 壊れた入力からは何も作らない
+    {
+        check(!sd::analyze({}, 20.0, 5.0).valid,
+              "seidel: an empty system has no aberrations");
+        check(!sd::analyze(thinLens(cEq, -cEq, true), 0.0, 5.0).valid,
+              "seidel: a zero pupil is rejected");
+    }
+}
+
 // ── .ofdx "display_optics" / "illumination" (追加キー) ──────────────────────
 static void testDisplayIlluminationSettings()
 {
@@ -15847,6 +16024,7 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testSeidelAberration();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
