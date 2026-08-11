@@ -22,6 +22,11 @@ public:
     // 実データを捨ててプレースホルダ表示へ戻す (プロジェクト切替時)
     void clearData();
     void setTitle(const QString &t) { m_title = t; update(); }
+    // カラーバーの凡例を差し替える (既定は |E| / V/m / 上端 "1.0")。
+    // 正規化して渡したデータの実スケールを添えたいときに使う
+    void setLegend(const QString &quantity, const QString &unit,
+                   const QString &topLabel)
+    { m_quantity = quantity; m_unit = unit; m_topLabel = topLabel; update(); }
     bool hasRealData() const { return !m_demo; }
 
     static QColor jet(double t);      // 0..1 → jet 色
@@ -35,6 +40,9 @@ private:
     QVector<double> m_cells;
     int      m_cols = 50, m_rows = 50;
     QString  m_title;
+    QString  m_quantity = QStringLiteral("|E|");
+    QString  m_unit = QStringLiteral("V/m");
+    QString  m_topLabel = QStringLiteral("1.0");
     bool     m_demo = true;   // まだ setData されていない = プレースホルダ表示中
 };
 

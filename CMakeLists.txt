@@ -313,6 +313,11 @@ set(CORE_SOURCES
     src/optics/IlluminationTrace.cpp
     src/optics/IlluminationTrace.h
 
+    # 配光ファイル (IES LM-63) の読み書き — 照明設計ソフトへの受け渡し。
+    # selftest からも直接検証するため CORE_SOURCES に置く
+    src/io/PhotometricIO.cpp
+    src/io/PhotometricIO.h
+
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp
@@ -345,6 +350,9 @@ set(GUI_SOURCES
     src/widgets/SectionBox.h
     src/widgets/MiniPlot.cpp
     src/widgets/MiniPlot.h
+    # 配光曲線 (極座標) — IlluminationTab の配光表示
+    src/widgets/PolarPlot.cpp
+    src/widgets/PolarPlot.h
     src/widgets/FieldHeatmap.cpp
     src/widgets/FieldHeatmap.h
     src/widgets/MeshPreview.cpp

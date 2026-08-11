@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "io/PhotometricIO.h"
 #include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
@@ -15568,6 +15569,202 @@ static void testIlluminationTrace()
     }
 }
 
+// ── 配光ファイル IES LM-63 (io/PhotometricIO) ──────────────────────────────
+// 判定は (a) 追跡結果との厳密な突き合わせ、(b) 書いて読み直しての往復、
+// (c) 規格上受け取ってはいけないファイルを断ること、の 3 本立て。
+static void testPhotometricIO()
+{
+    g_file = "photometric";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    const double PHI = 1000.0;
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    const il::Result rBare = il::trace(bare, 200000);
+    check(rBare.valid, "photom: the reference trace is valid");
+
+    // ── 1) 追跡結果 → 配光データ ──────────────────────────────────────────
+    PhotometricData d = PhotometricIO::fromTrace(rBare, PHI);
+    check(!d.isEmpty(), "photom: fromTrace produces a distribution");
+    check(d.vertAngles_deg.size() == int(rBare.intensity_cd.size()) &&
+          d.horizAngles_deg.size() == 1,
+          "photom: one C-plane (axially symmetric) and one angle per bin");
+    check(d.lumensPerLamp == PHI && d.lamps == 1,
+          "photom: the lamp flux is the source flux");
+    {
+        const double dth = 180.0 / d.vertAngles_deg.size();
+        check(std::fabs(d.vertAngles_deg.first() - 0.5 * dth) < 1e-12 &&
+              std::fabs(d.vertAngles_deg.last() - (180.0 - 0.5 * dth)) < 1e-12,
+              "photom: the vertical angles are bin centres");
+    }
+    // 光度は I0 cos(theta) (ランバート面)。すれすれのビン (theta -> 90 deg) は
+    // 立体角そのものが小さく光線が数十本しか入らないので、統計誤差が支配する。
+    // 判定は光線の入る範囲で行い、90 deg より後ろは「厳密に 0」で見る。
+    {
+        const double I0 = PHI / PI;
+        int checked = 0;
+        for (int k : { 0, 10, 30, 60, 80 }) {
+            const double th = d.vertAngles_deg[k] * PI / 180.0;
+            if (rel(d.candela[0][k], I0 * std::cos(th)) < 5e-3) ++checked;
+        }
+        check(checked == 5,
+              "photom: the exported candela follow I0 cos(theta) for a "
+              "Lambertian source");
+        bool behind = true;
+        for (int k = 90; k < d.candela[0].size(); ++k)
+            behind = behind && (d.candela[0][k] == 0.0);
+        check(behind,
+              "photom: the exported distribution is exactly zero behind the "
+              "emitter (no invented back light)");
+    }
+    // **中点を境界にとると、積分が追跡の全光束を厳密に復元する**
+    check(rel(PhotometricIO::integratedFlux(d), rBare.fluxOut_lm) < 1e-9,
+          "photom: integrating the distribution over solid angle returns the "
+          "flux that left the system");
+    check(d.more.size() == 3,
+          "photom: the file records where the numbers came from ([MORE])");
+
+    // ── 2) 書いて読み直す ─────────────────────────────────────────────────
+    QTemporaryDir dir;
+    check(dir.isValid(), "photom: temp dir");
+    const QString path = dir.path() + QStringLiteral("/lum.ies");
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = QStringLiteral("test luminaire");
+    d.lamp = QStringLiteral("white LED");
+    d.inputWatts = 12.5;
+    QString err;
+    check(PhotometricIO::writeIes(path, d, &err), "photom: write IES");
+
+    PhotometricData q;
+    check(PhotometricIO::readIes(path, &q, &err), "photom: read IES back");
+    check(q.vertAngles_deg.size() == d.vertAngles_deg.size() &&
+          q.horizAngles_deg.size() == 1 && q.candela.size() == 1,
+          "photom: the angle counts survive the round trip");
+    check(q.manufacturer == QStringLiteral("OpenFDTD-X") &&
+          q.luminaire == QStringLiteral("test luminaire") &&
+          q.lamp == QStringLiteral("white LED") && q.more.size() == 3,
+          "photom: the keyword block survives the round trip");
+    check(rel(q.lumensPerLamp, PHI) < 1e-9 && rel(q.inputWatts, 12.5) < 1e-9,
+          "photom: the lamp flux and input watts survive the round trip");
+    {
+        double worst = 0.0;
+        for (int k = 0; k < q.vertAngles_deg.size(); ++k) {
+            worst = std::max(worst, rel(q.vertAngles_deg[k], d.vertAngles_deg[k]));
+            worst = std::max(worst, rel(q.candela[0][k], d.candela[0][k]));
+        }
+        check(worst < 1e-5,
+              "photom: angles and candela survive the round trip to the "
+              "written precision");
+    }
+    check(rel(PhotometricIO::integratedFlux(q), rBare.fluxOut_lm) < 1e-5,
+          "photom: the re-read distribution still carries the traced flux");
+
+    // ── 3) 光出力比 (LOR) が吸収のある系で効率と一致する ──────────────────
+    {
+        il::Scene s = bare;
+        s.reflector.enabled = true;
+        s.reflector.focal_mm = 5.0;
+        s.reflector.radius_mm = 20.0;
+        s.reflector.reflectance = 0.85;
+        const il::Result r = il::trace(s, 200000);
+        const PhotometricData p = PhotometricIO::fromTrace(r, r.fluxIn_lm);
+        check(rel(PhotometricIO::integratedFlux(p) / p.lumensPerLamp,
+                  r.efficiency) < 1e-9,
+              "photom: (distribution flux)/(lamp flux) is the optical "
+              "efficiency, so a lossy mirror shows up as LOR < 1");
+        check(PhotometricIO::integratedFlux(p) < 0.95 * p.lumensPerLamp,
+              "photom: the lossy mirror really does lose flux");
+    }
+
+    // ── 4) 倍率の適用と、受け取ってはいけないファイル ─────────────────────
+    auto writeRaw = [&dir](const char *name, const QByteArray &body) {
+        const QString p = dir.path() + QStringLiteral("/") + name;
+        QFile f(p);
+        if (!f.open(QIODevice::WriteOnly)) return QString();
+        f.write(body);
+        f.close();
+        return p;
+    };
+    {
+        // 倍率 2.5 — ファイル中の値 100 は実光度 250 cd
+        const QByteArray body =
+            "IESNA:LM-63-2002\n[TEST] x\nTILT=NONE\n"
+            "1 1000 2.5 3 1 1 2 0 0 0\n1 1 10\n"
+            "0 90 180\n0\n100 40 0\n";
+        const QString p = writeRaw("mult.ies", body);
+        PhotometricData m;
+        check(PhotometricIO::readIes(p, &m, &err), "photom: read a file with "
+              "a candela multiplier");
+        check(rel(m.candela[0][0], 250.0) < 1e-9 &&
+              rel(m.candela[0][1], 100.0) < 1e-9,
+              "photom: the candela multiplier is applied on read");
+    }
+    {
+        const QString p = writeRaw("notilt.ies",
+            "IESNA:LM-63-2002\n1 1000 1 3 1 1 2 0 0 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: a file without a TILT line is rejected");
+    }
+    {
+        // TILT=INCLUDE は傾斜補正表つき。黙って無視すると光度が食い違う
+        const QString p = writeRaw("tilt.ies",
+            "IESNA:LM-63-2002\nTILT=INCLUDE\n1 1000 1 3 1 1 2 0 0 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: TILT=INCLUDE is refused rather than silently ignored");
+    }
+    {
+        // 測光型 2 = Type B は座標系が違う。読み替えずに断る
+        const QString p = writeRaw("typeb.ies",
+            "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 2 2 0 0 0\n"
+            "1 1 10\n0 90 180\n0\n100 40 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: photometric type B is refused (different coordinates)");
+    }
+    {
+        // 光度の数が足りないファイル
+        const QString p = writeRaw("short.ies",
+            "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n"
+            "1 1 10\n0 90 180\n0\n100 40\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: a truncated candela block is rejected");
+    }
+    {
+        PhotometricData m;
+        check(!PhotometricIO::readIes(dir.path() + QStringLiteral("/none.ies"),
+                                      &m, &err),
+              "photom: a missing file is rejected");
+    }
+    // 書き側の整合 (角度の数と光度の数が合わない / 空)
+    {
+        PhotometricData bad;
+        check(!PhotometricIO::writeIes(path, bad, &err),
+              "photom: an empty distribution is not written");
+        bad.vertAngles_deg = { 0.0, 90.0 };
+        bad.horizAngles_deg = { 0.0 };
+        bad.candela = { { 1.0 } };          // 鉛直角 2 個に対して光度 1 個
+        check(!PhotometricIO::writeIes(path, bad, &err),
+              "photom: a distribution whose counts disagree is not written");
+    }
+    // 追跡していない結果からは配光を作らない
+    {
+        il::Result none;
+        check(PhotometricIO::fromTrace(none, 1000.0).isEmpty(),
+              "photom: an invalid trace produces no distribution");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -17918,6 +18115,7 @@ int main(int argc, char *argv[])
     testSeidelAberration();
     testRayTrace();
     testIlluminationTrace();
+    testPhotometricIO();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();

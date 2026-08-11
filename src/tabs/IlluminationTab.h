@@ -30,6 +30,7 @@ class QTableWidget;
 namespace ofd {
 
 class Project;
+namespace illum { struct Result; }
 
 class IlluminationTab : public QScrollArea {
     Q_OBJECT
@@ -43,8 +44,15 @@ private slots:
     void onEdited();  // apply() + 測色量の再計算
 
 private:
-    void recompute();          // スペクトルモデル → 測色表
+    void recompute();          // スペクトルモデル → 測色表、追跡 → 配光量
     void updateSpectrumPage(); // スペクトル選択 → パラメータ欄の切替
+
+    // 現在の設定で追跡する。追跡モデルに入っていない選択や不正な幾何では
+    // false を返す (理由は測光・測色表の「未計算」行に出ている)
+    bool traceNow(illum::Result *out, long long *rays) const;
+    void showPolarPlot();       // 配光曲線 (極座標)
+    void showIlluminanceMap();  // 評価面の照度分布
+    void exportIes();           // IES LM-63 書出
 
     Project      *m_p;
     bool          m_updating = false;

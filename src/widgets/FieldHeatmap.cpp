@@ -128,12 +128,12 @@ void FieldHeatmap::paintEvent(QPaintEvent *)
         QFont mono("Menlo");
         mono.setPointSizeF(9);
         p.setFont(mono);
-        p.drawText(QRect(bx - 6, by - 16, 40, 14), Qt::AlignLeft, "1.0");
+        p.drawText(QRect(bx - 6, by - 16, 60, 14), Qt::AlignLeft, m_topLabel);
         p.drawText(QRect(bx - 6, by + bh + 2, 40, 14), Qt::AlignLeft, "0.0");
-        p.drawText(QRect(bx - 6, by + bh + 18, 40, 14), Qt::AlignLeft, "|E|");
+        p.drawText(QRect(bx - 6, by + bh + 18, 60, 14), Qt::AlignLeft, m_quantity);
         mono.setPointSizeF(8);
         p.setFont(mono);
-        p.drawText(QRect(bx - 6, by + bh + 32, 40, 14), Qt::AlignLeft, "V/m");
+        p.drawText(QRect(bx - 6, by + bh + 32, 60, 14), Qt::AlignLeft, m_unit);
     }
 
     // ── プレースホルダの明示バナー (setData 前は実行結果ではない) ──

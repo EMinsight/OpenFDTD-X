@@ -2,14 +2,19 @@
 #include "IlluminationTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/PhotometricIO.h"
 #include "../optics/IlluminationTrace.h"
 #include "../optics/SourceSpectrum.h"
+#include "../widgets/FieldHeatmap.h"
+#include "../widgets/PolarPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -17,9 +22,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QMessageBox>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
+#include <QDate>
 #include <QVBoxLayout>
 #include <QVector>
 #include <algorithm>
@@ -187,13 +194,51 @@ const bool s_i18n = [] {
     I18n::reg("ilm_btn_cie",   "🎨 CIE色度図", "🎨 CIE chromaticity diagram");
     I18n::reg("ilm_btn_illum", "📊 照度分布 (床面)",
               "📊 Illuminance distribution (floor)");
-    I18n::reg("ilm_btn_ies",   "💾 IES / LDT 配光ファイル書出",
-              "💾 Export IES / LDT photometric file");
+    I18n::reg("ilm_btn_ies",   "💾 IES LM-63 書出", "💾 Export IES LM-63");
+    I18n::reg("ilm_btn_ldt", "💾 EULUMDAT (.ldt) 書出",
+              "💾 Export EULUMDAT (.ldt)");
+    I18n::reg("ilm_dlg_polar", "配光曲線 (光度 I(θ))",
+              "Intensity distribution I(theta)");
+    I18n::reg("ilm_dlg_illum", "評価面の照度分布", "Illuminance on the target plane");
+    I18n::reg("ilm_polar_unit", "cd", "cd");
+    I18n::reg("ilm_illum_q", "E", "E");
+    I18n::reg("ilm_illum_unit", "lx", "lx");
+    I18n::reg("ilm_dlg_close", "閉じる", "Close");
+    I18n::reg("ilm_dlg_note",
+              "▸ 非順次モンテカルロ・レイトレース (光線 %1 本) の結果。"
+              "破線は中心光度の半値 (ビーム角 %2)。",
+              "▸ From a non-sequential Monte Carlo ray trace (%1 rays). "
+              "The dashed circle is half of the axial intensity (beam angle %2).");
+    I18n::reg("ilm_dlg_inote",
+              "▸ 評価面 (距離 %1 mm, 半幅 %2 mm) を %3×%3 に分けた照度。"
+              "最大 %4 lx / 平均 %5 lx / 均斉度 (min/avg) %6。",
+              "▸ Illuminance on the target plane (distance %1 mm, half-width "
+              "%2 mm) binned %3x%3. Max %4 lx / mean %5 lx / uniformity "
+              "(min/avg) %6.");
+    I18n::reg("ilm_ies_title", "IES LM-63 配光ファイルの書出",
+              "Export an IES LM-63 photometric file");
+    I18n::reg("ilm_ies_filter", "IES 配光ファイル (*.ies);;すべてのファイル (*)",
+              "IES photometric file (*.ies);;All files (*)");
+    I18n::reg("ilm_ies_ok", "書き出しました: %1\n光源光束 %2 lm / 配光の光束 %3 lm "
+              "(光出力比 %4)",
+              "Written: %1\nSource flux %2 lm / flux in the distribution %3 lm "
+              "(light output ratio %4)");
+    I18n::reg("ilm_ies_ng", "書き出せませんでした: %1", "Could not write: %1");
+    I18n::reg("ilm_need_trace",
+              "配光がまだ計算されていません。下の表の「未計算」の理由を解消すると"
+              "作図・書出ができます。",
+              "There is no computed distribution yet. Resolve the reason shown "
+              "in the table to enable the plots and the export.");
     I18n::reg("ilm_ies_hint",
-              "▸ IES LM-63 / EULUMDAT (.ldt) 書出は DIALux・AGi32 等の"
-              "照明設計ソフト向け (書出は未実装)。",
-              "▸ IES LM-63 / EULUMDAT (.ldt) export targets lighting design tools "
-              "such as DIALux and AGi32 (export is not implemented).");
+              "▸ IES LM-63 書出は DIALux・AGi32 等の照明設計ソフト向け。"
+              "Type C・TILT=NONE で、鉛直角はビン中心・値はそのビンの平均光度 "
+              "(その旨をファイルの [MORE] 行に書きます)。EULUMDAT (.ldt) は"
+              "書式が未実装。",
+              "▸ The IES LM-63 export targets lighting design tools such as "
+              "DIALux and AGi32. It writes Type C with TILT=NONE; the vertical "
+              "angles are bin centres and each value is that bin's mean "
+              "intensity (stated in the file's [MORE] lines). EULUMDAT (.ldt) "
+              "is not implemented.");
     I18n::reg("ilm_uw_optics",
               "TIRレンズ・導光板・蛍光体散乱の 3 要素と、面の反射モデルのうち "
               "「BSDF実測」(いずれも追跡モデルに入っていません)",
@@ -645,15 +690,19 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     sPh->vbox()->addWidget(noteLabel(I18n::tr("ilm_photo_note"), sPh));
 
     auto *btnRow = new QHBoxLayout();
-    // プロット生成・IES/LDT 書出は未実装 — 無効化して明示する (絶対規則 5)
+    // 配光曲線・照度分布・IES 書出はレイトレース結果から作る (実装済み)。
+    // CIE 色度図と EULUMDAT は未実装 — 無効化して明示する (絶対規則 5)
     auto *btnPolar = new QPushButton(I18n::tr("ilm_btn_polar"), sPh);
-    auto *btnCie   = new QPushButton(I18n::tr("ilm_btn_cie"), sPh);
     auto *btnIllum = new QPushButton(I18n::tr("ilm_btn_illum"), sPh);
     auto *btnIes   = new QPushButton(I18n::tr("ilm_btn_ies"), sPh);
-    for (QPushButton *b : { btnPolar, btnCie, btnIllum, btnIes }) {
-        tabhelp::markNotImplemented(b);
+    auto *btnCie   = new QPushButton(I18n::tr("ilm_btn_cie"), sPh);
+    auto *btnLdt   = new QPushButton(I18n::tr("ilm_btn_ldt"), sPh);
+    connect(btnPolar, &QPushButton::clicked, this, &IlluminationTab::showPolarPlot);
+    connect(btnIllum, &QPushButton::clicked, this, &IlluminationTab::showIlluminanceMap);
+    connect(btnIes,   &QPushButton::clicked, this, &IlluminationTab::exportIes);
+    for (QPushButton *b : { btnCie, btnLdt }) tabhelp::markNotImplemented(b);
+    for (QPushButton *b : { btnPolar, btnIllum, btnIes, btnCie, btnLdt })
         btnRow->addWidget(b);
-    }
     btnRow->addStretch(1);
     sPh->vbox()->addLayout(btnRow);
 
@@ -995,4 +1044,132 @@ void IlluminationTab::recompute()
         for (int c = 0; c < 5; ++c)
             if (auto *it = m_photoTable->item(r, c)) it->setToolTip(p.basis);
     }
+}
+
+// ── 追跡 / 作図 / 書出 ─────────────────────────────────────────────────────
+
+bool IlluminationTab::traceNow(illum::Result *out, long long *rays) const
+{
+    illum::Scene scene;
+    long long n = 0;
+    if (buildTraceScene(m_p->illumination(), &scene, &n) != nullptr) return false;
+    const illum::Result r = illum::trace(scene, n);
+    if (!r.valid) return false;
+    if (out) *out = r;
+    if (rays) *rays = n;
+    return true;
+}
+
+void IlluminationTab::showPolarPlot()
+{
+    illum::Result r;
+    long long rays = 0;
+    if (!traceNow(&r, &rays)) {
+        QMessageBox::information(this, I18n::tr("ilm_dlg_polar"),
+                                 I18n::tr("ilm_need_trace"));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(I18n::tr("ilm_dlg_polar"));
+    auto *v = new QVBoxLayout(&dlg);
+
+    auto *plot = new PolarPlot(&dlg);
+    QVector<double> vals;
+    vals.reserve(static_cast<int>(r.intensity_cd.size()));
+    for (double c : r.intensity_cd) vals.push_back(c);
+    plot->setData(vals, I18n::tr("ilm_polar_unit"));
+    plot->setTitle(I18n::tr("ilm_dlg_polar"));
+    plot->setMinimumSize(460, 420);
+    v->addWidget(plot, 1);
+
+    const QString beam = r.beamValid
+        ? fmt(r.beamAngleFwhm_deg, 1) + QString::fromUtf8("°")
+        : I18n::tr("ilm_dash");
+    v->addWidget(noteLabel(I18n::tr("ilm_dlg_note")
+                               .arg(QString::number(rays), beam), &dlg));
+
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    bb->button(QDialogButtonBox::Close)->setText(I18n::tr("ilm_dlg_close"));
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(bb);
+    dlg.resize(560, 560);
+    dlg.exec();
+}
+
+void IlluminationTab::showIlluminanceMap()
+{
+    illum::Result r;
+    long long rays = 0;
+    if (!traceNow(&r, &rays) || r.cells <= 0 || !(r.illumMax_lx > 0.0)) {
+        QMessageBox::information(this, I18n::tr("ilm_dlg_illum"),
+                                 I18n::tr("ilm_need_trace"));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(I18n::tr("ilm_dlg_illum"));
+    auto *v = new QVBoxLayout(&dlg);
+
+    auto *map = new FieldHeatmap(&dlg);
+    // FieldHeatmap は 0..1 正規化を受けるので最大値で割り、実スケールは
+    // カラーバーの凡例に出す (正規化した数字だけを見せない)
+    QVector<double> cells;
+    cells.reserve(r.cells * r.cells);
+    for (double e : r.illuminance_lx) cells.push_back(e / r.illumMax_lx);
+    map->setData(cells, r.cells, r.cells);
+    map->setTitle(I18n::tr("ilm_dlg_illum"));
+    map->setLegend(I18n::tr("ilm_illum_q"), I18n::tr("ilm_illum_unit"),
+                   fmt(r.illumMax_lx, 1));
+    map->setMinimumSize(460, 420);
+    v->addWidget(map, 1);
+
+    const IlluminationOpts &o = m_p->illumination();
+    const QString unif = r.uniformityValid ? fmt(r.uniformityMinAvg, 3)
+                                           : I18n::tr("ilm_dash");
+    v->addWidget(noteLabel(I18n::tr("ilm_dlg_inote")
+                               .arg(fmt(o.targetDist_mm, 1),
+                                    fmt(o.targetHalf_mm, 1),
+                                    QString::number(r.cells),
+                                    fmt(r.illumMax_lx, 1),
+                                    fmt(r.illumAvg_lx, 1), unif), &dlg));
+
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    bb->button(QDialogButtonBox::Close)->setText(I18n::tr("ilm_dlg_close"));
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(bb);
+    dlg.resize(560, 560);
+    dlg.exec();
+}
+
+void IlluminationTab::exportIes()
+{
+    illum::Result r;
+    long long rays = 0;
+    if (!traceNow(&r, &rays)) {
+        QMessageBox::information(this, I18n::tr("ilm_ies_title"),
+                                 I18n::tr("ilm_need_trace"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ilm_ies_title"), QStringLiteral("luminaire.ies"),
+        I18n::tr("ilm_ies_filter"));
+    if (path.isEmpty()) return;
+
+    PhotometricData d = PhotometricIO::fromTrace(r, m_p->illumination().flux_lm);
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = I18n::tr("ilm_title");
+    d.issueDate = QDate::currentDate().toString(Qt::ISODate);
+
+    QString err;
+    if (!PhotometricIO::writeIes(path, d, &err)) {
+        QMessageBox::warning(this, I18n::tr("ilm_ies_title"),
+                             I18n::tr("ilm_ies_ng").arg(err));
+        return;
+    }
+    QMessageBox::information(
+        this, I18n::tr("ilm_ies_title"),
+        I18n::tr("ilm_ies_ok").arg(path, fmt(r.fluxIn_lm, 1),
+                                   fmt(PhotometricIO::integratedFlux(d), 1),
+                                   fmt(r.efficiency, 4)));
 }
