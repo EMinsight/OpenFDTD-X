@@ -7522,6 +7522,10 @@ static void testUnderwaterBathymetry()
         u.numRays = 3000;
         u.angleMin_deg = -20.0; u.angleMax_deg = 20.0;
         u.srcDepth_m = 50.0;
+        // 海面 / 損失項 / 送信指向性 (追加キー)
+        u.waveHeight_m = 3.2; u.surfSpecular = false; u.surfBragg = true;
+        u.tlAbsorb = true; u.tlRangeMin_km = 0.75;
+        u.sonarDir = 2; u.beamWidth_deg = 40.0;
         const QString j = btyTmpPath("uw_rt.ofdx");
         OfdxIO::save(j, p);
         Project q;
@@ -7543,6 +7547,11 @@ static void testUnderwaterBathymetry()
                   && r.numRays == 3000 && qFuzzyCompare(r.angleMax_deg, 20.0)
                   && qFuzzyCompare(r.srcDepth_m, 50.0),
               "bathy: bellhop run settings round-trip");
+        check(qFuzzyCompare(r.waveHeight_m, 3.2) && !r.surfSpecular
+                  && r.surfBragg && r.tlAbsorb
+                  && qFuzzyCompare(r.tlRangeMin_km, 0.75)
+                  && r.sonarDir == 2 && qFuzzyCompare(r.beamWidth_deg, 40.0),
+              "bathy: sea surface / loss / directivity round-trip");
 
         // (c) .env / .bty への反映
         const QString env = BellhopIO::envText(p);
@@ -7550,12 +7559,20 @@ static void testUnderwaterBathymetry()
               "bathy: bottom option becomes 'A~' so BELLHOP reads the .bty");
         check(env.contains("\n'IB'"), "bathy: RunType from the run settings");
         check(env.contains("\n3000\t"), "bathy: NBEAMS from the run settings");
+        // 射出角の扇は ±20° と ±20° (ビーム幅 40°) の交差なので変わらない
         check(env.contains("-20 20 /"), "bathy: beam angles from the settings");
         check(env.contains("\n50 /"), "bathy: explicit source depth");
         // SSP は断面の最深点 (1200 m) まで延長される — BELLHOP が
-        // 「地形が SSP より深い」をエラーにするため
-        check(env.contains("\n0 0.0 1200\t"),
-              "bathy: bottom depth is extended to the deepest bathymetry point");
+        // 「地形が SSP より深い」をエラーにするため。SIGMA は有義波高 3.2 m
+        // から σ = Hs/4 = 0.8 m。
+        check(env.contains("\n0 0.8 1200\t"),
+              "bathy: bottom depth is extended to the deepest bathymetry point, "
+              "and SIGMA comes from the wave height");
+        check(env.split('\n')[3].startsWith("'CVWT'"),
+              "bathy: volume absorption reaches SSPOPT");
+        check(env.contains(QStringLiteral("\n0.75 ")
+                           + QString::number(u.rangeMax_km) + " /"),
+              "bathy: the lower range bound reaches the receiver-range line");
         const QStringList bty = BellhopIO::btyText(p).split('\n');
         check(bty.value(0) == QLatin1String("'L'") && bty.value(1) == QLatin1String("3")
                   && bty.value(2) == QLatin1String("0 150"),
@@ -7683,6 +7700,78 @@ static void testBellhop()
     check(env.contains("\n'CG'"), "bellhop: coherent TL + geometric beams "
                                   "(same behaviour as the old 1-char 'C')");
     check(env.contains("0.0 3100 11"), "bellhop: STEP/ZBOX/RBOX line");
+
+    // (b2) 海面の粗さ / 体積吸収 / 距離の下限 / 送信指向性
+    //   いずれも「既定のままなら従来の .env と 1 バイトも変わらない」側に
+    //   既定を置いてある (絶対規則 2)。指定したときだけ .env が変わる。
+    //   Project はコピーできない (QObject) ので、その場で書き換えて戻す。
+    {
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: the default sea surface is specular (sigma = 0)");
+        check(BellhopIO::sspOption(u) == QStringLiteral("CVW"),
+              "bellhop: the default SSPOPT has no Thorp attenuation");
+        double a1 = 0.0, a2 = 0.0;
+        BellhopIO::beamAngles(u, &a1, &a2);
+        check(a1 == u.angleMin_deg && a2 == u.angleMax_deg,
+              "bellhop: an omnidirectional source leaves the launch fan alone");
+
+        // 体積吸収 (Thorp) → SSPOPT 4 文字目 'T'
+        u.tlAbsorb = true;
+        check(BellhopIO::sspOption(u) == QStringLiteral("CVWT"),
+              "bellhop: volume absorption adds Thorp attenuation to SSPOPT");
+        check(BellhopIO::envText(p).split('\n')[3].startsWith("'CVWT'"),
+              "bellhop: the SSPOPT line carries it into the .env");
+        u.tlAbsorb = false;
+
+        // 海面粗さ: レイリー海面で σ = Hs/4。鏡面のままでは効かない。
+        u.waveHeight_m = 2.0;
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: wave height alone does nothing while the surface is "
+              "treated as specular");
+        u.surfSpecular = false;
+        u.surfBragg = true;
+        check(BellhopIO::surfaceSigma(u) == 0.5,
+              "bellhop: Bragg scattering turns a 2 m sea into sigma = Hs/4");
+        check(BellhopIO::envText(p).split('\n')[4].startsWith("0 0.5 3000"),
+              "bellhop: sigma is written as SIGMA on the SSP line");
+        // 鏡面が優先 (両方チェックされても粗さは入らない)
+        u.surfSpecular = true;
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: specular wins over Bragg when both are set");
+        u.surfBragg = false;
+        u.waveHeight_m = UnderwaterOpts{}.waveHeight_m;
+
+        // 受波器距離の下限 → R 行の始点
+        u.tlRangeMin_km = 1.5;
+        check(BellhopIO::envText(p).contains(QStringLiteral("\n1.5 10 /")),
+              "bellhop: the lower range bound becomes the first receiver range");
+        u.tlRangeMin_km = 0.0;
+
+        // 指向性: 射出角の扇を ±ビーム幅/2 と交差させる
+        u.sonarDir = 1;
+        u.beamWidth_deg = 30.0;
+        double b1 = 0.0, b2 = 0.0;
+        BellhopIO::beamAngles(u, &b1, &b2);
+        check(b1 == -15.0 && b2 == 15.0,
+              "bellhop: a 30 deg beam narrows the fan to +/-15 deg");
+        check(BellhopIO::envText(p).contains(QStringLiteral("\n-15 15 /")),
+              "bellhop: the narrowed fan is written as ALPHA1,2");
+        // 既存の射出角範囲より広いビームでは範囲の方が残る (交差を採る)
+        u.beamWidth_deg = 180.0;
+        BellhopIO::beamAngles(u, &b1, &b2);
+        check(b1 == u.angleMin_deg && b2 == u.angleMax_deg,
+              "bellhop: the fan is the intersection, so a wide beam cannot "
+              "widen the launch-angle range");
+        u.sonarDir = 0;
+        u.beamWidth_deg = UnderwaterOpts{}.beamWidth_deg;
+
+        // 新設定を触らなければ .env は 1 バイトも変わらない
+        u.waveHeight_m = 7.0;   // 鏡面のままなので効かない
+        check(BellhopIO::envText(p) == env,
+              "bellhop: settings that are switched off change nothing in the "
+              ".env");
+        u.waveHeight_m = UnderwaterOpts{}.waveHeight_m;
+    }
 
     // (c) SSP 2 点未満でも実行可能な既定プロファイルで埋める
     {

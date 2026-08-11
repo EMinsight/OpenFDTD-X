@@ -586,6 +586,27 @@ struct UnderwaterOpts {
     double  srcDepth_m = 0.0;         // 0 = 自動 (水深の 10%、従来動作)
     int     numRcvDepth = 201;        // NRD
     int     numRcvRange = 501;        // NR
+
+    // ── 海面 (.ofdx "underwater.surface" — 追加キー) ────────────────────────
+    // BELLHOP の海面粗さ σ [m] は SSP 行の SIGMA。有義波高 Hs との関係は
+    // レイリー海面で σ = Hs/4。**既定は鏡面 (σ = 0) = 従来の .env と一致**で、
+    // 「Bragg 散乱」を明示的に選んだときだけ粗さが入る。
+    double  waveHeight_m = 1.5;       // 有義波高 Hs
+    bool    surfSpecular = true;      // 鏡面として扱う (σ = 0)
+    bool    surfBragg = false;        // 粗さによる散乱を含む (σ = Hs/4)
+
+    // ── 伝搬損失の項と距離範囲 (.ofdx "underwater.tl" — 追加キー) ───────────
+    // 幾何拡散は BELLHOP の解に内在するので切り替えられない。体積吸収
+    // (Thorp) は SSPOPT の 4 文字目 'T'。**既定は従来どおり付けない**。
+    bool    tlAbsorb = false;         // 体積吸収 (Thorp)
+    double  tlRangeMin_km = 0.0;      // 受波器距離の下限 (BELLHOP の R 行の始点)
+
+    // ── 送信指向性 (.ofdx "underwater.beam" — 追加キー) ─────────────────────
+    // 指向性を選ぶと射出角の扇を ±ビーム幅/2 と交差させる (ray モデルでの
+    // 指向性)。**ビーム内の重み付けは一様**で、実測パターンには .sbp が要る。
+    // 既定は無指向 = 従来の射出角範囲そのまま。
+    int     sonarDir = 0;             // 0=無指向 1=指向性 2=アレイ
+    double  beamWidth_deg = 15.0;
 };
 
 // ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────

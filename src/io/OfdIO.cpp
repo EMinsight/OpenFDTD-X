@@ -872,6 +872,27 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                     {"num_rcv_depth", u.numRcvDepth},
                     {"num_rcv_range", u.numRcvRange} };
             }
+            // 海面 / 損失項 / 送信指向性 — 既定値のままなら書かない
+            if (u.waveHeight_m != d.waveHeight_m
+                || u.surfSpecular != d.surfSpecular
+                || u.surfBragg != d.surfBragg) {
+                uwObj["surface"] = QJsonObject{
+                    {"wave_height_m", u.waveHeight_m},
+                    {"specular", u.surfSpecular},
+                    {"bragg", u.surfBragg} };
+            }
+            if (u.tlAbsorb != d.tlAbsorb
+                || u.tlRangeMin_km != d.tlRangeMin_km) {
+                uwObj["tl"] = QJsonObject{
+                    {"absorption", u.tlAbsorb},
+                    {"range_min_km", u.tlRangeMin_km} };
+            }
+            if (u.sonarDir != d.sonarDir
+                || u.beamWidth_deg != d.beamWidth_deg) {
+                uwObj["beam"] = QJsonObject{
+                    {"directivity", u.sonarDir},
+                    {"width_deg", u.beamWidth_deg} };
+            }
         }
         root["underwater"] = uwObj;
     }
@@ -1505,6 +1526,22 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             u.srcDepth_m = bh.value("src_depth_m").toDouble(u.srcDepth_m);
             u.numRcvDepth = bh.value("num_rcv_depth").toInt(u.numRcvDepth);
             u.numRcvRange = bh.value("num_rcv_range").toInt(u.numRcvRange);
+        }
+        if (uw.contains("surface")) {
+            const QJsonObject sf = uw["surface"].toObject();
+            u.waveHeight_m = sf.value("wave_height_m").toDouble(u.waveHeight_m);
+            u.surfSpecular = sf.value("specular").toBool(u.surfSpecular);
+            u.surfBragg = sf.value("bragg").toBool(u.surfBragg);
+        }
+        if (uw.contains("tl")) {
+            const QJsonObject tl = uw["tl"].toObject();
+            u.tlAbsorb = tl.value("absorption").toBool(u.tlAbsorb);
+            u.tlRangeMin_km = tl.value("range_min_km").toDouble(u.tlRangeMin_km);
+        }
+        if (uw.contains("beam")) {
+            const QJsonObject bm = uw["beam"].toObject();
+            u.sonarDir = qBound(0, bm.value("directivity").toInt(u.sonarDir), 2);
+            u.beamWidth_deg = bm.value("width_deg").toDouble(u.beamWidth_deg);
         }
     }
     if (root.contains("tidy3d")) {
