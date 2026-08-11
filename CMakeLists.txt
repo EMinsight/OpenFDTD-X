@@ -113,6 +113,11 @@ set(CORE_SOURCES
     src/core/Optimizer.cpp
     src/core/Optimizer.h
 
+    # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
+    # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する
+    src/core/FlankingTransmission.cpp
+    src/core/FlankingTransmission.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h

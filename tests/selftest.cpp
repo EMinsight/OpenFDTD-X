@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "core/FlankingTransmission.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "optics/IlluminationTrace.h"
@@ -15659,6 +15660,102 @@ static void testIlluminationTrace()
     }
 }
 
+// ── 側路伝搬の経路合成 (core/FlankingTransmission) ─────────────────────────
+// 判定は **合成則そのものの恒等式**。R'w = −10log10(Σ10^(−R/10)) は
+//   - 同じ R の経路が N 本なら R − 10log10(N)
+//   - 10 dB 強い経路を足すと +10log10(1.1) = 0.414 dB しか悪くならない
+//   - 経路を無限に良くすると、その経路を外したのと同じになる
+// といった性質を持ち、いずれも手計算で確かめられる。
+static void testFlankingTransmission()
+{
+    g_file = "flanking";
+    namespace fl = ofd::flanking;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+    auto mk = [](double r, double d = 0.0, bool on = true) {
+        fl::Path p; p.R_dB = r; p.deltaR_dB = d; p.enabled = on; return p;
+    };
+
+    // 1 本だけならその経路そのもの
+    {
+        const fl::Combined c = fl::combine({ mk(52.0) });
+        check(c.valid && c.paths == 1, "flanking: a single path is valid");
+        check(approx(c.rw_dB, 52.0, 1e-12),
+              "flanking: one path combines to itself");
+        check(c.weakestIndex == 0, "flanking: it is also the weakest");
+    }
+    // 同じ R の経路 N 本 → R − 10log10(N)
+    {
+        for (int n : { 2, 3, 5, 10 }) {
+            std::vector<fl::Path> v(size_t(n), mk(50.0));
+            const fl::Combined c = fl::combine(v);
+            check(approx(c.rw_dB, 50.0 - 10.0 * std::log10(double(n)), 1e-9),
+                  "flanking: N equal paths give R - 10log10(N)");
+        }
+        // 2 本ならちょうど 3.01 dB 悪化
+        const fl::Combined c = fl::combine({ mk(50.0), mk(50.0) });
+        check(approx(c.rw_dB, 50.0 - 3.0102999566, 1e-9),
+              "flanking: two equal paths are exactly 3.01 dB worse");
+    }
+    // 10 dB 強い経路の寄与は 10log10(1.1) = 0.414 dB だけ
+    {
+        const fl::Combined c = fl::combine({ mk(50.0), mk(60.0) });
+        check(approx(c.rw_dB, 50.0 - 10.0 * std::log10(1.1), 1e-9),
+              "flanking: a path 10 dB stronger only costs 0.41 dB");
+        check(c.weakestIndex == 0,
+              "flanking: the weakest path is the one with the lowest R");
+    }
+    // 改善量 ΔR: 経路を十分良くすると、その経路を外したのと同じに漸近する
+    {
+        const fl::Combined without = fl::combine({ mk(50.0), mk(55.0, 0.0, false) });
+        const fl::Combined huge = fl::combine({ mk(50.0), mk(55.0, 100.0) });
+        check(approx(huge.rw_dB, without.rw_dB, 1e-9),
+              "flanking: improving a path without limit is the same as "
+              "removing it");
+        check(approx(without.rw_dB, 50.0, 1e-12),
+              "flanking: a disabled path does not enter the combination");
+    }
+    // 改善量と改善前の関係
+    {
+        const fl::Combined c = fl::combine({ mk(52.0), mk(58.0, 8.0),
+                                             mk(62.0), mk(60.0, 6.0),
+                                             mk(65.0, 3.0) });
+        const fl::Combined b = fl::combine({ mk(52.0), mk(58.0), mk(62.0),
+                                             mk(60.0), mk(65.0) });
+        check(approx(c.base_dB, b.rw_dB, 1e-12),
+              "flanking: base_dB is the combination with every improvement "
+              "switched off");
+        check(c.gain_dB > 0.0 && approx(c.gain_dB, c.rw_dB - c.base_dB, 1e-12),
+              "flanking: the gain is the difference the improvements make");
+        // 直接透過 (52 dB) が最も弱いので、側路をいくら直しても頭打ちになる
+        check(c.rw_dB < 52.0 && c.rw_dB > c.base_dB,
+              "flanking: improving only the flanking paths cannot beat the "
+              "direct path");
+        check(c.weakestIndex == 0,
+              "flanking: the direct path is what caps the result");
+        // 最も弱い経路を直すと初めて大きく効く
+        const fl::Combined d = fl::combine({ mk(52.0, 10.0), mk(58.0, 8.0),
+                                             mk(62.0), mk(60.0, 6.0),
+                                             mk(65.0, 3.0) });
+        check(d.gain_dB > c.gain_dB + 3.0,
+              "flanking: fixing the weakest path is worth much more than "
+              "fixing the others");
+    }
+    // 有効な経路が無い / 数値でない入力
+    {
+        check(!fl::combine({}).valid, "flanking: no paths is not a result");
+        check(!fl::combine({ mk(50.0, 0.0, false) }).valid,
+              "flanking: every path disabled is not a result");
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const fl::Combined c = fl::combine({ mk(50.0), mk(nan) });
+        check(c.valid && c.paths == 1 && approx(c.rw_dB, 50.0, 1e-12),
+              "flanking: a non-finite R is skipped rather than poisoning the "
+              "sum");
+    }
+}
+
 // ── 微分なし最適化 PSO / GA (core/Optimizer) ───────────────────────────────
 // 判定は **最適解が解析的に分かっているテスト関数**との比較。数値の丸写しでは
 // なく「箱の中でランダムに取ると数十のオーダーの値が、4 桁以上落ちて既知の
@@ -18460,6 +18557,7 @@ int main(int argc, char *argv[])
     testIlluminationTrace();
     testPhotometricIO();
     testOptimizer();
+    testFlankingTransmission();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();
