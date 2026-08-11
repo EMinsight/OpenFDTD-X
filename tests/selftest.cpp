@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -14769,6 +14770,188 @@ static void testWaveformSpectrum()
     }
 }
 
+// ── 実光線追跡 (optics/RayTrace) ───────────────────────────────────────────
+// 判定はすべて **厳密に分かっている解**との比較で、数値の丸写しではない:
+//   1) 球面の非点収差ゼロ点 (アプラナート点) — 開口いくらでも厳密に一点へ
+//      集まる (油浸対物の原理。R(n+n')/n' と R(n+n')/n の共役)
+//   2) 微小開口では近軸追跡 (y-nu) と一致する
+//   3) 平行平板の横ずれ  d = t·sinI·(1 − cosI/(n·cosI'))
+//   4) 3 次収差との突き合わせ — 横収差 |TA| → S_I/(2n'u') (開口 → 0 で収束)
+//   5) 全反射・けられ・不正な系は「それらしい点」を返さず失敗として返す
+static void testRayTrace()
+{
+    g_file = "raytrace";
+    namespace rt = ofd::raytrace;
+    namespace px = ofd::paraxial;
+    namespace sd = ofd::seidel;
+
+    // 1) アプラナート点 (Weierstrass 点): R < 0 の球面へ実物体を置く配置。
+    //    物体 = 中心から R·n'/n、像 = 中心から R·n/n' (同じ側)。
+    //    R = −50, n = 1, n' = 1.5 → 物体は頂点の 125 mm 手前、
+    //    像は頂点の 83.333… mm 手前 (虚像)。**開口に依らず厳密に一点**。
+    {
+        const double R = -50.0, n0 = 1.0, n1 = 1.5;
+        const double sObj = R * (n0 + n1) / n1;    // −83.333… (虚像側)
+        const double sImg = R * (n0 + n1) / n0;    // −125 (物体側)
+        rt::System sys;
+        rt::Surface s;
+        s.R = R;
+        s.thickness = 0.0;
+        s.nAfter = n1;
+        s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.objectDistance = -sImg;                // 125 mm 手前の実物体
+        sys.imageDistance = sObj;                  // 虚像面 (頂点より手前)
+        // 近軸の共役関係そのものを先に確かめる (n'/s' = n/s + (n'−n)/R)
+        const double lhs = n1 / sObj;
+        const double rhs = n0 / sImg + (n1 - n0) / R;
+        check(std::fabs(lhs - rhs) < 1e-12 * std::fabs(lhs),
+              "raytrace: the aplanatic pair satisfies the Gaussian conjugate "
+              "equation");
+        const rt::SpotResult spot = rt::spotDiagram(sys, 50.0, 0.0, 6);
+        check(spot.valid && spot.failed == 0 && spot.traced == 127,
+              "raytrace: the aplanatic configuration traces every ray of a "
+              "6-ring hexapolar pupil");
+        check(spot.rmsRadius < 1e-9 && spot.geoRadius < 1e-9,
+              "raytrace: the aplanatic points of a sphere are stigmatic at "
+              "full aperture (rms and geometric radius vanish)");
+        // 開口を倍にしても点のまま (3 次収差の打ち切りではない証拠)
+        const rt::SpotResult wide = rt::spotDiagram(sys, 90.0, 0.0, 4);
+        check(wide.valid && wide.geoRadius < 1e-9,
+              "raytrace: it stays stigmatic when the aperture is nearly the "
+              "full hemisphere");
+    }
+
+    // 2) 微小開口では近軸追跡と一致する (単一球面、無限遠物体)
+    {
+        const double R = 50.0, n1 = 1.5;
+        const double sImg = n1 * R / (n1 - 1.0);   // 150 mm
+        rt::System sys;
+        rt::Surface s;
+        s.R = R;
+        s.thickness = sImg;
+        s.nAfter = n1;
+        s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.imageDistance = sImg;
+        const rt::RayResult axial = rt::traceRay(sys, 0.02, 0.0, 0.0, 1.0);
+        check(axial.ok() && std::fabs(axial.y) < 1e-8,
+              "raytrace: a nearly paraxial marginal ray lands on the paraxial "
+              "focus of a single refracting surface");
+    }
+
+    // 2b) 主光線の像高 — 空気中の薄い両凸レンズ (f' = 50 mm) で、微小開口・
+    //     微小視野なら実光線の像高は近軸像高 f'·tan(θ) に一致する。
+    //     (単一屈折面のように像側が硝子中だと f'·tanθ は像高にならないので、
+    //      レンズエディタと同じ「像側が空気」の系で確かめる。)
+    {
+        const double ng = 1.5, Rc = 50.0;
+        std::vector<px::Surface> pxs(2);
+        pxs[0].R = Rc;   pxs[0].thickness = 1e-6; pxs[0].nAfter = ng;
+        pxs[0].stop = true;
+        pxs[1].R = -Rc;  pxs[1].thickness = 50.0; pxs[1].nAfter = 1.0;
+        rt::System sys;
+        sys.surfaces = rt::fromParaxial(pxs);
+        sys.imageDistance = 50.0;
+        const px::SystemData d = px::analyze(pxs, 50.0, 0.02, 1.0);
+        const rt::RayResult chief = rt::traceRay(sys, 0.02, 1.0, 0.0, 0.0);
+        check(d.valid && std::fabs(d.efl - 50.0) < 1e-3,
+              "raytrace: the equiconvex thin lens used here really is f' = 50 mm");
+        check(chief.ok() && std::fabs(chief.y / d.imageHeight - 1.0) < 0.01,
+              "raytrace: the real chief ray height agrees with the paraxial "
+              "image height f'*tan(theta) at a small field");
+    }
+
+    // 3) 平行平板: 光線は平行に出て、横に d = t·sinI(1 − cosI/(n cosI')) ずれる
+    {
+        const double t = 10.0, n1 = 1.5, thetaDeg = 20.0, D = 30.0;
+        rt::System sys;
+        rt::Surface a, b;
+        a.R = 0.0; a.thickness = t; a.nAfter = n1; a.stop = true;
+        b.R = 0.0; b.thickness = D; b.nAfter = 1.0;
+        sys.surfaces.push_back(a);
+        sys.surfaces.push_back(b);
+        sys.imageDistance = D;
+        const rt::RayResult r = rt::traceRay(sys, 2.0, thetaDeg, 0.0, 0.0);
+        const double th = thetaDeg * 3.14159265358979323846 / 180.0;
+        const double sinT = std::sin(th), cosT = std::cos(th);
+        const double sinT2 = sinT / n1;
+        const double cosT2 = std::sqrt(1.0 - sinT2 * sinT2);
+        const double shift = t * sinT * (1.0 - cosT / (n1 * cosT2));
+        // shift は **光線に垂直な方向**のずれ。像面 (z 一定) で見た y の
+        // ずれはこれを cosI で割ったものになる。
+        const double expected = (t + D) * (sinT / cosT) - shift / cosT;
+        check(r.ok() && std::fabs(r.y - expected) < 1e-12 * std::fabs(expected),
+              "raytrace: a plane-parallel plate displaces the ray by "
+              "t*sinI*(1 - cosI/(n*cosI'))");
+    }
+
+    // 4) 3 次収差との突き合わせ: 単一球面の横収差は開口 → 0 で
+    //    |TA| = S_I/(2 n' u') へ収束する (誤差は開口の 2 乗で減る)
+    {
+        const double R = 50.0, n1 = 1.5;
+        const double sImg = n1 * R / (n1 - 1.0);
+        rt::System sys;
+        rt::Surface s;
+        s.R = R; s.thickness = sImg; s.nAfter = n1; s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.imageDistance = sImg;
+        std::vector<px::Surface> pxs(1);
+        pxs[0].R = R; pxs[0].thickness = sImg; pxs[0].nAfter = n1;
+        pxs[0].stop = true;
+
+        double err[2] = { 0.0, 0.0 };
+        for (int k = 0; k < 2; ++k) {
+            const double epd = (k == 0) ? 4.0 : 2.0;
+            const double y = 0.5 * epd;
+            const sd::Result sr = sd::analyze(pxs, epd, 0.0);
+            const double uPrime = -y * (1.0 / R) * (n1 - 1.0) / n1;
+            const double predicted =
+                std::fabs(sr.sI) / (2.0 * n1 * std::fabs(uPrime));
+            const rt::FanResult fan = rt::rayFan(sys, epd, 0.0, 1);
+            check(sr.valid && fan.valid && fan.tangential.size() == 3,
+                  "raytrace: the ray fan of a single surface is computed");
+            const double ta = std::fabs(fan.tangential.back().dy);
+            err[k] = std::fabs(ta / predicted - 1.0);
+        }
+        check(err[0] < 0.05,
+              "raytrace: at f/12.5 the traced transverse aberration is within "
+              "5 percent of the third-order prediction S_I/(2 n' u')");
+        check(err[1] < 0.02 && err[1] < 0.4 * err[0],
+              "raytrace: halving the aperture shrinks that gap (the exact "
+              "trace converges to third-order theory, it is not a copy of it)");
+    }
+
+    // 5) 失敗はきちんと失敗として返す
+    {
+        rt::System bad;
+        check(!bad.isValid() && !rt::traceRay(bad, 4.0, 0.0, 0.0, 0.0).ok(),
+              "raytrace: an empty system is invalid and traces nothing");
+        // 全反射: ガラス → 空気で臨界角を超える入射
+        rt::System tir;
+        rt::Surface g, out;
+        g.R = 0.0; g.thickness = 5.0; g.nAfter = 1.8; g.stop = true;
+        out.R = 20.0; out.thickness = 10.0; out.nAfter = 1.0;
+        tir.surfaces.push_back(g);
+        tir.surfaces.push_back(out);
+        tir.imageDistance = 10.0;
+        const rt::RayResult t1 = rt::traceRay(tir, 30.0, 0.0, 0.0, 1.0);
+        check(t1.status == rt::Status::TotalReflect && t1.failedSurface == 1,
+              "raytrace: a ray past the critical angle is reported as total "
+              "internal reflection, not as a spot position");
+        // けられ: 有効半径の外を通る光線
+        rt::System vig;
+        rt::Surface v;
+        v.R = 100.0; v.thickness = 10.0; v.nAfter = 1.5; v.semiD = 1.0;
+        v.stop = true;
+        vig.surfaces.push_back(v);
+        vig.imageDistance = 10.0;
+        const rt::RayResult v1 = rt::traceRay(vig, 10.0, 0.0, 0.0, 1.0);
+        check(v1.status == rt::Status::Vignetted,
+              "raytrace: a ray outside the clear semi-diameter is vignetted");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -17088,6 +17271,7 @@ int main(int argc, char *argv[])
     testGdsGeometry();
     testWaveformSpectrum();
     testSeidelAberration();
+    testRayTrace();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();

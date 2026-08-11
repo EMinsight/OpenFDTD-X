@@ -104,22 +104,32 @@ const bool s_i18nOptRay = [] {
               "accelerated by ray tracing");
     I18n::reg("optm_uw_method", "解法 (波動 / 幾何) の選択",
               "the choice of method (wave / geometrical)");
-    I18n::reg("optm_uw_ray", "レイトレースの設定 (レイトレーサ本体が未実装のため)",
-              "the ray-trace settings (the ray tracer itself is not implemented)");
+    I18n::reg("optm_uw_ray",
+              "この節のレイトレース設定 (拡散反射・重要度サンプリング・偏光を"
+              "扱う非順次レイトレーサが未実装のため)。順次光線追跡 "
+              "(スポットダイアグラム・光線収差図) はレンズエディタタブに"
+              "あります",
+              "the ray-trace settings in this section (the non-sequential ray "
+              "tracer that handles diffuse reflection, importance sampling and "
+              "polarisation is not implemented). Sequential ray tracing — spot "
+              "diagrams and ray-aberration curves — is in the lens editor tab");
     I18n::reg("optm_uw_surf",
-              "この節の面データ (固定の設計例) と、スポット径・MTF・光線収差図の"
-              "チェック (いずれも実光線追跡が必要です)",
+              "この節の面データ (固定の設計例) と MTF のチェック "
+              "(MTF は回折を含む計算が要ります)",
               "the surface data in this section (a fixed worked example) and the "
-              "spot-size / MTF / ray-aberration check boxes (all of which need a "
-              "real ray trace)");
+              "MTF check box (MTF needs a diffraction calculation)");
     I18n::reg("optm_seidel_where",
               "収差解析 (Seidel) は 3 次収差の実計算がレンズエディタタブに"
               "あります — 面テーブル・入射瞳径・視野をそこで編集すると、"
-              "球面収差・コマ・非点・像面湾曲・歪曲が面ごとに出ます。",
+              "球面収差・コマ・非点・像面湾曲・歪曲が面ごとに出ます。"
+              "スポット径と光線収差図も同じタブの「解析プロット」から"
+              "実光線追跡で計算します。",
               "The Seidel (third-order) aberrations are computed for real in the "
               "lens editor tab — edit the surface table, the entrance pupil and "
               "the field there and you get spherical, coma, astigmatism, field "
-              "curvature and distortion per surface.");
+              "curvature and distortion per surface. The spot size and the ray "
+              "aberration curves come from a real ray trace in the same tab, "
+              "under \"Analyses\".");
     I18n::reg("optm_uw_hybrid", "波動 / 幾何のハイブリッド連携の設定",
               "the wave / geometrical hybrid settings");
     I18n::reg("optm_uw_out", "この節の設定",

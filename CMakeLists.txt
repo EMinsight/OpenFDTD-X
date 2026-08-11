@@ -303,6 +303,11 @@ set(CORE_SOURCES
     src/optics/SeidelAberration.cpp
     src/optics/SeidelAberration.h
 
+    # 順次光学系の実光線追跡 (厳密なスネルの法則) — Qt 非依存。
+    # LensEditorTab のスポットダイアグラム / 光線収差図の計算実体
+    src/optics/RayTrace.cpp
+    src/optics/RayTrace.h
+
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp

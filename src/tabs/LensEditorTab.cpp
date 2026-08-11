@@ -4,7 +4,9 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/RayTrace.h"
 #include "../optics/SeidelAberration.h"
+#include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -20,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QStandardItemModel>
 #include <QStringList>
@@ -173,6 +176,60 @@ const bool s_i18n = [] {
     I18n::reg("lde_analyses_section", "解析プロット / Analyses", "Analyses");
     I18n::reg("lde_an_mtf",      "MTF (変調伝達関数)",
               "MTF (modulation transfer function)");
+    I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
+              "Analysis result (real ray trace)");
+    I18n::reg("lde_an_why",
+              "MTF・包絡エネルギー・像面湾曲/歪曲図・色収差・波面 (Zernike) は"
+              "未実装です。スポットダイアグラムとレイファンは実光線追跡で"
+              "計算します。",
+              "MTF, encircled energy, field-curvature / distortion plots, "
+              "chromatic focal shift and the wavefront (Zernike) map are not "
+              "implemented. The spot diagram and the ray fan are computed by "
+              "real ray tracing.");
+    I18n::reg("lde_an_idle",
+              "「スポットダイアグラム」または「レイファン」を押すと、面テーブルの"
+              "系を実光線追跡して結果を描きます。",
+              "Press \"Spot Diagram\" or \"Ray Fan\" to trace the system in the "
+              "surface table and draw the result.");
+    I18n::reg("lde_an_fail",
+              "実光線追跡できませんでした (面が無い / 主光線が像面に届かない)。",
+              "The real ray trace failed (no surfaces, or the chief ray does "
+              "not reach the image plane).");
+    I18n::reg("lde_an_spot",
+              "軸上: RMS %1 µm / 最大 %2 µm、視野端 (%3°): RMS %4 µm / 最大 %5 µm"
+              "、追跡 %6 本 (失敗 %7 本)",
+              "On axis: RMS %1 µm / max %2 µm; edge of field (%3°): RMS %4 µm / "
+              "max %5 µm; %6 rays traced (%7 failed)");
+    I18n::reg("lde_an_airy",
+              "エアリー半径 1.22·λ·F = %1 µm (λ = 587.6 nm, F/%2)",
+              "Airy radius 1.22·λ·F = %1 µm (λ = 587.6 nm, F/%2)");
+    I18n::reg("lde_an_fan",
+              "横収差の最大値 — 軸上 %1 µm、視野端 (%2°) 子午 %3 µm / 球欠 %4 µm",
+              "Peak transverse aberration — on axis %1 µm; edge of field (%2°) "
+              "tangential %3 µm / sagittal %4 µm");
+    I18n::reg("lde_an_note",
+              "光線は「絞りを近軸で物体空間へ結像した入射瞳」へ向けて放ちます"
+              "(実光線が絞りを通る位置まで反復して合わせてはいません)。"
+              "面の有効半径を超えた光線はけられとして数え、全反射した光線は"
+              "捨てます。物体は無限遠、波長は 1 つ (色収差は含みません)。",
+              "Rays are aimed at the entrance pupil obtained by imaging the "
+              "stop into object space paraxially (there is no iterative real "
+              "ray aiming). Rays outside a surface's clear semi-diameter are "
+              "counted as vignetted and totally reflected rays are dropped. "
+              "The object is at infinity and a single wavelength is used (no "
+              "chromatic aberration).");
+    I18n::reg("lde_an_defocus",
+              "像面が近軸焦点から %1 mm ずれています — この結果は離焦が"
+              "支配的です (近軸諸元の「像面デフォーカス」と同じ値)。",
+              "The image plane is %1 mm away from the paraxial focus, so this "
+              "result is dominated by defocus (the same number as \"image-plane "
+              "defocus\" in the paraxial data).");
+    I18n::reg("lde_an_xpupil", "正規化瞳座標", "Normalised pupil coordinate");
+    I18n::reg("lde_an_yta", "横収差 [µm]", "Transverse aberration [µm]");
+    I18n::reg("lde_an_tan_ax", "子午 (軸上)", "Tangential (axis)");
+    I18n::reg("lde_an_sag_ax", "球欠 (軸上)", "Sagittal (axis)");
+    I18n::reg("lde_an_tan_fld", "子午 (視野端)", "Tangential (field)");
+    I18n::reg("lde_an_sag_fld", "球欠 (視野端)", "Sagittal (field)");
     I18n::reg("lde_preview_section", "レイトレース プレビュー / Raytrace preview",
               "Raytrace preview");
     I18n::reg("lde_preview_hint",
@@ -605,12 +662,38 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
         auto *b = new QPushButton(analyses[i], sAn);
         b->setFixedHeight(30);
         b->setStyleSheet("text-align:left; padding-left:8px;");
-        // 解析プロットは未実装 — 無効化して明示する (絶対規則 5)
-        tabhelp::markNotImplemented(b);
+        // スポットダイアグラムとレイファンは実光線追跡 (optics/RayTrace) で
+        // 計算する。残りは未実装なので無効化して理由を出す (絶対規則 5)。
+        if (i == 0) connect(b, &QPushButton::clicked,
+                            this, &LensEditorTab::runSpotDiagram);
+        else if (i == 1) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runRayFan);
+        else {
+            tabhelp::markNotImplemented(b);
+            b->setToolTip(I18n::tr("lde_an_why"));
+        }
         grid->addWidget(b, i / 2, i % 2);
     }
     sAn->vbox()->addLayout(grid);
     v->addWidget(sAn);
+
+    // 解析結果 (実光線追跡) — スポットは等倍散布図、レイファンは折れ線
+    auto *sAr = new SectionBox(I18n::tr("lde_an_result"), body);
+    m_spotView = new SpotDiagramView(sAr);
+    m_spotView->setVisible(false);
+    sAr->vbox()->addWidget(m_spotView);
+    m_fanPlot = new MiniPlot(sAr);
+    m_fanPlot->setMinimumHeight(190);
+    m_fanPlot->setLabels(I18n::tr("lde_an_xpupil"), I18n::tr("lde_an_yta"));
+    m_fanPlot->setVisible(false);
+    sAr->vbox()->addWidget(m_fanPlot);
+    m_anInfo = new QLabel(I18n::tr("lde_an_idle"), sAr);
+    m_anInfo->setWordWrap(true);
+    sAr->vbox()->addWidget(m_anInfo);
+    m_anNote = mutedLabel(I18n::tr("lde_an_note"), sAr);
+    m_anNote->setWordWrap(true);
+    sAr->vbox()->addWidget(m_anNote);
+    v->addWidget(sAr);
 
     // レイトレース プレビュー (面テーブル連動)
     auto *sPre = new SectionBox(I18n::tr("lde_preview_section"), body);
@@ -822,24 +905,36 @@ void LensEditorTab::retrace()
 
 // 面テーブル → 近軸諸元 (y-nu 追跡) と Merit の近軸オペランド値.
 // 収差オペランド (SPHA/COMA/ASTI/DIST) は実光線追跡が要るため「—」のまま。
-void LensEditorTab::recomputeParaxial()
+// 入射瞳径 / 視野半角 (入力欄が読めないときはモックの既定値)
+double LensEditorTab::epdValue() const
 {
     bool ok = false;
-    double epd = m_epd->text().toDouble(&ok);
-    if (!ok || epd <= 0) epd = 12.0;
-    double field = m_field->text().toDouble(&ok);
-    if (!ok) field = 20.0;
+    const double v = m_epd->text().toDouble(&ok);
+    return (ok && v > 0.0) ? v : 12.0;
+}
 
-    // 有効行のうち OBJ (無限遠物体) と IMG (像面) を除いたものが屈折面。
-    // 各行の「厚さ」は次の面までの距離なので、最後の面の厚さが像面までの距離。
+double LensEditorTab::fieldValue() const
+{
+    bool ok = false;
+    const double v = m_field->text().toDouble(&ok);
+    return ok ? v : 20.0;
+}
+
+// 面テーブル → 近軸面の並び。
+// 有効行のうち OBJ (無限遠物体) と IMG (像面) を除いたものが屈折面。
+// 各行の「厚さ」は次の面までの距離なので、最後の面の厚さが像面までの距離。
+std::vector<paraxial::Surface>
+LensEditorTab::collectSurfaces(double *imageDistance,
+                               QStringList *assumedGlass) const
+{
     std::vector<paraxial::Surface> surfs;
-    double imageDistance = -1.0;
-    QStringList unknownGlass;
+    if (imageDistance) *imageDistance = -1.0;
     for (const LensSurface &r : m_rows) {
         if (!r.enabled) continue;
         if (r.type == QStringLiteral("OBJ")) continue;
         if (r.type == QStringLiteral("IMG")) {
-            if (!surfs.empty()) imageDistance = surfs.back().thickness;
+            if (!surfs.empty() && imageDistance)
+                *imageDistance = surfs.back().thickness;
             break;
         }
         paraxial::Surface s;
@@ -850,14 +945,27 @@ void LensEditorTab::recomputeParaxial()
         const double t = r.thick.toDouble(&tok);
         s.thickness = tok ? t : 0.0;
         s.nAfter = indexAfter(r.glass);
-        if (isUnknownGlass(r.glass) && !unknownGlass.contains(r.glass.trimmed()))
-            unknownGlass << r.glass.trimmed();
+        if (assumedGlass && isUnknownGlass(r.glass)
+            && !assumedGlass->contains(r.glass.trimmed()))
+            *assumedGlass << r.glass.trimmed();
         bool dok = false;
         const double sd = r.semiD.toDouble(&dok);
         s.semiD = (dok && sd > 0) ? sd : 0.0;
         s.stop = (r.type == QStringLiteral("STO"));
         surfs.push_back(s);
     }
+    return surfs;
+}
+
+void LensEditorTab::recomputeParaxial()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+
+    double imageDistance = -1.0;
+    QStringList unknownGlass;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, &unknownGlass);
 
     const paraxial::SystemData d =
         paraxial::analyze(surfs, imageDistance, epd, field);
@@ -1011,4 +1119,242 @@ void LensEditorTab::recomputeParaxial()
         if (auto *it = m_merit->item(i, 5)) it->setText(basis);
     }
     m_updating = was;
+}
+
+// ── スポットダイアグラム表示 (等倍散布図 + エアリー円) ─────────────────────
+SpotDiagramView::SpotDiagramView(QWidget *parent) : QWidget(parent)
+{
+    setMinimumHeight(220);
+}
+
+void SpotDiagramView::setClouds(const QVector<Cloud> &clouds, double airyRadius)
+{
+    m_clouds = clouds;
+    m_airy = airyRadius;
+    update();
+}
+
+void SpotDiagramView::clear()
+{
+    m_clouds.clear();
+    m_airy = 0.0;
+    update();
+}
+
+void SpotDiagramView::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    if (m_clouds.isEmpty()) return;
+
+    // 各点群は自分の重心を原点にして重ねる (視野が違うと像高が桁違いに
+    // 離れるため、絶対位置で並べるとスポットの形が見えない)
+    double half = 0.0;
+    for (const Cloud &c : m_clouds)
+        for (const QPointF &q : c.pts) {
+            half = qMax(half, qAbs(q.x() - c.centroid.x()));
+            half = qMax(half, qAbs(q.y() - c.centroid.y()));
+        }
+    half = qMax(half, m_airy);
+    if (!(half > 0.0)) half = 1e-3;
+    half *= 1.15;                       // 余白
+
+    const int side = qMin(width(), height()) - 30;
+    if (side <= 10) return;
+    const QPointF org(width() * 0.5, height() * 0.5);
+    const double scale = 0.5 * side / half;      // [px/mm]
+
+    // 十字線
+    p.setPen(QPen(palette().mid().color(), 1, Qt::DotLine));
+    p.drawLine(QPointF(org.x() - 0.5 * side, org.y()),
+               QPointF(org.x() + 0.5 * side, org.y()));
+    p.drawLine(QPointF(org.x(), org.y() - 0.5 * side),
+               QPointF(org.x(), org.y() + 0.5 * side));
+
+    // エアリー円 (回折限界の目安)
+    if (m_airy > 0.0) {
+        p.setPen(QPen(QColor(0x88, 0x88, 0x88), 1, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        const double r = m_airy * scale;
+        p.drawEllipse(org, r, r);
+    }
+
+    for (const Cloud &c : m_clouds) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(c.color);
+        for (const QPointF &q : c.pts) {
+            const double dx = (q.x() - c.centroid.x()) * scale;
+            const double dy = (q.y() - c.centroid.y()) * scale;
+            p.drawEllipse(QPointF(org.x() + dx, org.y() - dy), 1.4, 1.4);
+        }
+    }
+
+    // 目盛り (半幅を µm で書く)
+    p.setPen(palette().text().color());
+    QFont f = p.font();
+    f.setPointSizeF(qMax(7.0, f.pointSizeF() - 1.0));
+    p.setFont(f);
+    p.drawText(rect().adjusted(6, 4, -6, -4), Qt::AlignTop | Qt::AlignLeft,
+               QStringLiteral("±%1 µm").arg(QString::number(half * 1000.0, 'g', 3)));
+    int row = 0;
+    for (const Cloud &c : m_clouds) {
+        p.setPen(c.color);
+        p.drawText(rect().adjusted(6, 4 + 14 * (row + 1), -6, -4),
+                   Qt::AlignTop | Qt::AlignLeft, c.label);
+        ++row;
+    }
+}
+
+// 像面が近軸焦点からずれているときの注記。ずれによるボケ (|defocus|/(2F))
+// がエアリー半径を超えていれば、結果は収差ではなく離焦で決まっている。
+static QString defocusNote(const paraxial::SystemData &d, double airy)
+{
+    if (!d.valid || !d.hasImagePlane) return QString();
+    const double blur = (d.fnumber > 0.0)
+                            ? std::fabs(d.defocus) / (2.0 * d.fnumber) : 0.0;
+    const double limit = (airy > 0.0) ? airy : 1e-3;
+    if (!(blur > limit)) return QString();
+    return QStringLiteral("\n") + I18n::tr("lde_an_defocus")
+                                       .arg(QString::number(d.defocus, 'f', 3));
+}
+
+// ── 解析プロット (実光線追跡) ──────────────────────────────────────────────
+// 面テーブルの系をそのまま optics/RayTrace へ渡す。物体は無限遠、波長は
+// d 線 1 本 (色収差は含まない — その旨を注記に出す)。
+void LensEditorTab::runSpotDiagram()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr);
+
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+
+    const raytrace::SpotResult axis = raytrace::spotDiagram(sys, epd, 0.0, 8);
+    const raytrace::SpotResult edge =
+        (field != 0.0) ? raytrace::spotDiagram(sys, epd, field, 8) : axis;
+    if (!axis.valid) {
+        m_spotView->clear();
+        m_spotView->setVisible(false);
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    QVector<SpotDiagramView::Cloud> clouds;
+    auto toCloud = [](const raytrace::SpotResult &r, const QColor &col,
+                      const QString &label) {
+        SpotDiagramView::Cloud c;
+        c.color = col;
+        c.label = label;
+        c.centroid = QPointF(r.centroidX, r.centroidY);
+        for (int i = 0; i < r.traced; ++i)
+            c.pts.push_back(QPointF(r.x[i], r.y[i]));
+        return c;
+    };
+    clouds.push_back(toCloud(axis, QColor(0xB8, 0x32, 0x80),
+                             I18n::tr("lde_an_tan_ax")));
+    if (field != 0.0 && edge.valid)
+        clouds.push_back(toCloud(edge, QColor(0x00, 0x78, 0xD4),
+                                 I18n::tr("lde_an_tan_fld")));
+
+    // エアリー半径 1.22·λ·F/# (回折限界の目安)
+    const double lambda_mm = 587.6e-6;
+    const paraxial::SystemData d =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+    const double airy = (d.valid && d.fnumber > 0.0)
+                            ? 1.22 * lambda_mm * d.fnumber : 0.0;
+    m_spotView->setClouds(clouds, airy);
+    m_spotView->setVisible(true);
+    m_fanPlot->setVisible(false);
+
+    const auto um = [](double mm) { return QString::number(mm * 1000.0, 'f', 2); };
+    QString info = I18n::tr("lde_an_spot")
+                       .arg(um(axis.rmsRadius), um(axis.geoRadius),
+                            QString::number(field, 'g', 4),
+                            um(edge.valid ? edge.rmsRadius : 0.0),
+                            um(edge.valid ? edge.geoRadius : 0.0),
+                            QString::number(axis.traced + edge.traced),
+                            QString::number(axis.failed + edge.failed));
+    if (airy > 0.0)
+        info += QStringLiteral("\n") + I18n::tr("lde_an_airy")
+                                           .arg(um(airy),
+                                                QString::number(d.fnumber, 'f', 2));
+    info += defocusNote(d, airy);
+    m_anInfo->setText(info);
+}
+
+void LensEditorTab::runRayFan()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr);
+
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+
+    const raytrace::FanResult axis = raytrace::rayFan(sys, epd, 0.0, 24);
+    const raytrace::FanResult edge =
+        (field != 0.0) ? raytrace::rayFan(sys, epd, field, 24) : axis;
+    if (!axis.valid) {
+        m_spotView->setVisible(false);
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    // 横収差は µm で描く (mm だと数値が潰れる)
+    auto series = [](const std::vector<raytrace::FanPoint> &pts, bool useY,
+                     const QColor &col, bool dashed, const QString &label,
+                     double *peak) {
+        MiniSeries s;
+        s.color = col;
+        s.dashed = dashed;
+        s.label = label;
+        for (const raytrace::FanPoint &q : pts) {
+            if (!q.ok) continue;
+            const double v = (useY ? q.dy : q.dx) * 1000.0;
+            s.pts.push_back(QPointF(q.pupil, v));
+            if (peak) *peak = qMax(*peak, qAbs(v));
+        }
+        return s;
+    };
+    double pAxis = 0.0, pTan = 0.0, pSag = 0.0;
+    QVector<MiniSeries> all;
+    all.push_back(series(axis.tangential, true, QColor(0xB8, 0x32, 0x80), false,
+                         I18n::tr("lde_an_tan_ax"), &pAxis));
+    all.push_back(series(axis.sagittal, false, QColor(0xB8, 0x32, 0x80), true,
+                         I18n::tr("lde_an_sag_ax"), &pAxis));
+    if (field != 0.0 && edge.valid) {
+        all.push_back(series(edge.tangential, true, QColor(0x00, 0x78, 0xD4),
+                             false, I18n::tr("lde_an_tan_fld"), &pTan));
+        all.push_back(series(edge.sagittal, false, QColor(0x00, 0x78, 0xD4),
+                             true, I18n::tr("lde_an_sag_fld"), &pSag));
+    }
+    m_fanPlot->setSeries(all);
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    const auto num = [](double v) { return QString::number(v, 'f', 2); };
+    const paraxial::SystemData d =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+    const double airy = (d.valid && d.fnumber > 0.0)
+                            ? 1.22 * 587.6e-6 * d.fnumber : 0.0;
+    m_anInfo->setText(I18n::tr("lde_an_fan")
+                          .arg(num(pAxis), QString::number(field, 'g', 4),
+                               num(pTan), num(pSag))
+                      + defocusNote(d, airy));
 }

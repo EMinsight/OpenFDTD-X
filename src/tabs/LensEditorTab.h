@@ -11,16 +11,25 @@
 //   - 面テーブルから子午面 2D 光線追跡するレイアウトプレビュー
 // 光ドメイン選択時のみ表示される。面データはローカル状態 (モック忠実)。
 #pragma once
+#include <QColor>
+#include <QPointF>
 #include <QScrollArea>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
+#include <vector>
+
+#include "../optics/ParaxialTrace.h"
+
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QTableWidget;
 
 namespace ofd {
 
+class MiniPlot;
 class Project;
 
 // 1面ぶんの行データ (mock の rows と同フィールド。数値も文字列で保持し
@@ -57,6 +66,32 @@ private:
 };
 
 // Merit Function の 1 オペランド。目標と重みは利用者が編集できる定義値、
+// スポットダイアグラム表示 (縦横同スケール + エアリー円)。
+// 散布図で縦横比が崩れると形の判断ができないので、MiniPlot ではなく
+// 専用に描く (レイファンは折れ線なので MiniPlot を使う)。
+class SpotDiagramView : public QWidget {
+    Q_OBJECT
+public:
+    explicit SpotDiagramView(QWidget *parent = nullptr);
+
+    struct Cloud {
+        QVector<QPointF> pts;    // 像面上の位置 [mm]
+        QPointF centroid;
+        QColor  color;
+        QString label;
+    };
+    // airyRadius <= 0 ならエアリー円を描かない
+    void setClouds(const QVector<Cloud> &clouds, double airyRadius);
+    void clear();
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+
+private:
+    QVector<Cloud> m_clouds;
+    double m_airy = 0.0;
+};
+
 // 「値」は近軸追跡で計算できるものだけを埋める (収差は実光線追跡が必要)。
 struct MeritOperand {
     QString code;      // EFFL / PIMH / ISFN / SPHA / COMA / ASTI / DIST
@@ -72,6 +107,8 @@ public:
 
 private slots:
     void retrace();                 // 面テーブル + 諸元 → プレビュー再追跡
+    void runSpotDiagram();          // ⊙ スポットダイアグラム (実光線追跡)
+    void runRayFan();               // 📐 レイファン (光線収差図)
 
 private:
     void rebuildTable();            // m_rows → QTableWidget (行挿入/削除後)
@@ -79,6 +116,12 @@ private:
     void applyStopHighlight();      // STO 行の背景ハイライト
     void rebuildMeritTable();       // m_fom → Merit 表 (目標/重みは編集可能)
     void recomputeParaxial();       // 面テーブル → 近軸諸元 + 収差 + Merit
+    // 面テーブル → 近軸面の並び (像面までの距離と屈折率仮定の銘柄も返す)。
+    // 近軸諸元・3 次収差・実光線追跡が同じ表から系を作るための共通処理。
+    std::vector<paraxial::Surface> collectSurfaces(double *imageDistance,
+                                                  QStringList *assumedGlass) const;
+    double epdValue() const;
+    double fieldValue() const;
 
     Project      *m_p;
     bool          m_updating = false;
@@ -92,6 +135,11 @@ private:
     QLineEdit    *m_epd, *m_field;
     QComboBox    *m_coord;
     LensLayoutView *m_layout;
+    // 解析プロット (実光線追跡)
+    SpotDiagramView *m_spotView = nullptr;
+    MiniPlot        *m_fanPlot = nullptr;
+    QLabel          *m_anInfo = nullptr;   // 数値 (RMS / GEO / エアリー半径)
+    QLabel          *m_anNote = nullptr;   // 前提と限界
 };
 
 } // namespace ofd
