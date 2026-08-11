@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
@@ -15569,6 +15570,259 @@ static void testIlluminationTrace()
     }
 }
 
+// ── 微分なし最適化 PSO / GA (core/Optimizer) ───────────────────────────────
+// 判定は **最適解が解析的に分かっているテスト関数**との比較。数値の丸写しでは
+// なく「箱の中でランダムに取ると数十のオーダーの値が、4 桁以上落ちて既知の
+// 最適点へ収束すること」を見る:
+//   sphere    Σxᵢ²                      最小 0 (原点) — 単峰・条件数 1
+//   Rosenbrock (1−x)² + 100(y−x²)²      最小 0 (1,1)  — 細い谷
+//   Rastrigin 10n + Σ(xᵢ²−10cos2πxᵢ)   最小 0 (原点) — 局所解が格子状に並ぶ
+//                                        (最寄りの局所解は f ≈ 1 なので、
+//                                         f < 0.5 は大域解を捕まえた証拠)
+static void testOptimizer()
+{
+    g_file = "optimizer";
+    namespace op = ofd::optim;
+
+    auto sphere = [](const std::vector<double> &x) {
+        double s = 0.0;
+        for (double v : x) s += v * v;
+        return s;
+    };
+    auto rosenbrock = [](const std::vector<double> &x) {
+        const double a = 1.0 - x[0], b = x[1] - x[0] * x[0];
+        return a * a + 100.0 * b * b;
+    };
+    auto rastrigin = [](const std::vector<double> &x) {
+        double s = 10.0 * double(x.size());
+        for (double v : x)
+            s += v * v - 10.0 * std::cos(2.0 * 3.14159265358979323846 * v);
+        return s;
+    };
+
+    // 箱と設定をまとめて 1 回まわす小道具。境界の逸脱と最良値の悪化も見張る。
+    struct RunOut {
+        double best = 0.0;
+        std::vector<double> x;
+        bool hasBest = false, inBounds = true, monotone = true;
+        int evaluations = 0;
+    };
+    auto sweep = [](op::Method m, int nv, double lo, double hi, int P, int G,
+                    bool maximize, uint64_t seed,
+                    const std::function<double(const std::vector<double>&)> &f,
+                    RunOut *out) {
+        std::vector<op::Variable> vars(static_cast<size_t>(nv));
+        for (op::Variable &v : vars) { v.lo = lo; v.hi = hi; }
+        op::Options o;
+        o.method = m; o.population = P; o.generations = G;
+        o.maximize = maximize; o.seed = seed;
+        op::Optimizer opt(vars, o);
+        double prev = 0.0;
+        bool havePrev = false;
+        while (!opt.done()) {
+            const std::vector<std::vector<double>> &pts = opt.ask();
+            std::vector<double> vals;
+            vals.reserve(pts.size());
+            for (const std::vector<double> &p : pts) {
+                for (int j = 0; j < nv; ++j)
+                    if (p[size_t(j)] < lo - 1e-12 || p[size_t(j)] > hi + 1e-12)
+                        out->inBounds = false;
+                vals.push_back(f(p));
+            }
+            opt.tell(vals);
+            if (opt.hasBest()) {
+                if (havePrev) {
+                    const bool worse = maximize ? (opt.bestValue() < prev)
+                                                : (opt.bestValue() > prev);
+                    if (worse) out->monotone = false;
+                }
+                prev = opt.bestValue();
+                havePrev = true;
+            }
+        }
+        out->best = opt.bestValue();
+        out->x = opt.best();
+        out->hasBest = opt.hasBest();
+        out->evaluations = opt.evaluations();
+    };
+
+    // ── 1) 単峰 (sphere) ──────────────────────────────────────────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 3, -5.0, 5.0, 30, 40, false, 42, sphere, &r);
+        check(r.hasBest, "optimizer: sphere run produces a best point");
+        check(r.inBounds, "optimizer: every asked point stays inside the box");
+        check(r.monotone, "optimizer: the best value never gets worse "
+                          "(elitism / global best)");
+        check(r.best < 1e-2,
+              "optimizer: sphere converges to its analytic minimum 0 "
+              "(random points in this box are of order 25)");
+        double d = 0.0;
+        for (double v : r.x) d = std::max(d, std::fabs(v));
+        check(d < 0.1, "optimizer: the sphere minimiser is the origin");
+        check(r.evaluations == 30 * 40,
+              "optimizer: every point of every generation was counted");
+    }
+
+    // ── 2) 細い谷 (Rosenbrock) ───────────────────────────────────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 2, -2.0, 2.0, 40, 80, false, 7, rosenbrock, &r);
+        check(r.best < 1e-2,
+              "optimizer: Rosenbrock converges to its analytic minimum 0");
+        check(std::fabs(r.x[0] - 1.0) < 0.1 && std::fabs(r.x[1] - 1.0) < 0.1,
+              "optimizer: the Rosenbrock minimiser is (1, 1)");
+    }
+
+    // ── 3) 多峰 (Rastrigin) — 局所解でなく大域解を捕まえること ────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 2, -5.12, 5.12, 40, 60, false, 3, rastrigin, &r);
+        check(r.best < 0.5,
+              "optimizer: Rastrigin lands in the global basin (the nearest "
+              "local minima sit at f = 1)");
+    }
+
+    // ── 4) 最大化 ─────────────────────────────────────────────────────────
+    {
+        auto negSphere = [&sphere](const std::vector<double> &x) {
+            return 10.0 - sphere(x);
+        };
+        RunOut r;
+        sweep(op::Method::ParticleSwarm, 3, -5.0, 5.0, 30, 40, true, 42,
+              negSphere, &r);
+        check(r.best > 9.99 && r.best <= 10.0,
+              "optimizer: maximisation finds the analytic maximum 10");
+        check(r.monotone, "optimizer: the best value never gets worse when "
+                          "maximising either");
+    }
+
+    // ── 5) 再現性 (同じ seed → 同じ設計点の列) ────────────────────────────
+    {
+        auto trajectory = [&](uint64_t seed) {
+            std::vector<op::Variable> vars(2);
+            for (op::Variable &v : vars) { v.lo = -3.0; v.hi = 3.0; }
+            op::Options o;
+            o.method = op::Method::Genetic;
+            o.population = 12; o.generations = 8; o.seed = seed;
+            op::Optimizer opt(vars, o);
+            std::vector<double> flat;
+            while (!opt.done()) {
+                const std::vector<std::vector<double>> &pts = opt.ask();
+                std::vector<double> vals;
+                for (const std::vector<double> &p : pts) {
+                    flat.push_back(p[0]);
+                    flat.push_back(p[1]);
+                    vals.push_back(sphere(p));
+                }
+                opt.tell(vals);
+            }
+            return flat;
+        };
+        const std::vector<double> a = trajectory(99), b = trajectory(99),
+                                  c = trajectory(100);
+        check(a == b, "optimizer: the same seed replays the same design points "
+                      "bit for bit");
+        check(a != c, "optimizer: a different seed explores differently");
+    }
+
+    // ── 6) 評価できなかった点 (NaN) ───────────────────────────────────────
+    // x0 > 0 の半空間ではカーネルが落ちた、という状況を模す。最適解は
+    // 残った半空間の端 x0 = 0 に寄る。NaN が最良に採られないことを見る。
+    {
+        std::vector<op::Variable> vars(2);
+        for (op::Variable &v : vars) { v.lo = -4.0; v.hi = 4.0; }
+        op::Options o;
+        o.method = op::Method::ParticleSwarm;
+        o.population = 30; o.generations = 40; o.seed = 5;
+        op::Optimizer opt(vars, o);
+        int nanCount = 0, okCount = 0;
+        while (!opt.done()) {
+            const std::vector<std::vector<double>> &pts = opt.ask();
+            std::vector<double> vals;
+            for (const std::vector<double> &p : pts) {
+                if (p[0] > 0.0) {
+                    vals.push_back(std::numeric_limits<double>::quiet_NaN());
+                    ++nanCount;
+                } else {
+                    vals.push_back(sphere(p));
+                    ++okCount;
+                }
+            }
+            opt.tell(vals);
+        }
+        check(nanCount > 0 && okCount > 0,
+              "optimizer: the NaN scenario really produced both outcomes");
+        check(opt.hasBest() && !std::isnan(opt.bestValue()),
+              "optimizer: a failed evaluation is never taken as the best");
+        check(opt.best()[0] <= 0.0,
+              "optimizer: the best point comes from the half-space that "
+              "actually evaluated");
+        check(opt.best()[0] > -0.1 && std::fabs(opt.best()[1]) < 0.1,
+              "optimizer: with the other half unusable the optimum sits on "
+              "the boundary x0 = 0");
+        check(opt.evaluations() == okCount,
+              "optimizer: only successful evaluations are counted");
+    }
+
+    // ── 7) 初期値と不正な設定 ─────────────────────────────────────────────
+    {
+        std::vector<op::Variable> vars(2);
+        vars[0].lo = -1.0; vars[0].hi = 1.0; vars[0].init = 0.25;
+        vars[0].hasInit = true;
+        vars[1].lo = -1.0; vars[1].hi = 1.0; vars[1].init = -0.5;
+        vars[1].hasInit = true;
+        op::Options o;
+        o.population = 6; o.generations = 3;
+        op::Optimizer opt(vars, o);
+        check(opt.valid() && opt.ask().size() == 6,
+              "optimizer: the first ask is one generation");
+        check(opt.ask()[0][0] == 0.25 && opt.ask()[0][1] == -0.5,
+              "optimizer: the first individual starts from the given initial "
+              "design");
+        // 範囲外の初期値は箱へ丸める (黙って箱の外を評価させない)
+        std::vector<op::Variable> v2 = vars;
+        v2[0].init = 99.0;
+        op::Optimizer o2(v2, o);
+        check(o2.ask()[0][0] == 1.0,
+              "optimizer: an initial value outside the box is clamped into it");
+    }
+    {
+        op::Options o;
+        check(!op::Optimizer(std::vector<op::Variable>{}, o).valid(),
+              "optimizer: no variables is not a problem to solve");
+        std::vector<op::Variable> bad(1);
+        bad[0].lo = 1.0; bad[0].hi = 1.0;      // 幅ゼロ
+        check(!op::Optimizer(bad, o).valid(),
+              "optimizer: a zero-width box is rejected");
+        std::vector<op::Variable> ok(1);
+        op::Options p1 = o; p1.population = 1;
+        check(!op::Optimizer(ok, p1).valid(),
+              "optimizer: a population of one cannot recombine");
+        op::Options g0 = o; g0.generations = 0;
+        check(!op::Optimizer(ok, g0).valid(),
+              "optimizer: zero generations is not a run");
+        // PSO は c1 + c2 > 4 でないと収縮係数が定義されない
+        op::Options phi = o;
+        phi.method = op::Method::ParticleSwarm; phi.c1 = 1.0; phi.c2 = 1.0;
+        check(!op::Optimizer(ok, phi).valid(),
+              "optimizer: PSO needs c1 + c2 > 4 for the constriction factor");
+        check(op::Optimizer(ok, phi).ask().empty(),
+              "optimizer: an invalid configuration asks for nothing");
+    }
+    // 評価値の数が合わなければ世代を進めない (黙って壊さない)
+    {
+        std::vector<op::Variable> vars(1);
+        op::Options o;
+        o.population = 4; o.generations = 3;
+        op::Optimizer opt(vars, o);
+        opt.tell(std::vector<double>(3, 1.0));    // 4 個体に 3 個
+        check(opt.generation() == 0 && !opt.hasBest(),
+              "optimizer: a mismatched number of results does not advance the "
+              "run");
+    }
+}
+
 // ── 配光ファイル IES LM-63 (io/PhotometricIO) ──────────────────────────────
 // 判定は (a) 追跡結果との厳密な突き合わせ、(b) 書いて読み直しての往復、
 // (c) 規格上受け取ってはいけないファイルを断ること、の 3 本立て。
@@ -18116,6 +18370,7 @@ int main(int argc, char *argv[])
     testRayTrace();
     testIlluminationTrace();
     testPhotometricIO();
+    testOptimizer();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();

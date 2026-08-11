@@ -107,6 +107,12 @@ set(CORE_SOURCES
     src/core/MeshRefine.cpp
     src/core/MeshRefine.h
 
+    # 微分を使わない箱制約付き最適化 (PSO / 実数値 GA) — Qt 非依存。
+    # OptimizeTab の PSO / GA 手法の実体で、selftest から解析的に最適解が
+    # 分かっているテスト関数と突き合わせる
+    src/core/Optimizer.cpp
+    src/core/Optimizer.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h

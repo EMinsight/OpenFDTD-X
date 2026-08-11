@@ -21,6 +21,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <limits>
+
 using namespace ofd;
 
 // ── タブ専用語彙 (file-local 登録, 接頭辞 opz_) ─────────────────────────────
@@ -108,21 +110,72 @@ const bool s_i18n = [] {
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
     I18n::reg("opz_uw_method",
-              "「掃引」以外の手法 (PSO / 随伴 / GA / ベイズ / トポロジー) の選択",
-              "the choice of method other than sweep (PSO / adjoint / GA / "
-              "Bayesian / topology)");
+              "「随伴」(カーネルが感度を返さないため) と「ベイズ」(代理モデルが"
+              "未実装) と「トポロジー」(密度場 → 材料分布が未実装) の選択",
+              "the adjoint method (the kernel returns no sensitivities), "
+              "Bayesian optimisation (no surrogate model) and topology "
+              "optimisation (no density-to-material mapping)");
     I18n::reg("opz_uw_method_ok",
-              "「掃引」— 下の「実行」から実際にカーネルを回します",
-              "sweep — it actually runs the kernel from Run below");
+              "「掃引」「PSO」「GA」— 下の「実行」から実際にカーネルを回します "
+              "(PSO / GA は 1 世代ぶんをまとめて実行し、評価量で採点して次の"
+              "世代を作ります)",
+              "sweep, PSO and GA — they actually run the kernel from Run below "
+              "(PSO and GA execute one generation as a batch, score it with the "
+              "figure of merit and build the next generation)");
     I18n::reg("opz_uw_vars",
-              "変数名と初期値の列 (名前はドメイン別の例で、実在の量には"
-              "結び付いていません)",
-              "the variable-name and initial-value columns (the names are "
-              "per-domain examples and are not bound to real quantities)");
+              "変数名と単位の列 (自由記入のラベルです — 計算に使うのは"
+              "「対象量」の列)",
+              "the variable-name and unit columns (free-form labels — the "
+              "quantity column is what the run actually uses)");
     I18n::reg("opz_uw_vars_ok",
-              "最小 / 最大 / 分割の列 — 掃引の範囲としてそのまま使われます",
-              "the min / max / divisions columns, which are used as the sweep "
-              "range");
+              "対象量・初期値・最小 / 最大 / 分割の列 — 掃引の範囲と、"
+              "PSO / GA の設計変数 (初期値は 1 個体目の出発点) になります",
+              "the quantity, initial-value and min / max / divisions columns — "
+              "they become the sweep range and the PSO / GA design variables "
+              "(the initial value seeds the first individual)");
+    I18n::reg("opz_c_quant", "対象量", "Quantity");
+    I18n::reg("opz_q_theta", "平面波 θ [deg]", "Plane wave theta [deg]");
+    I18n::reg("opz_q_phi",   "平面波 φ [deg]", "Plane wave phi [deg]");
+    I18n::reg("opz_q_mesh",  "メッシュ分割の倍率", "Mesh division factor");
+    I18n::reg("opz_q_eps1",  "材料#1 εr への加算", "Material #1 epsr offset");
+    I18n::reg("opz_q_eps2",  "材料#2 εr への加算", "Material #2 epsr offset");
+    I18n::reg("opz_opt_hint",
+              "PSO / GA はここから実際にカーネルを回します。1 世代ぶんの設計点を"
+              "まとめて実行し、上の評価量で採点して次の世代を作ります。"
+              "動かせるのは「対象量」の列に出ている量だけです "
+              "(形状寸法を動かすには掃引エンジン側の対応が要ります)。",
+              "PSO and GA run the kernel from here. Each generation is executed "
+              "as a batch, scored with the figure of merit above, and used to "
+              "build the next generation. Only the quantities offered in the "
+              "quantity column can be varied (varying geometry needs support in "
+              "the sweep engine).");
+    I18n::reg("opz_opt_cost",
+              "総ジョブ数 = 個体数 %1 × 世代 %2 = %3 回のカーネル実行",
+              "Total jobs = population %1 x generations %2 = %3 kernel runs");
+    I18n::reg("opz_opt_running",
+              "世代 %1 / %2 — %3 / %4 点",
+              "Generation %1 / %2 - point %3 / %4");
+    I18n::reg("opz_opt_done", "最適化終了 (%1 世代 / 有効評価 %2 点)",
+              "Optimisation finished (%1 generations, %2 valid evaluations)");
+    I18n::reg("opz_opt_stopped", "最適化を中止しました (%1 世代 / 有効評価 %2 点)",
+              "Optimisation stopped (%1 generations, %2 valid evaluations)");
+    I18n::reg("opz_opt_best", "最良: %1 → %2 = %3",
+              "Best: %1 -> %2 = %3");
+    I18n::reg("opz_opt_none",
+              "有効な評価が 1 点もありませんでした (カーネルの出力を確認してください)",
+              "No evaluation succeeded (check the kernel output)");
+    I18n::reg("opz_opt_need",
+              "チェックした行に「対象量」と数値の最小 / 最大が要ります "
+              "(最小 < 最大)。個体数は 2 以上、世代は 1 以上。",
+              "A checked row needs a quantity and numeric min / max "
+              "(min < max). Population must be at least 2 and generations at "
+              "least 1.");
+    I18n::reg("opz_opt_notrun",
+              "この手法 (%1) には最適化ループがありません。掃引 / PSO / GA が"
+              "実行できます。",
+              "There is no optimisation loop for this method (%1). Sweep, PSO "
+              "and GA can run.");
+    I18n::reg("opz_run_optimize2", "▶ 最適化を実行", "▶ Run optimisation");
     I18n::reg("opz_uw_con", "制約条件の設定",
               "the constraint settings");
     I18n::reg("opz_uw_topo", "トポロジー最適化の解像度とフィルタ半径",
@@ -164,10 +217,10 @@ const bool s_i18n = [] {
               "The sweep range is invalid — check min / max / divisions in the "
               "variable table (at least 2 divisions, min ≠ max).");
     I18n::reg("opz_run_notsweep",
-              "▸ 実行できるのは「掃引」手法だけです。他の手法は最適化ループが"
-              "未実装です。",
-              "▸ Only the sweep method can run; the other methods have no "
-              "optimisation loop yet.");
+              "▸ 実行できるのは「掃引」「PSO」「GA」です。随伴・ベイズ・"
+              "トポロジーは最適化ループが未実装です。",
+              "▸ Sweep, PSO and GA can run. The adjoint, Bayesian and topology "
+              "methods have no optimisation loop yet.");
     I18n::reg("opz_run_running", "実行中: %1 / %2 点", "Running: %1 / %2 points");
     I18n::reg("opz_run_done", "完了: %1 点", "Done: %1 point(s)");
     I18n::reg("opz_run_stopped", "中止しました (%1 点まで)",
@@ -288,10 +341,11 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
 
     // ── パラメータ / Parameters ─────────────────────────────────────────────
     auto *sParam = new SectionBox(I18n::tr("opz_param"), body);
-    m_params = new QTableWidget(3, 8, sParam);
+    m_params = new QTableWidget(3, 9, sParam);
     m_params->setHorizontalHeaderLabels({ QString(), "#",
         I18n::tr("opz_c_var"), I18n::tr("opz_c_init"), I18n::tr("opz_c_min"),
-        I18n::tr("opz_c_max"), I18n::tr("opz_c_div"), I18n::tr("opz_c_unit") });
+        I18n::tr("opz_c_max"), I18n::tr("opz_c_div"), I18n::tr("opz_c_unit"),
+        I18n::tr("opz_c_quant") });
     m_params->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_params->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
     m_params->horizontalHeader()->resizeSection(0, 24);
@@ -392,6 +446,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     // いる量に限る (平面波の入射角・メッシュ倍率)。形状寸法を振るには
     // SweepRunner 側の対応が要るので、まだ選択肢に出さない (絶対規則 5)。
     sRun->vbox()->addWidget(hintLabel(I18n::tr("opz_sweep_hint"), sRun));
+    sRun->vbox()->addWidget(hintLabel(I18n::tr("opz_opt_hint"), sRun));
     auto *swForm = new QFormLayout();
     swForm->setContentsMargins(0, 0, 0, 0);
     m_sweepVar = new QComboBox(sRun);
@@ -479,14 +534,30 @@ void OptimizeTab::setMode(const QString &mode)
 // ── 掃引の実行 ──────────────────────────────────────────────────────────────
 // 変数表の**最初にチェックの入った行**から最小 / 最大 / 分割を読み、
 // SweepRunner に渡す。範囲が不正なら起動せず理由を出す (絶対規則 5)。
+// 手法キー → 表示名 (未実装の手法を名指しで説明するため)
+static QString methodLabel(const QString &mode)
+{
+    if (mode == QLatin1String("adjoint"))  return I18n::tr("opz_gradient");
+    if (mode == QLatin1String("bayes"))    return I18n::tr("opz_bayesian");
+    if (mode == QLatin1String("topology")) return I18n::tr("opz_topology");
+    if (mode == QLatin1String("pso"))      return I18n::tr("opz_pso");
+    if (mode == QLatin1String("ga"))       return I18n::tr("opz_ga");
+    return I18n::tr("opz_sweep");
+}
+
 void OptimizeTab::startSweep()
 {
     if (m_sweeper->isRunning()) {          // 実行中の押下は中止
+        m_optStopped = true;                // 最適化なら次の世代へ進めない
         m_sweeper->stop();
         return;
     }
+    if (m_mode == QLatin1String("pso") || m_mode == QLatin1String("ga")) {
+        startOptimize();
+        return;
+    }
     if (m_mode != QLatin1String("sweep")) {
-        m_runStatus->setText(I18n::tr("opz_run_notsweep"));
+        m_runStatus->setText(I18n::tr("opz_opt_notrun").arg(methodLabel(m_mode)));
         return;
     }
     // 変数表から範囲を読む
@@ -549,6 +620,12 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
     const double freq = m_fomFreq->text().trimmed().toDouble(&okFreq);
     const FomValue fv = evaluateFom(kind, r, okFreq ? freq : 0.0);
     m_foms.push_back(fv);
+    if (m_optimizing) {
+        // 評価できなかった点は NaN で返す (0 で埋めない — 最良に採られる)
+        m_genFoms.push_back(fv.valid
+                                ? fv.value
+                                : std::numeric_limits<double>::quiet_NaN());
+    }
 
     const int row = m_resultTable->rowCount();
     m_resultTable->insertRow(row);
@@ -557,9 +634,22 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         return it;
     };
-    m_resultTable->setItem(row, 0, ro(r.label.isEmpty()
-                                          ? QString::number(r.value, 'g', 6)
-                                          : r.label));
+    QString shown = r.label.isEmpty() ? QString::number(r.value, 'g', 6)
+                                      : r.label;
+    if (m_optimizing && m_optimizer) {
+        // 「#3」では何を試した点か分からないので設計ベクトルを出す
+        const std::vector<std::vector<double>> &pts = m_optimizer->ask();
+        if (index >= 0 && index < static_cast<int>(pts.size())) {
+            QStringList parts;
+            for (int j = 0; j < m_optCols.size()
+                            && j < static_cast<int>(pts[index].size()); ++j)
+                parts << QStringLiteral("%1=%2").arg(m_optCols[j].label)
+                             .arg(QString::number(pts[index][static_cast<size_t>(j)],
+                                                  'g', 4));
+            if (!parts.isEmpty()) shown = parts.join(QStringLiteral(", "));
+        }
+    }
+    m_resultTable->setItem(row, 0, ro(shown));
     m_resultTable->setItem(row, 1, ro(fv.valid
                                           ? QString::number(fv.value, 'f', 3)
                                           : QStringLiteral("—")));
@@ -567,12 +657,25 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
         !r.ok ? "opz_state_fail" : (fv.valid ? "opz_state_ok"
                                              : "opz_state_nofom"))));
     m_progress->setValue(index + 1);
-    m_runStatus->setText(I18n::tr("opz_run_running")
-                             .arg(index + 1).arg(m_progress->maximum()));
+    if (m_optimizing && m_optimizer)
+        m_runStatus->setText(I18n::tr("opz_opt_running")
+                                 .arg(m_optimizer->generation() + 1)
+                                 .arg(m_optGens)
+                                 .arg(index + 1).arg(m_optPop));
+    else
+        m_runStatus->setText(I18n::tr("opz_run_running")
+                                 .arg(index + 1).arg(m_progress->maximum()));
 }
 
 void OptimizeTab::onSweepFinished(bool ok)
 {
+    if (m_optimizing) {
+        m_optimizer->tell(m_genFoms);
+        // 中止されたか、世代を使い切ったか、次の世代が作れないなら終わり
+        if (!ok && m_optStopped) { finishOptimize(false); return; }
+        if (m_optimizer->done() || !runGeneration()) finishOptimize(true);
+        return;
+    }
     m_progress->setVisible(false);
     const QVector<SweepResult> &rs = m_sweeper->results();
     m_runStatus->setText(I18n::tr(ok ? "opz_run_done" : "opz_run_stopped")
@@ -596,20 +699,28 @@ void OptimizeTab::onSweepFinished(bool ok)
     updateRunUi();
 }
 
-// 実行ボタンの文言と有効・無効 (掃引以外では押せない)
+// 実行ボタンの文言と有効・無効 (掃引 / PSO / GA だけが実行できる)
 void OptimizeTab::updateRunUi()
 {
     if (!m_runBtn) return;
     const bool running = m_sweeper && m_sweeper->isRunning();
     const bool sweep = (m_mode == QLatin1String("sweep"));
-    m_runBtn->setText(I18n::tr(running ? "opz_run_stop" : "opz_run_optimize"));
-    m_runBtn->setEnabled(sweep || running);
-    if (!sweep && !running && m_runStatus->text().isEmpty())
-        m_runStatus->setText(I18n::tr("opz_run_notsweep"));
-    for (QWidget *w : { static_cast<QWidget *>(m_sweepVar),
-                        static_cast<QWidget *>(m_fomKind),
+    const bool loop  = (m_mode == QLatin1String("pso")
+                     || m_mode == QLatin1String("ga"));
+    m_runBtn->setText(I18n::tr(running ? "opz_run_stop"
+                                       : (loop ? "opz_run_optimize2"
+                                               : "opz_run_optimize")));
+    m_runBtn->setEnabled(sweep || loop || running);
+    if (!sweep && !loop && !running && m_runStatus->text().isEmpty())
+        m_runStatus->setText(I18n::tr("opz_opt_notrun")
+                                 .arg(methodLabel(m_mode)));
+    // 掃引で振る量の選択は掃引のときだけ意味がある (PSO/GA は変数表の
+    // 「対象量」の列を使う)
+    if (m_sweepVar) m_sweepVar->setEnabled(!running && sweep);
+    for (QWidget *w : { static_cast<QWidget *>(m_fomKind),
                         static_cast<QWidget *>(m_fomFreq) })
         if (w) w->setEnabled(!running);
+    if (m_params) m_params->setEnabled(!running);
 }
 
 void OptimizeTab::rebuildDomain()
@@ -649,6 +760,15 @@ void OptimizeTab::rebuildDomain()
         m_params->setItem(r, 7, unit);
         for (int c = 3; c <= 6; ++c)
             m_params->item(r, c)->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        // 対象量 — この列だけが実在の量に結び付く (名前の列は自由記入のラベル)
+        auto *q = new QComboBox(m_params);
+        q->addItem(I18n::tr("opz_q_theta"));   // 0
+        q->addItem(I18n::tr("opz_q_phi"));     // 1
+        q->addItem(I18n::tr("opz_q_mesh"));    // 2
+        q->addItem(I18n::tr("opz_q_eps1"));    // 3
+        q->addItem(I18n::tr("opz_q_eps2"));    // 4
+        q->setCurrentIndex(r == 0 ? 0 : 1);
+        m_params->setCellWidget(r, 8, q);
     }
     // ＋ 変数を追加… 行
     auto *addCk = new QTableWidgetItem;
@@ -661,7 +781,7 @@ void OptimizeTab::rebuildDomain()
     af.setItalic(true);
     addIt->setFont(af);
     m_params->setItem(2, 1, addIt);
-    m_params->setSpan(2, 1, 1, 7);
+    m_params->setSpan(2, 1, 1, 8);
 
     // 総ジョブ数 (スイープ時のみ表示 / mock の div0 × div1)
     const int d0 = QString::fromUtf8(rows[0].div).toInt();
@@ -720,4 +840,153 @@ void OptimizeTab::updateMode()
     m_adjointWarnRow->setVisible(d != Domain::Optical);
     m_adjointWarn->setText(I18n::tr("opz_adjoint_warn")
         .arg(domainKey(d).toUpper()));
+}
+
+// ── 最適化ループ (PSO / GA) ────────────────────────────────────────────────
+// 掃引が「決めた点を順に回す」のに対し、こちらは 1 世代ぶんを回してから
+// 評価値を Optimizer へ返して次の世代を作る。1 世代 = SweepRunner の
+// samples 1 回ぶん。
+
+bool OptimizeTab::collectOptVars(QVector<SweepColumn> *cols,
+                                 std::vector<optim::Variable> *vars) const
+{
+    cols->clear();
+    vars->clear();
+    for (int r = 0; r < m_params->rowCount(); ++r) {
+        const QTableWidgetItem *ck = m_params->item(r, 0);
+        if (!ck || ck->checkState() != Qt::Checked) continue;
+        const auto *q = qobject_cast<QComboBox*>(m_params->cellWidget(r, 8));
+        const QTableWidgetItem *mn = m_params->item(r, 4);
+        const QTableWidgetItem *mx = m_params->item(r, 5);
+        if (!q || !mn || !mx) continue;
+        bool a = false, b = false;
+        const double lo = mn->text().toDouble(&a);
+        const double hi = mx->text().toDouble(&b);
+        if (!a || !b || !(hi > lo)) continue;
+
+        SweepColumn c;
+        switch (q->currentIndex()) {
+        case 1: c.param = SweepParam::PlaneWavePhi;    break;
+        case 2: c.param = SweepParam::MeshRefine;      break;
+        case 3: c.param = SweepParam::MaterialEpsrDelta; c.index = 1; break;
+        case 4: c.param = SweepParam::MaterialEpsrDelta; c.index = 2; break;
+        default: c.param = SweepParam::PlaneWaveTheta; break;
+        }
+        c.label = q->currentText();
+
+        optim::Variable v;
+        v.lo = lo;
+        v.hi = hi;
+        const QTableWidgetItem *it = m_params->item(r, 3);
+        if (it) {
+            bool okInit = false;
+            const double x = it->text().toDouble(&okInit);
+            if (okInit) { v.init = x; v.hasInit = true; }
+        }
+        cols->push_back(c);
+        vars->push_back(v);
+    }
+    return !cols->isEmpty();
+}
+
+void OptimizeTab::startOptimize()
+{
+    QVector<SweepColumn> cols;
+    std::vector<optim::Variable> vars;
+    if (!collectOptVars(&cols, &vars)) {
+        m_runStatus->setText(I18n::tr("opz_opt_need"));
+        return;
+    }
+    const int pop = m_pop->text().toInt();
+    const int gens = m_iters->text().toInt();
+
+    optim::Options o;
+    o.method = (m_mode == QLatin1String("ga")) ? optim::Method::Genetic
+                                               : optim::Method::ParticleSwarm;
+    o.population = pop;
+    o.generations = gens;
+    // 向きは FoM の種別が持っている (呼び出し側で書かない — OptimizeFom.h)
+    o.maximize = fomMaximizes(static_cast<FomKind>(m_fomKind->currentIndex()));
+
+    auto opt = std::make_unique<optim::Optimizer>(vars, o);
+    if (!opt->valid()) {
+        m_runStatus->setText(I18n::tr("opz_opt_need"));
+        return;
+    }
+    m_optimizer = std::move(opt);
+    m_optCols = cols;
+    m_optGens = gens;
+    m_optPop = pop;
+    m_optimizing = true;
+    m_optStopped = false;
+
+    m_foms.clear();
+    m_resultTable->setRowCount(0);
+    m_resultTable->setVisible(true);
+    m_bestLabel->setVisible(false);
+    m_runStatus->setText(I18n::tr("opz_opt_cost")
+                             .arg(pop).arg(gens).arg(pop * gens));
+    if (!runGeneration()) {
+        m_optimizing = false;
+        m_optimizer.reset();
+        m_runStatus->setText(I18n::tr("opz_opt_need"));
+        return;
+    }
+    updateRunUi();
+}
+
+bool OptimizeTab::runGeneration()
+{
+    if (!m_optimizer || m_optimizer->done()) return false;
+    const std::vector<std::vector<double>> &pts = m_optimizer->ask();
+    if (pts.empty()) return false;
+
+    SweepConfig cfg;
+    cfg.columns = m_optCols;
+    cfg.samples.reserve(static_cast<int>(pts.size()));
+    for (const std::vector<double> &p : pts) {
+        QVector<double> row;
+        row.reserve(static_cast<int>(p.size()));
+        for (double v : p) row.push_back(v);
+        cfg.samples.push_back(row);
+    }
+    cfg.run = m_runCfg;
+    cfg.run.mode = RunMode::Both;      // far1d.log が要る FoM があるため
+    cfg.run.kernel = Runner::kernelForProject(*m_p);
+
+    m_genFoms.clear();
+    m_progress->setVisible(true);
+    m_progress->setRange(0, cfg.samples.size());
+    m_progress->setValue(0);
+    return m_sweeper->start(*m_p, cfg);
+}
+
+void OptimizeTab::finishOptimize(bool ok)
+{
+    m_progress->setVisible(false);
+    const int gens = m_optimizer ? m_optimizer->generation() : 0;
+    const int evals = m_optimizer ? m_optimizer->evaluations() : 0;
+    m_runStatus->setText(I18n::tr(ok ? "opz_opt_done" : "opz_opt_stopped")
+                             .arg(gens).arg(evals));
+
+    if (m_optimizer && m_optimizer->hasBest()) {
+        QStringList parts;
+        const std::vector<double> &x = m_optimizer->best();
+        for (int j = 0; j < m_optCols.size()
+                        && j < static_cast<int>(x.size()); ++j)
+            parts << QStringLiteral("%1 = %2").arg(m_optCols[j].label)
+                         .arg(QString::number(x[static_cast<size_t>(j)], 'g', 6));
+        m_bestLabel->setText(I18n::tr("opz_opt_best")
+                                 .arg(parts.join(QStringLiteral(", ")),
+                                      m_fomKind->currentText(),
+                                      QString::number(m_optimizer->bestValue(),
+                                                      'f', 3)));
+    } else {
+        m_bestLabel->setText(I18n::tr("opz_opt_none"));
+    }
+    m_bestLabel->setVisible(true);
+
+    m_optimizing = false;
+    m_optStopped = false;
+    updateRunUi();
 }

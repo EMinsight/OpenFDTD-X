@@ -9,9 +9,11 @@
 #pragma once
 #include <QScrollArea>
 
+#include "../core/Optimizer.h"
 #include "../kernel/OptimizeFom.h"
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class QCheckBox;
 class QComboBox;
@@ -42,6 +44,18 @@ private slots:
 
 private:
     void setMode(const QString &mode);
+
+    // ── 最適化ループ (PSO / GA) ────────────────────────────────────────────
+    // 掃引が「決めた点を順に回す」のに対し、こちらは 1 世代ぶんを回してから
+    // 次の世代を決める。SweepRunner の samples (複数パラメータ同時) を
+    // 1 世代 = 1 回の start() として使う。
+    void startOptimize();
+    bool runGeneration();          // 現世代を投入する (false = 開始できない)
+    void finishOptimize(bool ok);
+    // 変数表のチェック行 → 設計変数 (対象量の列で実在の量に結び付ける)。
+    // 1 行も取れなければ false。
+    bool collectOptVars(QVector<SweepColumn> *cols,
+                        std::vector<optim::Variable> *vars) const;
 
     Project   *m_p;
     QString    m_mode = "sweep";       // sweep|pso|adjoint|ga|bayes|topology
@@ -86,6 +100,15 @@ private:
     SweepRunner  *m_sweeper = nullptr;
     RunConfig     m_runCfg;
     QVector<FomValue> m_foms;
+
+    // 最適化ループの状態 (m_optimizing = true の間だけ有効)
+    std::unique_ptr<optim::Optimizer> m_optimizer;
+    bool                 m_optimizing = false;
+    bool                 m_optStopped = false;
+    QVector<SweepColumn> m_optCols;
+    std::vector<double>  m_genFoms;      // 現世代の FoM (無効な点は NaN)
+    int                  m_optGens = 0;  // 総世代数
+    int                  m_optPop = 0;   // 1 世代の個体数
 };
 
 } // namespace ofd
