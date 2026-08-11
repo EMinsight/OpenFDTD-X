@@ -1,6 +1,8 @@
 // AcousticTab.cpp
 #include "AcousticTab.h"
 #include "../core/Project.h"
+#include "../acoustics/core/TestSignal.h"
+#include "../acoustics/io/WavWriter.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../kernel/AcousticRunner.h"
 #include "../widgets/SectionBox.h"
@@ -10,7 +12,9 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -177,11 +181,60 @@ const bool s_i18n = [] {
     I18n::reg("ac2_src_speech", "音声サンプル", "Speech sample");
     I18n::reg("ac2_src_music", "音楽 (anechoic)", "Music (anechoic)");
     I18n::reg("ac2_src_custom", "カスタム WAV…", "Custom WAV…");
+    I18n::reg("ac2_src_why",
+              "無響の音声・音楽素材は第三者の録音のため同梱していません。"
+              "手元の素材は「カスタム WAV…」で選んでください。",
+              "Anechoic speech and music are third-party recordings and are "
+              "not bundled; choose your own material with \"Custom WAV…\".");
+    I18n::reg("ac2_click_done",
+              "帯域制限クリックを生成し、ドライ音源に設定しました:\n%1\n"
+              "帯域 %2–%3 Hz / 窓長 %4 ms (%5 タップ) / fs %6 Hz / ピーク %7",
+              "Generated a band-limited click and set it as the dry source:\n"
+              "%1\nBand %2–%3 Hz / window %4 ms (%5 taps) / fs %6 Hz / "
+              "peak %7");
+    I18n::reg("ac2_click_fail", "クリックを書き出せませんでした: %1",
+              "Could not write the click: %1");
+    I18n::reg("ac2_dry_current", "現在のドライ音源: %1",
+              "Current dry source: %1");
+    I18n::reg("ac2_dry_none",
+              "ドライ音源は未設定です (クリックを生成するか WAV を選びます)。",
+              "No dry source yet (generate a click or choose a WAV).");
     I18n::reg("ac2_out_format", "出力形式", "Output format");
     I18n::reg("ac2_out_mono", "モノラル", "Mono");
     I18n::reg("ac2_out_stereo", "ステレオ", "Stereo");
     I18n::reg("ac2_out_binaural", "バイノーラル (HRTF)", "Binaural (HRTF)");
     I18n::reg("ac2_out_ambi", "Ambisonics", "Ambisonics");
+    I18n::reg("ac2_out_from_rir",
+              "畳み込みはドライ音源をモノにまとめ、RIR の各チャネルへ掛けます。"
+              "つまり出力チャネル数は RIR のチャネル数そのもので、選ぶものでは"
+              "ありません (下の表示が実際に書き出される形式です)。",
+              "The convolution downmixes the dry source to mono and applies "
+              "each RIR channel to it, so the number of output channels is the "
+              "RIR's own — it is not a choice. The boxes below show what will "
+              "actually be written.");
+    I18n::reg("ac2_out_norir",
+              "RIR が未設定です — 「%1」タブで RIR を指定すると出力形式が"
+              "決まります。",
+              "No RIR yet — choose one on the \"%1\" tab and the output "
+              "format follows from it.");
+    I18n::reg("ac2_out_unreadable",
+              "RIR (%1) を読めないのでチャネル数が分かりません。",
+              "The RIR (%1) cannot be read, so its channel count is unknown.");
+    I18n::reg("ac2_out_ch1",
+              "RIR は 1 ch です — 畳み込みの出力もモノラルになります。",
+              "The RIR has 1 channel, so the convolution writes mono.");
+    I18n::reg("ac2_out_ch2",
+              "RIR は 2 ch です — 畳み込みの出力もステレオになります。",
+              "The RIR has 2 channels, so the convolution writes stereo.");
+    I18n::reg("ac2_out_chn",
+              "RIR は %1 ch です — 畳み込みの出力も %1 ch になります。",
+              "The RIR has %1 channels, so the convolution writes %1 "
+              "channels.");
+    I18n::reg("ac2_out_why",
+              "バイノーラルは HRTF データベース、Ambisonics はデコーダが"
+              "要ります。どちらも同梱していないため選べません。",
+              "Binaural needs an HRTF database and Ambisonics needs a "
+              "decoder; neither is bundled, so they cannot be chosen.");
     // 材質設定 / Surface materials (AcousticOpts::absorption の View)
     I18n::reg("ac2_mat_section", "材質設定", "Surface materials");
     I18n::reg("ac2_col_face", "面", "Surface");
@@ -208,8 +261,13 @@ const bool s_i18n = [] {
               "air absorption A and the surface role are edited on that tab.");
     I18n::reg("ac2_uw_ism", "鏡像法の反射次数・可視判定とハイブリッド切替周波数",
               "the image-source reflection order, the visibility test and the hybrid crossover");
-    I18n::reg("ac2_uw_aural", "可聴化の音源選択と出力形式 (モノ / バイノーラル等)",
-              "the auralization source and output format (mono / binaural / …)");
+    I18n::reg("ac2_uw_aural",
+              "バイノーラル (HRTF データベースが要ります) と Ambisonics "
+              "(デコーダが要ります) の出力、無響の音声・音楽素材 (第三者の"
+              "録音のため同梱できません)",
+              "binaural output (needs an HRTF database), Ambisonics output "
+              "(needs a decoder) and the anechoic speech / music material "
+              "(third-party recordings that cannot be bundled)");
     return true;
 }();
 
@@ -571,20 +629,43 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     auralBtns->addWidget(convolveBtn);
     auralBtns->addStretch(1);
     au->vbox()->addLayout(auralBtns);
+    // ソース音源 — クリックは自前で生成でき (帯域制限クリック /
+    // acoustics/core/TestSignal)、カスタム WAV は可聴化タブと同じドライ音源
+    // モデルへ書く。無響の音声・音楽素材は同梱できないので選べない。
     m_auralSource = makeSeg(au, { I18n::tr("ac2_src_click"),
                                   I18n::tr("ac2_src_speech"),
                                   I18n::tr("ac2_src_music"),
                                   I18n::tr("ac2_src_custom") }, 0);
+    tabhelp::disableComboItems(m_auralSource, { 1, 2 }, I18n::tr("ac2_src_why"));
     au->form()->addRow(I18n::tr("ac2_aural_src"), m_auralSource);
+    connect(m_auralSource, &QComboBox::currentIndexChanged,
+            this, &AcousticTab::chooseAuralSource);
+    m_auralDry = mutedLabel(QString(), au);
+    m_auralDry->setWordWrap(true);
+    au->vbox()->addWidget(m_auralDry);
+    // 出力形式 — 畳み込みの出力チャネル数は RIR のチャネル数で決まるので、
+    // ここは「選択」ではなく「これから書き出される形式」の表示にする。
     auto *outRow = new QHBoxLayout();
     m_outMono     = makeCheck(I18n::tr("ac2_out_mono"), false, au);
     m_outStereo   = makeCheck(I18n::tr("ac2_out_stereo"), true, au);
     m_outBinaural = makeCheck(I18n::tr("ac2_out_binaural"), false, au);
     m_outAmbi     = makeCheck(I18n::tr("ac2_out_ambi"), false, au);
-    for (auto *c : { m_outMono, m_outStereo, m_outBinaural, m_outAmbi })
+    for (auto *c : { m_outMono, m_outStereo }) {
+        c->setEnabled(false);
+        c->setToolTip(I18n::tr("ac2_out_from_rir"));
         outRow->addWidget(c);
+    }
+    for (auto *c : { m_outBinaural, m_outAmbi }) {
+        c->setChecked(false);
+        c->setEnabled(false);
+        c->setToolTip(I18n::tr("ac2_out_why"));
+        outRow->addWidget(c);
+    }
     outRow->addStretch(1);
     au->form()->addRow(I18n::tr("ac2_out_format"), outRow);
+    m_outNote = mutedLabel(QString(), au);
+    m_outNote->setWordWrap(true);
+    au->vbox()->addWidget(m_outNote);
     au->vbox()->addWidget(tabhelp::unwiredNote(au, I18n::tr("ac2_uw_aural")));
     v->addWidget(au);
 
@@ -857,7 +938,140 @@ void AcousticTab::refresh()
     m_updating = false;
     refreshReceivers();
     refreshSurfaces();
+    refreshAuralization();
     refreshWorkflow();
+}
+
+// ── 可聴化 (ソース音源 / 出力形式) ─────────────────────────────────────────
+// どちらも実データの表示に徹する: ドライ音源は可聴化タブと共有する
+// OperaAcousticSettings::auralizationDryFile、出力形式は RIR の実チャネル数。
+void AcousticTab::refreshAuralization()
+{
+    if (!m_auralDry) return;
+    const OperaAcousticSettings &s = m_p->operaAcoustic();
+    const QString dry = s.auralizationDryFile.trimmed();
+
+    m_updating = true;
+    if (!m_clickPath.isEmpty() && dry == m_clickPath)
+        m_auralSource->setCurrentIndex(0);          // このセッションで生成した
+    else if (!dry.isEmpty())
+        m_auralSource->setCurrentIndex(3);          // 外から与えられた WAV
+    else
+        m_auralSource->setCurrentIndex(0);          // 未設定 (下の行に明示する)
+    m_updating = false;
+
+    m_auralDry->setText(dry.isEmpty()
+                            ? I18n::tr("ac2_dry_none")
+                            : I18n::tr("ac2_dry_current")
+                                  .arg(QFileInfo(dry).fileName()));
+
+    const QString rir = s.rirPath.trimmed();
+    const int ch = rirChannelCount();
+    m_outMono->setChecked(ch == 1);
+    m_outStereo->setChecked(ch == 2);
+    QString note;
+    if (rir.isEmpty())
+        note = I18n::tr("ac2_out_norir").arg(I18n::tr("t_riranalysis"));
+    else if (ch <= 0)
+        note = I18n::tr("ac2_out_unreadable").arg(QFileInfo(rir).fileName());
+    else if (ch == 1) note = I18n::tr("ac2_out_ch1");
+    else if (ch == 2) note = I18n::tr("ac2_out_ch2");
+    else              note = I18n::tr("ac2_out_chn").arg(ch);
+    m_outNote->setText(note + QStringLiteral(" ") + I18n::tr("ac2_out_from_rir"));
+}
+
+// RIR の実チャネル数。パスと更新時刻が変わったときだけ読み直す
+// (refresh() はモデル変更のたびに呼ばれるため)。
+int AcousticTab::rirChannelCount()
+{
+    const QString rir = m_p->operaAcoustic().rirPath.trimmed();
+    if (rir.isEmpty()) {
+        m_rirProbeKey.clear();
+        m_rirProbeCh = 0;
+        return 0;
+    }
+    const QFileInfo fi(rir);
+    const QString key = rir + QStringLiteral("\n")
+                      + QString::number(fi.lastModified().toMSecsSinceEpoch())
+                      + QStringLiteral("\n") + QString::number(fi.size());
+    if (key == m_rirProbeKey) return m_rirProbeCh;
+    m_rirProbeKey = key;
+    m_rirProbeCh = 0;
+    if (fi.isFile()) {
+        const acoustics::AcousticResult<acoustics::AudioBuffer> r =
+            QtAcousticAdapter::readWav(rir);
+        if (r.success()) m_rirProbeCh = int(r.value().channelCount());
+    }
+    return m_rirProbeCh;
+}
+
+// ソース音源の選択。クリックは帯域制限クリックを **その場で生成** して
+// ドライ音源に設定し、カスタム WAV は可聴化タブと同じモデルへ書く。
+// 音声・音楽サンプルは同梱していないので選べない (disableComboItems)。
+void AcousticTab::chooseAuralSource(int index)
+{
+    if (m_updating) return;
+    OperaAcousticSettings &s = m_p->operaAcoustic();
+
+    if (index == 3) {          // カスタム WAV…
+        const QString f = QFileDialog::getOpenFileName(
+            this, I18n::tr("ac2_aural_src"), QString(),
+            I18n::tr("rir_wav_filter"));
+        if (f.isEmpty()) { refreshAuralization(); return; }   // 取消 → 表示を戻す
+        s.auralizationDryFile = f;
+        s.enabled = true;      // 可聴化を使う意思表示 (可聴化タブと同じ)
+        m_p->touch();
+        return;
+    }
+    if (index != 0) { refreshAuralization(); return; }
+
+    // ── 帯域制限クリックの生成 ──
+    // fs は「音響解析のサンプリング周波数」に合わせる (RIR と揃えるため)。
+    // 上限は fs/2 に対して余裕を取る (遷移帯域が折り返しに掛からない値)。
+    acoustics::ClickSpec spec;
+    spec.sampleRateHz = qMax(8000, m_p->acoustic().sampleRate);
+    spec.lowHz = 20.0;
+    spec.highHz = qMin(20000.0, 0.45 * spec.sampleRateHz);
+    spec.durationSec = 0.02;
+    spec.amplitude = 0.5;
+    const acoustics::AudioBuffer click = acoustics::generateClick(spec);
+    if (click.channels.empty()) {          // 仕様が作れない (fs が異常)
+        QMessageBox::warning(this, I18n::tr("ac2_src_click"),
+                             I18n::tr("ac2_click_fail")
+                                 .arg(QString::number(spec.sampleRateHz)));
+        refreshAuralization();
+        return;
+    }
+    const QString suggest =
+        QStringLiteral("click_%1k.wav")
+            .arg(QString::number(spec.sampleRateHz / 1000.0, 'g', 4));
+    const QString out = QFileDialog::getSaveFileName(
+        this, I18n::tr("ac2_src_click"), suggest, I18n::tr("rir_wav_filter"));
+    if (out.isEmpty()) { refreshAuralization(); return; }
+    const acoustics::AcousticResult<bool> wr = acoustics::writeWavFile(
+        std::string(QFile::encodeName(out).constData()), click,
+        acoustics::WavSampleFormat::Float32);
+    if (!wr.success()) {
+        QMessageBox::warning(this, I18n::tr("ac2_src_click"),
+                             I18n::tr("ac2_click_fail")
+                                 .arg(QString::fromStdString(wr.message())));
+        refreshAuralization();
+        return;
+    }
+    m_clickPath = out;
+    s.auralizationDryFile = out;
+    s.enabled = true;
+    m_p->touch();
+    QMessageBox::information(
+        this, I18n::tr("ac2_src_click"),
+        I18n::tr("ac2_click_done")
+            .arg(out,
+                 QString::number(spec.lowHz, 'g', 4),
+                 QString::number(spec.highHz, 'g', 5),
+                 QString::number(spec.durationSec * 1000.0, 'g', 3),
+                 QString::number(qulonglong(spec.tapCount())),
+                 QString::number(spec.sampleRateHz, 'g', 6),
+                 QString::number(spec.amplitude, 'f', 2)));
 }
 
 // ── 受音点リスト (AcousticOpts::receivers) ─────────────────────────────────

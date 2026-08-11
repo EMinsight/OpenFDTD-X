@@ -139,6 +139,7 @@ signals:
 private slots:
     void refresh();
     void runConvolve();        // 可聴化経路 (ConvolutionEngine) へ委譲
+    void chooseAuralSource(int index);   // ソース音源の選択 (生成 / 取込)
     void applyReceiverCount(); // 受音点数スピン → 受音点リストの伸縮
 
 protected:
@@ -157,6 +158,9 @@ private:
     // 材質設定 = 吸音バジェット (AcousticOpts::absorption) の表 ↔ モデル
     void refreshSurfaces();
     void applySurfaces();
+    // 可聴化 (ドライ音源の表示と、出力形式が何になるかの表示)
+    void refreshAuralization();
+    int  rirChannelCount();    // RIR の実チャネル数 (0 = 未設定/読めない)
 
     Project   *m_p;
     bool       m_updating = false;
@@ -194,6 +198,14 @@ private:
 
     QComboBox *m_auralSource;
     QCheckBox *m_outMono, *m_outStereo, *m_outBinaural, *m_outAmbi;
+    QLabel    *m_auralDry = nullptr;      // 現在のドライ音源 (実データの表示)
+    QLabel    *m_outNote = nullptr;       // 出力形式が何で決まるかの説明
+    // このセッションで生成したクリックのパス (ソース音源の選択表示に使う。
+    // .ofdx へは書かない — 既存キーを増やさないため)
+    QString    m_clickPath;
+    // RIR のチャネル数のキャッシュ (パス + 更新時刻が変わったら読み直す)
+    QString    m_rirProbeKey;
+    int        m_rirProbeCh = 0;
     // 材質設定 = 吸音バジェット (AcousticOpts::absorption) の View。
     // 同じデータを RoomAcousticsTab の吸音バジェット表とも共有する。
     QTableWidget *m_surfTable;

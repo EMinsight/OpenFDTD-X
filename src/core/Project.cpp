@@ -36,6 +36,36 @@ bool ofd::isValidRcwaStack(const QVector<RcwaLayer> &layers)
     return true;
 }
 
+// ── 光ドメイン: 面テーブルの既定値 (Cooke triplet) ──────────────────────────
+// mock (optics-tabs.jsx LensEditorTab) と同じ 3 群 3 枚。物体は無限遠、
+// 第 2 行が絞り。**保存はしない** — 利用者が編集して初めて .ofdx へ入る。
+QVector<ofd::LensSurfaceRow> ofd::defaultLensSurfaces()
+{
+    auto row = [](const char *type, const char *R, const char *thick,
+                  const char *glass, const char *semiD, const char *comment) {
+        LensSurfaceRow s;
+        s.type = QString::fromUtf8(type);
+        s.R = QString::fromUtf8(R);
+        s.thick = QString::fromUtf8(thick);
+        s.glass = QString::fromUtf8(glass);
+        s.semiD = QString::fromUtf8(semiD);
+        s.conic = QStringLiteral("0");
+        s.comment = QString::fromUtf8(comment);
+        return s;
+    };
+    return {
+        row("OBJ", "Infinity", "Infinity", "AIR",     "-",    "Object"),
+        row("STO", "Infinity", "5.00",     "AIR",     "6.00", "Stop"),
+        row("STD", "50.230",   "3.260",    "N-LAK10", "7.10", "L1 front"),
+        row("STD", "-83.430",  "1.250",    "AIR",     "7.05", "L1 back"),
+        row("STD", "-39.270",  "1.000",    "N-SF10",  "6.30", "L2 front (neg)"),
+        row("STD", "40.500",   "5.300",    "AIR",     "6.30", "L2 back"),
+        row("STD", "83.430",   "3.260",    "N-LAK10", "7.50", "L3 front"),
+        row("STD", "-50.230",  "42.100",   "AIR",     "7.50", "L3 back"),
+        row("IMG", "Infinity", "-",        "-",       "7.65", "Image plane"),
+    };
+}
+
 // ── 室内音響: 騒音源内訳の既定 4 行 (mock room-acoustics.jsx:697-709) ────────
 // 後ろ 2 行 (外部交通騒音 / 照明トランス) は既定でチェック外し。
 QVector<NoiseSourceRow> ofd::defaultNoiseSources()

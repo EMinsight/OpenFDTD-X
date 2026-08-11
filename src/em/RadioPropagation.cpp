@@ -1,6 +1,7 @@
 // RadioPropagation.cpp — 電波伝搬リンクバジェット (式の出典はヘッダ参照)
 #include "em/RadioPropagation.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace ofd {
@@ -156,3 +157,115 @@ CoverageGrid coverageMap(double halfSpan_m, int n,
 } // namespace propagation
 } // namespace em
 } // namespace ofd
+
+// ── 環境別の経験式 ─────────────────────────────────────────────────────────
+namespace {
+
+// 奥村-秦の移動局高補正 a(hm) [dB]
+double hataMobileCorrection(double freq_mhz, double hm_m, bool largeCity)
+{
+    if (!(freq_mhz > 0.0) || !(hm_m > 0.0)) return 0.0;
+    const double lf = std::log10(freq_mhz);
+    if (largeCity) {
+        // 大都市: 200 MHz 以下と 400 MHz 以上で式が違う (中間は補間しない —
+        // 原典が定めていないため、400 MHz 以上の式を使う側へ寄せる)
+        if (freq_mhz <= 200.0) {
+            const double t = std::log10(1.54 * hm_m);
+            return 8.29 * t * t - 1.10;
+        }
+        const double t = std::log10(11.75 * hm_m);
+        return 3.20 * t * t - 4.97;
+    }
+    return (1.1 * lf - 0.7) * hm_m - (1.56 * lf - 0.8);
+}
+
+} // namespace
+
+double ofd::em::propagation::logDistancePathLossDb(double dist_m, double freq_hz,
+                                                   double exponent, double d0_m)
+{
+    if (!(dist_m > 0.0) || !(freq_hz > 0.0) || !(d0_m > 0.0)) return 0.0;
+    const double l0 = freeSpacePathLossDb(d0_m, freq_hz);
+    const double l = l0 + 10.0 * exponent * std::log10(dist_m / d0_m);
+    return std::min(l, kMaxPathLossDb);
+}
+
+double ofd::em::propagation::indoorP1238PathLossDb(double dist_m, double freq_hz,
+                                                   double distCoef,
+                                                   double floorLossDb)
+{
+    if (!(dist_m > 0.0) || !(freq_hz > 0.0)) return 0.0;
+    const double fMHz = freq_hz / 1e6;
+    const double l = 20.0 * std::log10(fMHz) + distCoef * std::log10(dist_m)
+                     - 28.0 + floorLossDb;
+    return std::min(l, kMaxPathLossDb);
+}
+
+double ofd::em::propagation::hataUrbanPathLossDb(double dist_m, double freq_hz,
+                                                 double hb_m, double hm_m,
+                                                 bool largeCity)
+{
+    if (!(dist_m > 0.0) || !(freq_hz > 0.0) || !(hb_m > 0.0) || !(hm_m > 0.0))
+        return 0.0;
+    const double fMHz = freq_hz / 1e6;
+    const double dkm = dist_m / 1000.0;
+    const double lf = std::log10(fMHz), lb = std::log10(hb_m);
+    const double a = hataMobileCorrection(fMHz, hm_m, largeCity);
+    const double l = 69.55 + 26.16 * lf - 13.82 * lb - a
+                     + (44.9 - 6.55 * lb) * std::log10(dkm);
+    return std::min(l, kMaxPathLossDb);
+}
+
+double ofd::em::propagation::hataSuburbanPathLossDb(double dist_m,
+                                                    double freq_hz,
+                                                    double hb_m, double hm_m)
+{
+    if (!(freq_hz > 0.0)) return 0.0;
+    const double urban = hataUrbanPathLossDb(dist_m, freq_hz, hb_m, hm_m, false);
+    if (urban == 0.0) return 0.0;
+    const double t = std::log10(freq_hz / 1e6 / 28.0);
+    return std::min(urban - 2.0 * t * t - 5.4, kMaxPathLossDb);
+}
+
+double ofd::em::propagation::hataOpenPathLossDb(double dist_m, double freq_hz,
+                                                double hb_m, double hm_m)
+{
+    if (!(freq_hz > 0.0)) return 0.0;
+    const double urban = hataUrbanPathLossDb(dist_m, freq_hz, hb_m, hm_m, false);
+    if (urban == 0.0) return 0.0;
+    const double lf = std::log10(freq_hz / 1e6);
+    return std::min(urban - 4.78 * lf * lf + 18.33 * lf - 40.94,
+                    kMaxPathLossDb);
+}
+
+double ofd::em::propagation::cost231HataPathLossDb(double dist_m, double freq_hz,
+                                                   double hb_m, double hm_m,
+                                                   double cityCorrectionDb,
+                                                   bool largeCity)
+{
+    if (!(dist_m > 0.0) || !(freq_hz > 0.0) || !(hb_m > 0.0) || !(hm_m > 0.0))
+        return 0.0;
+    const double fMHz = freq_hz / 1e6;
+    const double dkm = dist_m / 1000.0;
+    const double lf = std::log10(fMHz), lb = std::log10(hb_m);
+    const double a = hataMobileCorrection(fMHz, hm_m, largeCity);
+    const double l = 46.3 + 33.9 * lf - 13.82 * lb - a
+                     + (44.9 - 6.55 * lb) * std::log10(dkm) + cityCorrectionDb;
+    return std::min(l, kMaxPathLossDb);
+}
+
+bool ofd::em::propagation::hataApplicable(double dist_m, double freq_hz,
+                                          double hb_m, double hm_m)
+{
+    const double fMHz = freq_hz / 1e6, dkm = dist_m / 1000.0;
+    return fMHz >= 150.0 && fMHz <= 1500.0 && hb_m >= 30.0 && hb_m <= 200.0
+           && hm_m >= 1.0 && hm_m <= 10.0 && dkm >= 1.0 && dkm <= 20.0;
+}
+
+bool ofd::em::propagation::cost231Applicable(double dist_m, double freq_hz,
+                                             double hb_m, double hm_m)
+{
+    const double fMHz = freq_hz / 1e6, dkm = dist_m / 1000.0;
+    return fMHz >= 1500.0 && fMHz <= 2000.0 && hb_m >= 30.0 && hb_m <= 200.0
+           && hm_m >= 1.0 && hm_m <= 10.0 && dkm >= 1.0 && dkm <= 20.0;
+}

@@ -1,5 +1,7 @@
 // TabHelpers.cpp
 #include "TabHelpers.h"
+#include <QStandardItemModel>
+#include <QComboBox>
 #include "../core/PostPrereq.h"
 #include "../I18n.h"
 
@@ -146,7 +148,21 @@ void markNotImplemented(QAbstractButton *b)
     b->setEnabled(false);
     b->setToolTip(I18n::tr("th_notimpl"));
 }
-
+// 項目を消さずに無効化する (理由をツールチップに残す)。
+// QComboBox の項目は QStandardItemModel なので、フラグから Enabled を落とす。
+void disableComboItems(QComboBox *box, const QVector<int> &indices,
+                       const QString &why)
+{
+    if (!box) return;
+    auto *model = qobject_cast<QStandardItemModel *>(box->model());
+    if (!model) return;
+    for (int i : indices) {
+        QStandardItem *it = model->item(i);
+        if (!it) continue;
+        it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+        it->setToolTip(why);
+    }
+}
 QLabel *sampleNote(QWidget *parent)
 {
     auto *l = new QLabel(I18n::tr("th_sample"), parent);

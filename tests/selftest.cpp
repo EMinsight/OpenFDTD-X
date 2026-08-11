@@ -77,6 +77,7 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -10937,6 +10938,140 @@ static void testSolverSelection()
           "sel: zero range yields 0 (not computed)");
 }
 
+// ── 環境別の経験式 (奥村-秦 / COST-231 / ITU-R P.1238 / 対数距離) ──────────
+// 判定は原典の**定義式そのもの**との突き合わせと、独立実装との一致:
+//   - 対数距離 n = 2 は Friis と厳密一致 (別実装どうしの交差検証)
+//   - P.1238 の N = 20 は自由空間 (定数 −28 の丸めぶんだけずれる)
+//   - 郊外・開放地は市街地からの定義式で決まる
+//   - 距離の傾きは (44.9 − 6.55·log10 hb) dB/decade
+//   - 基地局高を 2 倍にすると d = 1 km でちょうど 13.82·log10(2) dB 下がる
+static void testEmpiricalPropagation()
+{
+    g_file = "propmodel";
+    namespace pr = ofd::em::propagation;
+
+    // 1) 対数距離モデル n = 2 == 自由空間 (どの距離でも厳密に一致)
+    {
+        const double f = 2.4e9;
+        for (double d : { 1.0, 10.0, 137.0, 5000.0 }) {
+            const double a = pr::logDistancePathLossDb(d, f, 2.0);
+            const double b = pr::freeSpacePathLossDb(d, f);
+            check(std::fabs(a - b) < 1e-9,
+                  "propmodel: the log-distance model with n = 2 is exactly the "
+                  "free-space loss");
+        }
+        // n = 4 なら距離 10 倍で 40 dB 増える (定義)
+        const double l1 = pr::logDistancePathLossDb(10.0, f, 4.0);
+        const double l2 = pr::logDistancePathLossDb(100.0, f, 4.0);
+        check(std::fabs((l2 - l1) - 40.0) < 1e-9,
+              "propmodel: n = 4 adds exactly 40 dB per decade of distance");
+    }
+
+    // 2) ITU-R P.1238 の N = 20 は自由空間 (定数 −28 の丸めぶん 0.44 dB だけ差)
+    {
+        const double f = 2.0e9;
+        for (double d : { 5.0, 20.0, 60.0 }) {
+            const double p = pr::indoorP1238PathLossDb(d, f, 20.0);
+            const double fs = pr::freeSpacePathLossDb(d, f);
+            check(std::fabs(p - fs) < 0.5,
+                  "propmodel: P.1238 with N = 20 reduces to free space "
+                  "(within the rounding of its -28 constant)");
+        }
+        // 距離損失係数がそのまま dB/decade になる
+        const double a = pr::indoorP1238PathLossDb(10.0, f, 30.0);
+        const double b = pr::indoorP1238PathLossDb(100.0, f, 30.0);
+        check(std::fabs((b - a) - 30.0) < 1e-9,
+              "propmodel: the P.1238 distance coefficient N is the loss per "
+              "decade in dB");
+        // 階層貫通損はそのまま足される
+        check(std::fabs(pr::indoorP1238PathLossDb(10.0, f, 30.0, 15.0)
+                        - (a + 15.0)) < 1e-9,
+              "propmodel: the floor penetration loss adds directly");
+    }
+
+    // 3) 奥村-秦 — 郊外・開放地は市街地からの定義式
+    {
+        const double f = 900e6, hb = 30.0, hm = 1.5, d = 5000.0;
+        const double u = pr::hataUrbanPathLossDb(d, f, hb, hm);
+        const double su = pr::hataSuburbanPathLossDb(d, f, hb, hm);
+        const double op = pr::hataOpenPathLossDb(d, f, hb, hm);
+        const double lf = std::log10(f / 1e6);
+        const double t = std::log10(f / 1e6 / 28.0);
+        check(std::fabs(su - (u - 2.0 * t * t - 5.4)) < 1e-9,
+              "propmodel: Hata suburban = urban - 2*[log10(f/28)]^2 - 5.4");
+        check(std::fabs(op - (u - 4.78 * lf * lf + 18.33 * lf - 40.94)) < 1e-9,
+              "propmodel: Hata open = urban - 4.78*(log f)^2 + 18.33*log f "
+              "- 40.94");
+        check(u > su && su > op,
+              "propmodel: urban loses more than suburban, suburban more than "
+              "open country");
+
+        // 距離の傾きは (44.9 - 6.55*log10 hb) dB/decade
+        const double slope = pr::hataUrbanPathLossDb(10000.0, f, hb, hm)
+                             - pr::hataUrbanPathLossDb(1000.0, f, hb, hm);
+        check(std::fabs(slope - (44.9 - 6.55 * std::log10(hb))) < 1e-9,
+              "propmodel: the Hata distance slope is (44.9 - 6.55*log10 hb) "
+              "dB per decade");
+        // d = 1 km では距離項が消えるので、基地局高 2 倍の効果は
+        // ちょうど 13.82*log10(2) dB
+        const double h1 = pr::hataUrbanPathLossDb(1000.0, f, 30.0, hm);
+        const double h2 = pr::hataUrbanPathLossDb(1000.0, f, 60.0, hm);
+        check(std::fabs((h1 - h2) - 13.82 * std::log10(2.0)) < 1e-9,
+              "propmodel: at 1 km, doubling the base-station height gains "
+              "exactly 13.82*log10(2) dB");
+
+        // 代表例 (f = 900 MHz, hb = 30 m, hm = 1.5 m, d = 1 km) の回帰値
+        check(std::fabs(h1 - 126.40) < 0.05,
+              "propmodel: the canonical Hata case (900 MHz / 30 m / 1.5 m / "
+              "1 km) gives 126.4 dB");
+
+        // 大都市補正は移動局高補正 a(hm) の差だけ市街地損を動かす
+        const double big = pr::hataUrbanPathLossDb(d, f, hb, hm, true);
+        check(std::fabs(big - u) > 1e-6 && big < u + 5.0,
+              "propmodel: the large-city mobile-height correction shifts the "
+              "urban loss");
+    }
+
+    // 4) COST-231 は同じ距離・高さ依存で定数だけが違う。都市補正は +3 dB
+    {
+        const double f = 1.8e9, hb = 30.0, hm = 1.5, d = 5000.0;
+        const double a = pr::cost231HataPathLossDb(d, f, hb, hm, 0.0);
+        const double b = pr::cost231HataPathLossDb(d, f, hb, hm, 3.0);
+        check(std::fabs((b - a) - 3.0) < 1e-9,
+              "propmodel: the COST-231 metropolitan correction adds 3 dB");
+        const double slope = pr::cost231HataPathLossDb(10000.0, f, hb, hm)
+                             - pr::cost231HataPathLossDb(1000.0, f, hb, hm);
+        check(std::fabs(slope - (44.9 - 6.55 * std::log10(hb))) < 1e-9,
+              "propmodel: COST-231 keeps the Hata distance slope");
+    }
+
+    // 5) 適用範囲の判定 (経験式を黙って外挿しない)
+    {
+        check(pr::hataApplicable(5000.0, 900e6, 30.0, 1.5),
+              "propmodel: a 900 MHz / 30 m / 1.5 m / 5 km link is inside the "
+              "Hata range");
+        check(!pr::hataApplicable(5000.0, 2.4e9, 30.0, 1.5),
+              "propmodel: 2.4 GHz is outside the Hata frequency range");
+        check(!pr::hataApplicable(100.0, 900e6, 30.0, 1.5),
+              "propmodel: 100 m is below the 1 km lower limit of Hata");
+        check(!pr::hataApplicable(5000.0, 900e6, 5.0, 1.5),
+              "propmodel: a 5 m base station is below the Hata height range");
+        check(pr::cost231Applicable(5000.0, 1.8e9, 30.0, 1.5)
+                  && !pr::cost231Applicable(5000.0, 900e6, 30.0, 1.5),
+              "propmodel: COST-231 covers 1.5-2 GHz, not 900 MHz");
+    }
+
+    // 6) 不正入力は 0 を返す (「それらしい損失」を作らない)
+    {
+        check(pr::hataUrbanPathLossDb(0.0, 900e6, 30.0, 1.5) == 0.0
+                  && pr::hataUrbanPathLossDb(1000.0, 0.0, 30.0, 1.5) == 0.0
+                  && pr::indoorP1238PathLossDb(0.0, 2e9, 30.0) == 0.0
+                  && pr::logDistancePathLossDb(-1.0, 2e9, 2.0) == 0.0,
+              "propmodel: non-positive distance or frequency returns 0, not a "
+              "plausible-looking number");
+    }
+}
+
 // ── 電波伝搬モデル (src/em/RadioPropagation) ────────────────────────────────
 // 期待値はテスト側に独立に書く:
 //   ITU-R P.525 の 32.44 + 20log10(f[MHz]) + 20log10(d[km])、
@@ -13029,6 +13164,120 @@ static void testSpiceNetlist()
         check(approx(n.elements[2].value, 1e-12),
               "spice: 1p farad stays 1e-12 (the .ofd load value is in farads)");
     }
+
+    // ── 書き出し: 自前のリーダで読み直せること (往復) ──────────────────────
+    // 書き手と読み手が同じリポジトリにあるので、往復が通れば「書いたものが
+    // SPICE の文法として自分で解釈できる形」であることは保証できる。
+    {
+        SpiceSubckt sub;
+        sub.name = QStringLiteral("EXTRACTED");
+        sub.series = true;
+        sub.r_ohm = 12.5;
+        sub.l_h = 3.4e-9;
+        sub.c_f = 2.2e-12;
+        sub.comment = QStringLiteral("from the extraction");
+        const QString text = SpiceIO::buildSubckt(sub);
+        check(!text.isEmpty(), "spice-w: a subckt is produced");
+        check(text.contains(QStringLiteral(".subckt EXTRACTED 1 2"))
+              && text.contains(QStringLiteral(".ends EXTRACTED")),
+              "spice-w: it is a two-terminal subckt");
+        check(text.contains(QStringLiteral("* from the extraction")),
+              "spice-w: the comment records where it came from");
+        // 直列なので 1 → n1 → n2 → 2 と数珠つなぎになる
+        check(text.contains(QStringLiteral("R1 1 n1 12.5")),
+              "spice-w: the series chain starts at terminal 1");
+        check(text.contains(QStringLiteral("C3 n2 2 2.2e-12")),
+              "spice-w: and ends at terminal 2");
+
+        // **リーダは .subckt の中身を展開しない仕様**なので、書いたものを
+        // そのまま parse しても素子は出てこない (それが正しい振る舞い)。
+        // ここではまずその仕様どおりであることを確かめる。
+        const SpiceNetlist wrapped = SpiceIO::parse(text);
+        check(wrapped.elements.isEmpty() && wrapped.skippedSubckts == 1,
+              "spice-w: the reader skips the subckt body, as documented");
+        // そのうえで、中身の素子行が自前のリーダで解釈できる書式かを見る
+        // (.subckt / .ends の 2 行を外して読ませる)
+        QStringList body;
+        for (const QString &ln : text.split(QLatin1Char('\n'))) {
+            const QString t = ln.trimmed();
+            if (t.startsWith(QStringLiteral(".subckt"))
+                || t.startsWith(QStringLiteral(".ends"))) continue;
+            body << ln;
+        }
+        const SpiceNetlist back =
+            SpiceIO::parse(QStringLiteral("title\n")
+                           + body.join(QLatin1Char('\n')));
+        check(back.isValid() && back.elements.size() == 3,
+              "spice-w: the element lines parse back");
+        check(back.count(QLatin1Char('R')) == 1
+              && back.count(QLatin1Char('L')) == 1
+              && back.count(QLatin1Char('C')) == 1,
+              "spice-w: one of each element survives");
+        double gotR = 0, gotL = 0, gotC = 0;
+        for (const SpiceElement &e : back.elements) {
+            if (e.type == QLatin1Char('R')) gotR = e.value;
+            if (e.type == QLatin1Char('L')) gotL = e.value;
+            if (e.type == QLatin1Char('C')) gotC = e.value;
+        }
+        check(std::fabs(gotR - 12.5) < 1e-9
+              && std::fabs(gotL - 3.4e-9) < 1e-18
+              && std::fabs(gotC - 2.2e-12) < 1e-21,
+              "spice-w: the values survive the round trip");
+    }
+    // 並列は全素子が 1-2 間に並ぶ
+    {
+        SpiceSubckt sub;
+        sub.series = false;
+        sub.r_ohm = 50.0;
+        sub.c_f = 1e-12;
+        const QString text = SpiceIO::buildSubckt(sub);
+        check(text.contains(QStringLiteral("R1 1 2 50"))
+              && text.contains(QStringLiteral("C2 1 2 1e-12")),
+              "spice-w: a parallel subckt puts everything across 1-2");
+        check(!text.contains(QStringLiteral("n1")),
+              "spice-w: and needs no internal node");
+        const SpiceNetlist wrapped = SpiceIO::parse(text);
+        check(wrapped.skippedSubckts == 1,
+              "spice-w: the parallel subckt is skipped as a body too");
+    }
+    // 値が 0 以下の素子は書かない / 何も無ければ作らない
+    {
+        SpiceSubckt only;
+        only.r_ohm = 10.0;               // L と C は 0 のまま
+        const QString text = SpiceIO::buildSubckt(only);
+        check(text.contains(QStringLiteral("R1 1 2 10")),
+              "spice-w: a lone resistor spans the terminals");
+        check(!text.contains(QStringLiteral("L")) || text.count(QStringLiteral("L")) == 0,
+              "spice-w: no zero-valued inductor is written");
+        SpiceSubckt empty;
+        check(SpiceIO::buildSubckt(empty).isEmpty(),
+              "spice-w: nothing to write means no subckt at all");
+        check(!empty.hasAny(), "spice-w: and hasAny() says so");
+    }
+    // ファイルへ書いて読み直す
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "spice-w: temp dir");
+        SpiceSubckt sub;
+        sub.r_ohm = 1.0;
+        sub.l_h = 1e-9;
+        const QString path = td.filePath(QStringLiteral("sub.cir"));
+        QString err;
+        check(SpiceIO::writeSubckt(path, sub, &err), "spice-w: file written");
+        QFile rf(path);
+        check(rf.open(QIODevice::ReadOnly), "spice-w: the file reopens");
+        const QString written = QString::fromUtf8(rf.readAll());
+        check(written.contains(QStringLiteral("R1 1 n1 1"))
+              && written.contains(QStringLiteral("L2 n1 2 1e-09")),
+              "spice-w: the file holds the series chain");
+        check(SpiceIO::parse(written).skippedSubckts == 1,
+              "spice-w: and it is a well-formed subckt");
+        SpiceSubckt empty;
+        check(!SpiceIO::writeSubckt(td.filePath(QStringLiteral("e.cir")),
+                                    empty, &err),
+              "spice-w: an empty subckt is refused, not written");
+        check(!err.isEmpty(), "spice-w: with a reason");
+    }
 }
 
 // ── ネットリストの素子が .ofd の load 行として出ること ──────────────────────
@@ -14652,6 +14901,340 @@ static void testWaveformSpectrum()
         std::reverse(tr.begin(), tr.end());
         check(!sp::waveformSpectrum(tr, y).valid,
               "spectrum: a decreasing time column is rejected");
+    }
+}
+
+// ── レンズ面テーブルの .ofdx 永続化 (optical.lens.surfaces) ────────────────
+// io-compat の規則どおり (a) ラウンドトリップ、(b) 旧ファイルは既定値、
+// および「既定のままなら 1 バイトも増えない」ことを検証する。
+static void testLensSurfacePersistence()
+{
+    g_file = "lenssurf";
+
+    // 既定値そのものが妥当か (レンズエディタと光解析タブの初期表示)
+    const QVector<LensSurfaceRow> def = defaultLensSurfaces();
+    check(def.size() == 9 && def.first().type == QStringLiteral("OBJ")
+              && def.last().type == QStringLiteral("IMG"),
+          "lenssurf: the default example is a 9-row table from OBJ to IMG");
+    int stops = 0;
+    for (const LensSurfaceRow &r : def)
+        if (r.type == QStringLiteral("STO")) ++stops;
+    check(stops == 1, "lenssurf: the default example has exactly one stop");
+
+    // (b') 触っていないプロジェクトの .ofdx にキーが出ない
+    {
+        Project p;
+        const QString j = btyTmpPath("lens_default.ofdx");
+        OfdxIO::save(j, p);
+        QFile f(j);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: default sidecar written");
+        const QByteArray raw = f.readAll();
+        f.close();
+        check(!raw.contains("\"lens\""),
+              "lenssurf: an untouched project writes no lens key at all");
+    }
+
+    // (a) ラウンドトリップ — 文字列のまま ("Infinity" / "-" も含めて) 戻る
+    {
+        Project p;
+        QVector<LensSurfaceRow> rows = defaultLensSurfaces();
+        rows[2].R = QStringLiteral("51.123");
+        rows[2].glass = QStringLiteral("N-BK7");
+        rows[3].enabled = false;
+        rows[4].comment = QString::fromUtf8("測定した曲率");
+        rows.last().semiD = QStringLiteral("8.25");
+        p.optical().lensSurfaces = rows;
+        const QString j = btyTmpPath("lens_rt.ofdx");
+        OfdxIO::save(j, p);
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "lenssurf: sidecar reload");
+        const QVector<LensSurfaceRow> &got = q.optical().lensSurfaces;
+        check(got.size() == rows.size(), "lenssurf: row count round-trip");
+        bool same = got.size() == rows.size();
+        for (int i = 0; same && i < got.size(); ++i) same = (got[i] == rows[i]);
+        check(same, "lenssurf: every field round-trips verbatim "
+                    "(Infinity / - / comments / enabled flag)");
+    }
+
+    // (b) 旧ファイル (lens キーが無い .ofdx) は空のまま = 既定の設計例
+    {
+        Project p;
+        p.optical().lensSurfaces = defaultLensSurfaces();
+        const QString j = btyTmpPath("lens_old.ofdx");
+        OfdxIO::save(j, p);
+        // "lens" ブロックを取り除いた旧世代のファイルを作る
+        QFile f(j);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: sidecar written");
+        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        QJsonObject root = doc.object();
+        QJsonObject opt = root.value("optical").toObject();
+        check(opt.contains("lens"),
+              "lenssurf: an edited table does write the lens key");
+        opt.remove("lens");
+        root["optical"] = opt;
+        const QString j2 = btyTmpPath("lens_old2.ofdx");
+        QFile g(j2);
+        check(g.open(QIODevice::WriteOnly), "lenssurf: legacy sidecar written");
+        g.write(QJsonDocument(root).toJson());
+        g.close();
+        Project q;
+        QString err;
+        check(OfdxIO::load(j2, q, &err), "lenssurf: legacy sidecar reload");
+        check(q.optical().lensSurfaces.isEmpty(),
+              "lenssurf: a sidecar without the lens key leaves the table empty "
+              "(= the default example)");
+    }
+}
+
+// ── 実光線追跡 (optics/RayTrace) ───────────────────────────────────────────
+// 判定はすべて **厳密に分かっている解**との比較で、数値の丸写しではない:
+//   1) 球面の非点収差ゼロ点 (アプラナート点) — 開口いくらでも厳密に一点へ
+//      集まる (油浸対物の原理。R(n+n')/n' と R(n+n')/n の共役)
+//   2) 微小開口では近軸追跡 (y-nu) と一致する
+//   3) 平行平板の横ずれ  d = t·sinI·(1 − cosI/(n·cosI'))
+//   4) 3 次収差との突き合わせ — 横収差 |TA| → S_I/(2n'u') (開口 → 0 で収束)
+//   5) 全反射・けられ・不正な系は「それらしい点」を返さず失敗として返す
+static void testRayTrace()
+{
+    g_file = "raytrace";
+    namespace rt = ofd::raytrace;
+    namespace px = ofd::paraxial;
+    namespace sd = ofd::seidel;
+
+    // 1) アプラナート点 (Weierstrass 点): R < 0 の球面へ実物体を置く配置。
+    //    物体 = 中心から R·n'/n、像 = 中心から R·n/n' (同じ側)。
+    //    R = −50, n = 1, n' = 1.5 → 物体は頂点の 125 mm 手前、
+    //    像は頂点の 83.333… mm 手前 (虚像)。**開口に依らず厳密に一点**。
+    {
+        const double R = -50.0, n0 = 1.0, n1 = 1.5;
+        const double sObj = R * (n0 + n1) / n1;    // −83.333… (虚像側)
+        const double sImg = R * (n0 + n1) / n0;    // −125 (物体側)
+        rt::System sys;
+        rt::Surface s;
+        s.R = R;
+        s.thickness = 0.0;
+        s.nAfter = n1;
+        s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.objectDistance = -sImg;                // 125 mm 手前の実物体
+        sys.imageDistance = sObj;                  // 虚像面 (頂点より手前)
+        // 近軸の共役関係そのものを先に確かめる (n'/s' = n/s + (n'−n)/R)
+        const double lhs = n1 / sObj;
+        const double rhs = n0 / sImg + (n1 - n0) / R;
+        check(std::fabs(lhs - rhs) < 1e-12 * std::fabs(lhs),
+              "raytrace: the aplanatic pair satisfies the Gaussian conjugate "
+              "equation");
+        const rt::SpotResult spot = rt::spotDiagram(sys, 50.0, 0.0, 6);
+        check(spot.valid && spot.failed == 0 && spot.traced == 127,
+              "raytrace: the aplanatic configuration traces every ray of a "
+              "6-ring hexapolar pupil");
+        check(spot.rmsRadius < 1e-9 && spot.geoRadius < 1e-9,
+              "raytrace: the aplanatic points of a sphere are stigmatic at "
+              "full aperture (rms and geometric radius vanish)");
+        // 開口を倍にしても点のまま (3 次収差の打ち切りではない証拠)
+        const rt::SpotResult wide = rt::spotDiagram(sys, 90.0, 0.0, 4);
+        check(wide.valid && wide.geoRadius < 1e-9,
+              "raytrace: it stays stigmatic when the aperture is nearly the "
+              "full hemisphere");
+    }
+
+    // 2) 微小開口では近軸追跡と一致する (単一球面、無限遠物体)
+    {
+        const double R = 50.0, n1 = 1.5;
+        const double sImg = n1 * R / (n1 - 1.0);   // 150 mm
+        rt::System sys;
+        rt::Surface s;
+        s.R = R;
+        s.thickness = sImg;
+        s.nAfter = n1;
+        s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.imageDistance = sImg;
+        const rt::RayResult axial = rt::traceRay(sys, 0.02, 0.0, 0.0, 1.0);
+        check(axial.ok() && std::fabs(axial.y) < 1e-8,
+              "raytrace: a nearly paraxial marginal ray lands on the paraxial "
+              "focus of a single refracting surface");
+    }
+
+    // 2b) 主光線の像高 — 空気中の薄い両凸レンズ (f' = 50 mm) で、微小開口・
+    //     微小視野なら実光線の像高は近軸像高 f'·tan(θ) に一致する。
+    //     (単一屈折面のように像側が硝子中だと f'·tanθ は像高にならないので、
+    //      レンズエディタと同じ「像側が空気」の系で確かめる。)
+    {
+        const double ng = 1.5, Rc = 50.0;
+        std::vector<px::Surface> pxs(2);
+        pxs[0].R = Rc;   pxs[0].thickness = 1e-6; pxs[0].nAfter = ng;
+        pxs[0].stop = true;
+        pxs[1].R = -Rc;  pxs[1].thickness = 50.0; pxs[1].nAfter = 1.0;
+        rt::System sys;
+        sys.surfaces = rt::fromParaxial(pxs);
+        sys.imageDistance = 50.0;
+        const px::SystemData d = px::analyze(pxs, 50.0, 0.02, 1.0);
+        const rt::RayResult chief = rt::traceRay(sys, 0.02, 1.0, 0.0, 0.0);
+        check(d.valid && std::fabs(d.efl - 50.0) < 1e-3,
+              "raytrace: the equiconvex thin lens used here really is f' = 50 mm");
+        check(chief.ok() && std::fabs(chief.y / d.imageHeight - 1.0) < 0.01,
+              "raytrace: the real chief ray height agrees with the paraxial "
+              "image height f'*tan(theta) at a small field");
+    }
+
+    // 3) 平行平板: 光線は平行に出て、横に d = t·sinI(1 − cosI/(n cosI')) ずれる
+    {
+        const double t = 10.0, n1 = 1.5, thetaDeg = 20.0, D = 30.0;
+        rt::System sys;
+        rt::Surface a, b;
+        a.R = 0.0; a.thickness = t; a.nAfter = n1; a.stop = true;
+        b.R = 0.0; b.thickness = D; b.nAfter = 1.0;
+        sys.surfaces.push_back(a);
+        sys.surfaces.push_back(b);
+        sys.imageDistance = D;
+        const rt::RayResult r = rt::traceRay(sys, 2.0, thetaDeg, 0.0, 0.0);
+        const double th = thetaDeg * 3.14159265358979323846 / 180.0;
+        const double sinT = std::sin(th), cosT = std::cos(th);
+        const double sinT2 = sinT / n1;
+        const double cosT2 = std::sqrt(1.0 - sinT2 * sinT2);
+        const double shift = t * sinT * (1.0 - cosT / (n1 * cosT2));
+        // shift は **光線に垂直な方向**のずれ。像面 (z 一定) で見た y の
+        // ずれはこれを cosI で割ったものになる。
+        const double expected = (t + D) * (sinT / cosT) - shift / cosT;
+        check(r.ok() && std::fabs(r.y - expected) < 1e-12 * std::fabs(expected),
+              "raytrace: a plane-parallel plate displaces the ray by "
+              "t*sinI*(1 - cosI/(n*cosI'))");
+    }
+
+    // 4) 3 次収差との突き合わせ: 単一球面の横収差は開口 → 0 で
+    //    |TA| = S_I/(2 n' u') へ収束する (誤差は開口の 2 乗で減る)
+    {
+        const double R = 50.0, n1 = 1.5;
+        const double sImg = n1 * R / (n1 - 1.0);
+        rt::System sys;
+        rt::Surface s;
+        s.R = R; s.thickness = sImg; s.nAfter = n1; s.stop = true;
+        sys.surfaces.push_back(s);
+        sys.imageDistance = sImg;
+        std::vector<px::Surface> pxs(1);
+        pxs[0].R = R; pxs[0].thickness = sImg; pxs[0].nAfter = n1;
+        pxs[0].stop = true;
+
+        double err[2] = { 0.0, 0.0 };
+        for (int k = 0; k < 2; ++k) {
+            const double epd = (k == 0) ? 4.0 : 2.0;
+            const double y = 0.5 * epd;
+            const sd::Result sr = sd::analyze(pxs, epd, 0.0);
+            const double uPrime = -y * (1.0 / R) * (n1 - 1.0) / n1;
+            const double predicted =
+                std::fabs(sr.sI) / (2.0 * n1 * std::fabs(uPrime));
+            const rt::FanResult fan = rt::rayFan(sys, epd, 0.0, 1);
+            check(sr.valid && fan.valid && fan.tangential.size() == 3,
+                  "raytrace: the ray fan of a single surface is computed");
+            const double ta = std::fabs(fan.tangential.back().dy);
+            err[k] = std::fabs(ta / predicted - 1.0);
+        }
+        check(err[0] < 0.05,
+              "raytrace: at f/12.5 the traced transverse aberration is within "
+              "5 percent of the third-order prediction S_I/(2 n' u')");
+        check(err[1] < 0.02 && err[1] < 0.4 * err[0],
+              "raytrace: halving the aperture shrinks that gap (the exact "
+              "trace converges to third-order theory, it is not a copy of it)");
+    }
+
+    // 5) 失敗はきちんと失敗として返す
+    {
+        rt::System bad;
+        check(!bad.isValid() && !rt::traceRay(bad, 4.0, 0.0, 0.0, 0.0).ok(),
+              "raytrace: an empty system is invalid and traces nothing");
+        // 全反射: ガラス → 空気で臨界角を超える入射
+        rt::System tir;
+        rt::Surface g, out;
+        g.R = 0.0; g.thickness = 5.0; g.nAfter = 1.8; g.stop = true;
+        out.R = 20.0; out.thickness = 10.0; out.nAfter = 1.0;
+        tir.surfaces.push_back(g);
+        tir.surfaces.push_back(out);
+        tir.imageDistance = 10.0;
+        const rt::RayResult t1 = rt::traceRay(tir, 30.0, 0.0, 0.0, 1.0);
+        check(t1.status == rt::Status::TotalReflect && t1.failedSurface == 1,
+              "raytrace: a ray past the critical angle is reported as total "
+              "internal reflection, not as a spot position");
+        // けられ: 有効半径の外を通る光線
+        rt::System vig;
+        rt::Surface v;
+        v.R = 100.0; v.thickness = 10.0; v.nAfter = 1.5; v.semiD = 1.0;
+        v.stop = true;
+        vig.surfaces.push_back(v);
+        vig.imageDistance = 10.0;
+        const rt::RayResult v1 = rt::traceRay(vig, 10.0, 0.0, 0.0, 1.0);
+        check(v1.status == rt::Status::Vignetted,
+              "raytrace: a ray outside the clear semi-diameter is vignetted");
+    }
+}
+
+// ── 色収差 (波長ごとの焦点移動) ────────────────────────────────────────────
+// レンズエディタ「解析プロット → 色収差」の計算経路 (カタログの Sellmeier
+// 分散式 → 波長ごとの近軸追跡 → バックフォーカスの移動) を、アッベ数の
+// 定義から導いた **閉形式**と突き合わせる。
+//   単レンズ: φ(λ) = (n(λ)−1)·K → f_C − f_F = f_d/V · (n_d−1)²/((n_C−1)(n_F−1))
+//   教科書の f/V はこの右辺の 1 次近似 (N-BK7 で 0.6 % ずれる)
+static void testChromaticFocalShift()
+{
+    g_file = "chromatic";
+    namespace px = ofd::paraxial;
+
+    const ofd::Glass *bk = nullptr;
+    for (const ofd::Glass &g : ofd::GlassCatalog::all())
+        if (g.name == QStringLiteral("N-BK7")) bk = &g;
+    check(bk != nullptr && bk->hasSellmeier(),
+          "chromatic: N-BK7 is in the catalog with Sellmeier coefficients");
+    if (!bk) return;
+
+    const double nF = bk->n(0.4861);      // F 線 (486.1 nm)
+    const double nd = bk->n(0.58756);     // d 線 (587.56 nm)
+    const double nC = bk->n(0.6563);      // C 線 (656.3 nm)
+    check(nF > nd && nd > nC,
+          "chromatic: the index falls with wavelength (normal dispersion)");
+    // Sellmeier から出したアッベ数がカタログ記載値と一致する
+    const double V = (nd - 1.0) / (nF - nC);
+    check(std::fabs(V / bk->vd - 1.0) < 2e-3,
+          "chromatic: the Abbe number from the Sellmeier fit matches the "
+          "catalog vd");
+
+    // 薄い両凸レンズ (d 線で f' = 50 mm)
+    const double f = 50.0;
+    const double R = 2.0 * (nd - 1.0) * f;
+    auto bflAt = [&](double n) {
+        std::vector<px::Surface> s(2);
+        s[0].R = R;  s[0].thickness = 1e-6; s[0].nAfter = n; s[0].stop = true;
+        s[1].R = -R; s[1].thickness = 60.0; s[1].nAfter = 1.0;
+        return px::analyze(s, 60.0, 10.0, 0.0);
+    };
+    const px::SystemData dD = bflAt(nd);
+    check(dD.valid && std::fabs(dD.efl - f) < 1e-6,
+          "chromatic: the test singlet really is f' = 50 mm at the d line");
+    const double bF = bflAt(nF).bfl, bD = dD.bfl, bC = bflAt(nC).bfl;
+    check(bF < bD && bD < bC,
+          "chromatic: blue focuses closer than red (positive singlet)");
+
+    const double exact = f / V * (nd - 1.0) * (nd - 1.0)
+                         / ((nC - 1.0) * (nF - 1.0));
+    check(std::fabs((bC - bF) / exact - 1.0) < 1e-6,
+          "chromatic: the F-to-C back-focus spread matches the closed form "
+          "f/V * (nd-1)^2/((nC-1)(nF-1))");
+    // 教科書の f/V は 1 次近似 — 1 % 以内には入るが厳密ではない
+    const double approx = f / V;
+    check(std::fabs((bC - bF) / approx - 1.0) < 0.01
+          && std::fabs((bC - bF) / approx - 1.0) > 1e-4,
+          "chromatic: the textbook f/V is within 1 percent but is not exact "
+          "(it is the first-order form)");
+
+    // 分散の無い媒質 (空気) では波長を変えても何も動かない
+    {
+        std::vector<px::Surface> s(1);
+        s[0].R = 0.0; s[0].thickness = 10.0; s[0].nAfter = 1.0; s[0].stop = true;
+        const px::SystemData a = px::analyze(s, 10.0, 4.0, 0.0);
+        check(!a.valid || !(std::fabs(a.efl) < 1e30),
+              "chromatic: a flat air interface has no power (afocal), so there "
+              "is nothing to shift");
     }
 }
 
@@ -16950,6 +17533,7 @@ int main(int argc, char *argv[])
     testSarMetrics();
     testSolverSelection();
     testRadioPropagation();
+    testEmpiricalPropagation();
     testDispersionFit();
     testBendWaveguide();
     testMeshImporterFormats();
@@ -16974,6 +17558,9 @@ int main(int argc, char *argv[])
     testGdsGeometry();
     testWaveformSpectrum();
     testSeidelAberration();
+    testRayTrace();
+    testLensSurfacePersistence();
+    testChromaticFocalShift();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();

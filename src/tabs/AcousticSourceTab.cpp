@@ -583,6 +583,33 @@ const bool s_i18n = [] {
     I18n::reg("asrc_hrtf_personal", "個人化 HRTF (.sofa)",
               "Personalised HRTF (.sofa)");
     I18n::reg("asrc_convmode", "畳み込み方式", "Convolution method");
+    I18n::reg("asrc_conv_wired",
+              "入力 WAV は可聴化タブのドライ音源として保存され、受音点は"
+              "プロジェクトの受音点リストそのものです。レンダリング (畳み込み) は"
+              "可聴化タブで実行します。",
+              "The input WAV is stored as the auralization tab's dry source, "
+              "and the receiver list is the project's own. The rendering "
+              "(convolution) itself is run from the auralization tab.");
+    I18n::reg("asrc_oc_why",
+              "バイノーラルは HRTF データベース、Ambisonics / 5.1ch / 22.2ch は"
+              "デコーダが要ります。どちらも同梱していないため選べません "
+              "(畳み込みエンジンが出せるのはモノとステレオです)。",
+              "Binaural needs an HRTF database and Ambisonics / 5.1 / 22.2 "
+              "need a decoder; neither is bundled, so they cannot be chosen "
+              "(the convolution engine produces mono and stereo).");
+    I18n::reg("asrc_hrtf_why",
+              "HRTF データベース (KEMAR / CIPIC / SADIE II) は第三者のデータで"
+              "同梱していないため選べません。",
+              "The HRTF databases (KEMAR / CIPIC / SADIE II) are third-party "
+              "data and are not bundled, so they cannot be selected.");
+    I18n::reg("asrc_cv_why",
+              "畳み込みエンジンは FFT の重畳加算で固定です。直接畳み込みと"
+              "分割畳み込みの違いは実時間処理の遅延と CPU 負荷で、"
+              "オフラインのレンダリングでは結果が変わりません。",
+              "The convolution engine always uses FFT overlap-add. Direct and "
+              "partitioned convolution differ only in latency and CPU load for "
+              "real-time use; for offline rendering the result is the same.");
+    I18n::reg("asrc_recv_none", "(受音点が未定義)", "(no receiver defined)");
     I18n::reg("asrc_cv_direct", "直接畳み込み", "Direct convolution");
     I18n::reg("asrc_cv_fft", "FFT (オフライン)", "FFT (offline)");
     I18n::reg("asrc_cv_part", "分割畳み込み (リアルタイム)",
@@ -1249,7 +1276,10 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     for (QCheckBox *c : { m_clipPrevent, m_distComp, m_coherence })
         connect(c, &QCheckBox::toggled, this, [this](bool) { updateDrive(); });
     // 音源リストや受音点が変われば作り直す
-    connect(m_p, &Project::changed, this, [this] { updateDrive(); });
+    connect(m_p, &Project::changed, this, [this] {
+        updateDrive();
+        refreshConvBindings();
+    });
     updateDrive();
     return page;
 }
@@ -1876,6 +1906,43 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
 // ── 同時駆動の見積り ────────────────────────────────────────────────────────
 // 有効な音源と 1 番目の有効な受音点から、直接音の距離・到達時刻・受音レベルを
 // 出す。室の反射は含まない (直接音のみ — 画面にもそう書いてある)。
+// 畳み込み設定の受音点リストと入力 WAV を、モデルの実データで埋める。
+// (受音点はプロジェクトの受音点リスト、入力 WAV は可聴化のドライ音源)
+void AcousticSourceTab::refreshConvBindings()
+{
+    if (m_convRecv) {
+        const QVector<ReceiverRow> &rx = m_p->acoustic().receivers;
+        const int keep = m_convRecv->currentIndex();
+        const bool was = m_updating;
+        m_updating = true;
+        m_convRecv->clear();
+        for (int i = 0; i < rx.size(); ++i) {
+            QString label = rx[i].name.isEmpty()
+                                ? QStringLiteral("#%1").arg(i + 1)
+                                : rx[i].name;
+            if (!rx[i].enabled) label += QStringLiteral(" (無効)");
+            if (!rx[i].rirFile.isEmpty())
+                label += QStringLiteral("  ← ")
+                         + QFileInfo(rx[i].rirFile).fileName();
+            m_convRecv->addItem(label);
+        }
+        if (m_convRecv->count() == 0)
+            m_convRecv->addItem(I18n::tr("asrc_recv_none"));
+        if (keep >= 0 && keep < m_convRecv->count())
+            m_convRecv->setCurrentIndex(keep);
+        m_updating = was;
+    }
+    if (m_convDry) {
+        const QString dry = m_p->operaAcoustic().auralizationDryFile;
+        if (m_convDry->text() != dry) {
+            const bool was = m_updating;
+            m_updating = true;
+            m_convDry->setText(dry);
+            m_updating = was;
+        }
+    }
+}
+
 void AcousticSourceTab::updateDrive()
 {
     if (!m_driveTable || !m_driveSummary) return;
@@ -2326,17 +2393,26 @@ QWidget *AcousticSourceTab::buildAuralPage()
     auto *inRow = new QHBoxLayout();
     auto *inWav = new QLineEdit(sc);
     inWav->setPlaceholderText("anechoic_speech_48k.wav");
+    m_convDry = inWav;
     auto *inBtn = new QPushButton("📁", sc);
     inBtn->setMaximumWidth(36);
     inRow->addWidget(inWav, 1);
     inRow->addWidget(inBtn);
     sc->form()->addRow(I18n::tr("asrc_input_wav"), inRow);
-    auto *recv = new QComboBox(sc);
-    recv->addItem(I18n::tr("asrc_p1"));
-    recv->addItem(I18n::tr("asrc_p2"));
-    recv->addItem(I18n::tr("asrc_p3"));
-    recv->addItem(I18n::tr("asrc_p4"));
-    sc->form()->addRow(I18n::tr("asrc_recv_irf"), recv);
+    // 入力 WAV は可聴化のドライ音源そのもの (同じモデルを編集する)
+    connect(inWav, &QLineEdit::editingFinished, this, [this, inWav] {
+        if (m_updating) return;
+        const QString wav = inWav->text().trimmed();
+        if (m_p->operaAcoustic().auralizationDryFile == wav) return;
+        m_p->operaAcoustic().auralizationDryFile = wav;
+        m_p->touch();
+    });
+    // 受音点はプロジェクトの受音点リストそのもの (mock の固定 4 点ではない)
+    m_convRecv = new QComboBox(sc);
+    sc->form()->addRow(I18n::tr("asrc_recv_irf"), m_convRecv);
+    // 出力チャネル: 畳み込みエンジンが出せるのはモノとステレオだけ。
+    // バイノーラル (HRTF) と Ambisonics / 5.1 / 22.2 (デコーダ) は同梱して
+    // いないので、選べないようにして理由を書く (絶対規則 5)
     auto *outch = new QComboBox(sc);
     outch->addItem(I18n::tr("asrc_oc_mono"));
     outch->addItem(I18n::tr("asrc_oc_stereo"));
@@ -2344,22 +2420,31 @@ QWidget *AcousticSourceTab::buildAuralPage()
     outch->addItem("Ambisonics (B-format)");
     outch->addItem("5.1ch");
     outch->addItem("22.2ch");
-    outch->setCurrentIndex(2);   // mock: value="binaural"
+    outch->setCurrentIndex(1);   // 出せるもののうち既定はステレオ
+    tabhelp::disableComboItems(outch, { 2, 3, 4, 5 }, I18n::tr("asrc_oc_why"));
     sc->form()->addRow(I18n::tr("asrc_outch"), outch);
     auto *hrtf = new QComboBox(sc);
     hrtf->addItem("KEMAR (MIT)");
     hrtf->addItem("CIPIC (UC Davis)");
     hrtf->addItem("SADIE II (York)");
     hrtf->addItem(I18n::tr("asrc_hrtf_personal"));
+    hrtf->setEnabled(false);
+    hrtf->setToolTip(I18n::tr("asrc_hrtf_why"));
     sc->form()->addRow(I18n::tr("asrc_hrtf"), hrtf);
+    // 畳み込みは FFT 重畳加算で固定 (差が出るのは実時間処理だけ)
     auto *conv = new QComboBox(sc);
     conv->addItem(I18n::tr("asrc_cv_direct"));
     conv->addItem(I18n::tr("asrc_cv_fft"));
     conv->addItem(I18n::tr("asrc_cv_part"));
-    conv->setCurrentIndex(2);   // mock: value="partition"
+    conv->setCurrentIndex(1);    // FFT (実装どおり)
+    tabhelp::disableComboItems(conv, { 0, 2 }, I18n::tr("asrc_cv_why"));
     sc->form()->addRow(I18n::tr("asrc_convmode"), conv);
-    // 畳み込み設定はまだどこにも読まれない
-    sc->vbox()->addWidget(tabhelp::unwiredNote(sc, I18n::tr("asrc_uw_conv")));
+    {
+        auto *note = new QLabel(I18n::tr("asrc_conv_wired"), sc);
+        note->setWordWrap(true);
+        note->setStyleSheet("color:#7A7A7A; font-size:11px;");
+        sc->vbox()->addWidget(note);
+    }
     v->addWidget(sc);
 
     auto *sr = new SectionBox(I18n::tr("asrc_render_section"), page);

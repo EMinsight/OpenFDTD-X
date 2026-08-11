@@ -628,6 +628,19 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"period_x_nm", o.rcwaPeriodX}, {"period_y_nm", o.rcwaPeriodY},
             {"layers", o.rcwaLayers},
             {"layer_list", rcwaLayerList} };
+        // 順次光学系の面テーブル — 利用者が編集したときだけ書く。
+        // 空 (= 既定の設計例のまま) なら **キーごと出さない** ので、
+        // 触っていないプロジェクトの .ofdx は 1 バイトも変わらない。
+        if (!o.lensSurfaces.isEmpty()) {
+            QJsonArray surfaces;
+            for (const LensSurfaceRow &r : o.lensSurfaces)
+                surfaces.append(QJsonObject{
+                    {"enabled", r.enabled}, {"type", r.type},
+                    {"radius", r.R}, {"thickness", r.thick},
+                    {"glass", r.glass}, {"semi_d", r.semiD},
+                    {"conic", r.conic}, {"comment", r.comment} });
+            opt["lens"] = QJsonObject{ {"surfaces", surfaces} };
+        }
         opt["bpm"] = QJsonObject{
             {"algorithm", o.bpmAlgorithm}, {"dz_nm", o.bpmDz},
             {"ref_index", o.bpmRefIndex}, {"input_mode", o.bpmInputMode} };
@@ -1159,6 +1172,24 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 l.thickness_nm =
                     lo.value("thickness_nm").toDouble(l.thickness_nm);
                 o.rcwaLayerList.push_back(l);
+            }
+        }
+        // 面テーブル — キーが無ければ空のまま (= 既定の設計例)
+        if (opt.contains("lens")) {
+            o.lensSurfaces.clear();
+            for (const QJsonValue &v :
+                 opt["lens"].toObject().value("surfaces").toArray()) {
+                const QJsonObject so = v.toObject();
+                LensSurfaceRow r;
+                r.enabled = so.value("enabled").toBool(r.enabled);
+                r.type    = so.value("type").toString(r.type);
+                r.R       = so.value("radius").toString(r.R);
+                r.thick   = so.value("thickness").toString(r.thick);
+                r.glass   = so.value("glass").toString(r.glass);
+                r.semiD   = so.value("semi_d").toString(r.semiD);
+                r.conic   = so.value("conic").toString(r.conic);
+                r.comment = so.value("comment").toString(r.comment);
+                o.lensSurfaces.push_back(r);
             }
         }
         const QJsonObject bp = opt["bpm"].toObject();

@@ -49,6 +49,7 @@ private slots:
     void refreshExtract();              // Project::circuit() → PEEC ページ
     void onPortItemChanged(QTableWidgetItem *item);   // ポート表 → model
     void updateResults();               // 集中定数モデル → 結果表 + |Z| 曲線
+    void exportSpiceSubckt();           // 集中定数モデル → SPICE .subckt
 
 private:
     // 抽出実行 (OpenPEEC / OpenFEM を QProcess で起動する)。

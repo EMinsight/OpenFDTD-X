@@ -53,6 +53,21 @@ struct SpiceNetlist {
     int count(QChar type) const;        // 種別ごとの個数
 };
 
+// 書き出す等価回路 1 個 (抽出結果 → SPICE サブサーキット)。
+// 直列 / 並列の別と R / L / C の値だけを持つ — 抽出が出すのはこれだけで、
+// それ以上を「それらしく」書き足さない。
+struct SpiceSubckt {
+    QString name = QStringLiteral("EXTRACTED");
+    bool    series = true;      // true = R-L-C 直列、false = 並列
+    double  r_ohm = 0.0;        // 0 以下の素子は書かない (存在しない扱い)
+    double  l_h = 0.0;
+    double  c_f = 0.0;
+    QString comment;            // 冒頭のコメント行 (出所を残す)
+
+    // 書ける素子が 1 つ以上あるか
+    bool hasAny() const { return r_ohm > 0.0 || l_h > 0.0 || c_f > 0.0; }
+};
+
 class SpiceIO {
 public:
     static SpiceNetlist parse(const QString &text);
@@ -64,6 +79,17 @@ public:
 
     // ファイルダイアログのフィルタ
     static QString fileDialogFilter();
+
+    // ── 書き出し ────────────────────────────────────────────────────────
+    // 抽出した等価回路を 2 端子の .subckt として組み立てる。
+    // 端子は 1 (入力) と 2 (出力)。直列は 1 → 内部ノード → 2 と数珠つなぎ、
+    // 並列は全素子を 1-2 間に並べる。値は %.6g の指数表記で書く
+    // (SPICE の接尾辞は使わない — M がミリかメガかで事故るため)。
+    // hasAny() が false のときは空文字列を返す (空の subckt を作らない)。
+    static QString buildSubckt(const SpiceSubckt &s);
+    // 上を .cir として書き出す。開けなければ false (err に理由)。
+    static bool writeSubckt(const QString &path, const SpiceSubckt &s,
+                            QString *err = nullptr);
 };
 
 } // namespace ofd

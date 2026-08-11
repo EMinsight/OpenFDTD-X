@@ -11,6 +11,7 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -122,12 +123,60 @@ const bool s_i18n = [] {
               "直接波 + 大地反射 (Γ = −%1) の干渉。建物透過・散乱は含まない",
               "interference of the direct and ground-reflected rays "
               "(Γ = −%1); no building penetration or scattering");
+    I18n::reg("chn_m_env", "経路損失 (環境モデル)",
+              "Path loss (environment model)");
+    I18n::reg("chn_m_env_indoor",
+              "ITU-R P.1238 屋内 (N = %1, 階層貫通損 0 dB)",
+              "ITU-R P.1238 indoor (N = %1, no floor penetration)");
+    I18n::reg("chn_m_env_hata", "奥村-秦 市街地 (Hata 1980)",
+              "Okumura-Hata urban (Hata 1980)");
+    I18n::reg("chn_m_env_hata_big", "奥村-秦 市街地・大都市補正 (Hata 1980)",
+              "Okumura-Hata urban, large-city correction (Hata 1980)");
+    I18n::reg("chn_m_env_cost", "COST-231 Hata 市街地 (%1 dB 都市補正)",
+              "COST-231 Hata urban (%1 dB city correction)");
+    I18n::reg("chn_m_env_2ray", "2 波モデル (見通し内)",
+              "two-ray model (line of sight)");
+    I18n::reg("chn_m_env_none", "—", "—");
+    I18n::reg("chn_m_env_note_indoor",
+              "L = 20log10(f[MHz]) + N·log10(d[m]) − 28。N は距離損失係数で、"
+              "自由空間が 20、屋内オフィスの代表値が 30 (ITU-R P.1238-11)",
+              "L = 20log10(f[MHz]) + N·log10(d[m]) − 28. N is the distance "
+              "power-loss coefficient: 20 in free space, 30 for a typical "
+              "office (ITU-R P.1238-11)");
+    I18n::reg("chn_m_env_note_hata",
+              "測定データの当てはめ (適用範囲: f 150–1500 MHz, 基地局高 "
+              "30–200 m, 移動局高 1–10 m, 距離 1–20 km)",
+              "an empirical fit to measurements (valid for f 150–1500 MHz, "
+              "base 30–200 m, mobile 1–10 m, distance 1–20 km)");
+    I18n::reg("chn_m_env_note_cost",
+              "奥村-秦の 1.5–2 GHz 拡張 (適用範囲: 基地局高 30–200 m, "
+              "移動局高 1–10 m, 距離 1–20 km)",
+              "the 1.5–2 GHz extension of Okumura-Hata (base 30–200 m, "
+              "mobile 1–10 m, distance 1–20 km)");
+    I18n::reg("chn_m_env_note_2ray",
+              "車内・車車間は見通しが基本なので、2 波モデルをそのまま使います",
+              "in-vehicle and V2V links are line-of-sight, so the two-ray "
+              "model is used as it stands");
+    I18n::reg("chn_m_env_out",
+              "適用範囲の外なので出しません (%1)。範囲外で経験式を外挿すると"
+              "数字の形をした嘘になります",
+              "outside the model's validity range, so no value is shown (%1). "
+              "Extrapolating an empirical fit would be a lie in the shape of "
+              "a number");
+    I18n::reg("chn_m_env_tunnel",
+              "トンネル・地下の経路損失は公表の経験式を持っていません "
+              "(導波管モードの解析かレイトレースが要ります)",
+              "there is no published empirical model for tunnels and "
+              "underground here (a waveguide-mode analysis or ray tracing is "
+              "needed)");
     I18n::reg("chn_m_bp", "ブレークポイント距離", "Breakpoint distance");
     I18n::reg("chn_m_bp_note", "d_bp = 4·h_t·h_r/λ — これより遠方は n ≈ 4",
               "d_bp = 4·h_t·h_r/λ — beyond this the exponent tends to 4");
     I18n::reg("chn_m_rx", "受信電力", "Received power");
     I18n::reg("chn_m_rx_note", "EIRP − 経路損失(2波) + 受信利得",
               "EIRP − two-ray path loss + RX gain");
+    I18n::reg("chn_m_rx_env_note", "EIRP − 経路損失(%1) + 受信利得",
+              "EIRP − path loss (%1) + RX gain");
     I18n::reg("chn_m_ds", "遅延スプレッド (RMS)", "Delay spread (RMS)");
     I18n::reg("chn_m_ds_note",
               "多重波の分布が要るためレイトレース / FDTD の実行が必要 "
@@ -175,7 +224,10 @@ const bool s_i18n = [] {
               "建物・壁の透過損失、家具や人体の散乱、多重反射は含みません — "
               "それらを含む指標 (RMS 遅延スプレッド・角度スプレッド) は"
               "レイトレース / FDTD の実行が必要で「未計算」と表示します。"
-              "上の環境モデル・解析手法の選択は計算に反映されません。",
+              "環境の選択は経路損失の経験式 (屋内 = ITU-R P.1238、市街地 = "
+              "奥村-秦 / COST-231、車内・車車間 = 2 波モデル) を選び、受信電力・"
+              "SNR・容量に効きます。解析手法 (レイトレース / FDTD / "
+              "ハイブリッド) の選択は計算に反映されません。",
               "▸ The values are computed with the flat-earth perfectly-"
               "reflecting two-ray model (line of sight) and the Friis "
               "free-space loss (formulas and sources in "
@@ -183,10 +235,27 @@ const bool s_i18n = [] {
               "scattering from furniture and people and higher-order "
               "reflections are not included — metrics that need them (RMS "
               "delay spread, angular spread) require a ray-tracing or FDTD run "
-              "and are shown as “not computed”. The environment and method "
-              "selections above do not enter the calculation.");
-    I18n::reg("chn_uw_env", "環境モデルの選択とそのパラメータ",
-              "the environment model and its parameters");
+              "and are shown as “not computed”. The environment selection "
+              "picks the empirical path-loss model (indoor = ITU-R P.1238, "
+              "urban = Okumura-Hata / COST-231, in-vehicle and V2V = the "
+              "two-ray model) and drives the received power, SNR and "
+              "capacity. The analysis-method selection (ray tracing / FDTD / "
+              "hybrid) does not enter the calculation.");
+    I18n::reg("chn_uw_env",
+              "間取り / 地形 STL の読み込みと、材料の透過損失 DB・散乱のチェック",
+              "loading the floor-plan / terrain STL and the material "
+              "transmission-loss / scattering check boxes");
+    I18n::reg("chn_uw_env_ok",
+              "環境の選択と経路損失モデルのパラメータ (下の「経路損失 "
+              "(環境モデル)」の行と、受信電力・SNR・容量に効きます)",
+              "the environment selection and the path-loss model parameters "
+              "(they drive the environment path-loss row below, and the "
+              "received power, SNR and capacity)");
+    I18n::reg("chn_model_row", "経路損失モデル", "Path-loss model");
+    I18n::reg("chn_indoor_n", "距離損失係数 N", "Distance coefficient N");
+    I18n::reg("chn_city", "都市規模", "City size");
+    I18n::reg("chn_large_city", "大都市 (移動局高補正)",
+              "Large city (mobile-height correction)");
     I18n::reg("chn_m_array", "アレイ利得 (ビームフォーミング)",
               "Array gain (beamforming)");
     I18n::reg("chn_m_array_note",
@@ -272,6 +341,21 @@ QLineEdit *numEdit(const QString &text, QWidget *parent, int w = 80)
     return e;
 }
 
+// 上の widget 版 (表示・非表示を切り替えたい行はこちらを使う — 返した
+// QWidget ごと setVisible できる)
+QWidget *formRowWidget(const QString &label, QWidget *field, QWidget *parent)
+{
+    auto *box = new QWidget(parent);
+    auto *f = new QFormLayout(box);
+    f->setContentsMargins(0, 0, 0, 0);
+    f->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    f->setLabelAlignment(Qt::AlignLeft);
+    f->setHorizontalSpacing(8);
+    f->setVerticalSpacing(4);
+    f->addRow(label, field);
+    return box;
+}
+
 // mock の <Row label> 単発版。SectionBox::form() は 1 枚しか持てないため、
 // hint を間に挟むセクションではこれで 1 行ずつ vbox に積む。
 QFormLayout *formRow(const QString &label, QLayout *field)
@@ -335,14 +419,24 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
 // チャネル特性表の行 (値は fillMetricsTable が実計算で埋める)。
 // note が計算値を含む行は書式引数を持つので、行ごとに fillMetricsTable で作る。
 enum MetricRow {
-    RowFspl = 0, RowTwoRay, RowBreak, RowRx, RowN, RowK, RowTau,
+    RowFspl = 0, RowTwoRay, RowEnv, RowBreak, RowRx, RowN, RowK, RowTau,
     RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity,
     RowArrayGain, RowMimoCap, RowCount
 };
 const char *kMetricNameKey[RowCount] = {
-    "chn_m_fspl", "chn_m_2ray", "chn_m_bp", "chn_m_rx", "chn_m_n", "chn_m_k",
-    "chn_m_tau", "chn_m_ds", "chn_m_as", "chn_m_noise", "chn_m_cap",
-    "chn_m_array", "chn_m_mimo",
+    "chn_m_fspl", "chn_m_2ray", "chn_m_env", "chn_m_bp", "chn_m_rx",
+    "chn_m_n", "chn_m_k", "chn_m_tau", "chn_m_ds", "chn_m_as", "chn_m_noise",
+    "chn_m_cap", "chn_m_array", "chn_m_mimo",
+};
+
+// 環境の選択 (屋内 / 市街地 / 車内・車車間 / トンネル) から使う経験式を決める。
+// **周波数と幾何が適用範囲の外なら使わない** — 経験式は測定データの当てはめ
+// なので、範囲外の外挿は数字の形をした嘘になる。
+struct EnvModel {
+    bool    hasLoss = false;   // 経路損失を出せるか
+    double  lossDb = 0.0;
+    QString name;              // 使ったモデル名 (表に出す)
+    QString note;              // 出所と適用範囲 / 出せない理由
 };
 
 // 選択した周波数帯の代表中心周波数 [GHz] (モックの帯域区分に対応)。
@@ -428,8 +522,30 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     mr->addWidget(m_matScatter);
     mr->addStretch(1);
     se->vbox()->addLayout(formRow(I18n::tr("chn_material"), mr));
-    // 環境モデルのフォームはどこにも読まれていない (未実装)
-    se->vbox()->addWidget(tabhelp::unwiredNote(se, I18n::tr("chn_uw_env")));
+    // 経路損失モデル — 上の環境の選択から自動で決まる。屋内の距離損失係数
+    // だけは値が場所で大きく変わるので入力にする (既定は P.1238 の office)。
+    m_modelName = new QLabel(se);
+    m_modelName->setWordWrap(true);
+    se->vbox()->addWidget(
+        formRowWidget(I18n::tr("chn_model_row"), m_modelName, se));
+    m_indoorN = new QDoubleSpinBox(se);
+    m_indoorN->setRange(10.0, 50.0);
+    m_indoorN->setDecimals(1);
+    m_indoorN->setSingleStep(1.0);
+    m_indoorN->setValue(30.0);
+    m_indoorN->setMaximumWidth(90);
+    m_indoorNRow = formRowWidget(I18n::tr("chn_indoor_n"), m_indoorN, se);
+    se->vbox()->addWidget(m_indoorNRow);
+    m_largeCity = makeCheck(I18n::tr("chn_large_city"), false, se);
+    m_largeCityRow = formRowWidget(I18n::tr("chn_city"), m_largeCity, se);
+    se->vbox()->addWidget(m_largeCityRow);
+    connect(m_indoorN, &QDoubleSpinBox::valueChanged,
+            this, &ChannelTab::recompute);
+    connect(m_largeCity, &QCheckBox::toggled, this, &ChannelTab::recompute);
+    // 間取り STL と材料 DB のチェックはどこにも読まれていない (未実装)。
+    // 経路損失モデルの選択とパラメータは効く。
+    se->vbox()->addWidget(tabhelp::unwiredNote(se, I18n::tr("chn_uw_env"),
+                                               I18n::tr("chn_uw_env_ok")));
     v->addWidget(se);
 
     // ── 送受信 / TX-RX ──────────────────────────────────────────────────────
@@ -556,8 +672,7 @@ void ChannelTab::refresh()
     m_updating = true;
     if (auto *b = m_env->button(m_envIdx)) b->setChecked(true);
     m_updating = false;
-    onEnvChanged();
-    recompute();
+    onEnvChanged();     // 内部で recompute() まで行う
 }
 
 // mock: defaultValue={env==="indoor" ? "office_floor3.ifc" : "city_shibuya.osm"}
@@ -565,6 +680,7 @@ void ChannelTab::onEnvChanged()
 {
     m_envFile->setText(QString::fromUtf8(m_envIdx == 0 ? kEnvFileIndoor
                                                        : kEnvFileOther));
+    recompute();      // 環境は経路損失モデルを決めるので表も出し直す
 }
 
 // リンク条件 → チャネル特性 (見通し内の伝搬モデルによる実計算)。
@@ -619,7 +735,59 @@ void ChannelTab::recompute()
     const double fspl = prop::freeSpacePathLossDb(d, f);
     const double l2ray = prop::twoRayPathLossDb(d, ht, hr, f, refl);
     const double dbp = prop::breakpointDistance(ht, hr, f);
-    const double prx = prop::receivedPowerDbm(eirp, l2ray, grx);
+
+    // ── 環境の選択 → 経路損失の経験式 ──
+    // 適用範囲の外では値を出さない (外挿しない)。出せたときは受信電力・
+    // SNR・容量もこの損失で計算する。
+    EnvModel env;
+    switch (m_envIdx) {
+    case 0: {          // 屋内 — ITU-R P.1238
+        const double N = m_indoorN ? m_indoorN->value() : 30.0;
+        env.hasLoss = true;
+        env.lossDb = prop::indoorP1238PathLossDb(d, f, N);
+        env.name = I18n::tr("chn_m_env_indoor").arg(N, 0, 'f', 1);
+        env.note = I18n::tr("chn_m_env_note_indoor");
+        break;
+    }
+    case 1: {          // 市街地 — 奥村-秦 / COST-231
+        const bool big = m_largeCity && m_largeCity->isChecked();
+        if (prop::hataApplicable(d, f, ht, hr)) {
+            env.hasLoss = true;
+            env.lossDb = prop::hataUrbanPathLossDb(d, f, ht, hr, big);
+            env.name = I18n::tr(big ? "chn_m_env_hata_big" : "chn_m_env_hata");
+            env.note = I18n::tr("chn_m_env_note_hata");
+        } else if (prop::cost231Applicable(d, f, ht, hr)) {
+            const double c = big ? 3.0 : 0.0;
+            env.hasLoss = true;
+            env.lossDb = prop::cost231HataPathLossDb(d, f, ht, hr, c, big);
+            env.name = I18n::tr("chn_m_env_cost").arg(c, 0, 'f', 0);
+            env.note = I18n::tr("chn_m_env_note_cost");
+        } else {
+            env.name = I18n::tr("chn_m_env_none");
+            env.note = I18n::tr("chn_m_env_out")
+                           .arg(I18n::tr("chn_m_env_note_hata"));
+        }
+        break;
+    }
+    case 2:            // 車内・車車間 — 見通しなので 2 波モデルそのもの
+        env.hasLoss = true;
+        env.lossDb = l2ray;
+        env.name = I18n::tr("chn_m_env_2ray");
+        env.note = I18n::tr("chn_m_env_note_2ray");
+        break;
+    default:           // トンネル・地下 — 公表の経験式を持っていない
+        env.name = I18n::tr("chn_m_env_none");
+        env.note = I18n::tr("chn_m_env_tunnel");
+        break;
+    }
+    if (m_modelName) m_modelName->setText(env.name);
+    if (m_indoorNRow) m_indoorNRow->setVisible(m_envIdx == 0);
+    if (m_largeCityRow) m_largeCityRow->setVisible(m_envIdx == 1);
+
+    // 受信電力は「使えるモデル」で計算する (環境モデルが出せないときだけ
+    // 2 波モデルに戻し、その旨を備考に書く)
+    const double lossUsed = env.hasLoss ? env.lossDb : l2ray;
+    const double prx = prop::receivedPowerDbm(eirp, lossUsed, grx);
     const double n = prop::pathLossExponent(
         l2ray, d, prop::twoRayPathLossDb(2.0 * d, ht, hr, f, refl), 2.0 * d);
     const double kdb = prop::twoRayKFactorDb(d, ht, hr, refl);
@@ -633,9 +801,14 @@ void ChannelTab::recompute()
            I18n::tr("chn_m_fspl_note").arg(fmtWavelength(lam)));
     setRow(RowTwoRay, QStringLiteral("%1 dB").arg(l2ray, 0, 'f', 2),
            I18n::tr("chn_m_2ray_note").arg(refl, 0, 'f', 2));
+    setRow(RowEnv,
+           env.hasLoss ? QStringLiteral("%1 dB").arg(env.lossDb, 0, 'f', 2)
+                       : nc,
+           env.name + QStringLiteral(" — ") + env.note);
     setRow(RowBreak, fmtDistance(dbp), I18n::tr("chn_m_bp_note"));
     setRow(RowRx, QStringLiteral("%1 dBm").arg(prx, 0, 'f', 2),
-           I18n::tr("chn_m_rx_note"));
+           env.hasLoss ? I18n::tr("chn_m_rx_env_note").arg(env.name)
+                       : I18n::tr("chn_m_rx_note"));
     setRow(RowN, QString::number(n, 'f', 2), I18n::tr("chn_m_n_note"));
     setRow(RowK, QStringLiteral("%1 dB").arg(kdb, 0, 'f', 2),
            I18n::tr("chn_m_k_note"));

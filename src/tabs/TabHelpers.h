@@ -16,6 +16,7 @@
 #include <vector>
 
 class QAbstractButton;
+class QComboBox;
 class QLabel;
 class QTableWidgetItem;
 class QWidget;
@@ -91,6 +92,14 @@ double rirBandWarnThresholdHz();
 // 未実装機能のボタン/チェックを「押せるのに何も起きない」状態にしない。
 // 無効化して「未実装」ツールチップを付ける。
 void markNotImplemented(QAbstractButton *b);
+
+// コンボボックスの一部の項目だけを選べなくする (残りは通常どおり選べる)。
+// 「その選択肢が何故無いのか」を **項目のツールチップ**として残すため、
+// 項目を消さずに無効化する — 消すと利用者は「対応予定が無い」のか
+// 「見落としている」のか分からない。
+// 例: 出力チャネルのうちバイノーラル (HRTF 未同梱) だけを落とす。
+void disableComboItems(QComboBox *box, const QVector<int> &indices,
+                       const QString &why);
 
 // モック由来のサンプル値 (固定の表・グラフ・バッジ) の直下に置く注記ラベル:
 // 「⚠ サンプル表示 — 実行結果ではありません (機能未実装)」

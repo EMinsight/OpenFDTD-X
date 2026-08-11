@@ -303,6 +303,11 @@ set(CORE_SOURCES
     src/optics/SeidelAberration.cpp
     src/optics/SeidelAberration.h
 
+    # 順次光学系の実光線追跡 (厳密なスネルの法則) — Qt 非依存。
+    # LensEditorTab のスポットダイアグラム / 光線収差図の計算実体
+    src/optics/RayTrace.cpp
+    src/optics/RayTrace.h
+
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp
@@ -590,6 +595,9 @@ add_library(ofdx_acoustic_core STATIC
     # 指数掃引正弦波 (ESS) の生成と逆畳み込み (Farina 2000) —
     # 実測 IR 取り込みの入口。線形応答と高調波を時間軸で分離する
     src/acoustics/core/SweepDeconvolution.cpp
+    # 可聴化のドライ音源として使う帯域制限クリック (窓関数法) —
+    # 無響の音声/音楽素材は同梱できないので、こちらで作れる音源を用意する
+    src/acoustics/core/TestSignal.cpp
     # 建築遮音 (質量則/コインシデンス, ISO 717, ASTM E413, ASHRAE, STI) —
     # SoundproofTab の計算実体。selftest から規格の不変量と直接突き合わせる
     src/acoustics/core/SoundInsulation.cpp
@@ -692,6 +700,7 @@ if(BUILD_TESTS)
         formant
         inr
         sweep
+        testsignal
         reflections
         reverberation
         vocal

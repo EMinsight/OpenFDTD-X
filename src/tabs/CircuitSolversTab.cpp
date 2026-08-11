@@ -26,6 +26,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTabWidget>
@@ -320,6 +321,22 @@ const bool s_i18n = [] {
               "(they can be edited freely).");
     I18n::reg("cir_exp_snp", "📁 Touchstone .s3p 書出", "📁 Export Touchstone .s3p");
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
+    I18n::reg("cir_exp_spice_tip",
+              "上の集中定数モデル (直列 / 並列と R・L・C) を 2 端子の "
+              ".subckt として書き出します。値は指数表記で書くので、"
+              "SPICE の接尾辞 (M がミリかメガか) で取り違える心配がありません。",
+              "Writes the lumped model above (series / parallel with R, L and "
+              "C) as a two-terminal .subckt. Values are written in exponential "
+              "form, so there is no confusion over SPICE suffixes (whether M "
+              "means milli or mega).");
+    I18n::reg("cir_exp_spice_bad",
+              "R / L / C がすべて 0 以下なので書き出せません。",
+              "Nothing to write - R, L and C are all zero or negative.");
+    I18n::reg("cir_exp_spice_ok",
+              "書き出しました: %1 (%2)",
+              "Written: %1 (%2)");
+    I18n::reg("cir_exp_spice_series", "直列", "series");
+    I18n::reg("cir_exp_spice_parallel", "並列", "parallel");
     I18n::reg("cir_exp_h5", "💾 HDF5 保存", "💾 Save HDF5");
     I18n::reg("cir_exp_fdtd", "→ FDTDポートへ適用", "→ Apply to FDTD ports");
     I18n::reg("cir_uw_extract",
@@ -985,6 +1002,48 @@ QWidget *CircuitSolversTab::buildSpicePage()
 }
 
 // ── SPICE ネットリストの取込 ────────────────────────────────────────────────
+// ── SPICE サブサーキット書出 ────────────────────────────────────────────────
+// 上の集中定数モデル (直列/並列 + R/L/C) をそのまま 2 端子の .subckt にする。
+// 抽出が出すのはこの 3 値だけなので、それ以上を「それらしく」書き足さない。
+void CircuitSolversTab::exportSpiceSubckt()
+{
+    SpiceSubckt sub;
+    sub.name = QStringLiteral("EXTRACTED");
+    sub.series = (m_rlcTopology && m_rlcTopology->currentIndex() == 0);
+    bool ok = false;
+    if (m_rlcR) { const double v = m_rlcR->text().trimmed().toDouble(&ok); if (ok) sub.r_ohm = v; }
+    if (m_rlcL) { const double v = m_rlcL->text().trimmed().toDouble(&ok); if (ok) sub.l_h = v * 1e-9; }   // nH
+    if (m_rlcC) { const double v = m_rlcC->text().trimmed().toDouble(&ok); if (ok) sub.c_f = v * 1e-12; }  // pF
+    if (!sub.hasAny()) {
+        QMessageBox::information(this, I18n::tr("cir_exp_spice"),
+                                 I18n::tr("cir_exp_spice_bad"));
+        return;
+    }
+    sub.comment = QStringLiteral("OpenFDTD-X lumped model (%1)")
+                      .arg(sub.series ? I18n::tr("cir_exp_spice_series")
+                                      : I18n::tr("cir_exp_spice_parallel"));
+
+    QString base = m_p->filePath();
+    base = base.isEmpty() ? QStringLiteral("extracted.cir")
+                          : QFileInfo(base).absolutePath()
+                                + QStringLiteral("/extracted.cir");
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("cir_exp_spice"), base,
+        QStringLiteral("SPICE (*.cir *.sp *.net);;All files (*)"));
+    if (path.isEmpty()) return;
+    QString err;
+    if (!SpiceIO::writeSubckt(path, sub, &err)) {
+        QMessageBox::warning(this, I18n::tr("cir_exp_spice"), err);
+        return;
+    }
+    QMessageBox::information(
+        this, I18n::tr("cir_exp_spice"),
+        I18n::tr("cir_exp_spice_ok")
+            .arg(QFileInfo(path).fileName(),
+                 sub.series ? I18n::tr("cir_exp_spice_series")
+                            : I18n::tr("cir_exp_spice_parallel")));
+}
+
 void CircuitSolversTab::browseNetlist()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -1177,10 +1236,15 @@ QWidget *CircuitSolversTab::buildResultsPage()
     auto *expSpice = new QPushButton(I18n::tr("cir_exp_spice"), s);
     auto *expH5    = new QPushButton(I18n::tr("cir_exp_h5"), s);
     auto *expFdtd  = new QPushButton(I18n::tr("cir_exp_fdtd"), s);
-    for (QPushButton *b : { expSnp, expSpice, expH5, expFdtd }) {
+    // SPICE サブサーキットの書出だけは実装済み (io/SpiceNetlist)
+    expSpice->setToolTip(I18n::tr("cir_exp_spice_tip"));
+    connect(expSpice, &QPushButton::clicked, this,
+            &CircuitSolversTab::exportSpiceSubckt);
+    for (QPushButton *b : { expSnp, expH5, expFdtd }) {
         tabhelp::markNotImplemented(b);
-        btnRow->addWidget(b);
     }
+    for (QPushButton *b : { expSnp, expSpice, expH5, expFdtd })
+        btnRow->addWidget(b);
     btnRow->addStretch(1);
     s->vbox()->addLayout(btnRow);
     v->addWidget(s);

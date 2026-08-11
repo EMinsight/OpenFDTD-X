@@ -58,6 +58,32 @@ struct RcwaLayer {
     double thickness_nm = 0;   // 厚み [nm] (≥ 0、半無限層は 0)
 };
 
+// レンズ面テーブルの 1 行 (レンズエディタタブ / 光解析タブが共有する)。
+// 数値も文字列で持つ — 本家の Zemax 風テーブルと同じく "Infinity" や "-" を
+// そのまま表現し、利用者が打った通りに往復させるため。
+struct LensSurfaceRow {
+    bool    enabled = true;
+    QString type;      // OBJ / STD / STO / ASP / BIN / EVN / HOL / FRE / IMG
+    QString R;         // 曲率半径 [mm] ("Infinity" 可)
+    QString thick;     // 厚さ [mm]
+    QString glass;     // ガラス名 / AIR / -
+    QString semiD;     // 有効半径 [mm]
+    QString conic;     // コーニック定数
+    QString comment;
+
+    bool operator==(const LensSurfaceRow &o) const {
+        return enabled == o.enabled && type == o.type && R == o.R
+            && thick == o.thick && glass == o.glass && semiD == o.semiD
+            && conic == o.conic && comment == o.comment;
+    }
+    bool operator!=(const LensSurfaceRow &o) const { return !(*this == o); }
+};
+
+// 面テーブルの既定値 (Cooke triplet)。プロジェクトに面データが無いときに
+// 表示するもので、**保存はしない** (既定のままなら .ofdx は 1 バイトも
+// 増えない)。レンズエディタ・光解析タブ・selftest が共有する。
+QVector<LensSurfaceRow> defaultLensSurfaces();
+
 struct OpticalOpts {
     OpticalSolver solver = OpticalSolver::FDTD;
     OpticalMode   mode   = OpticalMode::BPF;
@@ -73,6 +99,11 @@ struct OpticalOpts {
     // 出力しない (rcwaLayers は GUI 上の「層分割数」で意味が異なるため、
     // 後方互換のため残す — 改名も削除もしない)。
     QVector<RcwaLayer> rcwaLayerList;
+
+    // 順次光学系の面テーブル (レンズエディタタブ)。**空 = 既定の設計例**
+    // (defaultLensSurfaces())。利用者が編集したときだけ中身が入り、
+    // .ofdx の "optical.lens.surfaces" へ書かれる (空なら書かない)。
+    QVector<LensSurfaceRow> lensSurfaces;
 
     // BPM
     int     bpmAlgorithm = 0;     // 0=FFT, 1=FDM, 2=Wide-Angle Padé

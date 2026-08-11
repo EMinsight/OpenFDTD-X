@@ -13,11 +13,17 @@
 // (src/em/RadioPropagation: Friis / 2 波 / 熱雑音 / Shannon) に入れて
 // **実計算**する。多重波の統計が要る指標 (RMS 遅延スプレッド・角度スプレッド)
 // はレイトレース / FDTD の実行が必要なため「未計算」と表示する。
+//
+// 環境の選択 (屋内 / 市街地 / 車内・車車間 / トンネル) は経路損失の**経験式**
+// を選ぶ: 屋内 = ITU-R P.1238、市街地 = 奥村-秦 / COST-231 Hata、
+// 車内・車車間 = 2 波モデル。適用範囲の外では値を出さず理由を書く
+// (経験式の外挿はしない)。受信電力・SNR・容量はこの損失を使う。
 #pragma once
 #include <QScrollArea>
 
 class QButtonGroup;
 class QCheckBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QTableWidget;
@@ -51,6 +57,12 @@ private:
     QLineEdit *m_envFile = nullptr;
     QCheckBox *m_matDb = nullptr;
     QCheckBox *m_matScatter = nullptr;
+    // 経路損失モデル (環境の選択から決まる) とそのパラメータ
+    QLabel         *m_modelName = nullptr;
+    QDoubleSpinBox *m_indoorN = nullptr;    // ITU-R P.1238 の距離損失係数 N
+    QCheckBox      *m_largeCity = nullptr;  // 奥村-秦 の大都市補正
+    QWidget        *m_indoorNRow = nullptr;
+    QWidget        *m_largeCityRow = nullptr;
 
     // 送受信 / TX-RX
     QLineEdit    *m_apCount = nullptr;
