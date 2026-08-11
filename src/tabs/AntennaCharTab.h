@@ -10,6 +10,7 @@
 class QCheckBox;
 
 class QLabel;
+class QTableWidget;
 
 namespace ofd {
 
@@ -25,6 +26,10 @@ private:
     // 直近の計算結果 (給電点表 + 遠方界パターン) を CSV へ書き出す
     void exportCsv();
     QLabel *m_exportNote = nullptr;
+    // far1d.log から求めたパターン指標 (面ごと 1 行)
+    QTableWidget *m_metrics = nullptr;
+    QLabel *m_metricsNote = nullptr;
+    void refreshMetrics();
 
     // 1セクション = チェックボックスの縦並び (モックの <Row><Check/></Row> 群)
     SectionBox *checkSection(QWidget *parent, const char *titleKey,

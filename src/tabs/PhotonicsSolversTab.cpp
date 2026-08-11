@@ -4,9 +4,16 @@
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../io/OfdIO.h"
+#include "../kernel/Runner.h"
 #include "../Theme.h"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
+#include <QDir>
+#include <QFileInfo>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QColor>
 #include <QComboBox>
 #include <QFont>
@@ -245,6 +252,42 @@ const bool s_i18n = [] {
     I18n::reg("psol_hy_wg_role", "モード進化", "Mode evolution");
     I18n::reg("psol_hy_res", "共振器 / 微細構造", "Resonator / fine structure");
     I18n::reg("psol_hy_res_role", "完全波動解析", "Full-wave analysis");
+    I18n::reg("psol_cross_idle",
+              "チェックしたソルバを上から順に実行します "
+              "(1 本ずつ、前が終わってから次を起動します)。",
+              "Runs the checked solvers in order, one at a time, each starting "
+              "after the previous one finishes.");
+    I18n::reg("psol_cross_none",
+              "▸ 実行するソルバにチェックが入っていません。",
+              "▸ No solver is checked.");
+    I18n::reg("psol_cross_nosave",
+              "▸ 入力を書き出せませんでした: %1",
+              "▸ Could not write the input: %1");
+    I18n::reg("psol_cross_nokernel",
+              "カーネル %1 が見つかりません (%2 を設定するか、"
+              "ツール → カーネルパスの設定で指定してください)",
+              "The %1 kernel was not found (set %2 or use Tools > Kernel "
+              "paths)");
+    I18n::reg("psol_cross_running", "▸ 実行中: %1 (%2/%3)  作業先: %4",
+              "▸ Running: %1 (%2/%3)  working dir: %4");
+    I18n::reg("psol_cross_done", "▸ 完了: %1 本中 %2 本が正常終了しました。",
+              "▸ Finished: %2 of %1 runs completed normally.");
+    I18n::reg("psol_cross_state_ok", "正常終了", "completed");
+    I18n::reg("psol_cross_state_ng", "異常終了 (コード %1)",
+              "failed (exit code %1)");
+    I18n::reg("psol_cross_state_skip", "起動できず", "could not start");
+    I18n::reg("psol_cross_col_solver", "ソルバ", "Solver");
+    I18n::reg("psol_cross_col_state", "状態", "State");
+    I18n::reg("psol_cross_col_out", "出力", "Output");
+    I18n::reg("psol_cross_col_note", "備考", "Note");
+    I18n::reg("psol_uw_rerun_ok",
+              "再実行のチェックと「全ソルバ実行」— チェックしたソルバを順に"
+              "起動し、結果表に終了状態と生成ファイルを出します。"
+              "「ソルバ間で数値を突き合わせる比較」はまだ実装していません",
+              "the re-run check boxes and the \"run all solvers\" button - the "
+              "checked solvers are launched in order and the table shows each "
+              "exit state and the files it produced. Comparing the numbers "
+              "across solvers is not implemented yet");
     I18n::reg("psol_uw_rerun", "再実行のチェック群",
               "the re-run check boxes");
     I18n::reg("psol_uw_fdtd", "FDTD ページの入力 (シミュレーション時間・シャットオフ・サブピクセル・共形メッシュ等)",
@@ -436,20 +479,51 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
     // ── クロスバリデーション ───────────────────────────────────────────────
     auto *sCross = new SectionBox(I18n::tr("psol_cross_sec"), body);
     sCross->vbox()->addWidget(makeMuted(I18n::tr("psol_cross_hint"), sCross));
-    sCross->vbox()->addLayout(checkRow({ I18n::tr("psol_run_fdtd"),
-                                         I18n::tr("psol_rerun_rcwa"),
-                                         I18n::tr("psol_rerun_bpm"),
-                                         I18n::tr("psol_rerun_fmm") },
-                                       { true, false, false, false }, sCross));
+    {
+        auto *h = new QHBoxLayout();
+        h->setSpacing(8);
+        const QStringList labels = { I18n::tr("psol_run_fdtd"),
+                                     I18n::tr("psol_rerun_rcwa"),
+                                     I18n::tr("psol_rerun_bpm"),
+                                     I18n::tr("psol_rerun_fmm") };
+        const bool on[4] = { true, false, false, false };
+        m_crossChecks.clear();
+        for (int i = 0; i < labels.size(); ++i) {
+            auto *c = new QCheckBox(labels[i], sCross);
+            c->setChecked(on[i]);
+            m_crossChecks.push_back(c);
+            h->addWidget(c);
+        }
+        h->addStretch(1);
+        sCross->vbox()->addLayout(h);
+    }
     auto *runRow = new QHBoxLayout();
-    auto *runAll = new QPushButton(I18n::tr("psol_run_all"), sCross);
-    runAll->setProperty("primary", true);
-    tabhelp::markNotImplemented(runAll);   // 一括実行は未配線
-    runRow->addWidget(runAll);
+    m_crossRun = new QPushButton(I18n::tr("psol_run_all"), sCross);
+    m_crossRun->setProperty("primary", true);
+    connect(m_crossRun, &QPushButton::clicked,
+            this, &PhotonicsSolversTab::runCrossValidation);
+    runRow->addWidget(m_crossRun);
     runRow->addStretch(1);
     sCross->vbox()->addLayout(runRow);
-    // 再実行チェック群はどこにも読まれない (未実装の明示 — 絶対規則 5)
-    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross, I18n::tr("psol_uw_rerun")));
+    m_crossStatus = new QLabel(sCross);
+    m_crossStatus->setWordWrap(true);
+    m_crossStatus->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_crossStatus->setText(I18n::tr("psol_cross_idle"));
+    sCross->vbox()->addWidget(m_crossStatus);
+    m_crossTable = new QTableWidget(0, 4, sCross);
+    m_crossTable->setHorizontalHeaderLabels(
+        { I18n::tr("psol_cross_col_solver"), I18n::tr("psol_cross_col_state"),
+          I18n::tr("psol_cross_col_out"), I18n::tr("psol_cross_col_note") });
+    m_crossTable->horizontalHeader()->setStretchLastSection(true);
+    m_crossTable->verticalHeader()->setVisible(false);
+    m_crossTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_crossTable->setMinimumHeight(120);
+    m_crossTable->setVisible(false);
+    sCross->vbox()->addWidget(m_crossTable);
+    // 実行はできるが「値の突き合わせ」まではやっていない (絶対規則 5)
+    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross,
+                                                  I18n::tr("psol_uw_rerun"),
+                                                  I18n::tr("psol_uw_rerun_ok")));
     v->addWidget(sCross);
 
     // ── ハイブリッド解析 ───────────────────────────────────────────────────
@@ -898,4 +972,153 @@ void PhotonicsSolversTab::refresh()
     rebuildLayerTable();
     setMethod(int(o.solver));      // apply() は m_updating で抑止される
     m_updating = false;
+}
+
+// ── クロスバリデーション: チェックしたソルバを順に実行する ──────────────────
+//
+// ソルバごとに `optical().solver` を差し替えた .ofd を別ディレクトリへ書き、
+// `Runner` が解決したバイナリを QProcess で起動する。1 本ずつ直列に回すのは、
+// 同じ作業ディレクトリの出力を取り合わないようにするため。
+//
+// **数値の突き合わせはしていない。** 各ソルバの出力量が違う (RCWA は回折効率、
+// BPM は伝搬電力、FDTD は近傍界/遠方界) ので、共通の観測量へ落とす作業が別に
+// 要る。ここは「どのソルバが最後まで走ったか」と生成ファイルまでを出す。
+static const char *const kCrossName[4] = { "FDTD", "RCWA", "BPM", "FMM" };
+
+void PhotonicsSolversTab::runCrossValidation()
+{
+    if (m_crossProc && m_crossProc->state() != QProcess::NotRunning) return;
+
+    m_crossQueue.clear();
+    for (int i = 0; i < m_crossChecks.size(); ++i)
+        if (m_crossChecks[i]->isChecked()) m_crossQueue.push_back(i);
+    if (m_crossQueue.isEmpty()) {
+        m_crossStatus->setText(I18n::tr("psol_cross_none"));
+        m_crossTable->setVisible(false);
+        return;
+    }
+    m_crossTable->setRowCount(0);
+    m_crossTable->setVisible(true);
+    m_crossDir = m_p->filePath().isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+              + QStringLiteral("/openfdtd-x/cross")
+        : QFileInfo(m_p->filePath()).path() + QStringLiteral("/cross_run");
+    QDir().mkpath(m_crossDir);
+    m_crossRun->setEnabled(false);
+    startNextCrossRun();
+}
+
+void PhotonicsSolversTab::startNextCrossRun()
+{
+    if (m_crossQueue.isEmpty()) {          // 全部終わった
+        int ok = 0;
+        for (int r = 0; r < m_crossTable->rowCount(); ++r)
+            if (m_crossTable->item(r, 1)
+                && m_crossTable->item(r, 1)->text()
+                       == I18n::tr("psol_cross_state_ok")) ++ok;
+        m_crossStatus->setText(I18n::tr("psol_cross_done")
+                                   .arg(m_crossTable->rowCount()).arg(ok));
+        m_crossRun->setEnabled(true);
+        m_crossCurrent = -1;
+        return;
+    }
+    m_crossCurrent = m_crossQueue.takeFirst();
+
+    // そのソルバ用の .ofd を専用ディレクトリへ書く
+    static const OpticalSolver kSolver[4] = {
+        OpticalSolver::FDTD, OpticalSolver::RCWA,
+        OpticalSolver::BPM,  OpticalSolver::FMM };
+    // Project は QObject でコピーできないので、書き出しのあいだだけ
+    // solver を差し替えて元に戻す。touch() を呼ばないので他のビューは動かない。
+    const OpticalSolver saved = m_p->optical().solver;
+    m_p->optical().solver = kSolver[m_crossCurrent];
+    const QString sub = m_crossDir + QLatin1Char('/')
+                        + QString::fromLatin1(kCrossName[m_crossCurrent]).toLower();
+    QDir().mkpath(sub);
+    const QString base = m_p->filePath().isEmpty()
+                             ? QStringLiteral("cross")
+                             : QFileInfo(m_p->filePath()).completeBaseName();
+    const QString path = sub + QLatin1Char('/') + base + QStringLiteral(".ofd");
+    QString err;
+    const bool wrote = OfdIO::save(path, *m_p, &err);
+    if (wrote) OfdxIO::save(path, *m_p, nullptr);  // 拡張設定 (無くても進む)
+    RunConfig cfg;
+    cfg.kernel = Runner::kernelForProject(*m_p);
+    m_p->optical().solver = saved;                 // ここで必ず戻す
+    if (!wrote) {
+        addCrossRow(QString::fromLatin1(kCrossName[m_crossCurrent]),
+                    I18n::tr("psol_cross_state_skip"), QString(), err);
+        startNextCrossRun();
+        return;
+    }
+    const QString bin = Runner::resolvedSolverPath(cfg);
+    if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+        addCrossRow(QString::fromLatin1(kCrossName[m_crossCurrent]),
+                    I18n::tr("psol_cross_state_skip"), QString(),
+                    I18n::tr("psol_cross_nokernel")
+                        .arg(Runner::solverBinary(cfg))
+                        .arg(QLatin1String(Runner::homeVarFor(cfg.kernel))));
+        startNextCrossRun();
+        return;
+    }
+
+    if (!m_crossProc) {
+        m_crossProc = new QProcess(this);
+        m_crossProc->setProcessChannelMode(QProcess::MergedChannels);
+        connect(m_crossProc,
+                QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this](int code, QProcess::ExitStatus st) {
+                    onCrossFinished(st == QProcess::NormalExit ? code : -1);
+                });
+    }
+    m_crossStatus->setText(
+        I18n::tr("psol_cross_running")
+            .arg(QString::fromLatin1(kCrossName[m_crossCurrent]))
+            .arg(m_crossTable->rowCount() + 1)
+            .arg(m_crossTable->rowCount() + 1 + m_crossQueue.size())
+            .arg(QDir::toNativeSeparators(sub)));
+    m_crossProc->setWorkingDirectory(sub);
+    m_crossProc->start(bin, { QFileInfo(path).fileName() });
+    if (!m_crossProc->waitForStarted(10000)) {
+        addCrossRow(QString::fromLatin1(kCrossName[m_crossCurrent]),
+                    I18n::tr("psol_cross_state_skip"), QString(),
+                    m_crossProc->errorString());
+        startNextCrossRun();
+    }
+}
+
+void PhotonicsSolversTab::onCrossFinished(int exitCode)
+{
+    static const char *const kOut[] = {
+        "ev.ev2", "ev.ev3", "far1d.log", "far2d.log", "near1d.log",
+        "near2d.log", "rcwa_efficiency.csv", "time_series_data.h5", "obpm.out" };
+    const QString sub = m_crossProc ? m_crossProc->workingDirectory() : QString();
+    QStringList made;
+    for (const char *n : kOut)
+        if (QFileInfo::exists(sub + QLatin1Char('/') + QString::fromLatin1(n)))
+            made << QString::fromLatin1(n);
+    const QString name = (m_crossCurrent >= 0 && m_crossCurrent < 4)
+                             ? QString::fromLatin1(kCrossName[m_crossCurrent])
+                             : QString();
+    addCrossRow(name,
+                exitCode == 0 ? I18n::tr("psol_cross_state_ok")
+                              : I18n::tr("psol_cross_state_ng").arg(exitCode),
+                made.join(QStringLiteral(", ")),
+                QDir::toNativeSeparators(sub));
+    startNextCrossRun();
+}
+
+void PhotonicsSolversTab::addCrossRow(const QString &solver,
+                                      const QString &state,
+                                      const QString &out, const QString &note)
+{
+    const int r = m_crossTable->rowCount();
+    m_crossTable->insertRow(r);
+    const QString cols[4] = { solver, state, out, note };
+    for (int c = 0; c < 4; ++c) {
+        auto *it = new QTableWidgetItem(cols[c]);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        m_crossTable->setItem(r, c, it);
+    }
+    m_crossTable->resizeColumnsToContents();
 }

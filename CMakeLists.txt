@@ -151,6 +151,8 @@ set(CORE_SOURCES
     # ScatteringTab が <kernel>.log の cross section を表示するのに使う
     src/em/MieSphere.cpp
     src/em/MieSphere.h
+    src/em/PatternMetrics.cpp
+    src/em/PatternMetrics.h
     src/em/RadarCrossSection.cpp
     src/em/RadarCrossSection.h
 
@@ -284,6 +286,8 @@ set(CORE_SOURCES
     # LensEditorTab の近軸諸元 / EFFL・PIMH・ISFN オペランドの計算実体
     src/optics/ParaxialTrace.cpp
     src/optics/ParaxialTrace.h
+    src/optics/SeidelAberration.cpp
+    src/optics/SeidelAberration.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
@@ -545,6 +549,8 @@ set_target_properties(openfdtd_x PROPERTIES
 add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/AcousticFdtdEstimator.cpp
     src/acoustics/core/AcousticMetrics.cpp
+    # ラインアレイ / サブアレイの遠方界指向性合成 (音源タブのアレイページ)
+    src/acoustics/core/ArrayDirectivity.cpp
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/ConvolutionEngine.cpp
     # 有理比ポリフェーズ Kaiser 窓 sinc リサンプラ (負債 #12) —
@@ -655,6 +661,7 @@ if(BUILD_TESTS)
 
     # C++ 単体テスト (各 tests/acoustics/test_*.cpp → 個別実行ファイル)
     set(OFDX_ACOUSTIC_TESTS
+        array
         bandfilter
         clarity
         clipping

@@ -106,8 +106,20 @@ const bool s_i18nOptRay = [] {
               "the choice of method (wave / geometrical)");
     I18n::reg("optm_uw_ray", "レイトレースの設定 (レイトレーサ本体が未実装のため)",
               "the ray-trace settings (the ray tracer itself is not implemented)");
-    I18n::reg("optm_uw_surf", "面データと収差解析のチェック (面データは固定の設計例です)",
-              "the surface data and aberration check boxes (the surface data is a fixed worked example)");
+    I18n::reg("optm_uw_surf",
+              "この節の面データ (固定の設計例) と、スポット径・MTF・光線収差図の"
+              "チェック (いずれも実光線追跡が必要です)",
+              "the surface data in this section (a fixed worked example) and the "
+              "spot-size / MTF / ray-aberration check boxes (all of which need a "
+              "real ray trace)");
+    I18n::reg("optm_seidel_where",
+              "収差解析 (Seidel) は 3 次収差の実計算がレンズエディタタブに"
+              "あります — 面テーブル・入射瞳径・視野をそこで編集すると、"
+              "球面収差・コマ・非点・像面湾曲・歪曲が面ごとに出ます。",
+              "The Seidel (third-order) aberrations are computed for real in the "
+              "lens editor tab — edit the surface table, the entrance pupil and "
+              "the field there and you get spherical, coma, astigmatism, field "
+              "curvature and distortion per surface.");
     I18n::reg("optm_uw_hybrid", "波動 / 幾何のハイブリッド連携の設定",
               "the wave / geometrical hybrid settings");
     I18n::reg("optm_uw_out", "この節の設定",
@@ -792,7 +804,9 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_optRayAberr = makeCheck(I18n::tr("optray_ray_aberr"), false, ssys);
     ssys->vbox()->addLayout(
         hrow({ m_optSeidel, m_optSpot, m_optMtf, m_optRayAberr }));
-    // 面データは固定の設計例で、収差解析チェックもローカル state のみ
+    // 面データは固定の設計例。3 次収差 (Seidel) の実計算はレンズエディタ
+    // タブにあるので、そこへ誘導する (この節のチェックはローカル state)。
+    ssys->vbox()->addWidget(mutedLabel(I18n::tr("optm_seidel_where"), ssys));
     ssys->vbox()->addWidget(tabhelp::unwiredNote(ssys, I18n::tr("optm_uw_surf")));
     v->addWidget(ssys);
 

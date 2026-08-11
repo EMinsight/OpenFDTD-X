@@ -2,6 +2,7 @@
 #include "AntennaCharTab.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
+#include "../em/PatternMetrics.h"
 #include "../io/KernelResultReader.h"
 #include <QFileDialog>
 #include <QFile>
@@ -12,10 +13,13 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 using namespace ofd;
@@ -86,8 +90,43 @@ const bool s_i18n = [] {
               "Exported %1 \u2014 %2 feed(s) over %3 frequencies, %4 pattern cut(s)");
     I18n::reg("ant_csv_fail", "書き出しに失敗しました: %1",
               "Export failed: %1");
-    I18n::reg("ant_uw_items", "出力項目のチェック",
-              "the output-item check boxes");
+    I18n::reg("ant_uw_items",
+              "指向性・放射効率・アンテナ効率・偏波成分/軸比/XPD・アレイ特性の"
+              "チェック",
+              "the directivity, radiation/total efficiency, polarisation "
+              "(components, axial ratio, XPD) and array check boxes");
+    I18n::reg("ant_uw_items_ok",
+              "放射パターン・主ビーム方向と 3 dB 幅・サイドローブレベル・"
+              "前後比・ゲイン (下の「パターン指標」表と CSV に出ます)",
+              "the radiation pattern, main-beam direction and 3 dB width, "
+              "side-lobe level, front-to-back ratio and gain (they appear in "
+              "the pattern-metrics table below and in the CSV)");
+    I18n::reg("ant_uw_items_why",
+              "指向性・効率は切断面だけでは出せません (全球積分が要ります — "
+              "far2d の出力が必要)。偏波成分・軸比・XPD は far1d.log が "
+              "E-abs しか持たないため出せません。",
+              "The directivity and the efficiencies cannot be obtained from a "
+              "single cut (they need an integration over the full sphere - a "
+              "far2d output). The polarisation components, axial ratio and XPD "
+              "are not available because far1d.log carries only E-abs.");
+    I18n::reg("ant_met_title", "パターン指標 (far1d.log の切断面ごと)",
+              "Pattern metrics (per cut in far1d.log)");
+    I18n::reg("ant_met_none",
+              "far1d.log がまだありません。ポスト処理で「遠方界 1D "
+              "(plotfar1d)」を有効にして実行すると、.ofd と同じディレクトリに"
+              "出力されます。",
+              "There is no far1d.log yet. Enable \"far field 1D (plotfar1d)\" "
+              "in post processing and run - it is written next to the .ofd.");
+    I18n::reg("ant_met_ok", "%1 の %2 面から算出しました。",
+              "Computed from %2 cuts in %1.");
+    I18n::reg("ant_met_plane", "面", "Cut");
+    I18n::reg("ant_met_freq", "周波数", "Frequency");
+    I18n::reg("ant_met_peak", "ピーク", "Peak");
+    I18n::reg("ant_met_dir", "主ビーム方向", "Main-beam direction");
+    I18n::reg("ant_met_hpbw", "3 dB 幅", "3 dB width");
+    I18n::reg("ant_met_sll", "SLL", "SLL");
+    I18n::reg("ant_met_fb", "F/B", "F/B");
+    I18n::reg("ant_met_na", "—", "—");
     return true;
 }();
 
@@ -134,6 +173,31 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     v->addWidget(checkSection(body, "ant_array", kArrKeys, kArrOn,
                               int(sizeof(kArrKeys) / sizeof(kArrKeys[0])), &m_array));
 
+    // ── パターン指標 (far1d.log の切断面から実計算) ────────────────────────
+    {
+        auto *sMet = new SectionBox(I18n::tr("ant_met_title"), body);
+        m_metricsNote = new QLabel(sMet);
+        m_metricsNote->setWordWrap(true);
+        m_metricsNote->setStyleSheet("font-size:11px; color:palette(mid);");
+        sMet->vbox()->addWidget(m_metricsNote);
+        m_metrics = new QTableWidget(0, 7, sMet);
+        m_metrics->setHorizontalHeaderLabels(
+            { I18n::tr("ant_met_plane"), I18n::tr("ant_met_freq"),
+              I18n::tr("ant_met_peak"), I18n::tr("ant_met_dir"),
+              I18n::tr("ant_met_hpbw"), I18n::tr("ant_met_sll"),
+              I18n::tr("ant_met_fb") });
+        m_metrics->horizontalHeader()->setStretchLastSection(true);
+        m_metrics->verticalHeader()->setVisible(false);
+        m_metrics->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_metrics->setMinimumHeight(110);
+        m_metrics->setVisible(false);
+        sMet->vbox()->addWidget(m_metrics);
+        v->addWidget(sMet);
+        connect(project, &Project::loaded, this,
+                &AntennaCharTab::refreshMetrics);
+        refreshMetrics();
+    }
+
     // ── 出力先 ────────────────────────────────────────────────────────────
     auto *sOut = new SectionBox(I18n::tr("ant_output"), body);
     auto *row = new QHBoxLayout();
@@ -172,8 +236,14 @@ SectionBox *AntennaCharTab::checkSection(QWidget *parent, const char *titleKey,
         s->vbox()->addWidget(ck);
         out->push_back(ck);
     }
-    // チェック状態はまだどこにも読まれない (ローカル状態のみ)
-    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("ant_uw_items")));
+    // 切断面から出せる 5 項目は下の「パターン指標」表に出る。残りは出せない
+    // 理由を添える (全球積分が要る / far1d.log に成分が無い)
+    s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("ant_uw_items"),
+                                              I18n::tr("ant_uw_items_ok")));
+    auto *why = new QLabel(I18n::tr("ant_uw_items_why"), s);
+    why->setWordWrap(true);
+    why->setStyleSheet("font-size:11px; color:palette(mid);");
+    s->vbox()->addWidget(why);
     return s;
 }
 
@@ -231,6 +301,25 @@ void AntennaCharTab::exportCsv()
     for (const FarPattern &c : cuts) {
         out << "\n[pattern] plane," << c.plane << ",frequency[Hz],"
             << QString::number(c.freqHz, 'g', 10) << "\n";
+        // 切断面から確定する指標 (パターン指標表と同じ値)
+        {
+            const std::vector<double> dv(c.deg.begin(), c.deg.end());
+            const std::vector<double> bv(c.eAbsDb.begin(), c.eAbsDb.end());
+            const em::PatternMetrics m = em::patternMetrics(dv, bv);
+            out << "metric,value,unit\n";
+            if (m.hasPeak) {
+                out << "peak," << QString::number(m.peakDb, 'g', 6) << ",dB\n";
+                out << "peak_direction," << QString::number(m.peakDeg, 'g', 6)
+                    << ",deg\n";
+            }
+            if (m.hasHpbw)
+                out << "hpbw," << QString::number(m.hpbwDeg, 'g', 6) << ",deg\n";
+            if (m.hasSll)
+                out << "sll," << QString::number(m.sllDb, 'g', 6) << ",dB\n";
+            if (m.hasFb)
+                out << "front_to_back," << QString::number(m.fbDb, 'g', 6)
+                    << ",dB\n";
+        }
         out << "angle[deg],E-abs[dB]\n";
         for (int i = 0; i < c.deg.size() && i < c.eAbsDb.size(); ++i)
             out << QString::number(c.deg[i], 'g', 6) << ","
@@ -240,4 +329,57 @@ void AntennaCharTab::exportCsv()
     m_exportNote->setText(I18n::tr("ant_csv_ok")
                               .arg(QFileInfo(path).fileName())
                               .arg(feeds.size()).arg(freqCount).arg(cuts.size()));
+}
+
+// far1d.log の切断面ごとに、そこから確定する指標を出す。
+// 指向性・効率は全球積分が要るのでここには出さない (出せない理由は注記に出す)。
+void AntennaCharTab::refreshMetrics()
+{
+    if (!m_metrics) return;
+    m_metrics->setRowCount(0);
+    m_metrics->setVisible(false);
+    const QString dir = m_p->filePath().isEmpty()
+                            ? QString()
+                            : QFileInfo(m_p->filePath()).path();
+    if (dir.isEmpty()) {
+        m_metricsNote->setText(I18n::tr("ant_met_none"));
+        return;
+    }
+    const QString path = dir + QStringLiteral("/far1d.log");
+    const QVector<FarPattern> cuts = KernelResultReader::readFar1d(path);
+    if (cuts.isEmpty()) {
+        m_metricsNote->setText(I18n::tr("ant_met_none"));
+        return;
+    }
+    auto cell = [](const QString &t) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        return it;
+    };
+    const QString na = I18n::tr("ant_met_na");
+    for (const FarPattern &c : cuts) {
+        const std::vector<double> deg(c.deg.begin(), c.deg.end());
+        const std::vector<double> db(c.eAbsDb.begin(), c.eAbsDb.end());
+        const em::PatternMetrics m = em::patternMetrics(deg, db);
+        const int r = m_metrics->rowCount();
+        m_metrics->insertRow(r);
+        m_metrics->setItem(r, 0, cell(c.plane));
+        m_metrics->setItem(r, 1, cell(QStringLiteral("%1 MHz")
+                                          .arg(c.freqHz * 1e-6, 0, 'g', 6)));
+        m_metrics->setItem(r, 2, cell(m.hasPeak
+            ? QStringLiteral("%1 dB").arg(m.peakDb, 0, 'f', 2) : na));
+        m_metrics->setItem(r, 3, cell(m.hasPeak
+            ? QStringLiteral("%1°").arg(m.peakDeg, 0, 'f', 1) : na));
+        m_metrics->setItem(r, 4, cell(m.hasHpbw
+            ? QStringLiteral("%1°").arg(m.hpbwDeg, 0, 'f', 1) : na));
+        m_metrics->setItem(r, 5, cell(m.hasSll
+            ? QStringLiteral("%1 dB").arg(m.sllDb, 0, 'f', 2) : na));
+        m_metrics->setItem(r, 6, cell(m.hasFb
+            ? QStringLiteral("%1 dB").arg(m.fbDb, 0, 'f', 2) : na));
+    }
+    m_metrics->resizeColumnsToContents();
+    m_metrics->setVisible(true);
+    m_metricsNote->setText(I18n::tr("ant_met_ok")
+                               .arg(QDir::toNativeSeparators(path))
+                               .arg(cuts.size()));
 }

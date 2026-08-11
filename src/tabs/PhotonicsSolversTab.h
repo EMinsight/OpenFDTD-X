@@ -8,6 +8,7 @@
 #pragma once
 #include <QFrame>
 #include <QScrollArea>
+#include <QVector>
 
 class QCheckBox;
 class QComboBox;
@@ -15,6 +16,8 @@ class QLabel;
 class QLineEdit;
 class QSlider;
 class QSpinBox;
+class QProcess;
+class QPushButton;
 class QStackedWidget;
 class QTableWidget;
 
@@ -45,6 +48,8 @@ public:
 
 private slots:
     void refresh();
+    void runCrossValidation();      // チェックしたソルバを順に実行する
+    void onCrossFinished(int exitCode);
 
 private:
     void apply();
@@ -85,6 +90,19 @@ private:
     QLabel    *m_fmmTotal;
     QCheckBox *m_fmmLi;
     QTableWidget *m_layerTable = nullptr;   // 層構造 (RCWA 層スタックのビュー)
+
+    // クロスバリデーション (チェックしたソルバを順に実行する)
+    QVector<QCheckBox *> m_crossChecks;     // FDTD / RCWA / BPM / FMM の順
+    QPushButton  *m_crossRun = nullptr;
+    QLabel       *m_crossStatus = nullptr;
+    QTableWidget *m_crossTable = nullptr;
+    QProcess     *m_crossProc = nullptr;
+    QVector<int>  m_crossQueue;             // 残りのソルバ (m_method と同じ番号)
+    int           m_crossCurrent = -1;
+    QString       m_crossDir;
+    void startNextCrossRun();
+    void addCrossRow(const QString &solver, const QString &state,
+                     const QString &out, const QString &note);
 };
 
 } // namespace ofd

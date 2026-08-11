@@ -73,6 +73,7 @@
 #include "optics/SourceSpectrum.h"
 #include "optics/DisplayMetrics.h"
 #include "optics/ParaxialTrace.h"
+#include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
 #include "em/RadioPropagation.h"
@@ -81,6 +82,7 @@
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
 #include "em/MieSphere.h"
+#include "em/PatternMetrics.h"
 #include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
@@ -4918,6 +4920,40 @@ static void testRcwaCore()
         check(Runner::kernelForProject(p) == Kernel::RCWA,
               "fmm: kernel resolves to orcwa (RCWA)");
 
+        // ── 4 つのソルバ選択がそれぞれ正しいカーネルと入力になること ──────
+        // 光ソルバのクロスバリデーションは「solver を差し替えて書き出し →
+        // その solver のカーネルを起動」で回る。選択がカーネル入力に届いて
+        // いないと、別のソルバを走らせたつもりで同じものを走らせてしまう
+        // (回路タブの渦電流でまさにそれが起きていた)。
+        {
+            const struct { OpticalSolver s; Kernel k; const char *head; }
+            kCases[] = {
+                { OpticalSolver::FDTD, Kernel::FDTD, "OpenFDTD 4 2\n" },
+                { OpticalSolver::RCWA, Kernel::RCWA, "OpenRCWA 4 2\n" },
+                { OpticalSolver::BPM,  Kernel::BPM,  "OpenFDTD 4 2\n" },
+                { OpticalSolver::FMM,  Kernel::RCWA, "OpenRCWA 4 2\n" },
+            };
+            // RCWA / FMM のヘッダ切替は層スタックが妥当なときだけ起きる
+            o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                                RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+            bool allKernel = true, allHead = true;
+            for (const auto &c : kCases) {
+                o.solver = c.s;
+                if (Runner::kernelForProject(p) != c.k) allKernel = false;
+                if (!OfdIO::serialize(p).startsWith(QLatin1String(c.head)))
+                    allHead = false;
+            }
+            check(allKernel,
+                  "optical: every solver choice resolves to its own kernel "
+                  "(FDTD/BPM to their own, RCWA and FMM to orcwa)");
+            check(allHead,
+                  "optical: every solver choice writes the header its kernel "
+                  "parses");
+            o.rcwaLayerList.clear();
+            o.solver = OpticalSolver::FMM;
+        }
+
         // 層スタックが空なら従来出力とバイト一致 (実行前ゲートは
         // MainWindow 側で警告するため、書き出しは何も加えない)
         o.rcwaLayerList.clear();
@@ -8340,6 +8376,61 @@ static void testOfdIntegration(const QString &sampleDir)
             check(std::fabs(fs.vPerM - std::sqrt(30.0 * gLin * pW) / dM)
                       < 1e-12,
                   "far1d: the predicted field matches sqrt(30 G P)/d");
+
+            // ── パターン指標を実カーネル出力に当てる ───────────────────
+            // ここで **理想の半波長ダイポールの 78°** を期待してはいけない。
+            // dipole.ofd の線導体は幾何長 50 mm = 0.5004λ だが、実測パターンは
+            // 有限長ダイポールの解析式
+            //     F(θ) = [cos(kL/2·cosθ) − cos(kL/2)] / sinθ
+            // に **L = 0.6λ** を入れたものと −20 dB まで 0.1 dB で一致する
+            // (ボクセル化された PEC 線と給電ギャップのぶん電気長が伸びている)。
+            // 教科書値そのものではなく「解析式のどの長さに一致するか」を
+            // 判定する — こちらの方が強く、しかも実際に成り立つ。
+            // 8 の字なので前後比は 0 dB。
+            if (!cuts.isEmpty()) {
+                const FarPattern &c0 = cuts.first();
+                const std::vector<double> dv(c0.deg.begin(), c0.deg.end());
+                const std::vector<double> bv(c0.eAbsDb.begin(),
+                                             c0.eAbsDb.end());
+                const em::PatternMetrics pm = em::patternMetrics(dv, bv);
+                check(pm.hasPeak
+                      && std::fabs(pm.peakDb - peak) < 1e-9,
+                      "far1d: the metric peak agrees with the direct maximum");
+
+                // 解析式 (L = 0.6λ) を同じ角度で作り、同じ関数へ通す
+                const double kPi = 3.14159265358979323846;
+                const double kL2 = kPi * 0.6;          // kL/2 = π·(L/λ)
+                auto dipoleDb = [&](double degv) {
+                    const double th = degv * kPi / 180.0;
+                    const double s = std::sin(th);
+                    if (std::fabs(s) < 1e-9) return -240.0;
+                    const double f = (std::cos(kL2 * std::cos(th))
+                                      - std::cos(kL2)) / s;
+                    return 20.0 * std::log10(std::max(1e-12, std::fabs(f)));
+                };
+                const double refPeak = dipoleDb(90.0);
+                std::vector<double> rb;
+                rb.reserve(dv.size());
+                for (double d : dv) rb.push_back(dipoleDb(d));
+                const em::PatternMetrics rm = em::patternMetrics(dv, rb);
+                check(rm.hasHpbw && pm.hasHpbw
+                      && std::fabs(pm.hpbwDeg - rm.hpbwDeg) < 1.5,
+                      "far1d: the measured 3 dB width matches the analytic "
+                      "0.6 lambda dipole (not the ideal half-wave 78 deg)");
+                // 形そのものの一致 (−20 dB より上で 0.3 dB 以内)
+                double worst = 0.0;
+                for (int i = 0; i < int(dv.size()); ++i) {
+                    const double relRef = rb[i] - refPeak;
+                    if (relRef < -20.0) continue;
+                    worst = std::max(worst,
+                                     std::fabs((bv[i] - pm.peakDb) - relRef));
+                }
+                check(worst < 0.3,
+                      "far1d: the whole cut follows the analytic dipole "
+                      "pattern to 0.3 dB above -20 dB");
+                check(pm.hasFb && std::fabs(pm.fbDb) < 0.5,
+                      "far1d: the dipole pattern is front-back symmetric");
+            }
         }
         g_file = "ofd_integration";
     }
@@ -13619,6 +13710,182 @@ static void testParaxialTrace()
     }
 }
 
+// ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
+// 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
+//   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
+//   S_IV = H²φ/n / S_V = 0 (曲げに依らない)、同心面で Ā = 0 → S_II=S_III=S_V=0、
+//   絞り移動で S_I と S_IV は不変 (Seidel の絞り移動式)、ダミー平面は無寄与。
+static void testSeidelAberration()
+{
+    g_file = "seidel";
+    namespace px = ofd::paraxial;
+    namespace sd = ofd::seidel;
+
+    const double ng = 1.5, f = 100.0, phi = 1.0 / f;
+    // 曲率 c1 / c2 の薄レンズ (厚み ~0)。最終面を絞りとする = 絞り密着。
+    auto thinLens = [&](double c1, double c2, bool stopAtLens) {
+        std::vector<px::Surface> s(2);
+        s[0].R = (c1 != 0.0) ? 1.0 / c1 : 0.0;
+        s[0].thickness = 1e-6;
+        s[0].nAfter = ng;
+        s[1].R = (c2 != 0.0) ? 1.0 / c2 : 0.0;
+        s[1].thickness = 0.0;
+        s[1].nAfter = 1.0;
+        s[1].stop = stopAtLens;
+        return s;
+    };
+    const double cEq = phi / (2.0 * (ng - 1.0));       // 両凸 (等曲率)
+
+    // 1) 単レンズのペッツバール半径は −n·f (Kingslake §10)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        check(r.valid, "seidel: an equiconvex singlet is analysed");
+        check(r.hasField && std::fabs(r.lagrange) > 0.0,
+              "seidel: a non-zero field gives a non-zero Lagrange invariant");
+        check(r.hasPetzval
+              && std::fabs(r.petzvalRadius / (-ng * f) - 1.0) < 1e-9,
+              "seidel: the Petzval radius of a singlet is -n*f");
+        const double H2 = r.lagrange * r.lagrange;
+        // 厚み 0 は数値上作れないので 1e-6 mm にしてある。恒等式は
+        // 「薄レンズの極限」なので相対 1e-6 で判定する (厚みを 10 倍
+        // 薄くすると差も 10 分の 1 になることは手で確認済み)。
+        check(std::fabs(r.sIII / (H2 * phi) - 1.0) < 1e-6,
+              "seidel: with the stop in contact S_III = H^2 * power");
+        check(std::fabs(r.sIV / (H2 * phi / ng) - 1.0) < 1e-6,
+              "seidel: S_IV = H^2 * power / n");
+        check(std::fabs(r.sV) < 1e-6 * std::fabs(r.sIII),
+              "seidel: a thin lens with the stop in contact has no distortion");
+    }
+
+    // 2) 曲げ (bending) を変えても S_III / S_IV / S_V は動かず、S_I だけ動く。
+    //    しかも最小は端ではなく内側にある (= 単レンズの best form)。
+    {
+        auto c2of = [&](double c1) { return c1 - phi / (ng - 1.0); };
+        double sIIIref = 0.0, sIVref = 0.0;
+        double sI[4] = { 0, 0, 0, 0 };
+        const double bends[4] = { 0.0, 0.5 * cEq, 1.5 * cEq, 2.0 * cEq };
+        for (int i = 0; i < 4; ++i) {
+            const sd::Result r =
+                sd::analyze(thinLens(bends[i], c2of(bends[i]), true), 20.0, 5.0);
+            check(r.valid, "seidel: a bent singlet is analysed");
+            sI[i] = r.sI;
+            if (i == 0) { sIIIref = r.sIII; sIVref = r.sIV; }
+            check(std::fabs(r.sIII - sIIIref) < 1e-6 * std::fabs(sIIIref)
+                  && std::fabs(r.sIV - sIVref) < 1e-6 * std::fabs(sIVref),
+                  "seidel: astigmatism and Petzval do not depend on bending");
+            check(std::fabs(r.sV) < 1e-6 * std::fabs(sIIIref),
+                  "seidel: distortion stays zero through the bending");
+        }
+        check(sI[2] < sI[0] && sI[2] < sI[3] && sI[2] < sI[1],
+              "seidel: spherical aberration has an interior minimum "
+              "(the best-form singlet)");
+        check(sI[0] > 3.0 * sI[2],
+              "seidel: the worst bending is several times the best form");
+    }
+
+    // 3) 平凸レンズは **凸面を平行光側へ向けた方が球面収差が小さい** (教科書)
+    {
+        const double cPc = phi / (ng - 1.0);
+        const double convexFirst =
+            sd::analyze(thinLens(cPc, 0.0, true), 20.0, 0.0).sI;
+        const double flatFirst =
+            sd::analyze(thinLens(0.0, -cPc, true), 20.0, 0.0).sI;
+        check(convexFirst > 0.0 && flatFirst > convexFirst * 3.0,
+              "seidel: a plano-convex lens is best used convex to the "
+              "collimated beam");
+    }
+
+    // 4) 同心面 (絞りが曲率中心にある) では Ā = 0 → コマ・非点・歪曲が消える
+    {
+        std::vector<px::Surface> s(2);
+        s[0].R = 0.0;   s[0].thickness = 50.0; s[0].nAfter = 1.0;
+        s[0].stop = true;                       // 絞り (平面ダミー)
+        s[1].R = -50.0; s[1].thickness = 0.0;  s[1].nAfter = 1.5;
+        const sd::Result r = sd::analyze(s, 20.0, 5.0);
+        check(r.valid, "seidel: a concentric surface is analysed");
+        check(std::fabs(r.sII) < 1e-12 && std::fabs(r.sIII) < 1e-12
+              && std::fabs(r.sV) < 1e-12,
+              "seidel: a concentric surface has no coma, astigmatism or "
+              "distortion");
+        check(std::fabs(r.sIV) > 1e-6 && std::fabs(r.sI) > 1e-6,
+              "seidel: it still has spherical aberration and Petzval "
+              "curvature");
+    }
+
+    // 5) 絞り移動: S_I と S_IV は不変。S_II / S_III は絞り移動式に従って動く
+    //    (S_II* = S_II + E·S_I, S_III* = S_III + 2E·S_II + E²·S_I)
+    {
+        const sd::Result at = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        std::vector<px::Surface> shifted = thinLens(cEq, -cEq, false);
+        px::Surface dummy;
+        dummy.R = 0.0; dummy.thickness = 30.0; dummy.nAfter = 1.0;
+        dummy.stop = true;
+        shifted.insert(shifted.begin(), dummy);
+        const sd::Result sh = sd::analyze(shifted, 20.0, 5.0);
+        check(sh.valid && std::fabs(sh.sI - at.sI) < 1e-12,
+              "seidel: spherical aberration does not move with the stop");
+        check(std::fabs(sh.sIV - at.sIV) < 1e-12,
+              "seidel: the Petzval sum does not move with the stop");
+        check(std::fabs(sh.lagrange - at.lagrange) < 1e-12,
+              "seidel: the Lagrange invariant is unchanged");
+        const double E = (sh.sII - at.sII) / at.sI;
+        check(std::fabs(E) > 1e-6, "seidel: the stop really moved");
+        const double pred = at.sIII + 2.0 * E * at.sII + E * E * at.sI;
+        check(std::fabs(sh.sIII - pred) < 1e-12,
+              "seidel: astigmatism follows the stop-shift equation");
+    }
+
+    // 6) 屈折率が変わらないダミー平面は 1 バイトも動かさない
+    {
+        const sd::Result base = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        std::vector<px::Surface> withDummy = thinLens(cEq, -cEq, true);
+        px::Surface dummy;
+        dummy.R = 0.0; dummy.thickness = 7.0; dummy.nAfter = 1.0;
+        withDummy.insert(withDummy.begin(), dummy);
+        const sd::Result r = sd::analyze(withDummy, 20.0, 5.0);
+        check(std::fabs(r.sI - base.sI) < 1e-15
+              && std::fabs(r.sII - base.sII) < 1e-15
+              && std::fabs(r.sIII - base.sIII) < 1e-15
+              && std::fabs(r.sIV - base.sIV) < 1e-15
+              && std::fabs(r.sV - base.sV) < 1e-15,
+              "seidel: a dummy plane in the same medium contributes nothing");
+    }
+
+    // 7) 視野が 0 なら H = 0 — 球面収差以外は恒等的に 0 (「値が無い」ではない)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 0.0);
+        check(r.valid && !r.hasField, "seidel: zero field is flagged");
+        check(std::fabs(r.sI) > 1e-6, "seidel: spherical survives a zero field");
+        check(r.sII == 0.0 && r.sIII == 0.0 && r.sIV == 0.0 && r.sV == 0.0,
+              "seidel: every field-dependent term vanishes at zero field");
+    }
+
+    // 8) 波長換算 (Welford の正規化 W = S_I/8 + S_II/2 + …)
+    {
+        const sd::Result r = sd::analyze(thinLens(cEq, -cEq, true), 20.0, 5.0);
+        const double lam = 587.6e-6;                 // d 線 [mm]
+        const sd::Waves w = sd::toWaves(r, lam);
+        check(w.valid, "seidel: the wave conversion is available");
+        check(std::fabs(w.spherical - r.sI / (8.0 * lam)) < 1e-9,
+              "seidel: spherical in waves is S_I/(8 lambda)");
+        check(std::fabs(w.astigmatism - r.sIII / (2.0 * lam)) < 1e-9,
+              "seidel: astigmatism in waves is S_III/(2 lambda)");
+        const sd::Waves w2 = sd::toWaves(r, 2.0 * lam);
+        check(std::fabs(w2.spherical * 2.0 - w.spherical) < 1e-9,
+              "seidel: doubling the wavelength halves the wave count");
+        check(!sd::toWaves(r, 0.0).valid,
+              "seidel: a zero wavelength is rejected, not divided by");
+    }
+
+    // 9) 壊れた入力からは何も作らない
+    {
+        check(!sd::analyze({}, 20.0, 5.0).valid,
+              "seidel: an empty system has no aberrations");
+        check(!sd::analyze(thinLens(cEq, -cEq, true), 0.0, 5.0).valid,
+              "seidel: a zero pupil is rejected");
+    }
+}
+
 // ── .ofdx "display_optics" / "illumination" (追加キー) ──────────────────────
 static void testDisplayIlluminationSettings()
 {
@@ -14571,6 +14838,156 @@ static void testCourantTimestep()
 //       使う ka = 3.0 / a = 0.05 m の値 (後方 4.0901e-03 / 前方 8.4797e-02 m²)
 // (a) は級数の低次項が正しいこと、(b) は共鳴領域まで含めて正しいことを見る。
 // 片方だけでは足りない — (a) は n = 1 項でほぼ決まり、(b) は 9 項ほど効く。
+// ── 遠方界パターンの指標 (em/PatternMetrics) ───────────────────────────────
+//
+// 期待値は**教科書値**で、コードの外にある:
+//   (a) 一様励振の線状開口 (sinc パターン) の第一サイドローブ = −13.26 dB
+//       — 開口分布が一様なときの古典的な値 (Balanis §12.4 / Kraus)
+//   (b) 半波長ダイポールの半値幅 = 78°
+//       — E 面パターン cos(π/2·cosθ)/sinθ の −3 dB 全幅 (Balanis §4.6)
+// どちらも「実装がそれらしい形を返す」ではなく、**特定の数値**を要求する。
+static void testPatternMetrics()
+{
+    g_file = "pattern-metrics";
+    using ofd::em::patternMetrics;
+    const double pi = 3.14159265358979323846;
+
+    // (a) 一様線状開口: E(θ) ∝ sinc(u), u = (πL/λ)·sinθ。L/λ = 10
+    //     u が sinθ の関数なので **θ = 180° にも同じ主ビームが立つ**。
+    //     ここで見たいのは 1 本の主ビームとその外側なので、後ろ半分は
+    //     −60 dB の床にする (背面を塞いだ開口に相当)。
+    {
+        std::vector<double> deg, db;
+        const double L = 10.0;                   // 開口長 / 波長
+        for (int i = 0; i < 3600; ++i) {         // 0.1° 刻みで 1 周
+            const double d = i * 0.1;
+            double a = d;                        // −180..180 へ畳む
+            if (a > 180.0) a -= 360.0;
+            deg.push_back(d);
+            if (std::fabs(a) > 90.0) { db.push_back(-60.0); continue; }
+            const double th = a * pi / 180.0;
+            const double u = pi * L * std::sin(th);
+            const double e = (std::fabs(u) < 1e-12) ? 1.0 : std::sin(u) / u;
+            db.push_back(20.0 * std::log10(std::max(1e-12, std::fabs(e))));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasPeak && std::fabs(m.peakDb) < 1e-6,
+              "pattern: the sinc peak is 0 dB at broadside");
+        check(m.hasSll, "pattern: a side lobe is found outside the main beam");
+        // 一様開口の第一サイドローブ = −13.26 dB (教科書値)
+        check(std::fabs(m.sllDb + 13.26) < 0.2,
+              "pattern: the uniform-aperture side-lobe level is -13.26 dB");
+        // 3 dB 幅 ≈ 0.886·λ/L [rad] = 5.08° (L/λ = 10)
+        check(m.hasHpbw && std::fabs(m.hpbwDeg - 5.08) < 0.2,
+              "pattern: the 3 dB width matches 0.886*lambda/L");
+    }
+
+    // (b) 半波長ダイポール: E(θ) = cos(π/2·cosθ)/sinθ。HPBW = 78°
+    {
+        std::vector<double> deg, db;
+        for (int i = 0; i < 3600; ++i) {
+            const double d = i * 0.1;
+            const double th = d * pi / 180.0;
+            const double s = std::sin(th);
+            const double e = (std::fabs(s) < 1e-9)
+                                 ? 0.0
+                                 : std::cos(0.5 * pi * std::cos(th)) / s;
+            deg.push_back(d);
+            db.push_back(20.0 * std::log10(std::max(1e-12, std::fabs(e))));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasHpbw && std::fabs(m.hpbwDeg - 78.0) < 1.0,
+              "pattern: the half-wave dipole HPBW is 78 degrees");
+        // ダイポールは 90° と 270° が同じ強さ → 前後比 0 dB
+        check(m.hasFb && std::fabs(m.fbDb) < 0.05,
+              "pattern: a symmetric pattern has 0 dB front-to-back");
+        // 8 の字なので反対側にも同じ大きさのローブがある。
+        // 「サイドローブが無い」ではなく「0 dB のローブがある」が正しい
+        check(m.hasSll && std::fabs(m.sllDb) < 0.05,
+              "pattern: the figure-of-eight back lobe is reported at 0 dB");
+
+        // 同じパターンを **5° 刻み** (far1d.log の刻み) で作り直す。
+        // 内挿が効いていれば粗い格子でも 0.5° 以内で同じ幅が出る。
+        std::vector<double> cd, cb;
+        for (int i = 0; i < 72; ++i) {
+            const double d = i * 5.0;
+            const double th = d * pi / 180.0;
+            const double s = std::sin(th);
+            const double e = (std::fabs(s) < 1e-9)
+                                 ? 0.0
+                                 : std::cos(0.5 * pi * std::cos(th)) / s;
+            cd.push_back(d);
+            cb.push_back(20.0 * std::log10(std::max(1e-12, std::fabs(e))));
+        }
+        const auto mc = patternMetrics(cd, cb);
+        check(mc.hasHpbw && std::fabs(mc.hpbwDeg - m.hpbwDeg) < 0.5,
+              "pattern: a 5 degree grid still resolves the 3 dB width");
+    }
+
+    // (b2) 有限長ダイポール F(θ) = [cos(kL/2 cosθ) − cos(kL/2)]/sinθ。
+    //      長いほどビームは細る。実カーネル (dipole.ofd) の切断面は
+    //      L ≈ 0.6λ に一致するので、その値をここで固定しておく。
+    {
+        auto hpbwOf = [&](double Llam) {
+            const double kL2 = pi * Llam;
+            std::vector<double> deg, db;
+            for (int i = 0; i < 3600; ++i) {
+                const double d = i * 0.1;
+                const double th = d * pi / 180.0;
+                const double s = std::sin(th);
+                const double f = (std::fabs(s) < 1e-9)
+                                     ? 0.0
+                                     : (std::cos(kL2 * std::cos(th))
+                                        - std::cos(kL2)) / s;
+                deg.push_back(d);
+                db.push_back(20.0 * std::log10(std::max(1e-12,
+                                                        std::fabs(f))));
+            }
+            return patternMetrics(deg, db);
+        };
+        const auto m05 = hpbwOf(0.5);
+        const auto m06 = hpbwOf(0.6);
+        check(m05.hasHpbw && std::fabs(m05.hpbwDeg - 78.0) < 1.0,
+              "pattern: L = 0.5 lambda reproduces the 78 degree textbook "
+              "value from the finite-length formula");
+        check(m06.hasHpbw && std::fabs(m06.hpbwDeg - 72.8) < 0.5,
+              "pattern: L = 0.6 lambda narrows the beam to 72.8 degrees");
+    }
+
+    // (c) 前後比が正しく出る非対称パターン (前方 0 dB / 後方 −20 dB)
+    {
+        std::vector<double> deg, db;
+        for (int i = 0; i < 360; ++i) {
+            const double d = i;
+            const double th = d * pi / 180.0;
+            // (1 + cosθ)/2 のカージオイド。0° で 1、180° で 0 に近づく
+            const double e = std::max(1e-3, 0.5 * (1.0 + std::cos(th)));
+            deg.push_back(d);
+            db.push_back(20.0 * std::log10(e));
+        }
+        const auto m = patternMetrics(deg, db);
+        check(m.hasPeak && std::fabs(m.peakDeg) < 1e-9,
+              "pattern: the cardioid peaks at 0 degrees");
+        check(m.hasFb && m.fbDb > 40.0,
+              "pattern: the cardioid has a large front-to-back ratio");
+        // ローブが 1 つしかないので SLL は出さない。2 つのヌルがパターン全体を
+        // 囲っているときに「外側」を歩くとピークへ戻ってしまう — その場合は
+        // サイドローブ無しとする (最初の実装はここでピークを拾って落ちた)
+        check(!m.hasSll,
+              "pattern: a single-lobe pattern reports no side lobe");
+    }
+
+    // (d) 壊れた入力からは何も作らない
+    {
+        check(!patternMetrics({}, {}).hasPeak,
+              "pattern: an empty pattern has no metrics");
+        check(!patternMetrics({ 0.0, 1.0 }, { 0.0, 0.0 }).hasPeak,
+              "pattern: fewer than three points is not a pattern");
+        check(!patternMetrics({ 0.0, 1.0, 2.0 }, { 0.0, 0.0 }).hasPeak,
+              "pattern: mismatched lengths are rejected");
+    }
+}
+
 static void testMieSphere()
 {
     g_file = "mie";
@@ -15607,12 +16024,14 @@ int main(int argc, char *argv[])
     testColorimetry();
     testDisplayMetrics();
     testParaxialTrace();
+    testSeidelAberration();
     testDisplayIlluminationSettings();
     testI18nKeysRegistered();
     testUnwiredNotesHaveSubject();
     testOptimizeFom();
     testCourantTimestep();
     testPostTables();
+    testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
     testPostPrereq();

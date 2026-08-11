@@ -1,6 +1,7 @@
 // AcousticSourceTab.cpp
 #include "AcousticSourceTab.h"
 #include "../core/Project.h"
+#include "../acoustics/core/ArrayDirectivity.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../audio/AudioEditEngine.h"
 #include "../widgets/MiniPlot.h"
@@ -447,6 +448,62 @@ const bool s_i18n = [] {
               "Grating lobe suppression");
     I18n::reg("asrc_airabs", "Air absorption 補償",
               "Air absorption compensation");
+    I18n::reg("asrc_steer_unit", "° (下向き正)", "° (down positive)");
+    // ── 合成された指向性 (実計算) ────────────────────────────────────────
+    I18n::reg("asrc_beam_section", "合成された指向性 (鉛直面)",
+              "Synthesised directivity (vertical plane)");
+    I18n::reg("asrc_beam_hint",
+              "上の素子数・素子間隔・splay・ステアリングから遠方界の和を取った"
+              "ものです。素子は箱の高さぶんの連続線音源とみなしています。"
+              "レベルは最大を 0 dB とした相対値で、絶対 SPL ではありません。",
+              "The far-field sum of the element count, spacing, splay and "
+              "steering above. Each cabinet is modelled as a continuous line "
+              "source as tall as the box spacing. Levels are relative to the "
+              "maximum, not absolute SPL.");
+    I18n::reg("asrc_beam_freq", "評価周波数", "Evaluation frequency");
+    I18n::reg("asrc_beam_x", "角度 [° 下向き正]", "Angle [deg, down positive]");
+    I18n::reg("asrc_beam_item", "項目", "Quantity");
+    I18n::reg("asrc_beam_value", "値", "Value");
+    I18n::reg("asrc_beam_peak", "最大方向", "Peak direction");
+    I18n::reg("asrc_beam_hpbw", "主ローブの 3 dB 幅", "Main-lobe 3 dB width");
+    I18n::reg("asrc_beam_cov", "−6 dB が及ぶ角度範囲",
+              "Angles covered within 6 dB");
+    I18n::reg("asrc_beam_sll", "主ローブ外の最大", "Highest lobe outside");
+    I18n::reg("asrc_beam_len", "アレイ長 (素子数 × 間隔)",
+              "Array length (elements x spacing)");
+    I18n::reg("asrc_beam_gl", "グレーティングローブ出現周波数",
+              "Grating-lobe onset frequency");
+    I18n::reg("asrc_beam_glwarn",
+              "評価周波数がグレーティングローブの出現周波数を超えています — "
+              "主ビームと同じ高さのローブが別方向に立ちます。素子間隔を "
+              "狭めるか、評価周波数を下げてください。",
+              "The evaluation frequency is above the grating-lobe onset, so a "
+              "lobe as strong as the main beam appears in another direction. "
+              "Use a smaller spacing or a lower frequency.");
+    I18n::reg("asrc_beam_bad",
+              "素子数・素子間隔が数値として読めないため合成できません。",
+              "The element count or spacing is not a number, so nothing can be "
+              "synthesised.");
+    // ── サブアレイ ───────────────────────────────────────────────────────
+    I18n::reg("asrc_sub_single",
+              "単発なので指向性は生まれません (低域では無指向)。",
+              "A single box has no directivity (omnidirectional at low "
+              "frequencies).");
+    I18n::reg("asrc_sub_fb",
+              "遅延に見合う間隔 %1 m (= c·τ) としたときの前後比 %2 dB "
+              "(前方 %3 dB / 後方 %4 dB、%5 Hz)。前方が最大になるのは %6 Hz "
+              "(間隔 = λ/4) です。",
+              "With the spacing %1 m that matches the delay (= c·tau), the "
+              "front-to-back ratio is %2 dB (front %3 dB / back %4 dB at "
+              "%5 Hz). The front output peaks at %6 Hz (spacing = lambda/4).");
+    I18n::reg("asrc_sub_needrev",
+              "後方を全周波数で打ち消すには「リアを逆相にする」が要ります "
+              "(同相のままだと打ち消せる周波数が限られます)。",
+              "Cancelling the rear at every frequency needs the rear box "
+              "reversed in polarity; in phase, only some frequencies cancel.");
+    I18n::reg("asrc_sub_bad",
+              "リア遅延が数値として読めないため計算できません。",
+              "The rear delay is not a number, so nothing can be computed.");
     I18n::reg("asrc_sub_section", "サブウーファアレイ", "Sub array");
     I18n::reg("asrc_layout", "配置", "Layout");
     I18n::reg("asrc_l_single", "単発", "Single");
@@ -578,8 +635,13 @@ const bool s_i18n = [] {
               "the normalisation / delay / phase check boxes");
     I18n::reg("asrc_uw_norm_ok", "基準 SPL",
               "the reference SPL");
-    I18n::reg("asrc_uw_array", "アレイ設定 (素子配置・ステアリング・指向性合成)",
-              "the array settings (element layout, steering, pattern synthesis)");
+    I18n::reg("asrc_uw_array",
+              "このページの設定 (ソルバ入力に対応するキーがありません)。"
+              "画面の「合成された指向性」は、この設定から GUI が実計算した"
+              "ものです",
+              "the settings on this page (there is no matching key in the "
+              "solver input). The synthesised directivity shown above is "
+              "computed by the GUI from these very settings");
     I18n::reg("asrc_uw_conv", "畳み込み設定 (レンダリング品質・HRTF・出力形式)",
               "the convolution settings (render quality, HRTF, output format)");
     return true;
@@ -1730,6 +1792,136 @@ QWidget *AcousticSourceTab::buildDirectivityPage()
 // 軸上周波数特性へ反映する。ビーム幅・F/B 比・指向性係数 Q は閉形式の実計算。
 // 音源データが CLF/GLL・測定 polar のときはパーサ未実装なので、帯域表と
 // 周波数特性は値を出さない ("—" / 空グラフ) — 偽の数値を出さない (絶対規則 5)。
+// ── アレイページ: 設定 → 遠方界パターン (acoustics/ArrayDirectivity) ────────
+// ソルバは要らない。素子位置と遅延が決まれば遠方界は和で書ける。
+void AcousticSourceTab::updateArray()
+{
+    if (!m_arrPlot || !m_arrTable) return;
+    const double c = 343.0;               // 20 °C の空気 (室内音響の既定)
+
+    auto rowItem = [](const QString &t, bool right) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        if (right) it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return it;
+    };
+    struct Line { QString name, value; };
+    QVector<Line> lines;
+
+    bool okN = false, okD = false;
+    const int nEl = m_arrElems->text().trimmed().toInt(&okN);
+    const double spacing = m_arrSpacing->text().trimmed().toDouble(&okD);
+    const double freq = [this] {
+        const double table[7] = { 125, 250, 500, 1000, 2000, 4000, 8000 };
+        return table[qBound(0, m_arrFreq->currentIndex(), 6)];
+    }();
+
+    if (!okN || !okD || nEl <= 0 || spacing <= 0.0) {
+        m_arrPlot->setSeries({});
+        m_arrTable->clearContents();
+        m_arrTable->setRowCount(1);
+        m_arrTable->setItem(0, 0, rowItem(I18n::tr("asrc_beam_bad"), false));
+        m_arrTable->setItem(0, 1, rowItem(QStringLiteral("—"), true));
+        m_arrNote->setVisible(false);
+        return;
+    }
+
+    // splay: ストレートを選んだら 0、それ以外は入力欄の並びを読む
+    std::vector<double> splay;
+    if (m_arrCurve->currentIndex() != 0) {
+        const QStringList parts =
+            m_arrSplay->text().split(QRegularExpression("[,\\s]+"),
+                                     Qt::SkipEmptyParts);
+        for (const QString &p : parts) {
+            bool ok = false;
+            const double v = p.toDouble(&ok);
+            if (ok) splay.push_back(v);
+        }
+    }
+    const double steer = m_arrSteer->isChecked()
+                             ? m_arrSteerDeg->text().trimmed().toDouble()
+                             : 0.0;
+
+    const std::vector<acoustics::ArrayElement> els =
+        acoustics::buildLineArray(nEl, spacing, splay, steer, c);
+    const acoustics::ArrayPattern pat =
+        acoustics::beamPattern(els, freq, c, spacing, -90.0, 90.0, 1801);
+    const acoustics::BeamMetrics bm = acoustics::beamMetrics(pat);
+
+    QVector<QPointF> pts;
+    pts.reserve(int(pat.deg.size()));
+    for (std::size_t i = 0; i < pat.deg.size(); ++i)
+        pts.push_back(QPointF(pat.deg[i], std::max(-30.0, pat.db[i])));
+    MiniSeries ms;
+    ms.pts = pts;
+    ms.color = QColor("#0078D4");
+    m_arrPlot->setSeries({ ms });
+
+    const QString dash = QStringLiteral("—");
+    auto deg = [](double v) { return QString::number(v, 'f', 1)
+                                     + QString::fromUtf8("°"); };
+    lines.push_back({ I18n::tr("asrc_beam_peak"),
+                      pat.valid ? deg(pat.peakDeg) : dash });
+    lines.push_back({ I18n::tr("asrc_beam_hpbw"),
+                      bm.hasHpbw ? deg(bm.hpbwDeg) : dash });
+    lines.push_back({ I18n::tr("asrc_beam_cov"),
+                      bm.hasCoverage
+                          ? (deg(bm.coverageMinDeg) + QStringLiteral(" … ")
+                             + deg(bm.coverageMaxDeg))
+                          : dash });
+    lines.push_back({ I18n::tr("asrc_beam_sll"),
+                      bm.hasSll ? (QString::number(bm.sllDb, 'f', 1)
+                                   + QStringLiteral(" dB @ ")
+                                   + deg(bm.sllDeg))
+                                : dash });
+    lines.push_back({ I18n::tr("asrc_beam_len"),
+                      QString::number(nEl * spacing, 'f', 2)
+                          + QStringLiteral(" m") });
+    const double fg = acoustics::gratingLobeFreq(spacing, steer, c);
+    lines.push_back({ I18n::tr("asrc_beam_gl"),
+                      fg > 0.0 ? (QString::number(fg, 'f', 0)
+                                  + QStringLiteral(" Hz"))
+                               : dash });
+
+    m_arrTable->clearContents();
+    m_arrTable->setRowCount(lines.size());
+    for (int i = 0; i < lines.size(); ++i) {
+        m_arrTable->setItem(i, 0, rowItem(lines[i].name, false));
+        m_arrTable->setItem(i, 1, rowItem(lines[i].value, true));
+    }
+    // 「グレーティングローブ抑制」を入れているのに超えているなら言う
+    const bool over = (fg > 0.0 && freq >= fg);
+    m_arrNote->setVisible(over && m_arrGrating->isChecked());
+    if (over) m_arrNote->setText(I18n::tr("asrc_beam_glwarn"));
+
+    // ── サブアレイ ──────────────────────────────────────────────────────
+    if (!m_subInfo) return;
+    if (m_subLayout->currentIndex() == 0) {          // 単発
+        m_subInfo->setText(I18n::tr("asrc_sub_single"));
+        return;
+    }
+    bool okT = false;
+    const double tauMs = m_subDelay->text().trimmed().toDouble(&okT);
+    if (!okT || tauMs <= 0.0) {
+        m_subInfo->setText(I18n::tr("asrc_sub_bad"));
+        return;
+    }
+    const double tau = tauMs * 1e-3;
+    const double dSub = c * tau;                     // 遅延に見合う間隔
+    const bool rev = m_subRev->isChecked();
+    const acoustics::EndfireResult ef =
+        acoustics::endfire(dSub, tau, freq, c, rev);
+    QString text = I18n::tr("asrc_sub_fb")
+                       .arg(QString::number(dSub, 'f', 2),
+                            QString::number(ef.frontBackDb, 'f', 1),
+                            QString::number(ef.frontDb, 'f', 1),
+                            QString::number(ef.backDb, 'f', 1),
+                            QString::number(freq, 'f', 0),
+                            QString::number(ef.bestFreqHz, 'f', 0));
+    if (!rev) text += QStringLiteral(" ") + I18n::tr("asrc_sub_needrev");
+    m_subInfo->setText(text);
+}
+
 void AcousticSourceTab::updateDirectivity()
 {
     const int idx = qBound(0, m_dirModel->currentIndex(), 4);
@@ -1798,34 +1990,41 @@ QWidget *AcousticSourceTab::buildArrayPage()
     auto *hint = new QLabel(I18n::tr("asrc_array_hint"), s);
     hint->setWordWrap(true);
     s->vbox()->addWidget(hint);
-    auto *elems = new QLineEdit("12", s);
-    elems->setMaximumWidth(60);
-    s->form()->addRow(I18n::tr("asrc_elems"), elems);
+    m_arrElems = new QLineEdit("12", s);
+    m_arrElems->setMaximumWidth(60);
+    s->form()->addRow(I18n::tr("asrc_elems"), m_arrElems);
     auto *spacingRow = new QHBoxLayout();
-    auto *spacing = new QLineEdit("0.35", s);
-    spacing->setMaximumWidth(60);
-    spacingRow->addWidget(spacing);
+    m_arrSpacing = new QLineEdit("0.35", s);
+    m_arrSpacing->setMaximumWidth(60);
+    spacingRow->addWidget(m_arrSpacing);
     spacingRow->addWidget(new QLabel("m", s));
     spacingRow->addStretch(1);
     s->form()->addRow(I18n::tr("asrc_spacing"), spacingRow);
-    auto *curve = new QComboBox(s);
-    curve->addItem(I18n::tr("asrc_c_straight"));
-    curve->addItem(I18n::tr("asrc_c_j"));
-    curve->addItem(I18n::tr("asrc_c_banana"));
-    curve->addItem(I18n::tr("asrc_c_custom"));
-    curve->setCurrentIndex(1);   // mock: value="jcurve"
-    s->form()->addRow(I18n::tr("asrc_curve"), curve);
+    m_arrCurve = new QComboBox(s);
+    m_arrCurve->addItem(I18n::tr("asrc_c_straight"));
+    m_arrCurve->addItem(I18n::tr("asrc_c_j"));
+    m_arrCurve->addItem(I18n::tr("asrc_c_banana"));
+    m_arrCurve->addItem(I18n::tr("asrc_c_custom"));
+    m_arrCurve->setCurrentIndex(1);   // mock: value="jcurve"
+    s->form()->addRow(I18n::tr("asrc_curve"), m_arrCurve);
     auto *splayRow = new QHBoxLayout();
-    auto *splay = new QLineEdit("0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14", s);
-    splayRow->addWidget(splay, 1);
+    m_arrSplay = new QLineEdit("0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14", s);
+    splayRow->addWidget(m_arrSplay, 1);
     splayRow->addWidget(new QLabel(I18n::tr("asrc_splay_unit"), s));
     s->form()->addRow(I18n::tr("asrc_splay"), splayRow);
     v->addWidget(s);
 
     auto *sd = new SectionBox(I18n::tr("asrc_dg_section"), page);
-    auto *steer = new QCheckBox(I18n::tr("asrc_steer_auto"), sd);
-    steer->setChecked(true);
-    sd->form()->addRow("Beam steering", steer);
+    auto *steerRow = new QHBoxLayout();
+    m_arrSteer = new QCheckBox(I18n::tr("asrc_steer_auto"), sd);
+    m_arrSteer->setChecked(true);
+    m_arrSteerDeg = new QLineEdit("0", sd);
+    m_arrSteerDeg->setMaximumWidth(60);
+    steerRow->addWidget(m_arrSteer);
+    steerRow->addWidget(m_arrSteerDeg);
+    steerRow->addWidget(new QLabel(I18n::tr("asrc_steer_unit"), sd));
+    steerRow->addStretch(1);
+    sd->form()->addRow("Beam steering", steerRow);
     auto *covRow = new QHBoxLayout();
     auto *cov0 = new QLineEdit("5", sd);  cov0->setMaximumWidth(60);
     auto *cov1 = new QLineEdit("30", sd); cov1->setMaximumWidth(60);
@@ -1844,37 +2043,95 @@ QWidget *AcousticSourceTab::buildArrayPage()
     uniRow->addStretch(1);
     sd->form()->addRow(I18n::tr("asrc_uniform"), uniRow);
     auto *chkRow = new QHBoxLayout();
-    auto *grating = new QCheckBox(I18n::tr("asrc_grating"), sd);
-    grating->setChecked(true);
+    m_arrGrating = new QCheckBox(I18n::tr("asrc_grating"), sd);
+    m_arrGrating->setChecked(true);
     auto *airabs = new QCheckBox(I18n::tr("asrc_airabs"), sd);
-    chkRow->addWidget(grating);
+    // 空気吸収は距離に依存する量で、遠方界パターン (相対値) には効かない
+    tabhelp::markNotImplemented(airabs);
+    chkRow->addWidget(m_arrGrating);
     chkRow->addWidget(airabs);
     chkRow->addStretch(1);
     sd->vbox()->addLayout(chkRow);
     v->addWidget(sd);
 
+    // ── 合成された指向性 (実計算) ────────────────────────────────────────
+    auto *sr = new SectionBox(I18n::tr("asrc_beam_section"), page);
+    auto *beamHint = new QLabel(I18n::tr("asrc_beam_hint"), sr);
+    beamHint->setWordWrap(true);
+    sr->vbox()->addWidget(beamHint);
+    m_arrFreq = new QComboBox(sr);
+    m_arrFreq->addItems({ "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz",
+                          "4 kHz", "8 kHz" });
+    m_arrFreq->setCurrentIndex(3);
+    m_arrFreq->setMaximumWidth(120);
+    sr->form()->addRow(I18n::tr("asrc_beam_freq"), m_arrFreq);
+    m_arrPlot = new MiniPlot(sr);
+    m_arrPlot->setLabels(I18n::tr("asrc_beam_x"), "dB");
+    m_arrPlot->setYRange(-30.0, 3.0);
+    m_arrPlot->setMinimumHeight(170);
+    sr->vbox()->addWidget(m_arrPlot);
+    m_arrTable = new QTableWidget(0, 2, sr);
+    m_arrTable->setHorizontalHeaderLabels({ I18n::tr("asrc_beam_item"),
+                                            I18n::tr("asrc_beam_value") });
+    m_arrTable->verticalHeader()->setVisible(false);
+    m_arrTable->verticalHeader()->setDefaultSectionSize(24);
+    m_arrTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_arrTable->horizontalHeader()->setSectionResizeMode(0,
+                                                         QHeaderView::Stretch);
+    m_arrTable->horizontalHeader()
+        ->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_arrTable->setMinimumHeight(160);
+    sr->vbox()->addWidget(m_arrTable);
+    m_arrNote = new QLabel(sr);
+    m_arrNote->setWordWrap(true);
+    m_arrNote->setStyleSheet("color:#B45309;");
+    m_arrNote->setVisible(false);
+    sr->vbox()->addWidget(m_arrNote);
+    v->addWidget(sr);
+
     auto *ss = new SectionBox(I18n::tr("asrc_sub_section"), page);
-    auto *layout = new QComboBox(ss);
-    layout->addItem(I18n::tr("asrc_l_single"));
-    layout->addItem(I18n::tr("asrc_l_endfire"));
-    layout->addItem(I18n::tr("asrc_l_cardioid"));
-    layout->addItem(I18n::tr("asrc_l_gradient"));
-    layout->setCurrentIndex(2);   // mock: value="cardioid"
-    ss->form()->addRow(I18n::tr("asrc_layout"), layout);
-    auto *rev = new QCheckBox(I18n::tr("asrc_rev_chk"), ss);
-    rev->setChecked(true);
-    ss->form()->addRow(I18n::tr("asrc_rev_rear"), rev);
+    m_subLayout = new QComboBox(ss);
+    m_subLayout->addItem(I18n::tr("asrc_l_single"));
+    m_subLayout->addItem(I18n::tr("asrc_l_endfire"));
+    m_subLayout->addItem(I18n::tr("asrc_l_cardioid"));
+    m_subLayout->addItem(I18n::tr("asrc_l_gradient"));
+    m_subLayout->setCurrentIndex(2);   // mock: value="cardioid"
+    ss->form()->addRow(I18n::tr("asrc_layout"), m_subLayout);
+    m_subRev = new QCheckBox(I18n::tr("asrc_rev_chk"), ss);
+    m_subRev->setChecked(true);
+    ss->form()->addRow(I18n::tr("asrc_rev_rear"), m_subRev);
     auto *delayRow = new QHBoxLayout();
-    auto *delay = new QLineEdit("3.5", ss);
-    delay->setMaximumWidth(60);
-    delayRow->addWidget(delay);
+    m_subDelay = new QLineEdit("3.5", ss);
+    m_subDelay->setMaximumWidth(60);
+    delayRow->addWidget(m_subDelay);
     delayRow->addWidget(new QLabel("ms", ss));
     delayRow->addStretch(1);
     ss->form()->addRow(I18n::tr("asrc_delay_rear"), delayRow);
+    m_subInfo = new QLabel(ss);
+    m_subInfo->setWordWrap(true);
+    ss->vbox()->addWidget(m_subInfo);
     v->addWidget(ss);
-    // アレイページの設定は全節ともまだどこにも読まれない
+    // 画面の合成結果は実計算だが、アレイの設定そのものはソルバ入力へは
+    // 渡らない (.ofd/.ofdx に対応キーが無い) — そこを明示する
     v->addWidget(tabhelp::unwiredNote(page, I18n::tr("asrc_uw_array")));
     v->addStretch(1);
+
+    // 入力が変わったら合成し直す
+    const QLineEdit *edits[5] = { m_arrElems, m_arrSpacing, m_arrSplay,
+                                  m_arrSteerDeg, m_subDelay };
+    for (int i = 0; i < 5; ++i)
+        connect(const_cast<QLineEdit *>(edits[i]), &QLineEdit::editingFinished,
+                this, &AcousticSourceTab::updateArray);
+    connect(m_arrCurve, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateArray(); });
+    connect(m_arrFreq, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateArray(); });
+    connect(m_subLayout, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateArray(); });
+    connect(m_arrSteer, &QCheckBox::toggled, this, [this](bool) { updateArray(); });
+    connect(m_arrGrating, &QCheckBox::toggled, this, [this](bool) { updateArray(); });
+    connect(m_subRev, &QCheckBox::toggled, this, [this](bool) { updateArray(); });
+    updateArray();
     return page;
 }
 

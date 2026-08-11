@@ -4,6 +4,7 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/SeidelAberration.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -74,12 +75,17 @@ const bool s_i18n = [] {
     I18n::reg("lde_merit_section","Merit Function (FoM)", "Merit Function (FoM)");
     I18n::reg("lde_merit_hint",
               "最適化評価関数の定義 (目標・重みは編集可能。最適化そのものは未実装)。"
-              "「値」列は近軸オペランド (EFFL / PIMH / ISFN) のみ面テーブルから"
-              "計算する。収差オペランドは実光線追跡が必要なため「—」。",
+              "「値」列は面テーブルから計算する — 近軸オペランド "
+              "(EFFL / PIMH / ISFN) は y-nu 追跡、収差オペランド "
+              "(SPHA / COMA / ASTI / DIST) は 3 次収差 (ザイデル和) による。"
+              "5 次以上の収差は含まないので、大口径・広角では実光線追跡との差が出る。",
               "Merit-function definition (target and weight are editable; the "
               "optimizer itself is not implemented). The value column is computed "
-              "from the surface table for the paraxial operands (EFFL / PIMH / ISFN) "
-              "only; aberration operands need real ray tracing and stay “—”.");
+              "from the surface table: the paraxial operands (EFFL / PIMH / ISFN) "
+              "from the y-nu trace, the aberration operands (SPHA / COMA / ASTI / "
+              "DIST) from the third-order (Seidel) sums. Fifth- and higher-order "
+              "terms are not included, so fast or wide-angle systems will differ "
+              "from a real ray trace.");
     I18n::reg("lde_col_operand", "オペランド",  "Operand");
     I18n::reg("lde_col_target",  "目標",        "Target");
     I18n::reg("lde_col_weight",  "重み",        "Weight");
@@ -97,6 +103,43 @@ const bool s_i18n = [] {
     I18n::reg("lde_b_needreal",
               "実光線追跡 (収差計算) が必要 — 未実装",
               "Requires real ray tracing (aberration calculation) — not implemented");
+    I18n::reg("lde_b_nofield",
+              "視野半角が 0 なので恒等的に 0 — 視野を入れると値が出ます",
+              "Identically zero because the half-field angle is zero — enter a "
+              "field to get a value");
+    I18n::reg("lde_b_seidel",
+              "3 次収差 (ザイデル和) — 近軸追跡から計算。単位は波長 (d線)",
+              "Third-order (Seidel) sums from the paraxial trace, in waves at "
+              "the d line");
+    // ── 3 次収差 (ザイデル) ──────────────────────────────────────────────
+    I18n::reg("lde_sd_section", "3 次収差 (ザイデル) / Seidel aberrations",
+              "Seidel (third-order) aberrations");
+    I18n::reg("lde_sd_hint",
+              "縁光線と主光線の近軸追跡だけで決まる 3 次収差。実光線追跡は要らない "
+              "(W. T. Welford, Aberrations of Optical Systems §8)。"
+              "値は波面収差の峰値 [波長, d線] で、瞳端・視野端での量。"
+              "5 次以上・色収差・非球面項は含まない。",
+              "The third-order aberrations follow from the paraxial marginal and "
+              "chief rays alone — no real ray trace is needed (W. T. Welford, "
+              "Aberrations of Optical Systems §8). Values are peak wavefront "
+              "coefficients in waves at the d line, at the edge of the pupil and "
+              "of the field. Fifth-order, chromatic and aspheric terms are not "
+              "included.");
+    I18n::reg("lde_sd_surf",   "面",             "Surface");
+    I18n::reg("lde_sd_total",  "総和",           "Total");
+    I18n::reg("lde_sd_si",     "球面収差 SI",    "Spherical SI");
+    I18n::reg("lde_sd_sii",    "コマ SII",       "Coma SII");
+    I18n::reg("lde_sd_siii",   "非点 SIII",      "Astigmatism SIII");
+    I18n::reg("lde_sd_siv",    "像面湾曲 SIV",   "Field curvature SIV");
+    I18n::reg("lde_sd_sv",     "歪曲 SV",        "Distortion SV");
+    I18n::reg("lde_sd_petz",   "ペッツバール半径", "Petzval radius");
+    I18n::reg("lde_sd_lagr",   "ラグランジュ不変量 H", "Lagrange invariant H");
+    I18n::reg("lde_sd_nofield",
+              "視野半角が 0 なので、球面収差以外は 0 になります "
+              "(H = 0)。視野を入れると全項が出ます。",
+              "With a zero half-field angle every term except spherical "
+              "aberration vanishes (H = 0). Enter a field angle to get them "
+              "all.");
     I18n::reg("lde_dash",        "—",           "—");
     I18n::reg("lde_parax_section", "近軸諸元 / Paraxial data", "Paraxial data");
     I18n::reg("lde_parax_hint",
@@ -491,6 +534,25 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     sPx->vbox()->addWidget(m_paraxial);
     v->addWidget(sPx);
 
+    // 3 次収差 (ザイデル) — 面ごとの寄与 + 総和。近軸追跡だけで決まる。
+    auto *sSd = new SectionBox(I18n::tr("lde_sd_section"), body);
+    sSd->vbox()->addWidget(mutedLabel(I18n::tr("lde_sd_hint"), sSd));
+    m_seidel = new QTableWidget(0, 6, sSd);
+    m_seidel->setHorizontalHeaderLabels({ I18n::tr("lde_sd_surf"),
+                                          I18n::tr("lde_sd_si"),
+                                          I18n::tr("lde_sd_sii"),
+                                          I18n::tr("lde_sd_siii"),
+                                          I18n::tr("lde_sd_siv"),
+                                          I18n::tr("lde_sd_sv") });
+    m_seidel->verticalHeader()->setVisible(false);
+    m_seidel->verticalHeader()->setDefaultSectionSize(24);
+    m_seidel->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_seidel->horizontalHeader()
+        ->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_seidel->setMinimumHeight(200);
+    sSd->vbox()->addWidget(m_seidel);
+    v->addWidget(sSd);
+
     // Merit Function (FoM)
     auto *sMerit = new SectionBox(I18n::tr("lde_merit_section"), body);
     sMerit->vbox()->addWidget(mutedLabel(I18n::tr("lde_merit_hint"), sMerit));
@@ -843,12 +905,92 @@ void LensEditorTab::recomputeParaxial()
         m_paraxial->setItem(i, 1, roItem(lines[i].value, true));
     }
 
-    // Merit の値列 (近軸オペランドのみ)
+    // ── 3 次収差 (ザイデル和) ────────────────────────────────────────────
+    // 近軸追跡だけで決まるので、ここで実計算できる (実光線追跡は不要)。
+    // 単位は d 線 (587.6 nm) の波長で割った波面収差の峰値。
+    const double lambda_mm = 587.6e-6;
+    const seidel::Result sd = seidel::analyze(surfs, epd, field);
+    const seidel::Waves wv = seidel::toWaves(sd, lambda_mm);
+    {
+        auto num = [](double v) { return QString::number(v, 'f', 4); };
+        m_seidel->clearContents();
+        const int nSurf = int(sd.perSurface.size());
+        m_seidel->setRowCount(sd.valid ? nSurf + 3 : 1);
+        if (!sd.valid) {
+            m_seidel->setItem(0, 0, roItem(I18n::tr("lde_px_invalid"), false));
+            for (int c = 1; c < 6; ++c)
+                m_seidel->setItem(0, c, roItem(dash, true));
+        } else {
+            // 面ごとの寄与も波長単位へ揃える (総和と足し算が合うように)
+            for (int i = 0; i < nSurf; ++i) {
+                const seidel::SurfaceTerms &t = sd.perSurface[std::size_t(i)];
+                m_seidel->setItem(i, 0, roItem(QString::number(i + 1), true));
+                m_seidel->setItem(i, 1,
+                                  roItem(num(t.sI / (8.0 * lambda_mm)), true));
+                m_seidel->setItem(i, 2,
+                                  roItem(num(t.sII / (2.0 * lambda_mm)), true));
+                m_seidel->setItem(i, 3,
+                                  roItem(num(t.sIII / (2.0 * lambda_mm)), true));
+                m_seidel->setItem(i, 4,
+                                  roItem(num(t.sIV / (4.0 * lambda_mm)), true));
+                m_seidel->setItem(i, 5,
+                                  roItem(num(t.sV / (2.0 * lambda_mm)), true));
+            }
+            m_seidel->setItem(nSurf, 0, roItem(I18n::tr("lde_sd_total"), false));
+            m_seidel->setItem(nSurf, 1, roItem(num(wv.spherical), true));
+            m_seidel->setItem(nSurf, 2, roItem(num(wv.coma), true));
+            m_seidel->setItem(nSurf, 3, roItem(num(wv.astigmatism), true));
+            m_seidel->setItem(nSurf, 4, roItem(num(wv.fieldCurv), true));
+            m_seidel->setItem(nSurf, 5, roItem(num(wv.distortion), true));
+            // ペッツバール半径とラグランジュ不変量 (どちらも系の量)
+            m_seidel->setItem(nSurf + 1, 0,
+                              roItem(I18n::tr("lde_sd_petz"), false));
+            m_seidel->setItem(nSurf + 1, 1,
+                              roItem(sd.hasPetzval ? mm(sd.petzvalRadius)
+                                                   : dash, true));
+            m_seidel->setItem(nSurf + 2, 0,
+                              roItem(I18n::tr("lde_sd_lagr"), false));
+            m_seidel->setItem(nSurf + 2, 1,
+                              roItem(QString::number(sd.lagrange, 'f', 5),
+                                     true));
+            for (int r = nSurf + 1; r <= nSurf + 2; ++r)
+                for (int c = 2; c < 6; ++c)
+                    m_seidel->setItem(r, c, roItem(QString(), true));
+            // 視野 0 のときは「なぜ 0 なのか」を出す (絶対規則 5 の趣旨)
+            if (!sd.hasField)
+                m_seidel->setItem(nSurf + 2, 2,
+                                  roItem(I18n::tr("lde_sd_nofield"), false));
+        }
+    }
+
+    // Merit の値列 (近軸オペランド + 3 次収差オペランド)
     const bool was = m_updating;
     m_updating = true;
     for (int i = 0; i < m_fom.size(); ++i) {
         QString value = dash;
         QString basis = I18n::tr("lde_b_needreal");
+        if (wv.valid) {
+            const QString code = m_fom[i].code;
+            const bool isAberr =
+                code == QStringLiteral("SPHA") || code == QStringLiteral("COMA")
+                || code == QStringLiteral("ASTI")
+                || code == QStringLiteral("DIST");
+            // 視野が 0 だと球面収差以外は恒等的に 0。値ではなく理由を出す
+            // (「実光線追跡が必要」という別の理由を出してはいけない)
+            if (isAberr && !sd.hasField && code != QStringLiteral("SPHA")) {
+                basis = I18n::tr("lde_b_nofield");
+            } else if (isAberr) {
+                const double v = (code == QStringLiteral("SPHA"))
+                                     ? wv.spherical
+                                     : (code == QStringLiteral("COMA"))
+                                           ? wv.coma
+                                           : (code == QStringLiteral("ASTI"))
+                                                 ? wv.astigmatism
+                                                 : wv.distortion;
+                value = QString::number(v, 'f', 4);
+                basis = I18n::tr("lde_b_seidel");
+            }
+        }
         if (d.valid) {
             if (m_fom[i].code == QStringLiteral("EFFL")) {
                 value = QString::number(d.efl, 'f', 4);
