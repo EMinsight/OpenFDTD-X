@@ -45,6 +45,8 @@ private slots:
     void solverChanged(int index);      // ソルバ切替 → 説明文・抽出ページ・推定時間
     void refresh();                     // model → widgets (ポート表 / RLC 初期値)
     void refreshPorts();                // model → ポート表のみ
+    void applyExtract();                // PEEC ページ → Project::circuit()
+    void refreshExtract();              // Project::circuit() → PEEC ページ
     void onPortItemChanged(QTableWidgetItem *item);   // ポート表 → model
     void updateResults();               // 集中定数モデル → 結果表 + |Z| 曲線
 
@@ -77,6 +79,15 @@ private:
     QTabWidget     *m_tabs;
 
     QStackedWidget *m_extractStack;     // ソルバ別の抽出設定
+    // PEEC ページの入力 → Project::circuit() (CircuitIO が読む値そのもの)
+    QLineEdit *m_peecMesh = nullptr;    // 導体分割幅 [mm]
+    QCheckBox *m_peecCp = nullptr;      // 部分容量 Cp   → peecCapacitance
+    QCheckBox *m_peecR = nullptr;       // 抵抗 (表皮効果) → peecSkinEffect
+    QCheckBox *m_peecRpeec = nullptr;   // 遅延 PEEC      → peecRetardation
+    QCheckBox *m_peecQuasi = nullptr;   // 準静的 (= 遅延なし。rPEEC と排他)
+    QLineEdit *m_peecFmin = nullptr;    // 周波数範囲 [MHz]
+    QLineEdit *m_peecFmax = nullptr;
+    QLineEdit *m_peecFdiv = nullptr;    // 分割数
     QLabel         *m_estimate;         // 推定計算時間
     QPushButton    *m_runExtract = nullptr;
     QLabel         *m_extractStatus = nullptr;

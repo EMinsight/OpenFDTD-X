@@ -80,6 +80,7 @@
 #include "em/LumpedRlc.h"
 #include "em/Reflection.h"
 #include "em/RadiatedEmission.h"
+#include "em/MieSphere.h"
 #include "em/RadarCrossSection.h"
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
@@ -2762,6 +2763,93 @@ static void testKernelResultReader()
     }
     check(KernelResultReader::parseFar1d(QStringLiteral("---\n")).isEmpty(),
           "no far1d block -> empty");
+
+    // ── ファイル経路 (1 行ずつ読む別実装) がテキスト経路と一致すること ──
+    // 大規模データ対策で read* 系はファイル全体を載せずにストリームで読む。
+    // 読み取りの実装が 2 本あるので、片方だけ直したらここが落ちる。
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "kernel_result: temp dir");
+        auto write = [&dir](const char *name, const QString &text) {
+            QFile f(dir.filePath(QString::fromLatin1(name)));
+            f.open(QIODevice::WriteOnly | QIODevice::Text);
+            f.write(text.toUtf8());
+            f.close();
+            return f.fileName();
+        };
+
+        // 給電点表
+        const QString feedPath = write("ofd.log", feedLog);
+        const QVector<FeedSweep> fs = KernelResultReader::readFeedSweeps(feedPath);
+        check(fs.size() == sweeps.size() && !fs.isEmpty(),
+              "kernel_result: streamed feed table has the same blocks");
+        if (fs.size() == sweeps.size() && !fs.isEmpty())
+            check(fs[0].feedIndex == sweeps[0].feedIndex
+                  && fs[0].z0 == sweeps[0].z0
+                  && fs[0].points.size() == sweeps[0].points.size()
+                  && fs[0].points[1].refDb == sweeps[0].points[1].refDb
+                  && fs[0].points[1].vswr == sweeps[0].points[1].vswr,
+                  "kernel_result: streamed feed table matches the text parser");
+
+        // 遠方界パターン
+        const QString farPath = write("far1d.log", farLog);
+        const QVector<FarPattern> fp = KernelResultReader::readFar1d(farPath);
+        check(fp.size() == pats.size() && fp.size() == 2,
+              "kernel_result: streamed far1d has the same blocks");
+        if (fp.size() == pats.size())
+            check(fp[0].plane == pats[0].plane
+                  && fp[0].freqHz == pats[0].freqHz
+                  && fp[0].deg == pats[0].deg
+                  && fp[0].eAbsDb == pats[0].eAbsDb
+                  && fp[1].plane == pats[1].plane,
+                  "kernel_result: streamed far1d matches the text parser");
+
+        // 散乱断面積 — 次の "===" 見出しで止まること (ストリームでも同じ)
+        const QString csText = QStringLiteral(
+            "=== cross section ===\n"
+            "  frequency[Hz] backward[m*m]  forward[m*m]\n"
+            "    3.00000e+09    1.2594e-02    1.9587e-01\n"
+            "    3.50000e+09    2.0000e-02    3.0000e-01\n"
+            "=== output files ===\n"
+            "    9.99000e+09    9.9990e-02    9.9990e-01\n");
+        const QString csPath = write("cs.log", csText);
+        const QVector<CrossSectionPoint> cs =
+            KernelResultReader::readCrossSection(csPath);
+        const QVector<CrossSectionPoint> csT =
+            KernelResultReader::parseCrossSection(csText);
+        check(cs.size() == 2 && csT.size() == 2,
+              "kernel_result: cross section stops at the next === heading");
+        if (cs.size() == 2 && csT.size() == 2)
+            check(cs[1].freqHz == csT[1].freqHz
+                  && cs[1].backward_m2 == csT[1].backward_m2
+                  && cs[1].forward_m2 == csT[1].forward_m2,
+                  "kernel_result: streamed cross section matches the parser");
+
+        // 熱解析の診断行 (他のログ行に混ざって出る)
+        const QString thText = QStringLiteral(
+            "  some unrelated line\n"
+            "Thermal: dissipated[0] = 1.234560e-03 (f=3.000000e+09 Hz)\n"
+            "Thermal: dissipated[1] = 2.000000e-03 (f=3.500000e+09 Hz)\n"
+            "  another line\n");
+        const QString thPath = write("th.log", thText);
+        const QVector<ThermalPoint> th = KernelResultReader::readThermal(thPath);
+        const QVector<ThermalPoint> thT = KernelResultReader::parseThermal(thText);
+        check(th.size() == 2 && thT.size() == 2,
+              "kernel_result: thermal lines found in a mixed log");
+        if (th.size() == 2 && thT.size() == 2)
+            check(th[1].index == thT[1].index
+                  && th[1].freqHz == thT[1].freqHz
+                  && th[1].dissipated == thT[1].dissipated,
+                  "kernel_result: streamed thermal matches the parser");
+
+        // 存在しないファイルからは何も作らない (残骸を再表示しない)
+        const QString nope = dir.filePath("nope.log");
+        check(KernelResultReader::readFeedSweeps(nope).isEmpty()
+              && KernelResultReader::readFar1d(nope).isEmpty()
+              && KernelResultReader::readCrossSection(nope).isEmpty()
+              && KernelResultReader::readThermal(nope).isEmpty(),
+              "kernel_result: a missing file yields nothing");
+    }
 }
 
 // 音響編集エンジン (AudioEditorTab の DSP — src/audio/AudioEditEngine)。
@@ -6787,6 +6875,43 @@ static void testCircuitExtraction()
                   && t2.contains(QLatin1String("capacitance = 1"))
                   && t2.contains(QLatin1String("retardation = 1")),
               "peec: enabled options are written");
+
+        // ── 抽出ページの入力が .peec に届くこと ──────────────────────────
+        // 画面は MHz と mm、.peec は Hz と分割数。単位の取り違えは桁で効く
+        // ので、ここで固定する (画面 → CircuitOpts → .peec の契約)。
+        c.fmin_Hz = 0.01e6;          // 画面の「0.01 MHz」
+        c.fmax_Hz = 100.0e6;         // 画面の「100 MHz」
+        c.fdiv    = 40;              // 画面の「40 点」
+        const QString t3 = CircuitIO::peecText(p).text;
+        check(t3.contains(QLatin1String("frequency = 10000 100000000 40")),
+              "peec: the MHz range and point count reach the frequency line");
+
+        // メッシュ分割幅 [mm] は bar の分割数になる。導体長 10 mm に対して
+        // 0.5 mm 幅なら 20 分割、2 mm 幅なら 5 分割
+        c.peecMesh_mm = 0.5;
+        const QString m1 = CircuitIO::peecText(p).text;
+        c.peecMesh_mm = 2.0;
+        const QString m2 = CircuitIO::peecText(p).text;
+        check(m1 != m2,
+              "peec: the mesh width changes the generated input");
+        auto lastBarNdiv = [](const QString &t) {
+            int best = -1;
+            for (const QString &line : t.split(QLatin1Char('\n'))) {
+                if (!line.startsWith(QLatin1String("bar = "))) continue;
+                const QStringList tk = line.split(QLatin1Char(' '),
+                                                  Qt::SkipEmptyParts);
+                if (!tk.isEmpty()) best = tk.last().toInt();
+            }
+            return best;
+        };
+        const int n1 = lastBarNdiv(m1), n2 = lastBarNdiv(m2);
+        check(n1 > 0 && n2 > 0 && n1 > n2,
+              "peec: a finer mesh gives more bar subdivisions");
+        // 0 や負の分割幅でも 1 分割は残る (0 除算・0 分割を作らない)
+        c.peecMesh_mm = 0.0;
+        check(lastBarNdiv(CircuitIO::peecText(p).text) >= 1,
+              "peec: a zero mesh width still yields at least one subdivision");
+        c.peecMesh_mm = 0.5;
     }
 
     // (d) 作れないときは理由を返して text は空 (黙って壊れた入力を出さない)
@@ -6969,6 +7094,98 @@ static void testCircuitExtraction()
               "circuit: PEEC home var");
         check(qstrcmp(Runner::homeVarFor(Kernel::FEM), "OPENFEM_HOME") == 0,
               "circuit: FEM home var");
+    }
+
+    // (h) 実カーネル統合 — GUI が作った .peec を **本物の peec に食わせる**。
+    // 「文字列に正しい行が入っている」だけでは、ソルバが受け付けるかは分から
+    // ない。ここは環境変数 OFDX_PEEC_BIN が指す実行ファイルで実際に解く。
+    //
+    // 期待値はコードの外にある: 角線 1 m × 10 mm × 1 mm・σ = 5.8e7 S/m の
+    // 直流抵抗は閉形式で R = 1/(σ·w·t) = 1/(5.8e7 × 1e-5) = 1.724138e-3 Ω。
+    // インダクタンスは OpenPEEC の検証サンプル data/sample/bar_single.peec の
+    // 記載値 L = 1.141093e-6 H を使う (どちらも GUI 側の計算ではない)。
+    {
+        g_file = "peec_e2e";
+        const QString bin = qEnvironmentVariable("OFDX_PEEC_BIN");
+        if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+            std::printf("  (peec integration skipped: set OFDX_PEEC_BIN "
+                        "to run)\n");
+        } else {
+            Project p;
+            p.general().title = QStringLiteral("bar");
+            p.materials().clear();
+            Material cu;
+            cu.esgm = 5.8e7;
+            p.materials().push_back(cu);
+            Geometry g;
+            g.materialId = 2;
+            g.shape = 1;
+            g.g[0] = -5e-3;   g.g[1] = 5e-3;      // 幅 10 mm
+            g.g[2] = -0.5e-3; g.g[3] = 0.5e-3;    // 厚さ 1 mm
+            g.g[4] = 0.0;     g.g[5] = 1.0;       // 長さ 1 m
+            p.geometries().push_back(g);
+            p.circuitPorts().clear();
+            CircuitPortRow port;
+            port.kind = CircuitPortRow::Lumped;
+            port.z2_m = 1.0;
+            p.circuitPorts().push_back(port);
+            // 抽出ページが書く値そのもの (画面の MHz / mm と同じ意味)
+            CircuitOpts &c = p.circuit();
+            c.fmin_Hz = 1e6; c.fmax_Hz = 1e6; c.fdiv = 0;
+            c.peecMesh_mm = 1000.0;
+            c.peecSkinEffect = false;
+            c.peecCapacitance = false;
+
+            const CircuitInput in = CircuitIO::peecText(p);
+            check(in.isValid(), "peec-e2e: the GUI produced an input");
+
+            QTemporaryDir dir;
+            check(dir.isValid(), "peec-e2e: temp dir");
+            const QString path = dir.filePath("bar.peec");
+            {
+                QFile f(path);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Text),
+                      "peec-e2e: write the .peec");
+                f.write(in.text.toUtf8());
+            }
+            QProcess pr;
+            pr.setWorkingDirectory(dir.path());
+            pr.start(bin, { QStringLiteral("bar.peec") });
+            check(pr.waitForFinished(300000), "peec-e2e: solver finished");
+            check(pr.exitStatus() == QProcess::NormalExit && pr.exitCode() == 0,
+                  "peec-e2e: solver exit code 0");
+            const QString out = QString::fromUtf8(pr.readAllStandardOutput());
+            check(out.contains(QLatin1String("normal end")),
+                  "peec-e2e: the solver accepted the GUI-generated input");
+
+            // zin.csv: port,frequency,Rin,Xin,Gin,Bin,Zabs
+            QFile zf(dir.filePath("zin.csv"));
+            QString zin;
+            if (zf.open(QIODevice::ReadOnly | QIODevice::Text))
+                zin = QString::fromUtf8(zf.readAll());
+            check(!zin.isEmpty(), "peec-e2e: zin.csv was produced");
+            double rin = 0.0, xin = 0.0, freq = 0.0;
+            for (const QString &line : zin.split(QLatin1Char('\n'))) {
+                const QStringList t = line.split(QLatin1Char(','));
+                if (t.size() < 4) continue;
+                bool okf = false;
+                const double f = t[1].toDouble(&okf);
+                if (!okf) continue;              // 見出し行
+                freq = f; rin = t[2].toDouble(); xin = t[3].toDouble();
+            }
+            check(std::fabs(freq - 1e6) < 1.0,
+                  "peec-e2e: the frequency line reached the solver");
+            // 直流抵抗の閉形式 R = 1/(sigma*w*t)
+            const double rExact = 1.0 / (5.8e7 * 0.01 * 0.001);
+            check(rin > 0 && std::fabs(rin / rExact - 1.0) < 1e-3,
+                  "peec-e2e: Rin matches the closed-form 1/(sigma*w*t)");
+            // L = X/(2 pi f) を OpenPEEC のサンプル記載値と比べる
+            const double lH = xin / (2.0 * 3.14159265358979323846 * freq);
+            check(std::fabs(lH / 1.141093e-6 - 1.0) < 0.01,
+                  "peec-e2e: the extracted L matches OpenPEEC's own sample "
+                  "value for this bar");
+        }
+        g_file = "circuit";
     }
 }
 
@@ -8151,6 +8368,21 @@ static void testOfdIntegration(const QString &sampleDir)
                 check(std::fabs(em::rcsFromDbsm(em::rcsDbsm(back)) - back)
                           < 1e-12 * back,
                       "rcs-e2e: the dBsm conversion is lossless");
+                // 散乱/RCS タブが並べて出す Mie 厳密解を、**同じ半径・同じ
+                // 周波数**で計算し直す。上の定数 (本家スクリプトの転記) と
+                // 一致するはずで、ここがずれていれば画面に出る理論値が嘘になる
+                const em::MieSphereRcs m = em::pecSphereRcs(0.05, cs[0].freqHz);
+                check(m.valid, "rcs-e2e: the Mie solution is computed");
+                check(std::fabs(m.backward_m2 / mieBack - 1.0) < 0.03,
+                      "rcs-e2e: our Mie backscatter reproduces the sample's "
+                      "reference at the run's own frequency");
+                check(std::fabs(m.forward_m2 / mieFwd - 1.0) < 0.03,
+                      "rcs-e2e: our Mie forward scatter reproduces it too");
+                // 表に並ぶ 2 つ (計算値と理論値) が同じ許容窓に収まること
+                check(back / m.backward_m2 > 0.625
+                          && back / m.backward_m2 < 1.6,
+                      "rcs-e2e: measured vs displayed theory agree within the "
+                      "staircase tolerance");
             }
         }
         g_file = "ofd_integration";
@@ -9797,6 +10029,52 @@ static void testSarMetrics()
               "sar: negative power density yields no field");
     }
 
+    // ── (2') 曝露源からの入射量 (遠方界) ────────────────────────────────
+    {
+        // dBm → W: 30 dBm = 1 W, 0 dBm = 1 mW
+        check(std::fabs(dbmToWatts(30.0) - 1.0) < 1e-12
+              && std::fabs(dbmToWatts(0.0) - 1e-3) < 1e-15,
+              "sar: 30 dBm is 1 W and 0 dBm is 1 mW");
+
+        // S = P·G/(4πd²)。1 W, 0 dBi, 1 m なら 1/(4π)
+        const double pi = 3.14159265358979323846;
+        check(std::fabs(farFieldPowerDensity(1.0, 0.0, 1.0) - 1.0 / (4.0 * pi))
+                  < 1e-15,
+              "sar: 1 W isotropic at 1 m gives 1/(4 pi) W/m^2");
+        // 利得 +3.0103 dB (= 2 倍) で 2 倍
+        check(std::fabs(farFieldPowerDensity(1.0, 3.0102999566398120, 1.0)
+                        / farFieldPowerDensity(1.0, 0.0, 1.0) - 2.0) < 1e-9,
+              "sar: +3.01 dBi doubles the power density");
+        // 距離 2 倍で 1/4 (逆 2 乗)
+        check(std::fabs(farFieldPowerDensity(1.0, 0.0, 2.0)
+                        / farFieldPowerDensity(1.0, 0.0, 1.0) - 0.25) < 1e-12,
+              "sar: doubling the distance quarters the power density");
+        check(farFieldPowerDensity(0.0, 0.0, 1.0) == 0.0
+              && farFieldPowerDensity(1.0, 0.0, 0.0) == 0.0,
+              "sar: no power or no distance yields 0 (not computed)");
+
+        // 画面が出す S と E_rms は同じ平面波の関係で結ばれていること
+        const double s2 = farFieldPowerDensity(dbmToWatts(24.0), 0.0, 1.0);
+        const double e2 = rmsFieldFromPowerDensity(s2);
+        check(std::fabs(planeWavePowerDensityFromRms(e2) - s2) < 1e-15,
+              "sar: the displayed S and E_rms are consistent");
+        // 24 dBm 等方 1 m は約 0.02 W/m^2 / 2.74 V/m (画面表示の裏取り)
+        check(std::fabs(s2 - 0.019993) < 1e-5 && std::fabs(e2 - 2.744) < 1e-3,
+              "sar: 24 dBm isotropic at 1 m is about 0.02 W/m^2 / 2.74 V/m");
+
+        // 反応性近傍界の境界 λ/(2π)。1950 MHz なら λ = 0.1538 m → 0.0245 m
+        const double nb = reactiveNearFieldBoundary(1950e6);
+        check(std::fabs(nb - (2.99792458e8 / 1950e6) / (2.0 * pi)) < 1e-15,
+              "sar: the reactive near-field boundary is lambda/(2 pi)");
+        check(nb > 0.024 && nb < 0.025,
+              "sar: at 1950 MHz that boundary is about 24.5 mm");
+        check(reactiveNearFieldBoundary(0.0) == 0.0,
+              "sar: no frequency means no boundary");
+        // 携帯を体に密着させる 5 mm 配置はこの内側 = 遠方界の式は使えない
+        check(0.005 < nb,
+              "sar: a 5 mm body-worn spacing is inside the near field");
+    }
+
     // ── (3) 断熱温度上昇 ────────────────────────────────────────────────
     {
         // 2 W/kg を 6 分、c_p = 3600 J/(kg K) → 2*360/3600 = 0.2 K
@@ -10493,6 +10771,121 @@ static void testRadioPropagation()
         // 受信電力 = EIRP − 損失 + 利得
         check(std::fabs(pr::receivedPowerDbm(30.0, 100.0, 3.0) + 67.0) < 1e-12,
               "prop: received power is EIRP - loss + gain");
+    }
+
+    // ── アレイ利得 10log10(N) ──────────────────────────────────────────────
+    {
+        check(pr::arrayGainDb(1) == 0.0,
+              "prop: a single element has no array gain");
+        // 素子数 2 倍で +3.01 dB (電力比なので 10log10 — 20log10 なら +6.02)
+        check(std::fabs(pr::arrayGainDb(2) - 3.0102999566398120) < 1e-12,
+              "prop: doubling the elements adds 3.01 dB (10log10, not 20log10)");
+        check(std::fabs(pr::arrayGainDb(4) - 2.0 * pr::arrayGainDb(2)) < 1e-12,
+              "prop: array gain is logarithmic in the element count");
+        check(pr::arrayGainDb(0) == 0.0 && pr::arrayGainDb(-3) == 0.0,
+              "prop: a non-positive element count yields 0 (not computed)");
+    }
+
+    // ── MIMO 空間多重の容量上限 ────────────────────────────────────────────
+    {
+        const double b = 1.0e6, snr = 20.0;
+        // 1×1 は Shannon 容量と厳密に一致しなければならない
+        check(std::fabs(pr::mimoCapacity(b, snr, 1, 1)
+                        - pr::shannonCapacity(b, snr)) < 1e-9,
+              "prop: 1x1 MIMO equals the Shannon capacity");
+        // min(Nt,Nr)·B·log2(1 + SNR/Nt) — 定義式そのもの
+        const double want = 4.0 * b
+            * std::log2(1.0 + std::pow(10.0, snr / 10.0) / 4.0);
+        check(std::fabs(pr::mimoCapacity(b, snr, 4, 4) - want) < 1e-6,
+              "prop: 4x4 follows min(Nt,Nr)*B*log2(1+SNR/Nt)");
+        // ストリーム数は少ない側で決まる (4×2 は 2 ストリーム)
+        const double want42 = 2.0 * b
+            * std::log2(1.0 + std::pow(10.0, snr / 10.0) / 4.0);
+        check(std::fabs(pr::mimoCapacity(b, snr, 4, 2) - want42) < 1e-6,
+              "prop: the stream count is min(Nt,Nr)");
+        // 高 SNR では 4×4 が 1×1 の 4 倍へ漸近する (電力等分の -6 dB を含めても
+        // 多重利得が勝つ)。低 SNR では逆に電力等分の損が効く — 向きを固定する
+        check(pr::mimoCapacity(b, 40.0, 4, 4) > 3.0 * pr::shannonCapacity(b, 40.0),
+              "prop: at high SNR spatial multiplexing wins");
+        check(pr::mimoCapacity(b, -10.0, 4, 4) < 2.0 * pr::shannonCapacity(b, -10.0),
+              "prop: at low SNR splitting the power costs more than it gains");
+        check(pr::mimoCapacity(0.0, snr, 4, 4) == 0.0
+              && pr::mimoCapacity(b, snr, 0, 4) == 0.0
+              && pr::mimoCapacity(b, snr, 4, 0) == 0.0,
+              "prop: no bandwidth or no antenna yields 0 (not computed)");
+    }
+
+    // ── カバレッジ格子 ────────────────────────────────────────────────────
+    {
+        const double half = 200.0, ht = 10.0, hr = 1.5, f = 3.5e9;
+        const double eirp = 30.0, grx = 2.0, refl = 1.0, minD = 1.0;
+        const int n = 41;                     // 奇数 = 中心の点を含む
+        const pr::CoverageGrid g =
+            pr::coverageMap(half, n, ht, hr, f, eirp, grx, refl, minD);
+        check(g.valid() && g.n == n
+              && g.dbm.size() == std::size_t(n) * std::size_t(n),
+              "coverage: the grid has n*n points");
+        // 座標は中心が 0、両端が ±half
+        check(std::fabs(g.coord(0) + half) < 1e-12
+              && std::fabs(g.coord(n - 1) - half) < 1e-12
+              && std::fabs(g.coord(n / 2)) < 1e-12,
+              "coverage: coordinates run from -half to +half through 0");
+
+        // **格子の各点は直接評価と一致しなければならない** — 図が別物の式で
+        // 描かれていないことの検査 (ここがずれたら図は嘘になる)
+        bool same = true;
+        for (int iy = 0; iy < n && same; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = g.coord(ix), y = g.coord(iy);
+                double d = std::sqrt(x * x + y * y);
+                if (d < minD) d = minD;
+                const double want = pr::receivedPowerDbm(
+                    eirp, pr::twoRayPathLossDb(d, ht, hr, f, refl), grx);
+                if (std::fabs(g.dbm[std::size_t(iy) * n + ix] - want) > 1e-12)
+                    { same = false; break; }
+            }
+        check(same, "coverage: every cell equals the two-ray model directly");
+
+        // 送信点が中央なので、原点対称・軸対称でなければならない
+        bool sym = true;
+        for (int iy = 0; iy < n && sym; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double a = g.dbm[std::size_t(iy) * n + ix];
+                const double b2 =
+                    g.dbm[std::size_t(n - 1 - iy) * n + (n - 1 - ix)];
+                if (std::fabs(a - b2) > 1e-9) { sym = false; break; }
+            }
+        check(sym, "coverage: the map is symmetric about the transmitter");
+
+        // **最大は中心とは限らない。** ブレークポイント距離
+        // d_bp = 4·ht·hr/λ ≈ 700 m に対して図の半幅は 200 m なので、格子は
+        // まるごと 2 波の干渉領域に入る。最大は干渉が強め合うリング上に来る。
+        // (「ピークは送信点」と書いた最初のテストはここで落ちた — 図の見た目
+        //  についての思い込みであって、モデルの主張ではなかった。)
+        check(pr::breakpointDistance(ht, hr, f) > half,
+              "coverage: the map lies inside the two-ray interference region");
+        // 言えるのは「近い方が強い」と「包絡線が距離とともに落ちる」こと
+        const double centre = g.dbm[std::size_t(n / 2) * n + n / 2];
+        check(centre > g.dbm[0] && centre > g.dbm[g.dbm.size() - 1],
+              "coverage: the centre beats the far corners");
+        double innerMax = -1e300, outerMax = -1e300;
+        for (int iy = 0; iy < n; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = g.coord(ix), y = g.coord(iy);
+                const double r = std::sqrt(x * x + y * y);
+                const double v = g.dbm[std::size_t(iy) * n + ix];
+                if (r <= 0.25 * half) innerMax = std::max(innerMax, v);
+                if (r >= 0.75 * half) outerMax = std::max(outerMax, v);
+            }
+        check(innerMax > outerMax,
+              "coverage: the envelope falls off with distance");
+        check(g.minDbm < g.maxDbm, "coverage: the map has a real range");
+
+        // 不正な入力からは空を返す (図を描かせない)
+        check(!pr::coverageMap(half, 0, ht, hr, f, eirp, grx).valid()
+              && !pr::coverageMap(0.0, n, ht, hr, f, eirp, grx).valid()
+              && !pr::coverageMap(half, n, ht, hr, 0.0, eirp, grx).valid(),
+              "coverage: bad inputs yield an invalid grid");
     }
 }
 
@@ -11920,6 +12313,63 @@ static void testRadiatedEmission()
     // グランド反射の上限は 20log10(2)
     check(approx(groundReflectionMaxDb(), 6.0205999, 1e-6),
           "radem: the ground-reflection ceiling is 6.02 dB");
+
+    // ── 試験配置から求める実際のグランド反射 ─────────────────────────────
+    // 一律 6.02 dB は「同相合成の上限」であって実際の増分ではない。
+    // 配置 (サイト種別・距離・アンテナ高・周波数) で決まる量として検算する。
+    {
+        const double d = 3.0, f = 300e6;      // 3 m 法, 300 MHz (λ = 1 m)
+        // 反射の無いサイトでは増分そのものが無い (0 dB は「反射なし」の意味)
+        const GroundEnhancement far =
+            groundEnhancement(EmcSite::FullyAnechoic, d, 2.0, f);
+        check(far.valid && !far.applies && far.atHeightDb == 0.0
+                  && far.scanMaxDb == 0.0,
+              "radem: a fully anechoic room has no ground reflection");
+        const GroundEnhancement rev =
+            groundEnhancement(EmcSite::Reverberation, d, 2.0, f);
+        check(rev.valid && !rev.applies,
+              "radem: a reverberation chamber is not a two-ray site");
+
+        // OATS / 半電波暗室では反射がある。**どの高さでも上限 6.02 dB を
+        // 超えてはならない** — 超えたら 2 波の合成が壊れている
+        bool everOverCeiling = false, anyPositive = false, anyNegative = false;
+        for (double h = 1.0; h <= 4.0 + 1e-9; h += 0.05) {
+            const GroundEnhancement g =
+                groundEnhancement(EmcSite::OpenArea, d, h, f);
+            if (!g.valid || !g.applies) { everOverCeiling = true; break; }
+            if (g.atHeightDb > 6.0206 + 1e-6) everOverCeiling = true;
+            if (g.atHeightDb > 0.5)  anyPositive = true;
+            if (g.atHeightDb < -0.5) anyNegative = true;
+            // 走査の最大は、その走査に含まれるどの点の値より小さくない
+            if (g.scanMaxDb + 1e-9 < g.atHeightDb) everOverCeiling = true;
+        }
+        check(!everOverCeiling,
+              "radem: the enhancement never exceeds the 6.02 dB ceiling and "
+              "the scan maximum bounds every height in the scan");
+        check(anyPositive && anyNegative,
+              "radem: the two-ray term both reinforces and cancels across the "
+              "height scan (a flat +6 dB would fail here)");
+
+        // OATS と半電波暗室は同じ 2 波の扱い (床のグランドプレーンは共通)
+        const GroundEnhancement oats =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f);
+        const GroundEnhancement sac =
+            groundEnhancement(EmcSite::SemiAnechoic, d, 2.0, f);
+        check(approx(oats.atHeightDb, sac.atHeightDb, 1e-12)
+                  && approx(oats.scanMaxDb, sac.scanMaxDb, 1e-12),
+              "radem: OATS and a semi-anechoic chamber use the same two-ray "
+              "geometry");
+        // 走査の最大は上限に肉薄する (規格が最大を拾う前提と整合する)
+        check(oats.scanMaxDb > 5.0 && oats.scanMaxDb <= 6.0206 + 1e-6,
+              "radem: the 1-4 m scan finds a near-constructive height");
+
+        // 入力が不正なら計算しない (0 を返して計算済みに見せない)
+        check(!groundEnhancement(EmcSite::OpenArea, 0.0, 2.0, f).valid
+              && !groundEnhancement(EmcSite::OpenArea, d, 0.0, f).valid
+              && !groundEnhancement(EmcSite::OpenArea, d, 2.0, 0.0).valid,
+              "radem: a non-positive distance, height or frequency is not "
+              "computed");
+    }
 
     // 遠方界距離 2D²/λ と波長
     {
@@ -13989,6 +14439,62 @@ static void testCourantTimestep()
 }
 
 // ── RCS の読み取りと単位換算 (io/KernelResultReader + em/RadarCrossSection) ─
+// ── 完全導体球の Mie 厳密解 (em/MieSphere) ─────────────────────────────────
+//
+// 期待値は **2 つともコードの外にある**:
+//   (a) Rayleigh 極限 σ_b/(πa²) → 9·x⁴  (x → 0) — 古典的な解析的漸近形
+//   (b) 本家 OpenFDTD の検証スクリプト data/sample/sphere_rcs_check.sh が
+//       使う ka = 3.0 / a = 0.05 m の値 (後方 4.0901e-03 / 前方 8.4797e-02 m²)
+// (a) は級数の低次項が正しいこと、(b) は共鳴領域まで含めて正しいことを見る。
+// 片方だけでは足りない — (a) は n = 1 項でほぼ決まり、(b) は 9 項ほど効く。
+static void testMieSphere()
+{
+    g_file = "mie";
+    using ofd::em::pecSphereRcs;
+    const double c0 = 2.99792458e8;
+    const double pi = 3.14159265358979323846;
+    // ka を指定して周波数を作る (λ = 2πa/x)
+    auto freqFor = [&](double a, double x) { return c0 * x / (2.0 * pi * a); };
+
+    {   // (b) 本家の検証値と 5 桁一致すること
+        const double a = 0.05;
+        const auto m = pecSphereRcs(a, freqFor(a, 3.0));
+        check(m.valid, "mie: ka = 3 sphere is computed");
+        check(std::fabs(m.ka - 3.0) < 1e-12, "mie: ka comes back as asked");
+        check(std::fabs(m.backward_m2 / 4.0901e-03 - 1.0) < 1e-4,
+              "mie: backscatter matches the upstream reference (4.0901e-03 m2)");
+        check(std::fabs(m.forward_m2 / 8.4797e-02 - 1.0) < 1e-4,
+              "mie: forward scatter matches the upstream reference "
+              "(8.4797e-02 m2)");
+        check(m.terms >= 8,
+              "mie: the series is long enough for the resonance region");
+    }
+    {   // (a) Rayleigh 極限 σ_b/(πa²) → 9·x⁴
+        const double a = 1e-3;
+        for (double x : { 0.01, 0.02, 0.05 }) {
+            const auto m = pecSphereRcs(a, freqFor(a, x));
+            const double norm = m.backward_m2 / (pi * a * a);
+            check(std::fabs(norm / (9.0 * x * x * x * x) - 1.0) < 1e-3,
+                  "mie: the Rayleigh limit is 9*x^4");
+        }
+    }
+    {   // 前方散乱は後方より大きい (ka >~ 1 の領域で前方に集中する)
+        const double a = 0.05;
+        const auto m = pecSphereRcs(a, freqFor(a, 3.0));
+        check(m.forward_m2 > m.backward_m2,
+              "mie: forward scatter dominates at ka = 3");
+        // ka を上げると前方散乱は単調に増える (幾何光学極限へ向かう)
+        const auto m6 = pecSphereRcs(a, freqFor(a, 6.0));
+        check(m6.forward_m2 > m.forward_m2,
+              "mie: forward scatter grows with ka");
+    }
+    {   // 不正な入力は valid = false (0 を返して計算済みに見せない)
+        check(!pecSphereRcs(0.0, 3e9).valid && !pecSphereRcs(-1.0, 3e9).valid
+              && !pecSphereRcs(0.05, 0.0).valid,
+              "mie: a non-positive radius or frequency is not computed");
+    }
+}
+
 static void testRadarCrossSection()
 {
     g_file = "rcs";
@@ -14983,6 +15489,7 @@ int main(int argc, char *argv[])
     testOptimizeFom();
     testCourantTimestep();
     testPostTables();
+    testMieSphere();
     testRadarCrossSection();
     testPostPrereq();
     testNoMarkdownInUiStrings();

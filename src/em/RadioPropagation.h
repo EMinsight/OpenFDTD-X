@@ -18,6 +18,13 @@
 //       Bell Syst. Tech. J. 27, 379-423 (1948)。C = B·log2(1+S/N)。
 //   [5] IEEE Std 1149 系で慣用の標準雑音温度 T0 = 290 K。
 //       雑音電力 N = kT0B (k = 1.380649e-23 J/K, CODATA 2018)。
+//   [6] C. A. Balanis, "Antenna Theory: Analysis and Design", 4th ed.,
+//       Wiley (2016), §6.3 (N 素子等間隔アレイの指向性)。
+//   [7] I. E. Telatar, "Capacity of multi-antenna Gaussian channels",
+//       Eur. Trans. Telecommun. 10(6), 585-595 (1999)。
+//   [8] G. J. Foschini and M. J. Gans, "On limits of wireless communications
+//       in a fading environment when using multiple antennas",
+//       Wireless Pers. Commun. 6, 311-335 (1998)。
 //
 // 適用範囲 (GUI にも明示すること):
 //   - two-ray モデルは「平面大地・完全反射 (Γ = −1)・等方アンテナ」を仮定した
@@ -25,6 +32,8 @@
 //   - 干渉のヌル点では損失が発散するので、損失には上限 (kMaxPathLossDb) を置く。
 #ifndef OFD_EM_RADIOPROPAGATION_H
 #define OFD_EM_RADIOPROPAGATION_H
+
+#include <vector>
 
 namespace ofd {
 namespace em {
@@ -80,6 +89,52 @@ double thermalNoiseDbm(double bandwidth_hz, double noiseFigureDb);
 // Shannon 容量 [bit/s] = B·log2(1 + SNR) ([4])。B ≤ 0 なら 0。
 // SISO (単一入出力) の上限であり、MIMO の多重利得は含まない。
 double shannonCapacity(double bandwidth_hz, double snrDb);
+
+// N 素子アレイの最大アレイ利得 [dB] = 10·log10(N) ([6] §6.3)。
+// 素子が無損失・等間隔・同振幅で、ボアサイト方向へ同相合成した場合の上限。
+// **単一素子の利得に対する増分**なので、EIRP に既にアレイ分が入っていれば
+// 二重計上になる (呼び出し側で明示すること)。N < 1 なら 0。
+double arrayGainDb(int elements);
+
+// 空間多重 MIMO の容量 [bit/s] ([7] eq.(7), [8])。
+//   C = min(Nt, Nr)·B·log2(1 + SNR/Nt)
+// 送信電力を Nt 本へ等分し、min(Nt,Nr) 本の等利得な固有モードが立つと
+// 仮定した**上限**。実チャネルの相関・ランク落ちは含まない。
+// Nt = Nr = 1 なら shannonCapacity と一致する。
+double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx);
+
+// 受信電力のカバレッジ格子 (受信点を「格子」にしたときの表示の実体)。
+//
+// 送信点を格子の中心に置き、受信点を水平面 (x, y) 上へ並べて 2 波モデルで
+// 受信電力 [dBm] を求める。**アンテナ指向性は含まない** (等方 + 受信利得の
+// 一定加算)。したがって等方円対称になり、遮蔽物の影は出ない — 見通し内の
+// 距離依存を見るための図であることを画面に明示すること。
+struct CoverageGrid {
+    int n = 0;                  // 1 辺の点数 (n×n)
+    double halfSpan_m = 0.0;    // 中心からの半幅 [m]
+    std::vector<double> dbm;    // n*n, row-major。[0] は (x,y) = (−half, −half)
+    double minDbm = 0.0, maxDbm = 0.0;
+
+    bool valid() const
+    {
+        return n > 0 && halfSpan_m > 0.0
+            && dbm.size() == std::size_t(n) * std::size_t(n);
+    }
+    // (ix, iy) の座標 [m] (中心が 0)
+    double coord(int i) const
+    {
+        return (n > 1) ? (-halfSpan_m + 2.0 * halfSpan_m * i / (n - 1)) : 0.0;
+    }
+};
+
+// カバレッジ格子を作る。距離は minDistance_m で下限を切る (原点は距離 0 で
+// 発散するため、また 2 波モデルは遠方界の式なので近すぎる点は意味を持たない)。
+// n ≤ 0 / halfSpan ≤ 0 / 周波数 ≤ 0 なら valid() == false の空を返す。
+CoverageGrid coverageMap(double halfSpan_m, int n,
+                         double hTx_m, double hRx_m, double freq_hz,
+                         double eirpDbm, double rxGainDbi,
+                         double reflection = 1.0,
+                         double minDistance_m = 1.0);
 
 } // namespace propagation
 } // namespace em

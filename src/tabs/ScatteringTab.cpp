@@ -5,6 +5,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 #include "../io/KernelResultReader.h"
+#include "../em/MieSphere.h"
 #include "../em/RadarCrossSection.h"
 
 #include <QCheckBox>
@@ -133,6 +134,23 @@ const bool s_i18n = [] {
               "Backscatter (monostatic)");
     I18n::reg("sct_res_fwd",  "前方散乱", "Forward scatter");
     I18n::reg("sct_res_ka",   "電気サイズ ka", "Electrical size ka");
+    I18n::reg("sct_res_mie_b", "後方 (Mie 厳密解)", "Backscatter (exact Mie)");
+    I18n::reg("sct_res_mie_f", "前方 (Mie 厳密解)", "Forward (exact Mie)");
+    I18n::reg("sct_mie_note",
+              "「その他散乱量」の Mie にチェックが入っているので、完全導体球の"
+              "厳密解を並べて表示しています。球を直交格子で階段近似するので"
+              "一致はしません — 桁と傾向が合っているかの目安です。"
+              "形状が球 (shape 2) のときだけ計算します。",
+              "The Mie box under \"other scattering quantities\" is checked, so "
+              "the exact perfectly-conducting-sphere solution is shown "
+              "alongside. The sphere is staircased on the Cartesian grid so the "
+              "two will not agree - this is a sanity check on the order of "
+              "magnitude and the trend. It is computed only when the shape is a "
+              "sphere (shape 2).");
+    I18n::reg("sct_mie_notsphere",
+              "Mie 厳密解は球にだけ当てはまるので、この形状では出しません",
+              "The exact Mie solution applies to a sphere only, so it is not "
+              "shown for this shape");
     I18n::reg("sct_res_none",
               "▸ 実行結果の RCS はまだありません。平面波入射 (planewave) と "
               "frequency2 のあるプロジェクトを計算すると、カーネルが "
@@ -154,8 +172,12 @@ const bool s_i18n = [] {
               "the RCS output options (monostatic / bistatic, unit, scattering matrix)");
     I18n::reg("sct_uw_ntff", "近傍界→遠方界変換の設定 (抽出面・広角オプション)",
               "the near-to-far-field settings (extraction surface, wide-angle option)");
-    I18n::reg("sct_uw_misc", "その他散乱量 (SE・FSS・吸収率・消光・Mie) のチェック",
-              "the other-quantity check boxes (SE, FSS, absorptance, extinction, Mie)");
+    I18n::reg("sct_uw_misc", "SE・FSS・吸収率・消光のチェック",
+              "the SE, FSS, absorptance and extinction check boxes");
+    I18n::reg("sct_uw_misc_ok",
+              "Mie のチェック — 上の結果表に完全導体球の厳密解を並べて表示します",
+              "the Mie check box - it adds the exact perfectly-conducting-sphere "
+              "solution alongside the results above");
     return true;
 }();
 
@@ -298,10 +320,11 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     m_rcsResultNote->setWordWrap(true);
     m_rcsResultNote->setStyleSheet("font-size:11px; color:palette(mid);");
     sRcs->vbox()->addWidget(m_rcsResultNote);
-    m_rcsTable = new QTableWidget(0, 4, sRcs);
+    m_rcsTable = new QTableWidget(0, 6, sRcs);
     m_rcsTable->setHorizontalHeaderLabels(
         { I18n::tr("sct_res_freq"), I18n::tr("sct_res_back"),
-          I18n::tr("sct_res_fwd"), I18n::tr("sct_res_ka") });
+          I18n::tr("sct_res_mie_b"), I18n::tr("sct_res_fwd"),
+          I18n::tr("sct_res_mie_f"), I18n::tr("sct_res_ka") });
     m_rcsTable->horizontalHeader()->setStretchLastSection(true);
     m_rcsTable->verticalHeader()->setVisible(false);
     m_rcsTable->setMinimumHeight(110);
@@ -331,7 +354,12 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     auto *sMisc = checkSection(body, "sct_misc", kMiscKeys, kMiscOn,
                                int(sizeof(kMiscKeys) / sizeof(kMiscKeys[0])),
                                &m_misc);
-    sMisc->vbox()->addWidget(tabhelp::unwiredNote(sMisc, I18n::tr("sct_uw_misc")));
+    sMisc->vbox()->addWidget(tabhelp::unwiredNote(sMisc, I18n::tr("sct_uw_misc"),
+                                                 I18n::tr("sct_uw_misc_ok")));
+    // Mie のチェックは上の結果表に理論値の列を足す
+    if (m_misc.size() > 4 && m_misc[4])
+        connect(m_misc[4], &QCheckBox::toggled,
+                this, &ScatteringTab::refreshRcsResult);
     v->addWidget(sMisc);
 
     v->addStretch(1);
@@ -541,12 +569,21 @@ void ScatteringTab::refreshRcsResult()
     // 球でも √3 倍に膨らんで ka がずれるので使わない。球以外では代表寸法の
     // 目安でしかないため、注記でそう言う。
     double radius = 0.0;
+    bool isSphere = false;
     for (const Geometry &g : m_p->geometries()) {
         const double hx = 0.5 * std::fabs(g.g[1] - g.g[0]);
         const double hy = 0.5 * std::fabs(g.g[3] - g.g[2]);
         const double hz = 0.5 * std::fabs(g.g[5] - g.g[4]);
-        radius = std::max(radius, std::max(hx, std::max(hy, hz)));
+        const double h = std::max(hx, std::max(hy, hz));
+        if (h > radius) { radius = h; isSphere = (g.shape == 2); }
     }
+    // Mie は「その他散乱量」の Mie にチェックがあり、かつ形状が球のときだけ。
+    // 球でない形へ球の厳密解を並べると比較になっていない値を出すことになる。
+    const bool wantMie = (m_misc.size() > 4 && m_misc[4]
+                          && m_misc[4]->isChecked());
+    const bool showMie = wantMie && isSphere && radius > 0.0;
+    m_rcsTable->setColumnHidden(2, !showMie);
+    m_rcsTable->setColumnHidden(4, !showMie);
 
     const int unit = m_rcsUnit ? m_rcsUnit->currentIndex() : 0;
     auto fmt = [&](double sigma, double f) {
@@ -575,18 +612,32 @@ void ScatteringTab::refreshRcsResult()
         m_rcsTable->setItem(r, 0, ro(QStringLiteral("%1 MHz")
                                          .arg(p.freqHz * 1e-6, 0, 'g', 6)));
         m_rcsTable->setItem(r, 1, ro(fmt(p.backward_m2, p.freqHz)));
-        m_rcsTable->setItem(r, 2, ro(fmt(p.forward_m2, p.freqHz)));
+        m_rcsTable->setItem(r, 3, ro(fmt(p.forward_m2, p.freqHz)));
+        if (showMie) {
+            const em::MieSphereRcs m = em::pecSphereRcs(radius, p.freqHz);
+            m_rcsTable->setItem(r, 2, ro(m.valid
+                ? fmt(m.backward_m2, p.freqHz) : QStringLiteral("—")));
+            m_rcsTable->setItem(r, 4, ro(m.valid
+                ? fmt(m.forward_m2, p.freqHz) : QStringLiteral("—")));
+        } else {
+            m_rcsTable->setItem(r, 2, ro(QStringLiteral("—")));
+            m_rcsTable->setItem(r, 4, ro(QStringLiteral("—")));
+        }
         const double ka = em::sphereKa(radius, p.freqHz);
-        m_rcsTable->setItem(r, 3, ro(ka > 0
+        m_rcsTable->setItem(r, 5, ro(ka > 0
             ? QStringLiteral("%1").arg(ka, 0, 'f', 3)
             : QStringLiteral("—")));
     }
     m_rcsTable->resizeColumnsToContents();
     m_rcsTable->setVisible(true);
-    m_rcsResultNote->setText(I18n::tr("sct_res_ok")
-                                 .arg(QDir::toNativeSeparators(used))
-                                 .arg(cs.size())
-                                 .arg(QString::number(radius, 'g', 4)));
+    QString note = I18n::tr("sct_res_ok")
+                       .arg(QDir::toNativeSeparators(used))
+                       .arg(cs.size())
+                       .arg(QString::number(radius, 'g', 4));
+    if (showMie)            note += QLatin1Char(' ') + I18n::tr("sct_mie_note");
+    else if (wantMie)       note += QLatin1Char(' ')
+                                  + I18n::tr("sct_mie_notsphere");
+    m_rcsResultNote->setText(note);
 }
 
 void ScatteringTab::refresh()

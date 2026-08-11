@@ -1,6 +1,8 @@
 // RadiatedEmission.cpp — 遠方界から放射妨害波レベルへの換算 (定義は .h)
 #include "RadiatedEmission.h"
+#include "RadioPropagation.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace ofd {
@@ -50,6 +52,36 @@ double wavelengthM(double freqHz)
 double marginDb(double levelDbuVm, double limitDbuVm)
 {
     return limitDbuVm - levelDbuVm;
+}
+
+GroundEnhancement groundEnhancement(EmcSite site, double distM,
+                                    double antHeightM, double freqHz,
+                                    double eutHeightM)
+{
+    namespace prop = ofd::em::propagation;
+    GroundEnhancement g;
+    if (!(distM > 0.0) || !(freqHz > 0.0)) return g;
+    if (!(antHeightM > 0.0) || !(eutHeightM > 0.0)) return g;
+    g.valid = true;
+    g.applies = (site == EmcSite::OpenArea || site == EmcSite::SemiAnechoic);
+    if (!g.applies) return g;          // 反射が無い = 増分 0
+
+    const double fsl = prop::freeSpacePathLossDb(distM, freqHz);
+    const auto gain = [&](double hr) {
+        // 自由空間より損失が小さければ強め合っている = 正の増分
+        return fsl - prop::twoRayPathLossDb(distM, eutHeightM, hr, freqHz, 1.0);
+    };
+    g.atHeightDb = gain(antHeightM);
+
+    // 1〜4 m の走査。規格は連続走査で最大を拾うので、細かく刻んで最大を取る
+    double best = -1e300;
+    const int steps = 601;             // 5 mm 刻み
+    for (int i = 0; i < steps; ++i) {
+        const double hr = 1.0 + 3.0 * i / (steps - 1);
+        best = std::max(best, gain(hr));
+    }
+    g.scanMaxDb = best;
+    return g;
 }
 
 } // namespace em

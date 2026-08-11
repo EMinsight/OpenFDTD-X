@@ -13,13 +13,6 @@ namespace KernelResultReader {
 
 namespace {
 
-QString readAll(const QString &path)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return QString();
-    return QString::fromUtf8(f.readAll());
-}
-
 // 空白区切りの数値行をパース。全トークンが数値なら true
 bool numericRow(const QString &line, QVector<double> &vals)
 {
@@ -35,98 +28,163 @@ bool numericRow(const QString &line, QVector<double> &vals)
     return true;
 }
 
+// テキストからでもファイルからでも 1 行ずつ供給する。ファイル版は
+// **全体をメモリに載せない** (大規模データ対策 — near2d.log はセル数と
+// 周波数点数の積で増える)。
+template <class F>
+void eachLineOfText(const QString &text, F &&f)
+{
+    for (const QString &raw : text.split(QLatin1Char('\n'))) f(raw);
+}
+
+template <class F>
+bool eachLineOfFile(const QString &path, F &&f)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    QTextStream in(&file);
+    while (!in.atEnd()) f(in.readLine());
+    return true;
+}
+
+} // namespace
+
+namespace {
+
+// <kernel>.log の給電点表。行を 1 本ずつ食わせる。
+//   feed #1 (Z0[ohm] = 50.00)
+//     frequency[Hz] Rin[ohm] Xin[ohm] Gin[mS] Bin[mS] Ref[dB] VSWR
+//     2.00000e+09  34.621 ...
+struct FeedSweepCollector {
+    QVector<FeedSweep> out;
+    FeedSweep cur;
+    bool inTable = false;
+
+    void flush()
+    {
+        if (inTable && !cur.points.isEmpty()) out.push_back(cur);
+        cur = FeedSweep();
+        inTable = false;
+    }
+
+    void feed(const QString &raw)
+    {
+        static const QRegularExpression head(
+            QStringLiteral("^feed\\s+#(\\d+)\\s*\\(Z0\\[ohm\\]\\s*=\\s*"
+                           "([-+0-9.eE]+)\\s*\\)"));
+        const QString line = raw.trimmed();
+        const QRegularExpressionMatch m = head.match(line);
+        if (m.hasMatch()) {
+            flush();
+            cur.feedIndex = m.captured(1).toInt();
+            cur.z0 = m.captured(2).toDouble();
+            inTable = true;
+            return;
+        }
+        if (!inTable) return;
+        QVector<double> v;
+        if (numericRow(line, v)) {
+            // freq Rin Xin Gin Bin Ref VSWR (7 列)
+            if (v.size() >= 7) {
+                FeedSweepPoint pt;
+                pt.freqHz = v[0];
+                pt.rin = v[1];
+                pt.xin = v[2];
+                pt.refDb = v[5];
+                pt.vswr = v[6];
+                cur.points.push_back(pt);
+            }
+        } else if (line.startsWith(QStringLiteral("frequency[Hz]"))) {
+            // 列ヘッダ — 読み飛ばす
+        } else {
+            flush();    // 表の終わり (空行や次のセクション)
+        }
+    }
+
+    QVector<FeedSweep> take() { flush(); return std::move(out); }
+};
+
 } // namespace
 
 QVector<FeedSweep> parseFeedSweeps(const QString &text)
 {
-    QVector<FeedSweep> out;
-    // 例: "feed #1 (Z0[ohm] = 50.00)"
-    static const QRegularExpression head(
-        QStringLiteral("^feed\\s+#(\\d+)\\s*\\(Z0\\[ohm\\]\\s*=\\s*"
-                       "([-+0-9.eE]+)\\s*\\)"));
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    int i = 0;
-    while (i < lines.size()) {
-        const QRegularExpressionMatch m = head.match(lines[i].trimmed());
-        if (!m.hasMatch()) { ++i; continue; }
-        FeedSweep sweep;
-        sweep.feedIndex = m.captured(1).toInt();
-        sweep.z0 = m.captured(2).toDouble();
-        ++i;
-        // ヘッダ行 ("frequency[Hz] Rin[ohm] ...") を読み飛ばし、数値行を収集
-        QVector<double> v;
-        while (i < lines.size()) {
-            const QString line = lines[i].trimmed();
-            if (numericRow(line, v)) {
-                // freq Rin Xin Gin Bin Ref VSWR (7 列)
-                if (v.size() >= 7) {
-                    FeedSweepPoint pt;
-                    pt.freqHz = v[0];
-                    pt.rin = v[1];
-                    pt.xin = v[2];
-                    pt.refDb = v[5];
-                    pt.vswr = v[6];
-                    sweep.points.push_back(pt);
-                }
-                ++i;
-            } else if (line.startsWith(QStringLiteral("frequency[Hz]"))) {
-                ++i;    // 列ヘッダ
-            } else {
-                break;  // 表の終わり (空行や次のセクション)
-            }
-        }
-        if (!sweep.points.isEmpty()) out.push_back(sweep);
-    }
-    return out;
+    FeedSweepCollector c;
+    eachLineOfText(text, [&c](const QString &l) { c.feed(l); });
+    return c.take();
 }
 
 QVector<FeedSweep> readFeedSweeps(const QString &logPath)
 {
-    const QString text = readAll(logPath);
-    return text.isEmpty() ? QVector<FeedSweep>() : parseFeedSweeps(text);
+    FeedSweepCollector c;
+    if (!eachLineOfFile(logPath, [&c](const QString &l) { c.feed(l); }))
+        return QVector<FeedSweep>();
+    return c.take();
 }
+
+namespace {
+
+// far1d.log の放射パターン。1 ブロック = 1 面 × 1 周波数。
+//   #1 : X-plane, frequency[Hz] = 3.00000e+09
+//     No. deg E-abs[dB] ...
+struct Far1dCollector {
+    QVector<FarPattern> out;
+    FarPattern cur;
+    bool inBlock = false;
+
+    void flush()
+    {
+        if (inBlock && !cur.deg.isEmpty()) out.push_back(cur);
+        cur = FarPattern();
+        inBlock = false;
+    }
+
+    void feed(const QString &raw)
+    {
+        static const QRegularExpression head(
+            QStringLiteral("^#(\\d+)\\s*:\\s*([^,]+),\\s*frequency\\[Hz\\]"
+                           "\\s*=\\s*([-+0-9.eE]+)"));
+        const QString line = raw.trimmed();
+        const QRegularExpressionMatch m = head.match(line);
+        if (m.hasMatch()) {
+            flush();
+            cur.plane = m.captured(2).trimmed();
+            cur.freqHz = m.captured(3).toDouble();
+            inBlock = true;
+            return;
+        }
+        if (!inBlock) return;
+        QVector<double> v;
+        if (numericRow(line, v)) {
+            // No. deg E-abs[dB] ... (3 列以上)
+            if (v.size() >= 3) {
+                cur.deg.push_back(v[1]);
+                cur.eAbsDb.push_back(v[2]);
+            }
+        } else if (line.startsWith(QStringLiteral("No."))) {
+            // 列ヘッダ — 読み飛ばす
+        } else {
+            flush();
+        }
+    }
+
+    QVector<FarPattern> take() { flush(); return std::move(out); }
+};
+
+} // namespace
 
 QVector<FarPattern> parseFar1d(const QString &text)
 {
-    QVector<FarPattern> out;
-    // 例: "#1 : X-plane, frequency[Hz] = 3.00000e+09"
-    static const QRegularExpression head(
-        QStringLiteral("^#(\\d+)\\s*:\\s*([^,]+),\\s*frequency\\[Hz\\]\\s*=\\s*"
-                       "([-+0-9.eE]+)"));
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    int i = 0;
-    while (i < lines.size()) {
-        const QRegularExpressionMatch m = head.match(lines[i].trimmed());
-        if (!m.hasMatch()) { ++i; continue; }
-        FarPattern pat;
-        pat.plane = m.captured(2).trimmed();
-        pat.freqHz = m.captured(3).toDouble();
-        ++i;
-        QVector<double> v;
-        while (i < lines.size()) {
-            const QString line = lines[i].trimmed();
-            if (numericRow(line, v)) {
-                // No. deg E-abs[dB] ... (3 列以上)
-                if (v.size() >= 3) {
-                    pat.deg.push_back(v[1]);
-                    pat.eAbsDb.push_back(v[2]);
-                }
-                ++i;
-            } else if (line.startsWith(QStringLiteral("No."))) {
-                ++i;    // 列ヘッダ
-            } else {
-                break;
-            }
-        }
-        if (!pat.deg.isEmpty()) out.push_back(pat);
-    }
-    return out;
+    Far1dCollector c;
+    eachLineOfText(text, [&c](const QString &l) { c.feed(l); });
+    return c.take();
 }
 
 QVector<FarPattern> readFar1d(const QString &path)
 {
-    const QString text = readAll(path);
-    return text.isEmpty() ? QVector<FarPattern>() : parseFar1d(text);
+    Far1dCollector c;
+    if (!eachLineOfFile(path, [&c](const QString &l) { c.feed(l); }))
+        return QVector<FarPattern>();
+    return c.take();
 }
 
 // ── ofd_post の番号付き表 (ev2d を介さないポスト表示の素データ) ─────────────
@@ -329,9 +387,30 @@ QVector<CrossSectionPoint> parseCrossSection(const QString &text)
 
 QVector<CrossSectionPoint> readCrossSection(const QString &path)
 {
-    const QString text = readAll(path);
-    return text.isEmpty() ? QVector<CrossSectionPoint>()
-                          : parseCrossSection(text);
+    // cross section は <kernel>.log の末尾寄りにある小さな節だが、ログ自体は
+    // 反復回数に比例して伸びる。全体を載せずに 1 行ずつ通す。
+    bool started = false;
+    bool done = false;
+    QVector<CrossSectionPoint> out;
+    const bool opened = eachLineOfFile(path, [&](const QString &raw) {
+        if (done) return;
+        if (!started) {
+            if (raw.contains(QLatin1String("=== cross section ===")))
+                started = true;
+            return;
+        }
+        const QString line = raw.trimmed();
+        if (line.isEmpty()) return;
+        if (line.startsWith(QLatin1String("==="))) { done = true; return; }
+        QVector<double> v;
+        if (!numericRow(line, v) || v.size() < 3) return;  // 見出し行を飛ばす
+        CrossSectionPoint p;
+        p.freqHz      = v[0];
+        p.backward_m2 = v[1];
+        p.forward_m2  = v[2];
+        out.push_back(p);
+    });
+    return opened ? out : QVector<CrossSectionPoint>();
 }
 
 // ── 2 次元の場マップ ────────────────────────────────────────────────────────
@@ -375,25 +454,6 @@ FieldMap buildMap(const QVector<int> &ii, const QVector<int> &jj,
         m.colMin = qMin(m.colMin, bb[k]); m.colMax = qMax(m.colMax, bb[k]);
     }
     return m;
-}
-
-// テキストからでもファイルからでも 1 行ずつ供給する。ファイル版は
-// **全体をメモリに載せない** (大規模データ対策 — near2d.log はセル数と
-// 周波数点数の積で増える)。
-template <class F>
-void eachLineOfText(const QString &text, F &&f)
-{
-    for (const QString &raw : text.split(QLatin1Char('\n'))) f(raw);
-}
-
-template <class F>
-bool eachLineOfFile(const QString &path, F &&f)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
-    QTextStream in(&file);
-    while (!in.atEnd()) f(in.readLine());
-    return true;
 }
 
 } // namespace
@@ -574,8 +634,12 @@ QVector<ThermalPoint> parseThermal(const QString &text)
 
 QVector<ThermalPoint> readThermal(const QString &path)
 {
-    const QString text = readAll(path);
-    return text.isEmpty() ? QVector<ThermalPoint>() : parseThermal(text);
+    // 熱解析の診断行は他のログ行に混ざって出るので、行ごとに見るだけでよい
+    QVector<ThermalPoint> out;
+    const bool opened = eachLineOfFile(path, [&out](const QString &line) {
+        out += parseThermal(line);
+    });
+    return opened ? out : QVector<ThermalPoint>();
 }
 
 } // namespace KernelResultReader

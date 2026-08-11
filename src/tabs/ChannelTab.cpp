@@ -3,6 +3,7 @@
 #include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../em/RadioPropagation.h"
+#include "../widgets/FieldHeatmap.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -186,8 +187,62 @@ const bool s_i18n = [] {
               "selections above do not enter the calculation.");
     I18n::reg("chn_uw_env", "環境モデルの選択とそのパラメータ",
               "the environment model and its parameters");
-    I18n::reg("chn_uw_txrx", "送受信機の設定",
-              "the transmitter / receiver settings");
+    I18n::reg("chn_m_array", "アレイ利得 (ビームフォーミング)",
+              "Array gain (beamforming)");
+    I18n::reg("chn_m_array_note",
+              "10log10(N) — N 素子を同相合成した上限。"
+              "単一素子に対する増分なので、EIRP に既にアレイ分が入っていれば"
+              "二重計上になる (上の受信電力には加えていません)",
+              "10log10(N) - the upper bound for N elements combined in phase. "
+              "It is the increment over a single element, so adding it on top "
+              "of an EIRP that already includes the array double-counts "
+              "(it is not added to the received power above)");
+    I18n::reg("chn_m_array_off",
+              "ビームフォーミングのチェックが外れています (単一素子)",
+              "Beamforming is unchecked (single element)");
+    I18n::reg("chn_m_mimo", "空間多重の容量上限 (MIMO)",
+              "Spatial-multiplexing capacity (MIMO)");
+    I18n::reg("chn_m_mimo_note",
+              "min(Nt,Nr)·B·log2(1+SNR/Nt) — %1×%2、送信電力を Nt 本へ等分し"
+              "等利得な固有モードが立つと仮定した上限。"
+              "実チャネルの相関やランク落ちは含みません",
+              "min(Nt,Nr)*B*log2(1+SNR/Nt) - %1x%2, an upper bound assuming the "
+              "transmit power is split evenly over Nt and equal-gain "
+              "eigenmodes exist. Channel correlation and rank loss are not "
+              "included");
+    I18n::reg("chn_m_mimo_off",
+              "MIMO のチェックが外れています (1×1 = 上の Shannon 容量と同じ)",
+              "MIMO is unchecked (1x1 - same as the Shannon capacity above)");
+    I18n::reg("chn_cov_title", "カバレッジ (受信電力 [dBm])",
+              "Coverage (received power [dBm])");
+    I18n::reg("chn_cov_note",
+              "半幅 %1 の水平面に受信点を並べ、2 波モデルで受信電力を求めた図。"
+              "%2 … %3 dBm。送信点は「中央」で、アンテナ指向性と遮蔽物は"
+              "含まないので円対称になる (見通し内の距離依存を見る図)",
+              "Received power over a horizontal plane of half-span %1, from the "
+              "two-ray model; %2 to %3 dBm. The transmitter sits at the centre; "
+              "antenna patterns and obstacles are not included, so the map is "
+              "circularly symmetric (it shows the line-of-sight distance "
+              "dependence)");
+    I18n::reg("chn_cov_off",
+              "カバレッジ図は受信点が「格子」のときだけ描きます "
+              "(経路・個別点は配置の入力が要るため未実装)",
+              "The coverage map is drawn only when the receive points are a "
+              "grid (routes and individual points need a layout input, which is "
+              "not implemented)");
+    I18n::reg("chn_cov_bad",
+              "リンク条件の入力が不正なためカバレッジ図を描けません",
+              "The coverage map needs valid link-budget inputs");
+    I18n::reg("chn_uw_txrx", "基地局/AP の台数",
+              "the number of base stations / APs");
+    I18n::reg("chn_uw_txrx_ok",
+              "MIMO 4×4 とビームフォーミングのチェック (下のチャネル特性表の"
+              "「アレイ利得」「空間多重の容量上限」) と、受信点の種別 "
+              "(「格子」でカバレッジ図)",
+              "the MIMO 4x4 and beamforming checkboxes (the \"array gain\" and "
+              "\"spatial-multiplexing capacity\" rows of the channel table "
+              "below) and the receive-point kind (\"grid\" draws the coverage "
+              "map)");
     return true;
 }();
 
@@ -281,11 +336,13 @@ QTableWidget *makeTable(const QStringList &headers, int rows, QWidget *parent,
 // note が計算値を含む行は書式引数を持つので、行ごとに fillMetricsTable で作る。
 enum MetricRow {
     RowFspl = 0, RowTwoRay, RowBreak, RowRx, RowN, RowK, RowTau,
-    RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity, RowCount
+    RowDelaySpread, RowAngleSpread, RowNoise, RowCapacity,
+    RowArrayGain, RowMimoCap, RowCount
 };
 const char *kMetricNameKey[RowCount] = {
     "chn_m_fspl", "chn_m_2ray", "chn_m_bp", "chn_m_rx", "chn_m_n", "chn_m_k",
     "chn_m_tau", "chn_m_ds", "chn_m_as", "chn_m_noise", "chn_m_cap",
+    "chn_m_array", "chn_m_mimo",
 };
 
 // 選択した周波数帯の代表中心周波数 [GHz] (モックの帯域区分に対応)。
@@ -392,8 +449,21 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
                        segRow(sx, &m_rxKind, { I18n::tr("chn_rx_grid"),
                                                I18n::tr("chn_rx_route"),
                                                I18n::tr("chn_rx_points") }, 0));
-    // 送受信フォームはどこにも読まれていない (未実装)
-    sx->vbox()->addWidget(tabhelp::unwiredNote(sx, I18n::tr("chn_uw_txrx")));
+    // 受信点=格子 のときだけカバレッジ図を描く
+    m_coverage = new FieldHeatmap(sx);
+    m_coverage->setMinimumHeight(220);
+    m_coverage->setTitle(I18n::tr("chn_cov_title"));
+    sx->vbox()->addWidget(m_coverage);
+    m_coverageNote = new QLabel(sx);
+    m_coverageNote->setWordWrap(true);
+    m_coverageNote->setStyleSheet("color:#666; font-size:11px;");
+    sx->vbox()->addWidget(m_coverageNote);
+    connect(m_rxKind, &QButtonGroup::idClicked, this, &ChannelTab::recompute);
+
+    // AP 台数はどこにも読まれていない。MIMO / ビームフォーミングはチャネル
+    // 特性表の 2 行に、受信点の種別はカバレッジ図に効くので併記する
+    sx->vbox()->addWidget(tabhelp::unwiredNote(sx, I18n::tr("chn_uw_txrx"),
+                                               I18n::tr("chn_uw_txrx_ok")));
     v->addWidget(sx);
 
     // ── リンク条件 / Link budget inputs (チャネル特性の計算入力) ────────────
@@ -429,6 +499,9 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
         connect(r.edit, &QLineEdit::textChanged,
                 this, &ChannelTab::recompute);
     }
+    // MIMO / ビームフォーミングもチャネル特性表に効くので再計算させる
+    connect(m_mimo, &QCheckBox::toggled, this, &ChannelTab::recompute);
+    connect(m_beamforming, &QCheckBox::toggled, this, &ChannelTab::recompute);
     m_inputError = new QLabel(sl);
     m_inputError->setWordWrap(true);
     m_inputError->setStyleSheet("color:#C0392B; font-size:11px;");
@@ -534,6 +607,10 @@ void ChannelTab::recompute()
     if (!valid) {
         for (int r = 0; r < RowCount; ++r)
             setRow(r, nc, I18n::tr("chn_bad_input"));
+        if (m_coverage) {
+            m_coverage->clearData();
+            m_coverageNote->setText(I18n::tr("chn_cov_bad"));
+        }
         return;
     }
 
@@ -572,4 +649,56 @@ void ChannelTab::recompute()
            I18n::tr("chn_m_noise_note"));
     setRow(RowCapacity, QStringLiteral("%1 Mbps").arg(cap / 1e6, 0, 'f', 1),
            I18n::tr("chn_m_cap_note"));
+
+    // ── 送受信セクションのチェックが効く 2 行 ──────────────────────────────
+    // 「MIMO 4×4」はラベルどおり 4 送信 × 4 受信。外せば 1×1 (SISO)。
+    // ビームフォーミングのアレイ素子数は MIMO の送信本数に合わせる。
+    const int nT = m_mimo->isChecked() ? 4 : 1;
+    const int nR = nT;
+    const double ag = prop::arrayGainDb(m_beamforming->isChecked() ? nT : 1);
+    setRow(RowArrayGain, QStringLiteral("%1 dB").arg(ag, 0, 'f', 2),
+           m_beamforming->isChecked() ? I18n::tr("chn_m_array_note")
+                                      : I18n::tr("chn_m_array_off"));
+    const double mcap = prop::mimoCapacity(bw, snr, nT, nR);
+    setRow(RowMimoCap, QStringLiteral("%1 Mbps").arg(mcap / 1e6, 0, 'f', 1),
+           m_mimo->isChecked()
+               ? I18n::tr("chn_m_mimo_note").arg(nT).arg(nR)
+               : I18n::tr("chn_m_mimo_off"));
+
+    // ── カバレッジ図 (受信点 = 格子 のときだけ) ────────────────────────────
+    // 半幅はリンク条件の距離に合わせる (見たい距離が図に入るように)。
+    // 近傍は 2 波モデルの前提を外れるので、下限を λ で切る。
+    updateCoverage(d, ht, hr, f, eirp, grx, refl, lam);
+}
+
+void ChannelTab::updateCoverage(double dist, double ht, double hr, double f,
+                                double eirp, double grx, double refl,
+                                double lam)
+{
+    namespace prop = ofd::em::propagation;
+    if (!m_coverage) return;
+    if (!m_rxKind || m_rxKind->checkedId() != 0) {   // 0 = 格子
+        m_coverage->clearData();
+        m_coverageNote->setText(I18n::tr("chn_cov_off"));
+        return;
+    }
+    const int n = 121;                   // 表示用の解像度 (奇数 = 中心を含む)
+    const double minD = (lam > 0.0) ? lam : 1.0;
+    const prop::CoverageGrid g =
+        prop::coverageMap(dist, n, ht, hr, f, eirp, grx, refl, minD);
+    if (!g.valid()) {
+        m_coverage->clearData();
+        m_coverageNote->setText(I18n::tr("chn_cov_bad"));
+        return;
+    }
+    // dBm を 0..1 へ正規化 (最小 = 0, 最大 = 1)。範囲は注記に数値で出す
+    QVector<double> cells;
+    cells.reserve(int(g.dbm.size()));
+    const double span = (g.maxDbm > g.minDbm) ? (g.maxDbm - g.minDbm) : 1.0;
+    for (double v : g.dbm) cells.push_back((v - g.minDbm) / span);
+    m_coverage->setData(cells, g.n, g.n);
+    m_coverageNote->setText(I18n::tr("chn_cov_note")
+        .arg(fmtDistance(g.halfSpan_m))
+        .arg(g.minDbm, 0, 'f', 1)
+        .arg(g.maxDbm, 0, 'f', 1));
 }

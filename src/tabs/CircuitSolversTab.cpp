@@ -213,6 +213,13 @@ const bool s_i18n = [] {
     I18n::reg("cir_peec_quasi", "準静的PEEC (高速)", "Quasi-static PEEC (fast)");
     I18n::reg("cir_freq_range", "周波数範囲", "Frequency range");
     I18n::reg("cir_peec_freq_unit", "MHz (対数 40点)", "MHz (40 log points)");
+    I18n::reg("cir_peec_freq_mhz", "MHz ·", "MHz ·");
+    I18n::reg("cir_peec_freq_div", "点 (対数掃引)", "points (log sweep)");
+    I18n::reg("cir_peec_lp_tip",
+              "部分インダクタンス Lp は PEEC の手法そのものなので常に計算されます "
+              "(切れません)",
+              "The partial inductance Lp is what PEEC is - it is always computed "
+              "and cannot be switched off");
     I18n::reg("cir_femq_mesh", "断面メッシュ", "Cross-section mesh");
     I18n::reg("cir_mesh_auto", "自動 (適応)", "Automatic (adaptive)");
     I18n::reg("cir_mesh_manual", "手動", "Manual");
@@ -309,10 +316,18 @@ const bool s_i18n = [] {
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
     I18n::reg("cir_exp_h5", "💾 HDF5 保存", "💾 Save HDF5");
     I18n::reg("cir_exp_fdtd", "→ FDTDポートへ適用", "→ Apply to FDTD ports");
-    I18n::reg("cir_uw_extract", "抽出設定 (メッシュ・周波数分割・オプション)",
-              "the extraction settings (mesh, frequency division, options)");
-    I18n::reg("cir_uw_extract_ok", "「抽出実行」そのもの — 導体はジオメトリタブの直方体から、ポートは下のポート表から作られます",
-              "Run extraction itself — conductors come from the boxes on the Geometry tab and ports from the port table below");
+    I18n::reg("cir_uw_extract", "FEM ページ (準静的 / 渦電流) の設定",
+              "the FEM pages (quasi-static / eddy current)");
+    I18n::reg("cir_uw_extract_ok",
+              "PEEC ページのメッシュ分割・部分容量 Cp・抵抗 (表皮効果)・"
+              "遅延/準静的・周波数範囲と分割数 (.peec へ書かれます)。"
+              "「抽出実行」そのものも動きます — 導体はジオメトリタブの直方体から、"
+              "ポートは下のポート表から作られます",
+              "the mesh division, partial capacitance Cp, resistance (skin "
+              "effect), retarded/quasi-static choice and the frequency range "
+              "and point count on the PEEC page (written into the .peec). "
+              "Run extraction itself also works - conductors come from the "
+              "boxes on the Geometry tab and ports from the port table below");
     I18n::reg("cir_uw_spice", "SPICE 共シミュレーションの設定",
               "the SPICE co-simulation settings");
     return true;
@@ -515,6 +530,43 @@ QWidget *CircuitSolversTab::buildModelPage()
 }
 
 // モデル → ポート表 (行数が変わるので毎回作り直す)
+// PEEC ページ → Project::circuit()。CircuitIO はここを読んで .peec を書く。
+void CircuitSolversTab::applyExtract()
+{
+    if (m_updating || !m_peecMesh) return;
+    CircuitOpts &c = m_p->circuit();
+    bool ok = false;
+    const double mesh = m_peecMesh->text().trimmed().toDouble(&ok);
+    if (ok && mesh > 0.0) c.peecMesh_mm = mesh;
+    const double f0 = m_peecFmin->text().trimmed().toDouble(&ok);
+    if (ok && f0 > 0.0) c.fmin_Hz = f0 * 1e6;      // 画面は MHz
+    const double f1 = m_peecFmax->text().trimmed().toDouble(&ok);
+    if (ok && f1 > 0.0) c.fmax_Hz = f1 * 1e6;
+    const int div = m_peecFdiv->text().trimmed().toInt(&ok);
+    if (ok && div >= 0) c.fdiv = div;
+    c.peecCapacitance = m_peecCp->isChecked();
+    c.peecSkinEffect  = m_peecR->isChecked();
+    c.peecRetardation = m_peecRpeec->isChecked();
+    m_p->touch();
+}
+
+void CircuitSolversTab::refreshExtract()
+{
+    if (!m_peecMesh) return;
+    const CircuitOpts &c = m_p->circuit();
+    const bool prev = m_updating;
+    m_updating = true;
+    m_peecMesh->setText(QString::number(c.peecMesh_mm, 'g', 6));
+    m_peecFmin->setText(QString::number(c.fmin_Hz * 1e-6, 'g', 6));
+    m_peecFmax->setText(QString::number(c.fmax_Hz * 1e-6, 'g', 6));
+    m_peecFdiv->setText(QString::number(c.fdiv));
+    m_peecCp->setChecked(c.peecCapacitance);
+    m_peecR->setChecked(c.peecSkinEffect);
+    m_peecRpeec->setChecked(c.peecRetardation);
+    m_peecQuasi->setChecked(!c.peecRetardation);
+    m_updating = prev;
+}
+
 void CircuitSolversTab::refreshPorts()
 {
     m_updating = true;
@@ -624,32 +676,70 @@ QWidget *CircuitSolversTab::buildPeecPage()
     auto *form = new QFormLayout(page);
     form->setContentsMargins(0, 0, 0, 0);
 
+    m_peecMesh = numEdit("0.5", 70, page);
     auto *meshRow = new QHBoxLayout();
-    meshRow->addWidget(numEdit("0.5", 70, page));
+    meshRow->addWidget(m_peecMesh);
     meshRow->addWidget(new QLabel(I18n::tr("cir_peec_mesh_unit"), page));
     meshRow->addStretch(1);
     form->addRow(I18n::tr("cir_peec_mesh"), meshRow);
 
+    // 部分インダクタンス Lp は PEEC の手法そのもの (常に計算される) ので、
+    // 切れる設定として見せない。押せるが効かないチェックにはしない
+    auto *lp = check(I18n::tr("cir_peec_lp"), true, page);
+    lp->setEnabled(false);
+    lp->setToolTip(I18n::tr("cir_peec_lp_tip"));
+    m_peecCp = check(I18n::tr("cir_peec_cp"), true, page);
+    m_peecR  = check(I18n::tr("cir_peec_r"), true, page);
     auto *row1 = new QHBoxLayout();
-    row1->addWidget(check(I18n::tr("cir_peec_lp"), true, page));
-    row1->addWidget(check(I18n::tr("cir_peec_cp"), true, page));
-    row1->addWidget(check(I18n::tr("cir_peec_r"), true, page));
+    row1->addWidget(lp);
+    row1->addWidget(m_peecCp);
+    row1->addWidget(m_peecR);
     row1->addStretch(1);
     form->addRow(row1);
 
+    // 遅延 PEEC と準静的 PEEC は同じ 1 個の設定 (peecRetardation) の裏表
+    m_peecRpeec = check(I18n::tr("cir_peec_rpeec"), false, page);
+    m_peecQuasi = check(I18n::tr("cir_peec_quasi"), true, page);
     auto *row2 = new QHBoxLayout();
-    row2->addWidget(check(I18n::tr("cir_peec_rpeec"), false, page));
-    row2->addWidget(check(I18n::tr("cir_peec_quasi"), true, page));
+    row2->addWidget(m_peecRpeec);
+    row2->addWidget(m_peecQuasi);
     row2->addStretch(1);
     form->addRow(row2);
 
+    m_peecFmin = numEdit("0.01", 70, page);
+    m_peecFmax = numEdit("100", 70, page);
+    m_peecFdiv = numEdit("40", 50, page);
     auto *freqRow = new QHBoxLayout();
-    freqRow->addWidget(numEdit("0.01", 70, page));
+    freqRow->addWidget(m_peecFmin);
     freqRow->addWidget(new QLabel("〜", page));
-    freqRow->addWidget(numEdit("100", 70, page));
-    freqRow->addWidget(new QLabel(I18n::tr("cir_peec_freq_unit"), page));
+    freqRow->addWidget(m_peecFmax);
+    freqRow->addWidget(new QLabel(I18n::tr("cir_peec_freq_mhz"), page));
+    freqRow->addWidget(m_peecFdiv);
+    freqRow->addWidget(new QLabel(I18n::tr("cir_peec_freq_div"), page));
     freqRow->addStretch(1);
     form->addRow(I18n::tr("cir_freq_range"), freqRow);
+
+    // 遅延 / 準静的 は排他 (どちらかが必ず入る)
+    connect(m_peecRpeec, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_updating) return;
+        m_updating = true;
+        m_peecQuasi->setChecked(!on);
+        m_updating = false;
+        applyExtract();
+    });
+    connect(m_peecQuasi, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_updating) return;
+        m_updating = true;
+        m_peecRpeec->setChecked(!on);
+        m_updating = false;
+        applyExtract();
+    });
+    for (QCheckBox *c : { m_peecCp, m_peecR })
+        connect(c, &QCheckBox::toggled, this,
+                &CircuitSolversTab::applyExtract);
+    for (QLineEdit *e : { m_peecMesh, m_peecFmin, m_peecFmax, m_peecFdiv })
+        connect(e, &QLineEdit::editingFinished, this,
+                &CircuitSolversTab::applyExtract);
     return page;
 }
 
@@ -1057,6 +1147,7 @@ void CircuitSolversTab::refresh()
 {
     m_updating = true;
     refreshPorts();
+    refreshExtract();
 
     int nR = 0, nL = 0, nC = 0;
     double r = -1, l = -1, c = -1;

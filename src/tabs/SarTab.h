@@ -28,7 +28,8 @@ public:
 private slots:
     void refresh();
     void onModelChanged();         // 人体モデル → 追加行の出し入れ
-    void updatePointSar();         // σ/ρ/|E| → 点 SAR (src/em/SarMetrics)
+    void updatePointSar();      // σ/ρ/|E| → 点 SAR (src/em/SarMetrics)
+    void updateExposure();      // 送信電力・利得・距離 → 入射電力密度 / E_rms
 
 private:
     QWidget *buildVoxelPane(QWidget *parent);
@@ -56,6 +57,10 @@ private:
     QCheckBox *m_multiBand = nullptr;
     QLineEdit *m_txPower = nullptr;
     QComboBox *m_category = nullptr;    // 一般環境 / 職業 (指針値の選択に使う)
+    // 曝露源からの入射量 (遠方界) — 送信電力・利得・距離から S と E_rms
+    QLineEdit *m_srcGain = nullptr;
+    QLineEdit *m_srcDist = nullptr;
+    QLabel    *m_srcResult = nullptr;
 
     // 点 SAR 換算 / point SAR (定義式の実計算)
     QLineEdit *m_ptSigma = nullptr;

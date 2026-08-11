@@ -43,6 +43,20 @@ double sarFromRmsField(double sigma_Sm, double eRms_Vm, double rho_kgm3);
 double planeWavePowerDensityFromRms(double eRms_Vm);
 double rmsFieldFromPowerDensity(double s_Wm2);
 
+// ── 曝露源からの入射量 (遠方界) ────────────────────────────────────────────
+// 送信電力とアンテナ利得から、距離 d の**遠方界**での入射電力密度を求める。
+//   S = P_t·G / (4πd²)   [W/m²]           (等価等方放射の定義そのもの)
+//   E_rms = √(S·Z0)                        (平面波の関係)
+// ICNIRP 2020 / IEEE C95.1-2019 の**参考レベル**は S と E で与えられるので、
+// この値はそのまま Metric::IncidentPowerDensity と比べられる。
+//
+// **近傍界では使えない。** 反応性近傍界の境界は λ/(2π) で、携帯電話を身体に
+// 密着させる配置などはここに入る。その場合は SAR を場の分布から直接求める
+// 必要があり、この式で代用してはいけない (呼び出し側で距離を検査すること)。
+double dbmToWatts(double dBm);
+double farFieldPowerDensity(double power_W, double gainDbi, double dist_m);
+double reactiveNearFieldBoundary(double frequency_Hz);   // λ/(2π) [m]
+
 // 断熱温度上昇 ΔT = SAR·t/c_p [K] (熱伝導・血流灌流を無視した上限)
 //   specificHeat_JkgK: 組織の比熱 (筋肉 ≈ 3421 J/(kg·K), IT'IS V4.1)
 double adiabaticTemperatureRise(double sar_Wkg, double time_s,

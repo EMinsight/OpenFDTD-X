@@ -105,6 +105,54 @@ double shannonCapacity(double bandwidth_hz, double snrDb)
     return bandwidth_hz * std::log2(1.0 + snr);
 }
 
+double arrayGainDb(int elements)
+{
+    if (elements < 1) return 0.0;
+    return 10.0 * std::log10(double(elements));
+}
+
+double mimoCapacity(double bandwidth_hz, double snrDb, int nTx, int nRx)
+{
+    if (!(bandwidth_hz > 0.0)) return 0.0;
+    if (nTx < 1 || nRx < 1) return 0.0;
+    const int streams = (nTx < nRx) ? nTx : nRx;
+    // 送信電力を Nt 本へ等分するので、1 本あたりの SNR は SNR/Nt
+    const double snr = std::pow(10.0, snrDb / 10.0) / double(nTx);
+    return double(streams) * bandwidth_hz * std::log2(1.0 + snr);
+}
+
+CoverageGrid coverageMap(double halfSpan_m, int n,
+                         double hTx_m, double hRx_m, double freq_hz,
+                         double eirpDbm, double rxGainDbi,
+                         double reflection, double minDistance_m)
+{
+    CoverageGrid g;
+    if (n <= 0 || !(halfSpan_m > 0.0) || !(freq_hz > 0.0)) return g;
+    if (!(minDistance_m > 0.0)) minDistance_m = 1.0;
+    g.n = n;
+    g.halfSpan_m = halfSpan_m;
+    g.dbm.resize(std::size_t(n) * std::size_t(n));
+    double lo = 0.0, hi = 0.0;
+    bool first = true;
+    for (int iy = 0; iy < n; ++iy) {
+        const double y = g.coord(iy);
+        for (int ix = 0; ix < n; ++ix) {
+            const double x = g.coord(ix);
+            double d = std::sqrt(x * x + y * y);
+            if (d < minDistance_m) d = minDistance_m;   // 原点の発散を切る
+            const double loss =
+                twoRayPathLossDb(d, hTx_m, hRx_m, freq_hz, reflection);
+            const double p = receivedPowerDbm(eirpDbm, loss, rxGainDbi);
+            g.dbm[std::size_t(iy) * std::size_t(n) + std::size_t(ix)] = p;
+            if (first) { lo = hi = p; first = false; }
+            else { if (p < lo) lo = p; if (p > hi) hi = p; }
+        }
+    }
+    g.minDbm = lo;
+    g.maxDbm = hi;
+    return g;
+}
+
 } // namespace propagation
 } // namespace em
 } // namespace ofd

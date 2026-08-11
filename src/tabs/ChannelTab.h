@@ -5,6 +5,9 @@
 //   (モックの defaultValue={env==="indoor" ? "office_floor3.ifc" : "city_shibuya.osm"})。
 // モックは静的プロトタイプのため、設定は全てローカル state (.ofd 非対応)。
 //
+// 受信点を「格子」にするとカバレッジ図 (2 波モデルの受信電力 [dBm]) を描く。
+// 経路・個別点は配置の入力が要るので未実装のまま (図は出さずに理由を出す)。
+//
 // チャネル特性表は「リンク条件」欄の入力 (周波数・距離・アンテナ高・EIRP・
 // 帯域幅・雑音指数・大地反射係数) を見通し内の伝搬モデル
 // (src/em/RadioPropagation: Friis / 2 波 / 熱雑音 / Shannon) に入れて
@@ -22,6 +25,7 @@ class QTableWidget;
 namespace ofd {
 
 class Project;
+class FieldHeatmap;
 
 class ChannelTab : public QScrollArea {
     Q_OBJECT
@@ -52,7 +56,12 @@ private:
     QLineEdit    *m_apCount = nullptr;
     QCheckBox    *m_mimo = nullptr;
     QCheckBox    *m_beamforming = nullptr;
+    void updateCoverage(double dist, double ht, double hr, double f,
+                        double eirp, double grx, double refl, double lam);
+
     QButtonGroup *m_rxKind = nullptr;
+    FieldHeatmap *m_coverage = nullptr;   // カバレッジ格子 (受信点=格子のとき)
+    QLabel       *m_coverageNote = nullptr;
 
     // リンク条件 / link budget inputs (チャネル特性の計算入力)
     QLineEdit *m_freqGHz = nullptr;   // 中心周波数 [GHz]
