@@ -8,6 +8,11 @@ namespace ofd {
 namespace em {
 
 namespace {
+// MSVC は <cmath> で M_PI を出さないので自前で持つ
+constexpr double kPiSar = 3.14159265358979323846;
+} // namespace
+
+namespace {
 
 constexpr double kMHz = 1.0e6;
 constexpr double kGHz = 1.0e9;
@@ -178,6 +183,25 @@ Verdict evaluate(const ExposureLimit &limit, double value, bool hasValue)
     if (!limit.defined || !limit.applicable) return Verdict::NotApplicable;
     if (!hasValue || !std::isfinite(value))  return Verdict::NotEvaluated;
     return (value <= limit.value) ? Verdict::Compliant : Verdict::NonCompliant;
+}
+
+double dbmToWatts(double dBm)
+{
+    return std::pow(10.0, dBm / 10.0) * 1e-3;
+}
+
+double farFieldPowerDensity(double power_W, double gainDbi, double dist_m)
+{
+    if (!(power_W > 0.0) || !(dist_m > 0.0)) return 0.0;
+    const double g = std::pow(10.0, gainDbi / 10.0);
+    return power_W * g / (4.0 * kPiSar * dist_m * dist_m);
+}
+
+double reactiveNearFieldBoundary(double frequency_Hz)
+{
+    if (!(frequency_Hz > 0.0)) return 0.0;
+    const double lambda = 2.99792458e8 / frequency_Hz;
+    return lambda / (2.0 * kPiSar);
 }
 
 } // namespace em

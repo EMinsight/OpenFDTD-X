@@ -186,8 +186,51 @@ const bool s_i18n = [] {
               "distribution from the ofd kernel plus the IEC 62704-1 spatial "
               "averaging — neither is implemented yet.");
     I18n::reg("sar_col_avg", "平均化", "Averaging");
-    I18n::reg("sar_uw_dev", "機器の選択と送信電力",
-              "the device selection and the transmit power");
+    I18n::reg("sar_uw_dev", "機器の選択 (既定値の目安としてのみ使います)",
+              "the device selection (used only as a hint for the defaults)");
+    I18n::reg("sar_uw_dev_ok",
+              "送信電力・アンテナ利得・距離・周波数・曝露区分 "
+              "(下の「曝露源からの入射量」と指針値の引き当てに使われます)",
+              "the transmit power, antenna gain, distance, frequency and "
+              "exposure category (used for the incident quantities below and "
+              "for looking up the limits)");
+    I18n::reg("sar_src_gain", "アンテナ利得", "Antenna gain");
+    I18n::reg("sar_src_dist", "評価距離", "Evaluation distance");
+    I18n::reg("sar_exp_title", "曝露源からの入射量 (遠方界)",
+              "Incident quantities from the source (far field)");
+    I18n::reg("sar_exp_hint",
+              "S = P·G/(4πd²)、E_rms = √(S·Z0)。ICNIRP 2020 / IEEE C95.1 の"
+              "参考レベルは S と E で与えられるので、この値をそのまま比べられます。"
+              "SAR そのものは場の分布が要るので、ここからは求まりません。",
+              "S = P*G/(4*pi*d^2) and E_rms = sqrt(S*Z0). The reference levels "
+              "of ICNIRP 2020 and IEEE C95.1 are given in S and E, so these "
+              "values can be compared directly. SAR itself needs the field "
+              "distribution and cannot be obtained here.");
+    I18n::reg("sar_exp_bad", "入力が不正です (電力・利得・距離・周波数)",
+              "Invalid input (power, gain, distance or frequency)");
+    I18n::reg("sar_exp_near",
+              "▸ 距離 %1 m は反応性近傍界の境界 λ/(2π) = %2 m より内側です。"
+              "遠方界の式は使えません — この配置では SAR を場の分布から直接"
+              "求める必要があります (携帯電話やウェアラブルの密着配置がこれに"
+              "当たります)。",
+              "▸ The distance of %1 m is inside the reactive near-field "
+              "boundary lambda/(2*pi) = %2 m. The far-field formula does not "
+              "apply - this arrangement needs SAR from the field distribution "
+              "itself (a handset or wearable held against the body is such a "
+              "case).");
+    I18n::reg("sar_exp_ok",
+              "S = %1 W/m²    E_rms = %2 V/m    (P_t = %3 W, %4 dBm)",
+              "S = %1 W/m^2    E_rms = %2 V/m    (P_t = %3 W, %4 dBm)");
+    I18n::reg("sar_exp_limit",
+              "    %3: 参考レベル %1 W/m² に対して %2",
+              "    %3: against the %1 W/m^2 reference level - %2");
+    I18n::reg("sar_exp_within", "適合 (×%1)", "within (x%1)");
+    I18n::reg("sar_exp_over",   "超過 (×%1)", "over (x%1)");
+    I18n::reg("sar_exp_nolimit",
+              "    この周波数を範囲に含む入射電力密度の参考レベルは、"
+              "収録した 3 規格のいずれにもありません",
+              "    none of the three standards included here defines an "
+              "incident-power-density reference level covering this frequency");
     I18n::reg("sar_uw_opt", "BioHeat・不確かさ・ゾーニングのチェック",
               "the BioHeat, uncertainty and zoning check boxes");
     return true;
@@ -388,8 +431,36 @@ SarTab::SarTab(Project *project, QWidget *parent)
     m_category = new QComboBox(ss);
     m_category->addItems({ I18n::tr("sar_cat_gp"), I18n::tr("sar_cat_occ") });
     ss->form()->addRow(I18n::tr("sar_category"), m_category);
-    // 機器・送信電力はどこにも読まれない (未実装の明示 — 絶対規則 5)
-    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("sar_uw_dev")));
+    // アンテナ利得と評価距離 (遠方界の入射量を出すのに要る)
+    m_srcGain = numEdit("0", ss);
+    ss->form()->addRow(I18n::tr("sar_src_gain"),
+                       unitRow(m_srcGain, QStringLiteral("dBi"), ss));
+    m_srcDist = numEdit("1.0", ss);
+    ss->form()->addRow(I18n::tr("sar_src_dist"),
+                       unitRow(m_srcDist, QStringLiteral("m"), ss));
+
+    auto *expTitle = new QLabel(I18n::tr("sar_exp_title"), ss);
+    expTitle->setStyleSheet("font-weight:600;");
+    ss->vbox()->addWidget(expTitle);
+    auto *expHint = new QLabel(I18n::tr("sar_exp_hint"), ss);
+    expHint->setWordWrap(true);
+    expHint->setStyleSheet("font-size:11px; color:palette(mid);");
+    ss->vbox()->addWidget(expHint);
+    m_srcResult = new QLabel(ss);
+    m_srcResult->setWordWrap(true);
+    m_srcResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_srcResult->setStyleSheet("font-family:monospace;");
+    ss->vbox()->addWidget(m_srcResult);
+
+    for (QLineEdit *e : { m_txPower, m_srcGain, m_srcDist, m_freq })
+        connect(e, &QLineEdit::textChanged, this, &SarTab::updateExposure);
+    connect(m_category, &QComboBox::currentIndexChanged,
+            this, &SarTab::updateExposure);
+    updateExposure();
+
+    // 機器の選択だけは既定値の目安にしか使っていない (絶対規則 5)
+    ss->vbox()->addWidget(tabhelp::unwiredNote(ss, I18n::tr("sar_uw_dev"),
+                                               I18n::tr("sar_uw_dev_ok")));
     v->addWidget(ss);
 
     // ── 点 SAR 換算 (定義式による実計算) ────────────────────────────────────
@@ -491,6 +562,64 @@ QWidget *SarTab::buildPointSarSection(QWidget *parent)
         connect(e, &QLineEdit::textChanged, this, &SarTab::updatePointSar);
     updatePointSar();
     return s;
+}
+
+// 送信電力・利得・距離 → 遠方界の入射電力密度と E_rms。
+// 近傍界 (d < λ/2π) では遠方界の式が成り立たないので、値を出さずに理由を出す。
+void SarTab::updateExposure()
+{
+    if (!m_srcResult) return;
+    bool okP = false, okG = false, okD = false, okF = false;
+    const double dbm  = m_txPower->text().trimmed().toDouble(&okP);
+    const double gain = m_srcGain->text().trimmed().toDouble(&okG);
+    const double dist = m_srcDist->text().trimmed().toDouble(&okD);
+    const double fMHz = m_freq->text().trimmed().toDouble(&okF);
+    if (!okP || !okG || !okD || !okF || !(dist > 0.0) || !(fMHz > 0.0)) {
+        m_srcResult->setText(I18n::tr("sar_exp_bad"));
+        return;
+    }
+    const double f = fMHz * 1e6;
+    const double near = em::reactiveNearFieldBoundary(f);
+    if (dist < near) {
+        m_srcResult->setText(I18n::tr("sar_exp_near")
+                                 .arg(dist, 0, 'g', 3)
+                                 .arg(near, 0, 'g', 3));
+        return;
+    }
+    const double pw = em::dbmToWatts(dbm);
+    const double s  = em::farFieldPowerDensity(pw, gain, dist);
+    const double e  = em::rmsFieldFromPowerDensity(s);
+    QString text = I18n::tr("sar_exp_ok")
+                       .arg(QString::number(s, 'g', 4))
+                       .arg(QString::number(e, 'g', 4))
+                       .arg(QString::number(pw, 'g', 4))
+                       .arg(QString::number(dbm, 'g', 4));
+    // 参考レベル (入射電力密度) と比べる。**規格ごとに適用周波数が違う**ので
+    // (ICNIRP 2020 は 2 GHz 以上、FCC は 1.5 GHz 以上)、収録した 3 規格すべてを
+    // 引いて該当したものを並べる。1 つだけ引いて「参考レベルが無い」と出すと、
+    // 他の規格には有ることを隠してしまう。
+    const auto cat = (m_category->currentIndex() == 1)
+                         ? em::Category::Occupational
+                         : em::Category::GeneralPublic;
+    bool anyLimit = false;
+    for (const auto std : { em::Standard::Icnirp2020,
+                            em::Standard::IeeeC95_1_2019,
+                            em::Standard::Fcc47Cfr }) {
+        const em::ExposureLimit lim = em::exposureLimit(
+            std, cat, em::Metric::IncidentPowerDensity, f);
+        if (!lim.defined || !lim.applicable || !(lim.value > 0.0)) continue;
+        anyLimit = true;
+        const double ratio = s / lim.value;
+        text += QLatin1Char('\n') + I18n::tr("sar_exp_limit")
+                    .arg(QString::number(lim.value, 'g', 4))
+                    .arg(ratio <= 1.0 ? I18n::tr("sar_exp_within")
+                                            .arg(QString::number(ratio, 'g', 3))
+                                      : I18n::tr("sar_exp_over")
+                                            .arg(QString::number(ratio, 'g', 3)))
+                    .arg(QString::fromUtf8(lim.reference));
+    }
+    if (!anyLimit) text += QLatin1Char('\n') + I18n::tr("sar_exp_nolimit");
+    m_srcResult->setText(text);
 }
 
 void SarTab::updatePointSar()

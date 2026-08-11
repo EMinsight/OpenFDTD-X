@@ -9900,6 +9900,52 @@ static void testSarMetrics()
               "sar: negative power density yields no field");
     }
 
+    // ── (2') 曝露源からの入射量 (遠方界) ────────────────────────────────
+    {
+        // dBm → W: 30 dBm = 1 W, 0 dBm = 1 mW
+        check(std::fabs(dbmToWatts(30.0) - 1.0) < 1e-12
+              && std::fabs(dbmToWatts(0.0) - 1e-3) < 1e-15,
+              "sar: 30 dBm is 1 W and 0 dBm is 1 mW");
+
+        // S = P·G/(4πd²)。1 W, 0 dBi, 1 m なら 1/(4π)
+        const double pi = 3.14159265358979323846;
+        check(std::fabs(farFieldPowerDensity(1.0, 0.0, 1.0) - 1.0 / (4.0 * pi))
+                  < 1e-15,
+              "sar: 1 W isotropic at 1 m gives 1/(4 pi) W/m^2");
+        // 利得 +3.0103 dB (= 2 倍) で 2 倍
+        check(std::fabs(farFieldPowerDensity(1.0, 3.0102999566398120, 1.0)
+                        / farFieldPowerDensity(1.0, 0.0, 1.0) - 2.0) < 1e-9,
+              "sar: +3.01 dBi doubles the power density");
+        // 距離 2 倍で 1/4 (逆 2 乗)
+        check(std::fabs(farFieldPowerDensity(1.0, 0.0, 2.0)
+                        / farFieldPowerDensity(1.0, 0.0, 1.0) - 0.25) < 1e-12,
+              "sar: doubling the distance quarters the power density");
+        check(farFieldPowerDensity(0.0, 0.0, 1.0) == 0.0
+              && farFieldPowerDensity(1.0, 0.0, 0.0) == 0.0,
+              "sar: no power or no distance yields 0 (not computed)");
+
+        // 画面が出す S と E_rms は同じ平面波の関係で結ばれていること
+        const double s2 = farFieldPowerDensity(dbmToWatts(24.0), 0.0, 1.0);
+        const double e2 = rmsFieldFromPowerDensity(s2);
+        check(std::fabs(planeWavePowerDensityFromRms(e2) - s2) < 1e-15,
+              "sar: the displayed S and E_rms are consistent");
+        // 24 dBm 等方 1 m は約 0.02 W/m^2 / 2.74 V/m (画面表示の裏取り)
+        check(std::fabs(s2 - 0.019993) < 1e-5 && std::fabs(e2 - 2.744) < 1e-3,
+              "sar: 24 dBm isotropic at 1 m is about 0.02 W/m^2 / 2.74 V/m");
+
+        // 反応性近傍界の境界 λ/(2π)。1950 MHz なら λ = 0.1538 m → 0.0245 m
+        const double nb = reactiveNearFieldBoundary(1950e6);
+        check(std::fabs(nb - (2.99792458e8 / 1950e6) / (2.0 * pi)) < 1e-15,
+              "sar: the reactive near-field boundary is lambda/(2 pi)");
+        check(nb > 0.024 && nb < 0.025,
+              "sar: at 1950 MHz that boundary is about 24.5 mm");
+        check(reactiveNearFieldBoundary(0.0) == 0.0,
+              "sar: no frequency means no boundary");
+        // 携帯を体に密着させる 5 mm 配置はこの内側 = 遠方界の式は使えない
+        check(0.005 < nb,
+              "sar: a 5 mm body-worn spacing is inside the near field");
+    }
+
     // ── (3) 断熱温度上昇 ────────────────────────────────────────────────
     {
         // 2 W/kg を 6 分、c_p = 3600 J/(kg K) → 2*360/3600 = 0.2 K
