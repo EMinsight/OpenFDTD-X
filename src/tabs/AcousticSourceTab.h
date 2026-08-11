@@ -102,6 +102,8 @@ private:
     void updateArray();
     // 共通設定: 音源リストの位置と受音点から、距離・遅延・受音レベルを出す
     void updateDrive();
+    // 畳み込み設定の受音点・入力WAV をモデルの実データで埋める
+    void refreshConvBindings();
     // 可聴化品質指標: 実測 RIR (OperaAcousticSettings::rirPath) を非同期分析
     void computeAuralQuality();
     void clearAuralQuality();    // 未算出状態 ("—" + 説明) へ戻す
@@ -171,7 +173,10 @@ private:
     QLineEdit    *m_subDelay = nullptr;
     QLabel       *m_subInfo = nullptr;
 
-    // aural
+    // aural (畳み込み設定 — 実体は可聴化タブ。ここは同じモデルの View)
+    QLineEdit    *m_convDry = nullptr;    // 入力WAV = auralizationDryFile
+    QComboBox    *m_convRecv = nullptr;   // 受音点 = acoustic().receivers
+
     QComboBox    *m_renderRate;
     QTableWidget *m_qualTable = nullptr;    // 可聴化品質指標 (実測 RIR 由来)
     QLabel       *m_qualNote = nullptr;
