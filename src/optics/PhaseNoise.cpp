@@ -7,11 +7,16 @@
 namespace ofd {
 namespace optics {
 
+// MSVC は <cmath> だけでは円周率のマクロを定義しない (_USE_MATH_DEFINES が
+// 要る)。Qt を include しない optics/ のソースは自前の定数を置く流儀
+// (PhotonicCircuit.cpp も同じ) — Windows CI で実際に踏んだ。
+namespace { const double kPi = 3.14159265358979323846; }
+
 double phaseVariance(double linewidth_Hz, double delay_s)
 {
     if (!(linewidth_Hz > 0.0) || !(delay_s > 0.0)) return 0.0;
     // Wiener 過程 (白色周波数雑音の積分) の厳密解
-    return 2.0 * M_PI * linewidth_Hz * delay_s;
+    return 2.0 * kPi * linewidth_Hz * delay_s;
 }
 
 double visibility(double linewidth_Hz, double delay_s)
@@ -30,7 +35,7 @@ PhaseNoiseResult analyse(const PhaseNoiseInput &in)
     r.phaseVariance = s2;
     r.phaseRms_rad = std::sqrt(s2);
     r.coherenceTime_s = (in.linewidth_Hz > 0.0)
-                            ? 1.0 / (M_PI * in.linewidth_Hz)
+                            ? 1.0 / (kPi * in.linewidth_Hz)
                             : std::numeric_limits<double>::infinity();
     r.visibility = std::exp(-0.5 * s2);
 
