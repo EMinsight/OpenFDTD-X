@@ -117,6 +117,18 @@ Verdict convergenceVerdict(const std::vector<ConvergencePoint> &history,
 // 3 次元 Yee 格子の安定条件は S ≤ 1。Δt ≤ 0 (自動決定) や不正な格子では 0。
 double courantNumber(double dt_s, double speed_mps, const double dxMin_m[3]);
 
+// 目標解像度 λ/N からセル寸法を出す (Δx = c / (f·N))。
+// **λ は媒質中ではなく指定した速度に対する波長**なので、真空の光速を渡せば
+// 真空波長、音速を渡せば音の波長になる (呼び手が決める)。
+// f ≤ 0 / N ≤ 0 なら 0。
+double targetCellSize(double speed_mps, double freq_Hz, int lambdaDiv);
+
+// 立方セル (Δx = Δy = Δz) の一様格子での Courant 限界 Δt。
+//   dims = 3: Δx/(c√3)、2: Δx/(c√2)、1: Δx/c
+// **courantNumber() の逆**で、この Δt を courantNumber へ入れると S = 1 に
+// なる (selftest が往復で確認している)。不正な引数では 0。
+double courantLimitDt(double speed_mps, double dx_m, int dims);
+
 // S ≤ 0.99 → Ok、0.99 < S ≤ 1.0 → Warn (安定限界ぎりぎり)、
 // S > 1.0 → Ng (発散)。S <= 0 は Unknown。
 Verdict courantVerdict(double courant);

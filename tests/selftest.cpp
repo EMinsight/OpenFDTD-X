@@ -19038,6 +19038,103 @@ static void testSourceDirectivity()
     }
 }
 
+// ── メッシュ精度 → セル寸法 → Courant 限界 (core/FdtdVerification) ────────
+// メッシュ精度スライダが Δt に効く道筋。**既にある courantNumber() の逆**に
+// なっていることを往復で確かめ、既存の Project::courantDt() とも突き合わせる
+// (同じ物理を 2 通りに書いて食い違わせない)。
+static void testCourantFromAccuracy()
+{
+    g_file = "meshdt";
+    using namespace ofd::verify;
+    const double c0 = 2.99792458e8;
+
+    // ① Δx = c/(f·N) — 定義そのもの
+    {
+        const double dx = targetCellSize(c0, 2.5e9, 20);
+        const double lambda = c0 / 2.5e9;
+        check(std::fabs(dx - lambda / 20.0) < 1e-18,
+              "meshdt: the target cell size is lambda/N exactly");
+        check(std::fabs(targetCellSize(c0, 2.5e9, 40) - 0.5 * dx) < 1e-18,
+              "meshdt: doubling the divisor halves the cell");
+        check(targetCellSize(c0, 0.0, 20) == 0.0 && targetCellSize(c0, 2.5e9, 0) == 0.0,
+              "meshdt: invalid arguments give 0 rather than a made-up number");
+        // 音速で渡せば音の波長で刻む (真空の光速を暗黙に使っていないこと)
+        const double dxAc = targetCellSize(343.0, 1000.0, 10);
+        check(std::fabs(dxAc - 0.0343) < 1e-12,
+              "meshdt: passing the speed of sound gives the acoustic cell size");
+    }
+
+    // ② Courant 限界は courantNumber() の逆 (往復で S = 1 になること)
+    {
+        const double dx = 0.006;
+        for (int dims = 1; dims <= 3; ++dims) {
+            const double dt = courantLimitDt(c0, dx, dims);
+            double d[3] = { dx, dx, dx };
+            // 使わない次元は無限大の間隔 (= その方向に分割しない) とみなす
+            for (int a = dims; a < 3; ++a) d[a] = 1e308;
+            const double S = courantNumber(dt, c0, d);
+            check(std::fabs(S - 1.0) < 1e-12,
+                  qPrintable(QString("meshdt: the limit gives Courant S = 1 "
+                                     "in %1D (got %2)").arg(dims)
+                                 .arg(S, 0, 'f', 12)));
+        }
+        // 3D の閉形式 Δx/(c√3)
+        check(std::fabs(courantLimitDt(c0, dx, 3) - dx / (c0 * std::sqrt(3.0)))
+                  < 1e-24,
+              "meshdt: the 3D limit is dx/(c*sqrt(3))");
+        // Δx を半分にすると Δt も半分 (線形)
+        check(std::fabs(courantLimitDt(c0, 0.5 * dx, 3)
+                        - 0.5 * courantLimitDt(c0, dx, 3)) < 1e-24,
+              "meshdt: halving the cell halves the time step");
+        check(courantLimitDt(c0, 0.0, 3) == 0.0
+                  && courantLimitDt(c0, dx, 4) == 0.0,
+              "meshdt: invalid arguments give 0");
+    }
+
+    // ③ 既存の Project::courantDt() と一致すること (同じ物理の 2 実装が
+    //    食い違わないこと)。一様な立方格子を組んで突き合わせる。
+    {
+        ofd::Project p;
+        const double dx = 0.004;
+        const int n = 10;
+        for (int a = 0; a < 3; ++a) {
+            ofd::MeshAxis &ax = p.mesh(a);
+            ax.nodes = { 0.0, n * dx };
+            ax.divs = { n };            // 等間隔 n 分割 → 最小間隔 = dx
+        }
+        const double want = courantLimitDt(c0, dx, 3);
+        const double got = p.courantDt();
+        check(std::fabs(got - want) <= 1e-15 * want,
+              qPrintable(QString("meshdt: it agrees with Project::courantDt() "
+                                 "(%1 vs %2 s)")
+                             .arg(want, 0, 'e', 6).arg(got, 0, 'e', 6)));
+    }
+
+    // ④ 精度を 1 段上げると Δt が縮み、同じシミュレーション時間なら
+    //    反復回数が増える (スライダを動かす意味がここにある)
+    {
+        const int div[3] = { 10, 20, 40 };
+        double prevDt = 1e30;
+        bool shrinking = true;
+        for (int k = 0; k < 3; ++k) {
+            const double dx = targetCellSize(c0, 2.5e9, div[k]);
+            const double dt = courantLimitDt(c0, dx, 3);
+            if (!(dt < prevDt)) shrinking = false;
+            prevDt = dt;
+        }
+        check(shrinking,
+              "meshdt: a finer accuracy always shortens the time step");
+        const double dtCoarse =
+            courantLimitDt(c0, targetCellSize(c0, 2.5e9, 10), 3);
+        const double dtFine =
+            courantLimitDt(c0, targetCellSize(c0, 2.5e9, 20), 3);
+        const double T = 10.0e-9;
+        check(std::fabs((T / dtFine) / (T / dtCoarse) - 2.0) < 1e-9,
+              "meshdt: doubling the resolution doubles the number of steps "
+              "for the same simulated time");
+    }
+}
+
 // ── 光線図の経路記録 (optics/IlluminationTrace) ────────────────────────────
 // **記録は計測であって物理ではない**。いちばん大事なのは「記録を入れても
 // 結果が 1 ビットも変わらない」こと (乱数の消費や分岐に混ざると静かに
@@ -22640,6 +22737,7 @@ int main(int argc, char *argv[])
     testCircuitImpulse();
     testPhaseNoise();
     testRayPaths();
+    testCourantFromAccuracy();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
