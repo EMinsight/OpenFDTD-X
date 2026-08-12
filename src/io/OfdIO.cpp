@@ -925,10 +925,16 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
     {
         // API key is NOT persisted here — it lives in QSettings
         const Tidy3dOpts &t = p.tidy3d();
-        root["tidy3d"] = QJsonObject{
+        QJsonObject tj{
             {"project_name", t.projectName},
             {"resolution", t.resolution},
             {"auto_pml", t.autoPml} };
+        // 追加キーは既定値と違うときだけ書く (旧 .ofdx とバイト一致)
+        const Tidy3dOpts d;
+        if (t.subpixel != d.subpixel) tj["subpixel"] = t.subpixel;
+        if (t.dftMonitors != d.dftMonitors) tj["dft_monitors"] = t.dftMonitors;
+        if (t.priority != d.priority) tj["priority"] = t.priority;
+        root["tidy3d"] = tj;
     }
     // ── ジオメトリ拡張 (.ofdx "geometry") — 追加キーのみ ────────────────────
     // メッシュ細分化領域 (GeometryTab の「細分化領域」表)。領域が 1 つも
@@ -1609,6 +1615,9 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         t.projectName = t3.value("project_name").toString(t.projectName);
         t.resolution = t3.value("resolution").toString(t.resolution);
         t.autoPml = t3.value("auto_pml").toBool(t.autoPml);
+        t.subpixel = t3.value("subpixel").toBool(t.subpixel);
+        t.dftMonitors = t3.value("dft_monitors").toBool(t.dftMonitors);
+        t.priority = qBound(0, t3.value("priority").toInt(t.priority), 1);
     }
     // ジオメトリ拡張 — キーが無い旧ファイルは細分化領域なし (既定値のまま)
     if (root.contains("geometry")) {

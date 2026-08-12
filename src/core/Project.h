@@ -896,6 +896,14 @@ struct Tidy3dOpts {
     QString projectName = "openfdtd-x";
     QString resolution  = "medium";   // coarse / medium / fine
     bool    autoPml     = true;
+    // ── エクスポートへの追加設定 (.ofdx "tidy3d" の追加キー) ────────────────
+    // 既定値は「生成スクリプトが従来と 1 バイトも変わらない」側に置いてある:
+    // subpixel は tidy3d 自身の既定が True なので、True のときは書かない
+    // (書かない = ライブラリ既定を使う、で意味が一致する)。
+    bool    subpixel = true;          // サブピクセル平均化
+    bool    dftMonitors = true;       // モニターで時間 DFT 記録
+                                      // (false = td.FieldTimeMonitor で時間波形)
+    int     priority = 0;             // 0=通常 1=高 (スクリプトには注記として出す)
 };
 
 // ────────────────────────────────────────────────────────────────────────────

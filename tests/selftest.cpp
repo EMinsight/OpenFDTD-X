@@ -82,6 +82,7 @@
 #include "core/TransmissionLine.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
+#include "io/Tidy3dExporter.h"
 #include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
@@ -15662,6 +15663,119 @@ static void testIlluminationTrace()
     }
 }
 
+// ── tidy3d エクスポート設定 (io/Tidy3dExporter) ────────────────────────────
+// 判定は生成スクリプトの中身そのもの。**既定値では従来の出力と 1 バイトも
+// 変わらない**ことを最初に固定し (絶対規則 2)、設定を変えたときだけ差が出る
+// ことを見る。
+static void testTidy3dExportOptions()
+{
+    g_file = "tidy3d-export";
+
+    Project p;
+    p.setActiveDomain(Domain::Optical);
+    Probe pr; pr.x = 0.001; pr.y = 0.002; pr.z = 0.003;
+    p.probes().push_back(pr);
+    const QString base = Tidy3dExporter::generatePython(p);
+    check(!base.isEmpty(), "t3export: the default project generates a script");
+
+    // 既定: subpixel 行は書かない (tidy3d 自身の既定が有効なので、
+    // 書かないことと subpixel=True は同義)
+    check(!base.contains(QLatin1String("subpixel")),
+          "t3export: the default writes no subpixel line at all");
+    check(base.contains(QLatin1String("td.FieldMonitor("))
+              && base.contains(QLatin1String("freqs=freqs")),
+          "t3export: the default records a frequency-domain (DFT) monitor");
+    check(!base.contains(QLatin1String("job priority")),
+          "t3export: normal priority leaves no note");
+
+    // 既定値を明示代入しても出力は 1 バイトも変わらない
+    {
+        Project q;
+        q.setActiveDomain(Domain::Optical);
+        q.probes().push_back(pr);
+        const Tidy3dOpts d;
+        q.tidy3d().subpixel = d.subpixel;
+        q.tidy3d().dftMonitors = d.dftMonitors;
+        q.tidy3d().priority = d.priority;
+        check(Tidy3dExporter::generatePython(q) == base,
+              "t3export: assigning the defaults changes nothing in the script");
+    }
+
+    // サブピクセル平均化を外すと subpixel=False が入る
+    {
+        p.tidy3d().subpixel = false;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("subpixel=False")),
+              "t3export: clearing sub-pixel averaging writes subpixel=False");
+        check(s2.contains(QLatin1String("td.Simulation(")),
+              "t3export: it goes inside the Simulation call");
+        p.tidy3d().subpixel = true;
+    }
+    // DFT を外すと時間波形モニターへ変わる
+    {
+        p.tidy3d().dftMonitors = false;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("td.FieldTimeMonitor(")),
+              "t3export: clearing the DFT setting switches to a time monitor");
+        check(!s2.contains(QLatin1String("td.FieldMonitor(")),
+              "t3export: and the frequency-domain monitor is gone");
+        // 時間モニターに周波数の指定は付かない
+        const int idx = s2.indexOf(QLatin1String("td.FieldTimeMonitor("));
+        check(idx > 0
+                  && !s2.mid(idx, 120).contains(QLatin1String("freqs=")),
+              "t3export: a time monitor carries no freqs argument");
+        p.tidy3d().dftMonitors = true;
+    }
+    // 優先度「高」は注記として出る (ジョブ API へは渡さない)
+    {
+        p.tidy3d().priority = 1;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("# job priority: high")),
+              "t3export: high priority is written as a comment");
+        check(s2.contains(QLatin1String("does not pass it to web.Job")),
+              "t3export: the comment says the script does not submit it");
+        p.tidy3d().priority = 0;
+    }
+    // 全部戻せば最初と一致する (状態が残らない)
+    check(Tidy3dExporter::generatePython(p) == base,
+          "t3export: restoring the settings restores the script exactly");
+
+    // .ofdx のラウンドトリップと旧ファイル互換
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "t3export: temp dir");
+        const QString j = dir.path() + QStringLiteral("/t3.ofdx");
+        p.tidy3d().subpixel = false;
+        p.tidy3d().dftMonitors = false;
+        p.tidy3d().priority = 1;
+        check(OfdxIO::save(j, p), "t3export: sidecar save");
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "t3export: sidecar reload");
+        check(!q.tidy3d().subpixel && !q.tidy3d().dftMonitors
+                  && q.tidy3d().priority == 1,
+              "t3export: the export options round-trip");
+
+        // 既定値なら追加キー自体を書かない
+        Project z;
+        const QString jz = dir.path() + QStringLiteral("/t3def.ofdx");
+        check(OfdxIO::save(jz, z), "t3export: default sidecar save");
+        QFile f(jz);
+        check(f.open(QIODevice::ReadOnly), "t3export: default sidecar read");
+        const QString txt = QString::fromUtf8(f.readAll());
+        check(!txt.contains(QLatin1String("subpixel"))
+                  && !txt.contains(QLatin1String("dft_monitors"))
+                  && !txt.contains(QLatin1String("priority")),
+              "t3export: default export options are not written at all");
+        // 追加キーの無い旧ファイルは既定値のまま
+        Project w;
+        check(OfdxIO::load(jz, w, &err), "t3export: legacy sidecar reload");
+        check(w.tidy3d().subpixel && w.tidy3d().dftMonitors
+                  && w.tidy3d().priority == 0,
+              "t3export: a sidecar without the keys keeps the defaults");
+    }
+}
+
 // ── 受光器の雑音収支 (core/ReceiverNoise) ──────────────────────────────────
 // 判定は **定義式そのもの**と、そこから出る漸近形:
 //   ショット 2qIB / 熱 4kTB/R_L / RIN rin(RP)²B  — 手計算で確かめられる
@@ -19029,6 +19143,7 @@ int main(int argc, char *argv[])
     testFlankingTransmission();
     testTransmissionLine();
     testReceiverNoise();
+    testTidy3dExportOptions();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();

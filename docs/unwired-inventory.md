@@ -267,8 +267,8 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 
 | 未反映の内容 | 反映されるもの | 区分 | 実装に要るもの |
 |---|---|---|---|
-| サブピクセル平均化と DFT 記録の設定 | 自動 PML (エクスポートに反映されます) | **C** | エクスポータ (io/Tidy3dExporter) は GUI 側 |
-| 優先度の設定 (スクリプト生成にも反映されません) | — | **C** | 同上 |
+| — (解消) | 自動 PML (boundary_spec)・サブピクセル平均化 (subpixel。tidy3d の既定が有効なので外したときだけ subpixel=False を書く)・DFT 記録 (td.FieldMonitor ↔ td.FieldTimeMonitor の切替) — すべて生成スクリプトへ渡ります | — | 2026-08-11 に配線 |
+| 優先度をジョブ API へ渡すこと (このスクリプトは送信までは行わないため) | 優先度の選択そのもの — プロジェクトに保存し、生成スクリプトへ注記として書き出します | **C** | 送信そのものを GUI から行う経路が要る |
 | ローカル計算との比較機能 | — | **C** | ローカル結果は既に読める |
 
 ### TransmissionLineTab
