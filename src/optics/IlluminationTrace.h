@@ -149,6 +149,20 @@ struct TraceOptions {
     int      maxBounces = 64;        // これを超えたら打ち切って吸収に計上
     double   minEnergy_dB = -90.0;   // 初期重みに対する打ち切り閾値 (電力比)
     int      maxDiffuse = 0;         // 非鏡面の散乱回数の上限 (0 = 制限なし)
+    // 光線図のために**先頭 N 本の経路を記録**する (0 = 記録しない = 従来と
+    // 完全に同じ)。記録は計測であって物理ではないので、**記録の有無で
+    // 光束収支も配光も 1 ビットも変わってはいけない** (selftest が判定)。
+    int      recordPaths = 0;
+};
+
+// 光線 1 本の経路 (光線図の描画用)。点は「放射点 → 各交点 → 終点」の順。
+struct PathPoint { double x_mm = 0.0, y_mm = 0.0, z_mm = 0.0; };
+struct RayPath {
+    std::vector<PathPoint> points;
+    bool   reachedTarget = false;   // 最後の点が評価面 (z = D) 上にあるか
+    bool   escaped = false;         // 系の外へ出た (最後の線分は方向を示すだけ)
+    bool   absorbed = false;        // 面での吸収 / 打ち切りで終わった
+    double weightEnd_lm = 0.0;      // 終端での重み
 };
 
 struct Result {
@@ -186,6 +200,9 @@ struct Result {
     long long raysOnTarget = 0;
     long long raysTrapped = 0;          // 反射回数の上限で打ち切った本数
     long long raysDiffuseCut = 0;       // 拡散次数の上限で打ち切った本数
+
+    // 記録した経路 (TraceOptions::recordPaths が 0 なら空)。
+    std::vector<RayPath> paths;
 };
 
 // nRays 本を追跡する。nRays <= 0 や幾何が不正 (f <= 0, R <= 2f, D が系の

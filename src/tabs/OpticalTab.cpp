@@ -115,7 +115,7 @@ const bool s_i18nOptRay = [] {
               "The system in the illumination tab cannot be traced — check the "
               "flux, focal length, aperture radius and target distance.");
     I18n::reg("optray_uw_ray",
-              "偏波追跡・フレネル係数・分散追跡・光線図出力 (追跡モデルが"
+              "偏波追跡・フレネル係数・分散追跡 (追跡モデルが"
               "屈折率と波長を持たず、光線の経路も保存しないため — チェックを"
               "無効にしてあります)",
               "polarisation tracking, Fresnel coefficients, dispersion tracking "
@@ -144,6 +144,16 @@ const bool s_i18nOptRay = [] {
               "The trace does not store ray paths — it only brings back the "
               "aggregates.");
     I18n::reg("optray_viz_rays", "可視化レイ数", "Visualized rays");
+    I18n::reg("optray_plot_x", "光軸 z [mm]", "Optical axis z [mm]");
+    I18n::reg("optray_plot_y", "軸からの距離 r [mm]", "Distance from axis r [mm]");
+    I18n::reg("optray_viz_note",
+              " / 光線図: %1 本を描画 (評価面へ %2・系の外へ %3・吸収 %4)。"
+              "軸対称なので r = √(x²+y²) の断面に畳んでいます。系の外へ出た"
+              "光線の最後の線分は向きを示すだけで、当たった点ではありません。",
+              " / Ray diagram: %1 paths drawn (%2 to the target, %3 escaped, "
+              "%4 absorbed). The system is axisymmetric, so paths are folded "
+              "onto r = sqrt(x^2+y^2). The last segment of an escaping ray only "
+              "shows its direction -- it is not a hit point.");
     I18n::reg("optray_gpu", "GPU加速 (未実装)", "GPU accelerated (not implemented)");
     I18n::reg("optray_gpu_hint", "OptiX / Embree 経由 (レイトレーサ未実装)",
               "via OptiX / Embree (ray tracer not implemented)");
@@ -950,12 +960,21 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_rayDispersion->setChecked(false);
     m_rayDispersion->setEnabled(false);
     m_rayDispersion->setToolTip(I18n::tr("optray_tip_disp"));
-    for (QWidget *w : { static_cast<QWidget *>(m_rayVizEnable),
-                        static_cast<QWidget *>(m_rayVizCount) }) {
-        w->setEnabled(false);
-        w->setToolTip(I18n::tr("optray_tip_viz"));
-    }
+    // 光線図は経路を保存できるようにしたので有効 (optics/IlluminationTrace の
+    // TraceOptions::recordPaths)。**記録しても結果は 1 ビットも変わらない**
+    // ことを selftest が判定している。
+    m_rayVizCount->setValue(24);
+    m_rayVizCount->setRange(1, 200);   // 図として読める本数に絞る
     m_rayVizEnable->setChecked(false);
+    connect(m_rayVizEnable, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_rayPlot) m_rayPlot->setVisible(on);
+    });
+
+    m_rayPlot = new MiniPlot(sray);
+    m_rayPlot->setMinimumHeight(200);
+    m_rayPlot->setLabels(I18n::tr("optray_plot_x"), I18n::tr("optray_plot_y"));
+    m_rayPlot->setVisible(false);
+    sray->vbox()->addWidget(m_rayPlot);
 
     sray->vbox()->addWidget(mutedLabel(I18n::tr("optray_scene_hint"), sray));
     m_rayRunBtn = new QPushButton(I18n::tr("optray_run"), sray);
@@ -1898,6 +1917,9 @@ void OpticalTab::runRaycast()
     opt.maxBounces = m_rayBounces->value();
     opt.minEnergy_dB = m_rayMinEnergy->text().toDouble();
     opt.maxDiffuse = m_rayDiffOrder->value();
+    // 光線図 — 記録は計測なので、有効にしても追跡結果は変わらない
+    if (m_rayVizEnable && m_rayVizEnable->isChecked())
+        opt.recordPaths = m_rayVizCount->value();
 
     if (traceBlocker(sc, nRays) != nullptr) {
         m_rayResult->setText(I18n::tr("optray_no_geom"));
@@ -1919,6 +1941,40 @@ void OpticalTab::runRaycast()
     const long long cut = r.raysTrapped + r.raysDiffuseCut;
     if (cut > 0) text += I18n::tr("optray_res_cut").arg(cut);
     if (capped) text += QStringLiteral(" ") + I18n::tr("optray_cap").arg(kCap);
+
+    // ── 光線図 (r–z 断面) ──────────────────────────────────────────────
+    // 系は光軸まわりに軸対称なので、各点を r = √(x²+y²) に落として
+    // 描く。**符号は落とさず、x の符号で左右に振る**と経路が交差して
+    // 読みにくくなるので、r ≥ 0 の片側に畳む (軸対称だから情報は落ちない)。
+    if (m_rayPlot) {
+        QVector<MiniSeries> series;
+        series.reserve(int(r.paths.size()));
+        for (const RayPath &p : r.paths) {
+            MiniSeries ms;
+            // 評価面に届いた光線・外へ出た光線・吸収された光線を色で分ける
+            ms.color = p.reachedTarget ? QColor("#2E8B57")
+                     : p.escaped       ? QColor("#8899AA")
+                                       : QColor("#C05050");
+            ms.color.setAlpha(170);
+            for (const PathPoint &q : p.points) {
+                const double rr = std::sqrt(q.x_mm * q.x_mm + q.y_mm * q.y_mm);
+                ms.pts.push_back(QPointF(q.z_mm, rr));
+            }
+            series.push_back(ms);
+        }
+        m_rayPlot->setSeries(series);
+        m_rayPlot->setVisible(m_rayVizEnable && m_rayVizEnable->isChecked());
+        if (!r.paths.empty()) {
+            int nT = 0, nE = 0, nA = 0;
+            for (const RayPath &p : r.paths) {
+                if (p.reachedTarget) ++nT;
+                else if (p.escaped)  ++nE;
+                else                 ++nA;
+            }
+            text += I18n::tr("optray_viz_note")
+                        .arg(int(r.paths.size())).arg(nT).arg(nE).arg(nA);
+        }
+    }
     m_rayResult->setText(text);
 }
 

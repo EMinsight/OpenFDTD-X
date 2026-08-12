@@ -19038,6 +19038,147 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 光線図の経路記録 (optics/IlluminationTrace) ────────────────────────────
+// **記録は計測であって物理ではない**。いちばん大事なのは「記録を入れても
+// 結果が 1 ビットも変わらない」こと (乱数の消費や分岐に混ざると静かに
+// 別の答えになる)。そのうえで、経路が幾何として正しいかを見る。
+static void testRayPaths()
+{
+    g_file = "raypath";
+    using namespace ofd::illum;
+
+    Scene sc;
+    sc.source.flux_lm = 1000.0;
+    sc.reflector.enabled = true;
+    sc.reflector.model = Scatter::Specular;
+    sc.diffuser.enabled = false;
+    sc.target.distance_mm = 1000.0;
+    sc.target.half_mm = 500.0;
+
+    TraceOptions off;
+    off.sampling = Sampling::Qmc;
+    TraceOptions on = off;
+    on.recordPaths = 24;
+
+    const Result a = trace(sc, 2000, off);
+    const Result b = trace(sc, 2000, on);
+    check(a.valid && b.valid, "raypath: both traces run");
+
+    // ① 記録の有無で結果が 1 ビットも変わらないこと (これが本命)
+    check(a.fluxOut_lm == b.fluxOut_lm,
+          "raypath: recording paths does not change the emitted-out flux "
+          "(bit-for-bit)");
+    check(a.fluxAbsorbed_lm == b.fluxAbsorbed_lm,
+          "raypath: it does not change the absorbed flux");
+    check(a.fluxTarget_lm == b.fluxTarget_lm,
+          "raypath: it does not change the flux on the target");
+    check(a.raysOnTarget == b.raysOnTarget && a.raysTrapped == b.raysTrapped,
+          "raypath: it does not change the ray tallies");
+    check(a.axialIntensity_cd == b.axialIntensity_cd,
+          "raypath: it does not change the axial intensity");
+    bool sameCurve = a.intensity_cd.size() == b.intensity_cd.size();
+    for (std::size_t i = 0; sameCurve && i < a.intensity_cd.size(); ++i)
+        sameCurve = (a.intensity_cd[i] == b.intensity_cd[i]);
+    check(sameCurve, "raypath: the whole intensity distribution is identical");
+    check(a.paths.empty(), "raypath: recording is off by default");
+
+    // ② 記録した本数と、経路そのものの形
+    check(int(b.paths.size()) == on.recordPaths,
+          qPrintable(QString("raypath: exactly %1 paths are recorded (got %2)")
+                         .arg(on.recordPaths).arg(b.paths.size())));
+    bool allTwoPlus = true, endsClassified = true, lenOk = true;
+    for (const RayPath &p : b.paths) {
+        if (p.points.size() < 2) allTwoPlus = false;
+        // 終わり方は 3 つのどれか 1 つ (取りこぼしも二重計上も無いこと)
+        const int flags = int(p.reachedTarget) + int(p.escaped)
+                          + int(p.absorbed);
+        if (flags != 1) endsClassified = false;
+        if (int(p.points.size()) > 2 + 64) lenOk = false;   // maxBounces + 2
+    }
+    check(allTwoPlus, "raypath: every path has at least a start and an end");
+    check(endsClassified,
+          "raypath: every path ends in exactly one way (target / escaped / "
+          "absorbed)");
+    check(lenOk, "raypath: no path has more points than bounces allow");
+
+    // ③ 放射点は光源の位置 (点光源なら原点)
+    bool fromOrigin = true;
+    for (const RayPath &p : b.paths)
+        if (std::fabs(p.points[0].x_mm) > 1e-12
+            || std::fabs(p.points[0].y_mm) > 1e-12
+            || std::fabs(p.points[0].z_mm) > 1e-12) fromOrigin = false;
+    check(fromOrigin, "raypath: a point source emits every ray from the origin");
+
+    // ④ 評価面に届いた光線は、最後の点が z = D の面の上にあり、
+    //    面の内側 (|x|, |y| <= W) にあること
+    int nTarget = 0;
+    bool onPlane = true, inside = true;
+    for (const RayPath &p : b.paths) {
+        if (!p.reachedTarget) continue;
+        ++nTarget;
+        const PathPoint &e = p.points.back();
+        if (std::fabs(e.z_mm - sc.target.distance_mm) > 1e-9) onPlane = false;
+        if (std::fabs(e.x_mm) > sc.target.half_mm + 1e-9
+            || std::fabs(e.y_mm) > sc.target.half_mm + 1e-9) inside = false;
+    }
+    check(nTarget > 0, "raypath: some of the recorded rays reach the target");
+    check(onPlane, "raypath: a target-reaching path ends exactly on z = D");
+    check(inside, "raypath: and inside the evaluation area");
+
+    // ⑤ **反射の法則** — 鏡面反射器に当たった点で入射角 = 反射角。
+    //    法線は記録された交点から放物面の式で独立に組み直す
+    //    (n ∝ (−x/(2f), −y/(2f), 1) を正規化。z = (x²+y²)/(4f))
+    {
+        const double f = sc.reflector.focal_mm;
+        int checked = 0;
+        double worst = 0.0;
+        for (const RayPath &p : b.paths) {
+            for (std::size_t k = 1; k + 1 < p.points.size(); ++k) {
+                const PathPoint &P0 = p.points[k - 1];
+                const PathPoint &P1 = p.points[k];
+                const PathPoint &P2 = p.points[k + 1];
+                // 交点が放物面 x² + y² − 4f·z − 4f² = 0 の上にあること
+                // (光源は焦点 = 原点にあり、頂点は z = −f)
+                const double rr = P1.x_mm * P1.x_mm + P1.y_mm * P1.y_mm;
+                const double impl = rr - 4.0 * f * P1.z_mm - 4.0 * f * f;
+                if (std::fabs(impl) > 1e-6 * std::max(1.0, rr)) continue;
+                // 法線は勾配 ∇(x²+y²−4fz−4f²) = (2x, 2y, −4f) から
+                double nx = P1.x_mm, ny = P1.y_mm, nz = -2.0 * f;
+                const double nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+                nx /= nl; ny /= nl; nz /= nl;
+                auto unit = [](double x, double y, double z, double *o) {
+                    const double L = std::sqrt(x * x + y * y + z * z);
+                    o[0] = x / L; o[1] = y / L; o[2] = z / L;
+                };
+                double in[3], out[3];
+                unit(P1.x_mm - P0.x_mm, P1.y_mm - P0.y_mm, P1.z_mm - P0.z_mm, in);
+                unit(P2.x_mm - P1.x_mm, P2.y_mm - P1.y_mm, P2.z_mm - P1.z_mm, out);
+                const double ci = in[0] * nx + in[1] * ny + in[2] * nz;
+                const double co = out[0] * nx + out[1] * ny + out[2] * nz;
+                // 鏡面反射なら法線成分だけ符号が反転する
+                worst = std::max(worst, std::fabs(ci + co));
+                ++checked;
+            }
+        }
+        check(checked > 0,
+              "raypath: at least one recorded reflection off the reflector");
+        check(worst < 1e-6,
+              qPrintable(QString("raypath: the angle of incidence equals the "
+                                 "angle of reflection at every recorded hit "
+                                 "(worst %1)").arg(worst, 0, 'e', 2)));
+    }
+
+    // ⑥ 記録本数を光線数より多く頼んでも、あるだけしか返さない
+    {
+        TraceOptions many = off;
+        many.recordPaths = 500;
+        const Result r = trace(sc, 10, many);
+        check(int(r.paths.size()) == 10,
+              "raypath: asking for more paths than rays records only what "
+              "was traced");
+    }
+}
+
 // ── 位相雑音 → 強度雑音 (optics/PhaseNoise) ───────────────────────────────
 // 土台は **Wiener 過程の厳密解 σ² = 2π·Δν·τ**。ここが合っていれば残りは
 // 正規分布の特性関数から閉形式で出る。極限 (τ→0, Δν→0, τ≫τ_c) と、
@@ -22498,6 +22639,7 @@ int main(int argc, char *argv[])
     testEyeDiagram();
     testCircuitImpulse();
     testPhaseNoise();
+    testRayPaths();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
