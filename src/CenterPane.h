@@ -112,6 +112,8 @@ private:
     QTabBar        *m_tabs;
     QStackedWidget *m_stack;
     EvCanvas       *m_ev = nullptr;
+    QComboBox      *m_vexag = nullptr;       // 深さ方向の表示倍率 (水中音響)
+    QLabel         *m_vexagLabel = nullptr;
     FieldHeatmap   *m_post = nullptr;     // ポスト表示のマップ
     QComboBox      *m_postPick = nullptr; // どのマップを見るか
     QLabel         *m_postInfo = nullptr;

@@ -38,6 +38,10 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_fld_real",
         "結果断面 (ソルバ出力の実データ)",
         "Result slice (actual solver output)");
+    // 縦倍率は掛けたときに必ず出す (縮尺が等方でないことの明示)
+    ofd::I18n::reg("vp3_vexag",
+        "深さ方向 %1 倍で表示しています (縮尺は等方ではありません)",
+        "Depth is exaggerated %1x — the scale is not isotropic");
     ofd::I18n::reg("vp_fld_norm",
         "正規化 |値| (最大 %1)",
         "normalised |value| (max %1)");
@@ -425,6 +429,14 @@ void Viewport3D::setDomain(Domain d)
     update();
 }
 
+void Viewport3D::setVerticalExaggeration(double k)
+{
+    const double v = std::max(1.0, std::min(k, 200.0));
+    if (v == m_vScale) return;
+    m_vScale = v;
+    update();
+}
+
 void Viewport3D::setViewPlane(int plane)
 {
     switch (plane) {
@@ -453,7 +465,8 @@ bool Viewport3D::oceanBounds(double lo[3], double hi[3]) const
     if (!(x1 > x0) || !(depth > 0.0)) return false;
     lo[0] = x0;    hi[0] = x1;
     lo[1] = 0.0;   hi[1] = 0.0;       // 面 (厚みを持たせない)
-    lo[2] = -depth; hi[2] = 0.0;      // 海面 z = 0、海底 z = −水深
+    // 縦は表示倍率を掛けた後の値で囲う (掛けた分だけ画面に収める)
+    lo[2] = -depth * m_vScale; hi[2] = 0.0;   // 海面 z = 0、海底 z = −水深
     return true;
 }
 
@@ -795,12 +808,20 @@ void Viewport3D::paintEvent(QPaintEvent *)
 }
 
 // 面内座標 (u, v) [m] → 画面座標。固定軸は m_sliceAxis / m_slicePos。
+// 深度方向の表示倍率。**水中音響ドメインのときだけ**効く。海は 50 km x 3 km の
+// ように極端に平たいので、等方の縮尺では帯にしか見えない。倍率を掛けた分は
+// 画面に必ず明記する (断りなく縦に伸ばすと縮尺の嘘になる)。
+double Viewport3D::zView(double z) const
+{
+    return (m_domain == Domain::Underwater) ? z * m_vScale : z;
+}
+
 QPointF Viewport3D::projectSlicePoint(double u, double v) const
 {
     switch (m_sliceAxis) {
-    case 0:  return projectPoint(m_slicePos, u, v);   // YZ 面 (X 一定)
-    case 1:  return projectPoint(u, m_slicePos, v);   // XZ 面 (Y 一定)
-    default: return projectPoint(u, v, m_slicePos);   // XY 面 (Z 一定)
+    case 0:  return projectPoint(m_slicePos, u, zView(v));   // YZ 面 (X 一定)
+    case 1:  return projectPoint(u, m_slicePos, zView(v));   // XZ 面 (Y 一定)
+    default: return projectPoint(u, v, m_slicePos);          // XY 面 (Z 一定)
     }
 }
 
@@ -881,7 +902,7 @@ void Viewport3D::drawOcean(QPainter &p)
     const UnderwaterOpts &u = m_project->underwater();
     const double x0 = lo[0], x1 = hi[0], depth = -lo[2];
 
-    // 海面 (z = 0)
+    // 海面 (z = 0) — 倍率を掛けても 0 のまま
     p.setPen(QPen(QColor(120, 190, 255, 190), 2));
     p.drawLine(projectPoint(x0, 0.0, 0.0), projectPoint(x1, 0.0, 0.0));
 
@@ -891,23 +912,32 @@ void Viewport3D::drawOcean(QPainter &p)
         for (const BathyPoint &b : u.bathymetry) {
             const double x = b.range_km * 1000.0;
             if (x < x0 || x > x1) continue;
-            bottom << projectPoint(x, 0.0, -b.depth_m);
+            bottom << projectPoint(x, 0.0, zView(-b.depth_m));
         }
     }
     if (bottom.size() < 2) {
         bottom.clear();
-        bottom << projectPoint(x0, 0.0, -depth) << projectPoint(x1, 0.0, -depth);
+        bottom << projectPoint(x0, 0.0, zView(-depth))
+               << projectPoint(x1, 0.0, zView(-depth));
     }
     p.setPen(QPen(QColor(190, 150, 100, 200), 2));
     p.drawPolyline(bottom);
 
     // 側面の枠 (断面がどこに載るのかを示す)
     p.setPen(QPen(QColor(255, 255, 255, 45), 1, Qt::DashLine));
-    p.drawLine(projectPoint(x0, 0.0, 0.0), projectPoint(x0, 0.0, -depth));
-    p.drawLine(projectPoint(x1, 0.0, 0.0), projectPoint(x1, 0.0, -depth));
+    p.drawLine(projectPoint(x0, 0.0, 0.0), projectPoint(x0, 0.0, zView(-depth)));
+    p.drawLine(projectPoint(x1, 0.0, 0.0), projectPoint(x1, 0.0, zView(-depth)));
+
+    // 縦倍率を掛けているなら**必ず画面に書く** — 断りなく縦に伸ばした図は
+    // 縮尺の嘘になる (絶対規則 5 と同じ趣旨)。
+    if (m_vScale != 1.0) {
+        p.setPen(QColor(245, 158, 11));
+        p.drawText(10, height() - 26,
+                   I18n::tr("vp3_vexag").arg(QString::number(m_vScale, 'g', 3)));
+    }
 
     // 音源 — 深度は .env と同じ規則 (BellhopIO::sourceDepth)
-    const QPointF sc = projectPoint(x0, 0.0, -BellhopIO::sourceDepth(u));
+    const QPointF sc = projectPoint(x0, 0.0, zView(-BellhopIO::sourceDepth(u)));
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#ffb02e"));
     p.drawEllipse(sc, 4, 4);
