@@ -121,6 +121,9 @@ set(CORE_SOURCES
     # 2 目的の非劣解集合 (Pareto フロント) — Qt 非依存
     src/core/ParetoFront.cpp
     src/core/ParetoFront.h
+    # 系列どうしの突き合わせ (共通の軸・共通の単位へ揃える) — Qt 非依存
+    src/core/SeriesCompare.cpp
+    src/core/SeriesCompare.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する

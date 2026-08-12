@@ -83,6 +83,7 @@
 #include "core/DensityField.h"
 #include "core/IlluminationScene.h"
 #include "core/ParetoFront.h"
+#include "core/SeriesCompare.h"
 #include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
@@ -18498,6 +18499,187 @@ static void testRadarCrossSection()
 
 // ── ガウシアンビームの伝搬 (optics/GaussianBeam) ───────────────────────────
 // 波動 → 幾何 の橋渡し。閉形式しか無いので、**厳密に成り立つ恒等式**で判定する。
+
+// ── 系列どうしの突き合わせ (core/SeriesCompare) ────────────────────────────
+// クロスバリデーションの本体は「共通の軸・共通の単位へ揃える」部分。
+// 指標は定義から厳密に決まるので、そこで判定する。
+static void testSeriesCompare()
+{
+    g_file = "seriescmp";
+    namespace sc = ofd::cmp;
+
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+
+    // 直線 y = 3x + 1 を粗い刻みで
+    sc::Series a;
+    for (int k = 0; k <= 10; ++k) { a.x.push_back(k); a.y.push_back(3.0 * k + 1.0); }
+    check(a.valid(), "seriescmp: the reference series is well formed");
+
+    // ── 単位の換算 ─────────────────────────────────────────────────────
+    {
+        // **電力の dB と振幅の dB を混ぜない** — 同じ 20 dB でも別の値
+        check(rel(sc::toLinear(20.0, sc::Scale::PowerDb), 100.0) < 1e-12,
+              "seriescmp: 20 dB of power is a factor of 100");
+        check(rel(sc::toLinear(20.0, sc::Scale::AmplitudeDb), 10.0) < 1e-12,
+              "seriescmp: 20 dB of amplitude is a factor of 10");
+        // 取り違えると値がちょうど 2 乗ずれる (この関係を固定しておく)
+        const double p = sc::toLinear(13.0, sc::Scale::PowerDb);
+        const double q = sc::toLinear(13.0, sc::Scale::AmplitudeDb);
+        check(rel(p, q * q) < 1e-12,
+              "seriescmp: reading power dB as amplitude dB squares the value");
+        // 往復は厳密に戻る
+        for (sc::Scale s : { sc::Scale::PowerDb, sc::Scale::AmplitudeDb })
+            check(rel(sc::fromLinear(sc::toLinear(-7.25, s), s), -7.25) < 1e-12,
+                  "seriescmp: the dB round trip returns the same number");
+        check(sc::toLinear(3.0, sc::Scale::Linear) == 3.0
+              && sc::fromLinear(3.0, sc::Scale::Linear) == 3.0,
+              "seriescmp: the linear scale is the identity");
+        check(std::isinf(sc::fromLinear(0.0, sc::Scale::PowerDb))
+              && sc::fromLinear(0.0, sc::Scale::PowerDb) < 0.0,
+              "seriescmp: zero power is -inf dB, not a rounded number");
+        // 同じ単位への変換は 1 ビットも動かさない
+        check(sc::convert(a, sc::Scale::PowerDb, sc::Scale::PowerDb).y == a.y,
+              "seriescmp: converting to the same scale changes nothing");
+    }
+
+    // ── 載せ替え (線形補間) ────────────────────────────────────────────
+    {
+        // 同じ軸へ載せ替えると恒等 (ビット一致)
+        const sc::Series same = sc::resampleTo(a, a.x);
+        check(same.x == a.x && same.y == a.y,
+              "seriescmp: resampling onto its own axis is the identity");
+        // **直線は補間で厳密に再現される** (補間そのものの検算)
+        std::vector<double> fine;
+        for (int k = 0; k <= 100; ++k) fine.push_back(k * 0.1);
+        const sc::Series interp = sc::resampleTo(a, fine);
+        check(interp.x.size() == fine.size(),
+              "seriescmp: every requested point inside the range is produced");
+        double worst = 0.0;
+        for (std::size_t i = 0; i < interp.x.size(); ++i)
+            worst = std::max(worst, std::fabs(interp.y[i]
+                                              - (3.0 * interp.x[i] + 1.0)));
+        check(worst < 1e-12,
+              "seriescmp: linear interpolation reproduces a straight line exactly");
+        // **外挿はしない** — 範囲外は落ちる
+        const sc::Series out = sc::resampleTo(a, { -5.0, 2.0, 50.0 });
+        check(out.x.size() == 1 && out.x[0] == 2.0,
+              "seriescmp: points outside the range are dropped, not extrapolated");
+    }
+
+    // ── 一致の指標 ─────────────────────────────────────────────────────
+    {
+        // 自分自身との比較はすべて 0、相関は 1
+        const sc::Agreement self = sc::compare(a, a);
+        check(self.valid && self.n == int(a.x.size()),
+              "seriescmp: comparing a series with itself uses every point");
+        check(self.maxAbs == 0.0 && self.rms == 0.0 && self.bias == 0.0
+              && self.relL2 == 0.0,
+              "seriescmp: and every error metric is exactly zero");
+        check(rel(self.correlation, 1.0) < 1e-12,
+              "seriescmp: the correlation with itself is exactly 1");
+
+        // 一定オフセット: bias = c, rms = |c|, 相関は 1 のまま
+        sc::Series off = a;
+        for (double &v : off.y) v += 2.5;
+        const sc::Agreement go = sc::compare(a, off);
+        check(rel(go.bias, 2.5) < 1e-12 && rel(go.rms, 2.5) < 1e-12
+              && rel(go.maxAbs, 2.5) < 1e-12,
+              "seriescmp: a constant offset shows up exactly as the bias");
+        check(rel(go.correlation, 1.0) < 1e-12,
+              "seriescmp: an offset leaves the correlation at 1 (same shape)");
+
+        // 定数倍: relL2 = |k−1| ちょうど、相関は 1 のまま
+        sc::Series sc2 = a;
+        for (double &v : sc2.y) v *= 1.1;
+        const sc::Agreement gs = sc::compare(a, sc2);
+        check(rel(gs.relL2, 0.1) < 1e-12,
+              "seriescmp: scaling by k makes the relative L2 error exactly |k-1|");
+        check(rel(gs.correlation, 1.0) < 1e-12,
+              "seriescmp: and the correlation stays 1");
+
+        // 符号反転は相関 −1 (形が逆)
+        sc::Series neg = a;
+        for (double &v : neg.y) v = -v;
+        check(rel(sc::compare(a, neg).correlation, -1.0) < 1e-12,
+              "seriescmp: flipping the sign gives a correlation of -1");
+
+        // **bias と correlation は別のことを言う**: 形が違えば相関が落ちる
+        sc::Series bent = a;
+        for (std::size_t i = 0; i < bent.y.size(); ++i)
+            bent.y[i] = 3.0 * bent.x[i] + 1.0 + ((i % 2 == 0) ? 4.0 : -4.0);
+        const sc::Agreement gb = sc::compare(a, bent);
+        // 11 点で +4 が 6 個・−4 が 5 個なので、bias は素直に平均の 4/11。
+        // (「ぎざぎざなら bias は 0」は点数が偶数のときだけ — ここは
+        //  bias が「ただの平均」であることの確認になっている)
+        check(rel(gb.bias, 4.0 / 11.0) < 1e-12,
+              "seriescmp: the bias is just the mean difference, sign included");
+        // ずれの大きさは 1 点ごとに必ず 4 なので rms はちょうど 4
+        check(rel(gb.rms, 4.0) < 1e-12 && rel(gb.maxAbs, 4.0) < 1e-12,
+              "seriescmp: the rms and the worst case are exactly the zig-zag size");
+        check(gb.correlation < 1.0 - 1e-6,
+              "seriescmp: and the correlation drops below 1 (the shape differs)");
+        // 点数を偶数にすると ± が打ち消して bias は厳密に 0 になる
+        sc::Series even9;
+        for (int k = 0; k < 10; ++k) {
+            even9.x.push_back(k);
+            even9.y.push_back(3.0 * k + 1.0);
+        }
+        sc::Series zig = even9;
+        for (std::size_t i = 0; i < zig.y.size(); ++i)
+            zig.y[i] += (i % 2 == 0) ? 4.0 : -4.0;
+        const sc::Agreement ge = sc::compare(even9, zig);
+        check(std::fabs(ge.bias) < 1e-12 && rel(ge.rms, 4.0) < 1e-12,
+              "seriescmp: with an even count the zig-zag cancels in the bias only");
+    }
+
+    // ── 重なりが足りないとき ───────────────────────────────────────────
+    {
+        sc::Series far;
+        for (int k = 50; k <= 60; ++k) { far.x.push_back(k); far.y.push_back(k); }
+        check(!sc::compare(a, far).valid,
+              "seriescmp: series that do not overlap are refused, not guessed");
+        check(sc::overlapFraction(a, far) == 0.0,
+              "seriescmp: the overlap fraction says so");
+        // 半分だけ重なる
+        sc::Series half;
+        for (int k = 5; k <= 20; ++k) { half.x.push_back(k); half.y.push_back(3.0 * k + 1.0); }
+        const double frac = sc::overlapFraction(a, half);
+        check(rel(frac, 6.0 / 11.0) < 1e-12,
+              "seriescmp: a partial overlap is reported as a fraction");
+        const sc::Agreement gh = sc::compare(a, half);
+        check(gh.valid && gh.n == 6,
+              "seriescmp: only the overlapping points are compared");
+        check(gh.maxAbs < 1e-12,
+              "seriescmp: and on the overlap the two agree exactly");
+        // 点が足りない系列は最初から無効
+        sc::Series one;
+        one.x = { 1.0 };
+        one.y = { 2.0 };
+        check(!one.valid() && !sc::compare(a, one).valid,
+              "seriescmp: a single point cannot be compared");
+        check(!sc::compare(sc::Series(), a).valid,
+              "seriescmp: an empty series cannot be compared");
+    }
+
+    // ── 単位を揃えてから比べる (実際の使い方) ──────────────────────────
+    {
+        // 同じ物理量を、片方は線形・片方は電力 dB で持っている場合。
+        // **揃えずに比べると大きく食い違い、揃えると厳密に一致する。**
+        sc::Series lin;
+        for (int k = 1; k <= 10; ++k) { lin.x.push_back(k); lin.y.push_back(0.1 * k); }
+        sc::Series db = lin;
+        for (double &v : db.y) v = sc::fromLinear(v, sc::Scale::PowerDb);
+        check(sc::compare(lin, db).maxAbs > 1.0,
+              "seriescmp: comparing linear against dB without converting is far off");
+        const sc::Series back = sc::convert(db, sc::Scale::PowerDb, sc::Scale::Linear);
+        check(sc::compare(lin, back).maxAbs < 1e-12,
+              "seriescmp: converting to a common scale makes them agree exactly");
+    }
+}
+
 static void testGaussianBeam()
 {
     g_file = "gaussbeam";
@@ -20478,6 +20660,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testSeriesCompare();
     testGaussianBeam();
     testParetoFront();
     testIlluminationScene();

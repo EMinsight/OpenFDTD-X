@@ -22,6 +22,11 @@
 #include <QPushButton>
 #include <QShowEvent>
 #include <QTableWidget>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QRegularExpression>
+#include "../io/KernelResultReader.h"
+#include "../core/SeriesCompare.h"
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -270,6 +275,57 @@ const bool s_i18n = [] {
     I18n::reg("ver_speed_em", "真空中の光速", "speed of light in vacuum");
     I18n::reg("ver_speed_air", "空気中の音速 20℃", "speed of sound in air at 20℃");
     I18n::reg("ver_speed_sea", "海水中の代表音速", "typical speed of sound in sea water");
+    // クロスバリデーション (core/SeriesCompare)
+    I18n::reg("ver_cross_load", "参照データを読む (CSV)",
+              "Load reference data (CSV)");
+    I18n::reg("ver_cross_scale_a", "自分の単位", "Scale of this result");
+    I18n::reg("ver_cross_scale_b", "参照の単位", "Scale of the reference");
+    I18n::reg("ver_cross_lin", "線形", "Linear");
+    I18n::reg("ver_cross_pdb", "dB (電力 10log10)", "dB (power, 10log10)");
+    I18n::reg("ver_cross_adb", "dB (振幅 20log10)", "dB (amplitude, 20log10)");
+    I18n::reg("ver_cross_src",
+              "比較のもと: %1 (%2 点)。参照: %3 (%4 点)",
+              "This result: %1 (%2 points). Reference: %3 (%4 points)");
+    I18n::reg("ver_cross_res",
+              "重なり %1 点 (参照範囲の %2 %) / 最大差 %3 / RMS 差 %4 / "
+              "系統差 %5 / 相対 L2 %6 % / 相関 %7",
+              "%1 overlapping points (%2 % of the reference range) / worst "
+              "difference %3 / rms %4 / bias %5 / relative L2 %6 % / "
+              "correlation %7");
+    I18n::reg("ver_cross_read",
+              "系統差が大きく相関が高いときは正規化や校正のずれ、相関そのものが"
+              "低いときは物理が違います。",
+              "A large bias with a high correlation means a normalisation or "
+              "calibration difference; a low correlation means the physics "
+              "differs.");
+    I18n::reg("ver_cross_none",
+              "比較できる結果がありません。先にこのプロジェクトを実行して"
+              "結果を読み込むか、参照 CSV を読んでください。",
+              "There is nothing to compare — run this project and load its "
+              "result first, or load a reference CSV.");
+    I18n::reg("ver_cross_nooverlap",
+              "2 本の x 軸が重なっていないので比較できません "
+              "(参照は %1 〜 %2、こちらは %3 〜 %4)。",
+              "The two x axes do not overlap, so nothing can be compared (the "
+              "reference spans %1 to %2 and this result %3 to %4).");
+    I18n::reg("ver_cross_badcsv",
+              "CSV から数値の列を 2 つ以上読めませんでした (1 列目 = x、"
+              "2 列目 = y の形式)。",
+              "Could not read two numeric columns from the CSV (column 1 = x, "
+              "column 2 = y).");
+    I18n::reg("ver_cross_thin",
+              "重なりが %1 % しかありません — 数値は重なった範囲だけのものです。",
+              "Only %1 % of the range overlaps — the numbers describe just that "
+              "part.");
+    I18n::reg("ver_uw_cross_ok",
+              "参照データとの突き合わせ — 共通の x 軸へ線形補間で載せ替え、"
+              "単位 (線形 / 電力 dB / 振幅 dB) を揃えてから最大差・RMS 差・"
+              "系統差・相対 L2・相関を出します (core/SeriesCompare)",
+              "the comparison against reference data — it resamples onto a "
+              "common x axis by linear interpolation, converts the units "
+              "(linear / power dB / amplitude dB) and reports the worst "
+              "difference, rms, bias, relative L2 and correlation "
+              "(core/SeriesCompare)");
     I18n::reg("ver_uw_cross", "比較ソルバの選択",
               "the cross-check solver selection");
     return true;
@@ -636,14 +692,36 @@ VerificationTab::VerificationTab(Project *project, QWidget *parent)
     // 項目はドメイン別 (refreshDomain が入れる)
     m_crossBox = new QComboBox(sCross);
     sCross->form()->addRow(I18n::tr("ver_cross_solver"), m_crossBox);
-    // 比較ソルバの選択はどこにも読まれない
-    sCross->form()->addRow(tabhelp::unwiredNote(sCross, I18n::tr("ver_uw_cross")));
+
+    // ── 参照データとの突き合わせ (core/SeriesCompare) ─────────────────────
+    // 比較ソルバを「ここから起動する」経路は持たない (各ソルバータブの仕事)。
+    // ここが引き受けるのは**共通の観測量へ揃えて食い違いを数値にする**部分で、
+    // 参照側は CSV (1 列目 = x, 2 列目 = y) で受け取る。ソルバーごとの出力
+    // 書式に依存しないので、実測値や文献値とも同じ手順で比べられる。
+    m_crossScaleA = new QComboBox(sCross);
+    m_crossScaleB = new QComboBox(sCross);
+    for (QComboBox *c : { m_crossScaleA, m_crossScaleB })
+        for (const char *k : { "ver_cross_lin", "ver_cross_pdb", "ver_cross_adb" })
+            c->addItem(I18n::tr(k));
+    m_crossScaleA->setCurrentIndex(1);          // 反射 Ref は電力 dB
+    m_crossScaleB->setCurrentIndex(1);
+    sCross->form()->addRow(I18n::tr("ver_cross_scale_a"), m_crossScaleA);
+    sCross->form()->addRow(I18n::tr("ver_cross_scale_b"), m_crossScaleB);
+    for (QComboBox *c : { m_crossScaleA, m_crossScaleB })
+        connect(c, &QComboBox::currentIndexChanged,
+                this, &VerificationTab::updateCrossCompare);
+
     auto *crossRow = new QHBoxLayout();
-    auto *crossRunBtn = new QPushButton(I18n::tr("ver_cross_run"), sCross);
-    tabhelp::markNotImplemented(crossRunBtn);   // クロスバリデーションは未実装
-    crossRow->addWidget(crossRunBtn);
+    auto *loadBtn = new QPushButton(I18n::tr("ver_cross_load"), sCross);
+    connect(loadBtn, &QPushButton::clicked, this, &VerificationTab::loadReferenceCsv);
+    crossRow->addWidget(loadBtn);
     crossRow->addStretch(1);
     sCross->vbox()->addLayout(crossRow);
+    m_crossResult = noteLabel(QString(), sCross);
+    m_crossResult->setWordWrap(true);
+    sCross->vbox()->addWidget(m_crossResult);
+    sCross->vbox()->addWidget(tabhelp::unwiredNote(sCross, I18n::tr("ver_uw_cross"),
+                                                   I18n::tr("ver_uw_cross_ok")));
     v->addWidget(sCross);
 
     // 自動診断 (プロジェクト設定からの実判定 + 実行ログ由来の 1 行)
@@ -971,6 +1049,121 @@ void VerificationTab::updateBoundaryTable()
 }
 
 // ── ③ 収束履歴 (実行ログ) ──────────────────────────────────────────────────
+// ── クロスバリデーション: 参照データとの突き合わせ ─────────────────────────
+// 比較のもとは給電点掃引 (周波数 vs 反射 Ref[dB]) — このプロジェクトの実行で
+// 実際に出る物理量。参照側は CSV で受け取り、共通の x 軸・共通の単位へ
+// 揃えてから食い違いを数値にする (core/SeriesCompare)。
+void VerificationTab::loadReferenceCsv()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("ver_cross_load"), QString(),
+        QStringLiteral("CSV (*.csv *.txt);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        m_crossResult->setText(I18n::tr("ver_cross_badcsv"));
+        return;
+    }
+    cmp::Series ref;
+    QTextStream ts(&f);
+    while (!ts.atEnd()) {
+        const QString line = ts.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
+        const QStringList parts =
+            line.split(QRegularExpression(QStringLiteral("[,;\\s]+")),
+                       Qt::SkipEmptyParts);
+        if (parts.size() < 2) continue;
+        bool okx = false, oky = false;
+        const double x = parts[0].toDouble(&okx);
+        const double y = parts[1].toDouble(&oky);
+        if (okx && oky) { ref.x.push_back(x); ref.y.push_back(y); }
+    }
+    if (!ref.valid()) {
+        m_reference = cmp::Series();
+        m_referenceName.clear();
+        m_crossResult->setText(I18n::tr("ver_cross_badcsv"));
+        return;
+    }
+    m_reference = ref;
+    m_referenceName = QFileInfo(path).fileName();
+    updateCrossCompare();
+}
+
+void VerificationTab::updateCrossCompare()
+{
+    if (!m_crossResult) return;
+    if (!m_reference.valid()) {
+        m_crossResult->setText(I18n::tr("ver_cross_none"));
+        return;
+    }
+
+    // 比較のもと: <kernel>.log の給電点掃引 (周波数 vs 反射 Ref[dB])
+    cmp::Series mine;
+    QString mineName;
+    {
+        RunConfig cfg;
+        const QString dir = Runner::resolveWorkingDir(m_p, cfg);
+        const QString name = runLogName(Runner::kernelForProject(*m_p));
+        if (!dir.isEmpty() && !name.isEmpty()) {
+            const QString path = QDir(dir).filePath(name);
+            const QVector<FeedSweep> fs = KernelResultReader::readFeedSweeps(path);
+            if (!fs.isEmpty() && fs[0].points.size() >= 2) {
+                for (const FeedSweepPoint &p : fs[0].points) {
+                    mine.x.push_back(p.freqHz);
+                    mine.y.push_back(p.refDb);
+                }
+                mineName = name;
+            }
+        }
+    }
+    if (!mine.valid()) {
+        m_crossResult->setText(I18n::tr("ver_cross_none"));
+        return;
+    }
+
+    // 単位を揃える (電力 dB と振幅 dB を混ぜない — 2 乗ずれる)
+    const auto scaleOf = [](int idx) {
+        switch (idx) {
+            case 1:  return cmp::Scale::PowerDb;
+            case 2:  return cmp::Scale::AmplitudeDb;
+            default: return cmp::Scale::Linear;
+        }
+    };
+    const cmp::Scale sa = scaleOf(m_crossScaleA->currentIndex());
+    const cmp::Scale sb = scaleOf(m_crossScaleB->currentIndex());
+    const cmp::Series refIn = cmp::convert(m_reference, sb, sa);
+
+    QString text = I18n::tr("ver_cross_src")
+                       .arg(mineName).arg(mine.x.size())
+                       .arg(m_referenceName).arg(m_reference.x.size());
+
+    const cmp::Agreement g = cmp::compare(mine, refIn);
+    if (!g.valid) {
+        text += QStringLiteral(" ")
+              + I18n::tr("ver_cross_nooverlap")
+                    .arg(m_reference.x.front()).arg(m_reference.x.back())
+                    .arg(mine.x.front()).arg(mine.x.back());
+        m_crossResult->setText(text);
+        return;
+    }
+    const double frac = cmp::overlapFraction(mine, refIn);
+    text += QStringLiteral(" ")
+          + I18n::tr("ver_cross_res")
+                .arg(g.n)
+                .arg(100.0 * frac, 0, 'f', 0)
+                .arg(g.maxAbs, 0, 'g', 4)
+                .arg(g.rms, 0, 'g', 4)
+                .arg(g.bias, 0, 'g', 4)
+                .arg(100.0 * g.relL2, 0, 'g', 3)
+                .arg(g.correlation, 0, 'f', 4);
+    if (frac < 0.5)
+        text += QStringLiteral(" ")
+              + I18n::tr("ver_cross_thin").arg(100.0 * frac, 0, 'f', 0);
+    text += QStringLiteral(" ") + I18n::tr("ver_cross_read");
+    m_crossResult->setText(text);
+}
+
 void VerificationTab::reloadRunLog()
 {
     m_history.clear();
@@ -994,6 +1187,7 @@ void VerificationTab::reloadRunLog()
     }
     updateEnergyPlot();
     updateDiagnostics();
+    updateCrossCompare();
 }
 
 void VerificationTab::updateEnergyPlot()
