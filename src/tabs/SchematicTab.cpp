@@ -4,6 +4,7 @@
 #include "../core/ReceiverNoise.h"
 #include "../optics/PhotonicCircuit.h"
 #include "../optics/CircuitImpulse.h"
+#include "../optics/PhaseNoise.h"
 #include "../widgets/MiniPlot.h"
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -188,10 +189,33 @@ const bool s_i18n = [] {
               "“time domain”, which turns the same element's H(lambda) into "
               "a complex-envelope impulse response");
     I18n::reg("sch_uw_thermo",
-              "位相雑音 (干渉計の遅延とレーザ線幅から強度雑音へ換算する"
-              "モデルが要ります)",
-              "phase noise (converting it to intensity noise needs the "
-              "interferometer delay and the laser linewidth)");
+              "位相雑音の周波数ごとの分布 (RIN(f) の形。白色周波数雑音以外 "
+              "(1/f) の情報が要ります — 帯域内の総量は下に出します)",
+              "the spectral shape of the phase noise (RIN(f) needs information "
+              "about non-white, 1/f frequency noise; the in-band total is "
+              "reported below)");
+    I18n::reg("sch_pn_lw", "レーザ線幅 Δν [MHz]", "Laser linewidth [MHz]");
+    I18n::reg("sch_pn_res",
+              "位相差の標準偏差 σ = %1 rad (σ² = 2π·Δν·τ、τ = %2 ps は"
+              "この素子の遅延) / 干渉の可視度 V = %3 / コヒーレンス時間 "
+              "τ_c = %4 ns。直交バイアスでの相対強度ゆらぎは %5 "
+              "(%6 dB)。",
+              "Phase-difference standard deviation sigma = %1 rad "
+              "(sigma^2 = 2*pi*dnu*tau, with tau = %2 ps the delay of this "
+              "element) / fringe visibility V = %3 / coherence time "
+              "tau_c = %4 ns. The relative intensity fluctuation at quadrature "
+              "is %5 (%6 dB).");
+    I18n::reg("sch_pn_long",
+              " 遅延がコヒーレンス時間を超えているので干渉が消えかけています "
+              "(V < 0.1) — この動作点の数値は目安です。",
+              " The delay exceeds the coherence time, so the fringes are "
+              "nearly gone (V < 0.1); the numbers here are indicative only.");
+    I18n::reg("sch_pn_nolen",
+              "位相雑音は素子の遅延から換算します。リングの周長 / MZI の"
+              "アーム長差が 0 なので出せません。",
+              "Phase noise is converted from the element delay. The ring "
+              "circumference or MZI arm difference is zero, so it cannot be "
+              "computed.");
     I18n::reg("sch_uw_thermo_ok",
               "温度と熱光学シフト (素子応答の共振波長に効きます) と、"
               "ショット / 熱 / RIN の雑音項 (下の雑音収支になります)",
@@ -503,8 +527,18 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_toShift = new QCheckBox(I18n::tr("sch_to_shift"), sNo);
     m_toShift->setChecked(true);
     sNo->form()->addRow(m_toShift);
-    // 位相雑音だけは強度雑音への換算モデルが無い (絶対規則 5)
-    m_phase->setEnabled(false);
+    // 位相雑音は素子の遅延とレーザ線幅から換算する (optics/PhaseNoise)。
+    // 遅延は素子応答と同じ値を使うので、2 つの節が食い違うことはない。
+    m_lineWidth = new QLineEdit(QStringLiteral("1.0"), sNo);
+    m_lineWidth->setMaximumWidth(90);
+    sNo->form()->addRow(I18n::tr("sch_pn_lw"), m_lineWidth);
+    m_phaseResult = mutedLabel(QString(), sNo);
+    m_phaseResult->setWordWrap(true);
+    sNo->form()->addRow(m_phaseResult);
+    connect(m_phase, &QCheckBox::toggled,
+            this, &SchematicTab::updatePhaseNoise);
+    connect(m_lineWidth, &QLineEdit::textChanged,
+            this, [this](const QString &) { updatePhaseNoise(); });
     sNo->form()->addRow(tabhelp::unwiredNote(sNo, I18n::tr("sch_uw_thermo"),
                                              I18n::tr("sch_uw_thermo_ok")));
     v->addWidget(sNo);
@@ -653,6 +687,10 @@ void SchematicTab::runCircuitSim()
         sweep = sweepMzi(mzi, l1, l2, n);
     }
 
+    // 位相雑音は同じ素子の遅延を使うので、素子が変わったら作り直す
+    m_pnDelay_s = wg.ng * (length_um * 1e-6) / 299792458.0;
+    updatePhaseNoise();
+
     // ── 時間領域モード — 同じ素子の H(λ) からインパルス応答を作る ────────
     // 周波数掃引と**同じ素子・同じ設定**から作るので、2 つのモードが
     // 食い違うことはない。
@@ -698,6 +736,44 @@ void SchematicTab::runCircuitSim()
                              + I18n::tr("sch_to_applied")
                                    .arg(m_temp->text().trimmed())
                                    .arg(shift_nm, 0, 'f', 3));
+}
+
+// ── 位相雑音 → 強度雑音 ────────────────────────────────────────────────────
+// 干渉計は位相雑音を強度雑音に変える。遅延 τ は素子応答と**同じ値**を使う
+// (リングの 1 周 / MZI のアーム長差)。σ² = 2π·Δν·τ は Wiener 過程の厳密解。
+void SchematicTab::updatePhaseNoise()
+{
+    if (!m_phaseResult) return;
+    const bool on = m_phase && m_phase->isChecked();
+    m_lineWidth->setEnabled(on);
+    m_phaseResult->setVisible(on);
+    if (!on) { m_phaseResult->clear(); return; }
+    if (!(m_pnDelay_s > 0.0)) {
+        m_phaseResult->setText(I18n::tr("sch_pn_nolen"));
+        return;
+    }
+    bool ok = false;
+    const double lw_MHz = m_lineWidth->text().trimmed().toDouble(&ok);
+    if (!ok || lw_MHz < 0.0) { m_phaseResult->clear(); return; }
+
+    ofd::optics::PhaseNoiseInput in;
+    in.linewidth_Hz = lw_MHz * 1.0e6;
+    in.delay_s = m_pnDelay_s;
+    in.bias_rad = M_PI / 2.0;           // 直交バイアス (変換利得が最大)
+    in.power_W = 1.0e-3;
+    const ofd::optics::PhaseNoiseResult r = ofd::optics::analyse(in);
+    if (!r.valid) { m_phaseResult->clear(); return; }
+
+    QString note = I18n::tr("sch_pn_res")
+                       .arg(r.phaseRms_rad, 0, 'g', 4)
+                       .arg(m_pnDelay_s * 1e12, 0, 'f', 3)
+                       .arg(r.visibility, 0, 'f', 4)
+                       .arg(r.coherenceTime_s * 1e9, 0, 'g', 4)
+                       .arg(r.relativeIntensityNoise, 0, 'g', 4)
+                       .arg(r.rin_dB, 0, 'f', 2);
+    // 干渉が消えかけているときは断る (数値だけ出して信用させない)
+    if (r.visibility < 0.1) note += I18n::tr("sch_pn_long");
+    m_phaseResult->setText(note);
 }
 
 // ── 時間領域 (複素包絡線のインパルス応答) ─────────────────────────────────

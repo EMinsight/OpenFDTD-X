@@ -27,6 +27,7 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/BeamPatternCsv.h"
 #include "io/BellhopIO.h"
@@ -19037,6 +19038,133 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 位相雑音 → 強度雑音 (optics/PhaseNoise) ───────────────────────────────
+// 土台は **Wiener 過程の厳密解 σ² = 2π·Δν·τ**。ここが合っていれば残りは
+// 正規分布の特性関数から閉形式で出る。極限 (τ→0, Δν→0, τ≫τ_c) と、
+// 小信号近似が厳密式に一致することまで見る。
+static void testPhaseNoise()
+{
+    g_file = "phnoise";
+    using namespace ofd::optics;
+
+    // ① 位相分散は線幅にも遅延にも比例する (Wiener 過程)
+    {
+        const double dnu = 1.0e6, tau = 1.0e-9;
+        const double s2 = phaseVariance(dnu, tau);
+        check(std::fabs(s2 - 2.0 * M_PI * dnu * tau) < 1e-18,
+              "phnoise: the phase variance is 2*pi*dnu*tau exactly");
+        check(std::fabs(phaseVariance(2.0 * dnu, tau) - 2.0 * s2) < 1e-18,
+              "phnoise: doubling the linewidth doubles the variance");
+        check(std::fabs(phaseVariance(dnu, 2.0 * tau) - 2.0 * s2) < 1e-18,
+              "phnoise: doubling the delay doubles the variance");
+        check(phaseVariance(dnu, 0.0) == 0.0,
+              "phnoise: a zero delay leaves no phase difference");
+        check(phaseVariance(0.0, tau) == 0.0,
+              "phnoise: a zero-linewidth laser has no phase noise");
+    }
+
+    // ② 可視度 V = e^{−π·Δν·τ} と、コヒーレンス時間 τ_c = 1/(π·Δν) の関係。
+    //    τ = τ_c ちょうどで V = e^{−1} になる (定義と実装が同じであること)
+    {
+        const double dnu = 5.0e6;
+        const double tc = 1.0 / (M_PI * dnu);
+        check(std::fabs(visibility(dnu, 0.0) - 1.0) < 1e-15,
+              "phnoise: with no delay the fringes are fully visible");
+        check(std::fabs(visibility(dnu, tc) - std::exp(-1.0)) < 1e-12,
+              "phnoise: at one coherence time the visibility is 1/e");
+        check(visibility(dnu, 100.0 * tc) < 1e-40,
+              "phnoise: far beyond the coherence time the fringes vanish");
+        PhaseNoiseInput in;
+        in.linewidth_Hz = dnu;
+        in.delay_s = tc;
+        const PhaseNoiseResult r = analyse(in);
+        check(std::fabs(r.coherenceTime_s - tc) < 1e-18,
+              "phnoise: the reported coherence time is 1/(pi*dnu)");
+        check(std::fabs(r.visibility - std::exp(-1.0)) < 1e-12,
+              "phnoise: analyse() reports the same visibility as visibility()");
+    }
+
+    // ③ 直交バイアスの強度ゆらぎ — 厳密式 √((1−e^{−2σ²})/2) と一致し、
+    //    小さい σ では σ そのものに漸近すること (位相のゆらぎがそのまま
+    //    相対強度のゆらぎになる極限)
+    {
+        for (double dnu : { 1.0e3, 1.0e5, 1.0e6, 1.0e7 }) {
+            PhaseNoiseInput in;
+            in.linewidth_Hz = dnu;
+            in.delay_s = 1.0e-9;
+            in.bias_rad = M_PI / 2.0;
+            in.power_W = 2.0e-3;
+            const PhaseNoiseResult r = analyse(in);
+            const double s2 = 2.0 * M_PI * dnu * in.delay_s;
+            const double want = std::sqrt(0.5 * (1.0 - std::exp(-2.0 * s2)));
+            check(std::fabs(r.relativeIntensityNoise - want) < 1e-12,
+                  qPrintable(QString("phnoise: at quadrature the intensity "
+                                     "noise is sqrt((1-exp(-2s2))/2) "
+                                     "(dnu = %1 Hz)").arg(dnu, 0, 'g', 3)));
+            // 直交バイアスでは平均は P0/2 ちょうど (干渉項が落ちる)
+            check(std::fabs(r.meanPower_W - 0.5 * in.power_W) < 1e-18,
+                  "phnoise: at quadrature the mean power is P0/2");
+        }
+        // 小信号極限: σ が小さいほど σ_P/⟨P⟩ → σ に近づく (単調に)
+        double prevErr = 1.0;
+        bool converging = true;
+        for (double dnu : { 1.0e6, 1.0e5, 1.0e4, 1.0e3 }) {
+            PhaseNoiseInput in;
+            in.linewidth_Hz = dnu;
+            in.delay_s = 1.0e-9;
+            const PhaseNoiseResult r = analyse(in);
+            const double err =
+                std::fabs(r.relativeIntensityNoise - r.phaseRms_rad)
+                / r.phaseRms_rad;
+            if (!(err < prevErr)) converging = false;
+            prevErr = err;
+        }
+        check(converging,
+              "phnoise: the exact result approaches the small-angle limit "
+              "sigma_P/P = sigma as the phase noise shrinks");
+        check(prevErr < 1e-5,
+              "phnoise: for a narrow line the two agree to 5 digits");
+    }
+
+    // ④ バイアス点の効き — 干渉の山/谷 (φ₀ = 0, π) では位相→強度の
+    //    変換利得が消えるので、直交バイアスより静かになる
+    {
+        PhaseNoiseInput q;
+        q.linewidth_Hz = 1.0e6; q.delay_s = 1.0e-9; q.bias_rad = M_PI / 2.0;
+        PhaseNoiseInput top = q; top.bias_rad = 0.0;
+        const PhaseNoiseResult rq = analyse(q);
+        const PhaseNoiseResult rt = analyse(top);
+        check(rt.relativeIntensityNoise < rq.relativeIntensityNoise,
+              "phnoise: at the fringe top the phase-to-intensity gain "
+              "vanishes, so it is quieter than at quadrature");
+        check(rq.valid && rt.valid, "phnoise: both bias points are valid");
+    }
+
+    // ⑤ 極限 — 雑音の無いレーザ / 遅延の無い干渉計は揺らがない
+    {
+        PhaseNoiseInput in;
+        in.linewidth_Hz = 0.0;
+        in.delay_s = 1.0e-9;
+        const PhaseNoiseResult r = analyse(in);
+        check(r.valid, "phnoise: a zero-linewidth laser is a valid input");
+        check(std::fabs(r.relativeIntensityNoise) < 1e-15,
+              "phnoise: a zero-linewidth laser produces no intensity noise");
+        check(std::isinf(r.coherenceTime_s),
+              "phnoise: its coherence time is infinite");
+        PhaseNoiseInput z = in;
+        z.linewidth_Hz = 1.0e6;
+        z.delay_s = 0.0;
+        check(std::fabs(analyse(z).relativeIntensityNoise) < 1e-15,
+              "phnoise: with no delay there is no phase-to-intensity "
+              "conversion");
+        // 入力が壊れていれば valid = false (数字をでっち上げない)
+        PhaseNoiseInput bad;
+        bad.power_W = 0.0;
+        check(!analyse(bad).valid,
+              "phnoise: a zero input power is rejected rather than divided by");
+    }
+}
+
 // ── PIC 回路の時間領域応答 (optics/CircuitImpulse) ─────────────────────────
 // 「時間領域」モードの実体。**リングの全域通過は展開すると厳密な等比級数**
 // になるので、IFFT で得たタップ列をその閉形式と直接突き合わせられる。
@@ -22369,6 +22497,7 @@ int main(int argc, char *argv[])
     testBeamPatternCsv();
     testEyeDiagram();
     testCircuitImpulse();
+    testPhaseNoise();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
