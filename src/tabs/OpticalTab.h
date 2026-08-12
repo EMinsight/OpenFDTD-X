@@ -64,6 +64,8 @@ private:
     void        updateGeoMethodView();   // 解法 → 波動ソルバー設定の有効・無効
     // Raycast 節の設定で非順次レイトレースを実行し、結果を要約する
     void        runRaycast();
+    // ハイブリッド連携: 境界のビーム半径 → 回折の広がりと幾何光学の適用距離
+    void        updateHybridBeam();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -155,6 +157,10 @@ private:
     // ── ハイブリッド連携 / FDTD↔Ray bridge ──
     QCheckBox *m_hybModeDecomp, *m_hybGaussian;
     QComboBox *m_hybPropModel;
+    // 波動 → 幾何 の橋渡し (optics/GaussianBeam)
+    QLineEdit *m_hybW = nullptr, *m_hybLambda = nullptr;
+    QLineEdit *m_hybIndex = nullptr, *m_hybDist = nullptr;
+    QLabel    *m_hybOut = nullptr;
 
     // ── 分散モデル / Dispersion model (Drude / Lorentz / Sellmeier) ──
     QComboBox *m_dispModel;

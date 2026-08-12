@@ -83,6 +83,7 @@
 #include "core/DensityField.h"
 #include "core/IlluminationScene.h"
 #include "core/ParetoFront.h"
+#include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -18494,6 +18495,207 @@ static void testRadarCrossSection()
 
 // ── 2 目的の非劣解集合 (core/ParetoFront) ──────────────────────────────────
 // 支配関係は定義がすべてなので、定義から**厳密に従う性質**で判定する。
+
+// ── ガウシアンビームの伝搬 (optics/GaussianBeam) ───────────────────────────
+// 波動 → 幾何 の橋渡し。閉形式しか無いので、**厳密に成り立つ恒等式**で判定する。
+static void testGaussianBeam()
+{
+    g_file = "gaussbeam";
+    namespace gb = ofd::gauss;
+
+    const double PI = 3.14159265358979323846;
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+
+    const double lam = 1.55e-6;      // 光通信帯
+    const double w0 = 5.0e-6;        // ウエスト 5 μm
+    const double zr = gb::rayleighRange(w0, lam);
+
+    // ── レイリー長と w(z) ──────────────────────────────────────────────
+    {
+        check(approx(zr, PI * w0 * w0 / lam, 1e-18),
+              "gaussbeam: the Rayleigh range is pi w0^2 n / lambda");
+        check(gb::beamRadius(w0, 0.0, lam) == w0,
+              "gaussbeam: the radius at the waist is exactly w0");
+        // z = z_R でちょうど √2 倍 (定義そのもの)
+        check(rel(gb::beamRadius(w0, zr, lam), std::sqrt(2.0) * w0) < 1e-15,
+              "gaussbeam: at the Rayleigh range the radius is exactly sqrt(2) w0");
+        // 対称 (前後で同じ)
+        check(gb::beamRadius(w0, -3.0 * zr, lam) == gb::beamRadius(w0, 3.0 * zr, lam),
+              "gaussbeam: the beam is symmetric about the waist");
+        // 単調に広がる
+        check(gb::beamRadius(w0, 0.5 * zr, lam) < gb::beamRadius(w0, zr, lam)
+              && gb::beamRadius(w0, zr, lam) < gb::beamRadius(w0, 2.0 * zr, lam),
+              "gaussbeam: the radius grows monotonically away from the waist");
+        // 屈折率が上がるとレイリー長は比例して伸びる (媒質中で回折が緩む)
+        check(rel(gb::rayleighRange(w0, lam, 3.5), 3.5 * zr) < 1e-15,
+              "gaussbeam: the Rayleigh range scales with the refractive index");
+        check(gb::rayleighRange(0.0, lam) == 0.0
+              && gb::rayleighRange(w0, 0.0) == 0.0
+              && gb::beamRadius(w0, 1.0, 0.0) == 0.0,
+              "gaussbeam: non-positive inputs give 0, not a wrong number");
+    }
+
+    // ── 発散角とビームパラメータ積 ────────────────────────────────────
+    {
+        const double th = gb::divergence(w0, lam);
+        check(approx(th, lam / (PI * w0), 1e-18),
+              "gaussbeam: the divergence is lambda / (pi w0)");
+        // 遠方では w(z) → θ z (漸近線)
+        const double far = 1.0e5 * zr;
+        check(rel(gb::beamRadius(w0, far, lam), th * far) < 1e-9,
+              "gaussbeam: far from the waist the radius approaches theta z");
+        // **ビームパラメータ積は伝搬の不変量** — w0 を変えても λ/π のまま
+        for (double w : { 1.0e-6, 5.0e-6, 50.0e-6 })
+            check(rel(gb::beamParameterProduct(w, lam), lam / PI) < 1e-15,
+                  "gaussbeam: the beam parameter product is lambda / pi");
+        // 絞るほど広がる (w0 と θ は反比例)
+        check(gb::divergence(1.0e-6, lam) > gb::divergence(10.0e-6, lam),
+              "gaussbeam: a tighter waist diverges faster");
+    }
+
+    // ── 波面の曲率 ────────────────────────────────────────────────────
+    {
+        check(gb::radiusOfCurvature(0.0, w0, lam) == 0.0,
+              "gaussbeam: the wavefront is flat at the waist");
+        // R(z) は z = z_R で最小になり、その値はちょうど 2 z_R
+        check(rel(gb::radiusOfCurvature(zr, w0, lam), 2.0 * zr) < 1e-15,
+              "gaussbeam: the curvature radius is exactly 2 zR at the Rayleigh range");
+        bool minAtZr = true;
+        for (double f : { 0.3, 0.6, 0.9, 1.2, 2.0, 5.0 })
+            if (gb::radiusOfCurvature(f * zr, w0, lam)
+                < gb::radiusOfCurvature(zr, w0, lam) - 1e-18)
+                minAtZr = false;
+        check(minAtZr, "gaussbeam: no other distance gives a smaller radius");
+        // 遠方では R(z) → z (球面波)
+        check(rel(gb::radiusOfCurvature(1.0e6 * zr, w0, lam), 1.0e6 * zr) < 1e-9,
+              "gaussbeam: far away the wavefront becomes a sphere of radius z");
+    }
+
+    // ── Gouy 位相 ─────────────────────────────────────────────────────
+    {
+        check(gb::gouyPhase(0.0, w0, lam) == 0.0,
+              "gaussbeam: the Gouy phase is zero at the waist");
+        check(rel(gb::gouyPhase(zr, w0, lam), PI / 4.0) < 1e-15,
+              "gaussbeam: it is exactly pi/4 at the Rayleigh range");
+        // 焦点の前後で合計 π だけ回る (よく知られた性質)
+        const double span = gb::gouyPhase(1e9 * zr, w0, lam)
+                          - gb::gouyPhase(-1e9 * zr, w0, lam);
+        check(rel(span, PI) < 1e-8,
+              "gaussbeam: the total Gouy shift through the focus is pi");
+    }
+
+    // ── 幾何光学が使える距離 ──────────────────────────────────────────
+    {
+        const double z1 = gb::geometricValidDistance(w0, lam, 1.0, 0.01);
+        // 定義どおり、その距離では直線近似の誤差がちょうど 1 %
+        const double err = gb::beamRadius(w0, z1, lam)
+                         / (gb::divergence(w0, lam) * z1) - 1.0;
+        check(rel(err, 0.01) < 1e-9,
+              "gaussbeam: at that distance the straight-line error is exactly the tolerance");
+        // 許容誤差を緩めるほど手前で使えるようになる
+        check(gb::geometricValidDistance(w0, lam, 1.0, 0.05) < z1,
+              "gaussbeam: a looser tolerance moves the crossover closer");
+        check(z1 > zr,
+              "gaussbeam: geometrical optics only becomes valid beyond the Rayleigh range");
+        check(gb::geometricValidDistance(w0, lam, 1.0, 0.0) == 0.0,
+              "gaussbeam: a non-positive tolerance gives no distance");
+    }
+
+    // ── レンズ (ABCD) ─────────────────────────────────────────────────
+    {
+        // 平行光 (ウエストがレンズ位置にある大きなビーム) を f で絞る。
+        // z_R ≫ f の逆、すなわち f ≪ z_R のとき w0' → λ f / (π w)
+        const double wIn = 1.0e-3;                  // 1 mm のコリメート光
+        const double f = 10.0e-3;                   // 10 mm レンズ
+        const gb::Waist out = gb::lensWaist(wIn, 0.0, f, lam);
+        // 教科書式 λf/(πw) は f ≪ z_R の極限。**厳密解はこれより小さく**、
+        // ずれはちょうど 2 次の補正 f²/(2 z_R²) になる (この一致まで見る)。
+        const double thin = lam * f / (PI * wIn);
+        const double zrIn = gb::rayleighRange(wIn, lam);
+        check(rel(out.w0_m, thin) < 1e-4,
+              "gaussbeam: a collimated beam focuses to lambda f / (pi w)");
+        check(rel((thin - out.w0_m) / thin, f * f / (2.0 * zrIn * zrIn)) < 1e-3,
+              "gaussbeam: the deviation from the thin-lens formula is f^2 / 2 zR^2");
+        // f/z_R を 10 分の 1 にすると、ずれは 100 分の 1 になる (2 次の収束)
+        const gb::Waist finer = gb::lensWaist(wIn, 0.0, 0.1 * f, lam);
+        const double thin2 = lam * (0.1 * f) / (PI * wIn);
+        check(rel(finer.w0_m, thin2) < 0.011 * rel(out.w0_m, thin),
+              "gaussbeam: that deviation falls as the square of f / zR");
+        // ウエストは焦点面のすぐ近く (z_R ≫ f なのでほぼ f)
+        check(rel(out.z_m, f) < 1e-3,
+              "gaussbeam: and the waist sits essentially at the focal plane");
+        // 絞った先から見ると、もとの径へ戻る (可逆性)
+        const gb::Waist back = gb::lensWaist(out.w0_m, out.z_m, f, lam);
+        check(rel(back.w0_m, wIn) < 1e-6,
+              "gaussbeam: running the same lens backwards restores the input waist");
+        // レンズが無い (f → ∞) 極限では何も起きない
+        const gb::Waist huge = gb::lensWaist(w0, 0.0, 1.0e12, lam);
+        check(rel(huge.w0_m, w0) < 1e-6,
+              "gaussbeam: an infinitely weak lens leaves the waist alone");
+        check(gb::lensWaist(w0, 0.0, 0.0, lam).w0_m == 0.0,
+              "gaussbeam: a zero focal length is refused rather than divided by");
+    }
+
+    // ── 界分布からウエストを測る (ISO 11146 の 2 次モーメント) ─────────
+    {
+        // 理想ガウシアン I(x) = exp(-2x²/w²) を細かく標本化する。
+        // 2 次モーメントは σ = w/2 なので D4σ/2 = 2σ = w に戻るはず。
+        const double w = 8.0e-6, pitch = 0.05e-6;
+        const int n = 1201;                         // ±30 μm (裾まで入る)
+        std::vector<double> prof(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k) {
+            const double x = (k - (n - 1) / 2) * pitch;
+            prof[static_cast<std::size_t>(k)] = std::exp(-2.0 * x * x / (w * w));
+        }
+        check(rel(gb::waistFromIntensity(prof, pitch), w) < 1e-6,
+              "gaussbeam: the second moment of an ideal Gaussian returns its radius");
+        // 幅を 2 倍にすると測定値も 2 倍 (スケールに比例)。
+        // **2 次モーメントは裾を切ると小さく出る**ので、窓も 2 倍に取る。
+        const int nWide = 2 * n + 1;
+        std::vector<double> wide(static_cast<std::size_t>(nWide), 0.0);
+        for (int k = 0; k < nWide; ++k) {
+            const double x = (k - (nWide - 1) / 2) * pitch;
+            wide[static_cast<std::size_t>(k)] =
+                std::exp(-2.0 * x * x / (4.0 * w * w));
+        }
+        check(rel(gb::waistFromIntensity(wide, pitch), 2.0 * w) < 1e-4,
+              "gaussbeam: doubling the profile width doubles the measured radius");
+        // 同じ分布を狭い窓で測ると**必ず小さく出る** (D4σ の裾への敏感さ)。
+        // 「窓が足りないと過小評価になる」ことを固定しておく。
+        std::vector<double> clipped(wide.begin() + n / 2,
+                                    wide.end() - n / 2);
+        check(gb::waistFromIntensity(clipped, pitch)
+              < gb::waistFromIntensity(wide, pitch),
+              "gaussbeam: truncating the tails always underestimates the radius");
+        // 中心がずれていても幅は変わらない (1 次モーメントで中心を取るため)
+        std::vector<double> shifted(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k) {
+            const double x = (k - (n - 1) / 2) * pitch - 3.0e-6;
+            shifted[static_cast<std::size_t>(k)] =
+                std::exp(-2.0 * x * x / (w * w));
+        }
+        check(rel(gb::waistFromIntensity(shifted, pitch), w) < 1e-4,
+              "gaussbeam: an off-centre profile measures the same radius");
+        // **強度を渡す約束**: 振幅を渡すと √2 倍ずれる (取り違えの検出)
+        std::vector<double> amp(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k)
+            amp[static_cast<std::size_t>(k)] =
+                std::sqrt(prof[static_cast<std::size_t>(k)]);
+        check(rel(gb::waistFromIntensity(amp, pitch), std::sqrt(2.0) * w) < 1e-4,
+              "gaussbeam: passing amplitude instead of intensity is off by sqrt(2)");
+        check(gb::waistFromIntensity({}, pitch) == 0.0
+              && gb::waistFromIntensity(prof, 0.0) == 0.0
+              && gb::waistFromIntensity(std::vector<double>(10, 0.0), pitch) == 0.0,
+              "gaussbeam: empty or zero input measures nothing");
+    }
+}
+
 static void testParetoFront()
 {
     g_file = "pareto";
@@ -20276,6 +20478,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testGaussianBeam();
     testParetoFront();
     testIlluminationScene();
     testRaySampling();

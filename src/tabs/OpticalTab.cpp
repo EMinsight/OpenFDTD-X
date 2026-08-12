@@ -5,6 +5,7 @@
 #include "../io/ActivationCurve.h"
 #include "../io/Touchstone.h"
 #include "../kernel/Runner.h"
+#include "../optics/GaussianBeam.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -29,6 +30,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QTextStream>
@@ -212,6 +214,49 @@ const bool s_i18nOptRay = [] {
               "curvature and distortion per surface. The spot size and the ray "
               "aberration curves come from a real ray trace in the same tab, "
               "under \"Analyses\".");
+    // ハイブリッド連携 (波動 → 幾何 の橋渡し)
+    I18n::reg("opthyb_waist", "境界でのビーム半径 w", "Beam radius w at the boundary");
+    I18n::reg("opthyb_lambda", "波長 λ", "Wavelength");
+    I18n::reg("opthyb_index", "媒質の屈折率 n", "Refractive index n");
+    I18n::reg("opthyb_dist", "受け渡し先までの距離 z", "Hand-off distance z");
+    I18n::reg("opthyb_out",
+              "レイリー長 %1 μm / 発散半角 %2 mrad / z = %3 での半径 %4 μm "
+              "(直線近似なら %5 μm) / ビームパラメータ積 %6 μm·mrad",
+              "Rayleigh range %1 um / divergence %2 mrad / radius at z = %3 is "
+              "%4 um (a straight line would give %5 um) / beam parameter product "
+              "%6 um mrad");
+    I18n::reg("opthyb_valid",
+              "直線で追跡してよいのは z > %1 μm から (そこで誤差 1 %)。"
+              "それより手前は回折が効くので波動側で解くこと。",
+              "Straight-line tracing is only valid beyond z = %1 um, where the "
+              "error is 1 %. Closer in, diffraction matters and the wave solver "
+              "must be used.");
+    I18n::reg("opthyb_bad",
+              "波長・ビーム半径・屈折率はすべて正の値を入れてください。",
+              "The wavelength, beam radius and refractive index must all be "
+              "positive.");
+    I18n::reg("opthyb_gauss_off",
+              "「ガウシアンビーム」にチェックを入れると、境界の界分布を等価な"
+              "ガウシアンビーム 1 本に置き換えて、回折の広がりを保ったまま"
+              "遠方まで解析的に運びます。",
+              "Tick \"Gaussian beam\" to replace the boundary field with a "
+              "single equivalent Gaussian beam, which carries the diffractive "
+              "spreading analytically out to the far field.");
+    I18n::reg("optm_uw_hybrid2",
+              "「モード分解」と伝搬モデルの「BPM」「Physical Optics」"
+              "(モード分解には境界の界分布そのものが要り、BPM と物理光学は"
+              "別の伝搬計算が要ります)",
+              "mode decomposition and the BPM / Physical Optics propagation "
+              "models (mode decomposition needs the boundary field itself, and "
+              "those two need a different propagation calculation)");
+    I18n::reg("optm_uw_hybrid2_ok",
+              "「ガウシアンビーム」と伝搬モデルの「Geometric」— 境界のビーム"
+              "半径・波長・屈折率から、回折の広がり (optics/GaussianBeam) と"
+              "幾何光学が使える距離を出します",
+              "the Gaussian-beam option and the Geometric propagation model — "
+              "from the boundary beam radius, wavelength and index they give the "
+              "diffractive spreading (optics/GaussianBeam) and the distance "
+              "beyond which geometrical optics is valid");
     I18n::reg("optm_uw_hybrid", "波動 / 幾何のハイブリッド連携の設定",
               "the wave / geometrical hybrid settings");
     I18n::reg("optm_uw_out", "この節の設定",
@@ -921,8 +966,46 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_hybPropModel->setCurrentIndex(0);          // mock 既定 = Geometric
     shyb->form()->addRow(I18n::tr("optray_hyb_prop"), m_hybPropModel);
     shyb->vbox()->addWidget(mutedLabel(I18n::tr("optray_hyb_hint"), shyb));
-    // ハイブリッド連携は未実装 — この節はローカル state のみ
-    shyb->vbox()->addWidget(tabhelp::unwiredNote(shyb, I18n::tr("optm_uw_hybrid")));
+
+    // ── 波動 → 幾何 の橋渡し (optics/GaussianBeam) ────────────────────────
+    // 境界の界分布をそのまま光線束にすると回折が落ちる。等価なガウシアン
+    // ビーム 1 本に置き換えれば、広がりを保ったまま遠方まで解析的に運べる。
+    // 「モード分解」と BPM / 物理光学は別の計算が要るので無効にしてある。
+    m_hybW = new QLineEdit("5", shyb);
+    m_hybW->setMaximumWidth(90);
+    shyb->form()->addRow(I18n::tr("opthyb_waist"),
+                         hrow({ m_hybW, new QLabel(QStringLiteral("μm"), shyb) }));
+    m_hybLambda = new QLineEdit("1550", shyb);
+    m_hybLambda->setMaximumWidth(90);
+    shyb->form()->addRow(I18n::tr("opthyb_lambda"),
+                         hrow({ m_hybLambda, new QLabel(QStringLiteral("nm"), shyb) }));
+    m_hybIndex = new QLineEdit("1.0", shyb);
+    m_hybIndex->setMaximumWidth(90);
+    shyb->form()->addRow(I18n::tr("opthyb_index"), m_hybIndex);
+    m_hybDist = new QLineEdit("100", shyb);
+    m_hybDist->setMaximumWidth(90);
+    shyb->form()->addRow(I18n::tr("opthyb_dist"),
+                         hrow({ m_hybDist, new QLabel(QStringLiteral("μm"), shyb) }));
+    m_hybOut = mutedLabel(QString(), shyb);
+    m_hybOut->setWordWrap(true);
+    shyb->vbox()->addWidget(m_hybOut);
+    for (QLineEdit *e : { m_hybW, m_hybLambda, m_hybIndex, m_hybDist })
+        connect(e, &QLineEdit::editingFinished, this, &OpticalTab::updateHybridBeam);
+    connect(m_hybGaussian, &QCheckBox::toggled, this, &OpticalTab::updateHybridBeam);
+    connect(m_hybPropModel, &QComboBox::currentIndexChanged,
+            this, &OpticalTab::updateHybridBeam);
+    // モード分解と BPM / 物理光学は別の計算が要る (理由を添えて無効化)
+    m_hybModeDecomp->setChecked(false);
+    m_hybModeDecomp->setEnabled(false);
+    if (auto *m = qobject_cast<QStandardItemModel *>(m_hybPropModel->model())) {
+        for (int i = 1; i < m_hybPropModel->count(); ++i)
+            if (auto *it = m->item(i)) it->setEnabled(false);
+    }
+    m_hybGaussian->setChecked(true);
+    updateHybridBeam();
+
+    shyb->vbox()->addWidget(tabhelp::unwiredNote(shyb, I18n::tr("optm_uw_hybrid2"),
+                                                 I18n::tr("optm_uw_hybrid2_ok")));
     v->addWidget(shyb);
 
     // ── 分散モデル / Dispersion model (mock 末尾の <Section>) ───────────────
@@ -1608,6 +1691,41 @@ void OpticalTab::refreshOpticalSystem()
 // 解法 (波動 / 幾何 / ハイブリッド) → 波動ソルバー設定の有効・無効。
 // 幾何光学では外部カーネルを起動しないので、波動側の設定を触れなくして
 // 理由を出す (設定できるのに効かない状態を作らない)。
+// ── ハイブリッド連携: 波動 → 幾何 の橋渡し (optics/GaussianBeam) ──────────
+// 境界のビーム半径・波長・屈折率から、回折の広がりと「直線で追跡してよい
+// 距離」を出す。幾何光学が使えるのは z ≫ z_R からで、そこを数値で示すのが
+// この節の役目。
+void OpticalTab::updateHybridBeam()
+{
+    if (!m_hybOut) return;
+    if (!m_hybGaussian->isChecked()) {
+        m_hybOut->setText(I18n::tr("opthyb_gauss_off"));
+        return;
+    }
+    const double w = m_hybW->text().toDouble() * 1e-6;
+    const double lam = m_hybLambda->text().toDouble() * 1e-9;
+    const double n = m_hybIndex->text().toDouble();
+    const double z = m_hybDist->text().toDouble() * 1e-6;
+    if (!(w > 0.0) || !(lam > 0.0) || !(n > 0.0)) {
+        m_hybOut->setText(I18n::tr("opthyb_bad"));
+        return;
+    }
+    const double zr = ofd::gauss::rayleighRange(w, lam, n);
+    const double th = ofd::gauss::divergence(w, lam, n);
+    const double wz = ofd::gauss::beamRadius(w, z, lam, n);
+    const double zValid = ofd::gauss::geometricValidDistance(w, lam, n, 0.01);
+    QString text = I18n::tr("opthyb_out")
+                       .arg(zr * 1e6, 0, 'f', 2)
+                       .arg(th * 1e3, 0, 'f', 2)
+                       .arg(m_hybDist->text() + QStringLiteral(" μm"))
+                       .arg(wz * 1e6, 0, 'f', 3)
+                       .arg(th * z * 1e6, 0, 'f', 3)
+                       .arg(ofd::gauss::beamParameterProduct(w, lam, n) * 1e9, 0, 'f', 2);
+    text += QStringLiteral(" ")
+          + I18n::tr("opthyb_valid").arg(zValid * 1e6, 0, 'f', 2);
+    m_hybOut->setText(text);
+}
+
 // ── Raycast 節: この設定で非順次モンテカルロ追跡を回す ─────────────────────
 // 系は照明タブと共有 (core/IlluminationScene)。この節が決めるのは
 // 「どう追跡するか」— レイ数・サンプリング・打ち切り・反射モデル。

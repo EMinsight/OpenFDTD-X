@@ -344,6 +344,9 @@ set(CORE_SOURCES
     # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体
     src/optics/IlluminationTrace.cpp
     src/optics/IlluminationTrace.h
+    # 波動 → 幾何 の橋渡し (ガウシアンビームの伝搬) — Qt 非依存
+    src/optics/GaussianBeam.cpp
+    src/optics/GaussianBeam.h
 
     # 配光ファイル (IES LM-63) の読み書き — 照明設計ソフトへの受け渡し。
     # selftest からも直接検証するため CORE_SOURCES に置く
