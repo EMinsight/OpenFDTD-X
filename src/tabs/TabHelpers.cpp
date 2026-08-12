@@ -17,6 +17,35 @@
 namespace {
 const bool s_i18n = [] {
     ofd::I18n::reg("th_notimpl", "未実装", "Not implemented");
+    ofd::I18n::reg("th_notimpl_why", "未実装 — %1", "Not implemented - %1");
+    // 使い回せる「できない理由」(tabhelp::notimpl::)
+    ofd::I18n::reg("th_ni_format",
+                   "書き出す/読み込む外部書式の仕様が確認できていません",
+                   "the specification of the external file format is not "
+                   "confirmed");
+    ofd::I18n::reg("th_ni_parser", "その書式の読み手 (パーサ) がありません",
+                   "there is no parser for that format");
+    ofd::I18n::reg("th_ni_kernel", "カーネル側に対応する入力・出力がありません",
+                   "the kernel has no matching input or output");
+    ofd::I18n::reg("th_ni_data", "同梱していないデータが要ります",
+                   "it needs data that is not bundled");
+    ofd::I18n::reg("th_ni_engine", "その計算を行うエンジンがありません",
+                   "there is no engine that performs that calculation");
+    ofd::I18n::reg("th_ni_audio",
+                   "アプリは音声の入出力を持ちません (依存を増やさない方針)",
+                   "the application has no audio input or output (to avoid "
+                   "adding dependencies)");
+    ofd::I18n::reg("th_ni_external", "外部アプリの起動が要ります",
+                   "it requires launching an external application");
+    ofd::I18n::reg("th_ni_control",
+                   "実行中の中断・再開をソルバー起動側が持っていません",
+                   "the solver launcher cannot pause and resume a run");
+    ofd::I18n::reg("th_ni_report", "報告書の様式が決まっていません",
+                   "the report layout is not settled");
+    ofd::I18n::reg("th_ni_plot", "この図を描く実装がありません",
+                   "there is no implementation that draws this plot");
+    ofd::I18n::reg("th_ni_model", "その物理モデルが実装されていません",
+                   "that physical model is not implemented");
     ofd::I18n::reg("th_sample",
         "⚠ サンプル表示 — 実行結果ではありません (機能未実装)",
         "⚠ Sample display — not a computed result (feature not implemented)");
@@ -143,10 +172,13 @@ QStringList rirSampleRateNotes(double rirFsHz, double outFsHz,
     return notes;
 }
 
-void markNotImplemented(QAbstractButton *b)
+void markNotImplemented(QAbstractButton *b, const QString &why)
 {
+    if (!b) return;
     b->setEnabled(false);
-    b->setToolTip(I18n::tr("th_notimpl"));
+    // 「未実装」だけで終わらせず、何が足りないのかを必ず添える
+    b->setToolTip(why.isEmpty() ? I18n::tr("th_notimpl")
+                                : I18n::tr("th_notimpl_why").arg(why));
 }
 // 項目を消さずに無効化する (理由をツールチップに残す)。
 // QComboBox の項目は QStandardItemModel なので、フラグから Enabled を落とす。

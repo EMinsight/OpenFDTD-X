@@ -772,7 +772,7 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     for (const char *key : { "mds_to_source", "mds_to_monitor",
                              "mds_to_schematic" }) {
         auto *b = new QPushButton(I18n::tr(key), s2);
-        markNotImplemented(b);   // 受け側モデルが未実装
+        markNotImplemented(b, I18n::tr(tabhelp::notimpl::kKernel));   // 受け側モデルが未実装
         btnRow->addWidget(b);
     }
     btnRow->addStretch(1);

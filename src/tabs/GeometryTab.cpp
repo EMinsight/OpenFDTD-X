@@ -1406,8 +1406,8 @@ QWidget *GeometryTab::buildAssemblySection()
     auto *br = new QHBoxLayout();
     auto *assignBtn = new QPushButton(I18n::tr("geoc_asm_assign"), s);
     auto *ignoreBtn = new QPushButton(I18n::tr("geoc_asm_autoignore"), s);
-    tabhelp::markNotImplemented(assignBtn);
-    tabhelp::markNotImplemented(ignoreBtn);
+    tabhelp::markNotImplemented(assignBtn, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(ignoreBtn, I18n::tr(tabhelp::notimpl::kEngine));
     br->addWidget(assignBtn);
     br->addWidget(ignoreBtn);
     br->addStretch(1);
@@ -1609,7 +1609,7 @@ QWidget *GeometryTab::buildPreviewSection()
     hr->addWidget(runImport);
     auto *prev3dBtn = new QPushButton(I18n::tr("geoc_prev_3d"), s);
     auto *measureBtn = new QPushButton(I18n::tr("geoc_prev_measure"), s);
-    tabhelp::markNotImplemented(prev3dBtn);
+    tabhelp::markNotImplemented(prev3dBtn, I18n::tr(tabhelp::notimpl::kPlot));
     hr->addWidget(prev3dBtn);
     hr->addWidget(measureBtn);
     hr->addStretch(1);
@@ -1664,7 +1664,7 @@ QWidget *GeometryTab::buildVoxelSection()
                                I18n::tr("geoc_vox_sdf") }, 0));
     if (m_voxInside)
         for (QAbstractButton *b : m_voxInside->buttons())
-            if (m_voxInside->id(b) == 2) tabhelp::markNotImplemented(b);
+            if (m_voxInside->id(b) == 2) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     s->form()->addRow(makeHint(I18n::tr("geoc_vox_inout_hint"), s));
     // 実装済みの表面処理は階段近似のみ (io/Voxelizer) なので既定もそれに合わせる
     s->form()->addRow(I18n::tr("geoc_vox_surface"),
@@ -1704,9 +1704,9 @@ QWidget *GeometryTab::buildVoxelSection()
     // 内外判定と「まとめる」は Voxelizer が読む。表面処理 (共形/サブセル)・
     // PVF・八分木・GPU はエンジン側が未実装なので、それだけを明示する
     for (QAbstractButton *b : m_voxSurface->buttons())
-        if (m_voxSurface->id(b) != 0) tabhelp::markNotImplemented(b);
-    tabhelp::markNotImplemented(m_voxOctree);
-    tabhelp::markNotImplemented(m_voxGpu);
+        if (m_voxSurface->id(b) != 0) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(m_voxOctree, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(m_voxGpu, I18n::tr(tabhelp::notimpl::kEngine));
     s->vbox()->addWidget(makeHint(I18n::tr("geoc_vox_engine_note"), s));
 
     // 実行行: ボクセル化 (実処理) + 材質番号 + 占有セルバッジ
@@ -1715,7 +1715,7 @@ QWidget *GeometryTab::buildVoxelSection()
     m_voxBtn->setEnabled(false);
     runRow->addWidget(m_voxBtn);
     auto *voxPrevBtn = new QPushButton(I18n::tr("geoc_vox_preview"), s);
-    tabhelp::markNotImplemented(voxPrevBtn);
+    tabhelp::markNotImplemented(voxPrevBtn, I18n::tr(tabhelp::notimpl::kPlot));
     runRow->addWidget(voxPrevBtn);
     runRow->addWidget(new QLabel(I18n::tr("ge_voxel_mat"), s));
     m_voxMat = new QSpinBox(s);

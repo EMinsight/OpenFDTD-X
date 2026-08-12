@@ -482,7 +482,7 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     auto *rerunRow = new QHBoxLayout();
     // FDTD 再解析は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *rerun = new QPushButton(I18n::tr("gds_fdtd_rerun"), sFdtd);
-    tabhelp::markNotImplemented(rerun);
+    tabhelp::markNotImplemented(rerun, I18n::tr(tabhelp::notimpl::kEngine));
     rerunRow->addWidget(rerun);
     rerunRow->addStretch(1);
     sFdtd->vbox()->addLayout(rerunRow);

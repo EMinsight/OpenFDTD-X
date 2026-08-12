@@ -239,8 +239,8 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     auto *necBtn = new QPushButton("📐 .nec / .ffe", sOut);
     // CSV は実装済み (ofd の実行結果を読んで書く)。HDF5 / NEC は未実装。
     connect(csvBtn, &QPushButton::clicked, this, &AntennaCharTab::exportCsv);
-    tabhelp::markNotImplemented(h5Btn);
-    tabhelp::markNotImplemented(necBtn);
+    tabhelp::markNotImplemented(h5Btn, I18n::tr(tabhelp::notimpl::kFormat));
+    tabhelp::markNotImplemented(necBtn, I18n::tr(tabhelp::notimpl::kFormat));
     row->addWidget(csvBtn);
     row->addWidget(h5Btn);
     row->addWidget(necBtn);

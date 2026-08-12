@@ -1105,7 +1105,7 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     m_month->setCurrentIndex(6);          // 既定 7月
     monthRow->addWidget(m_month);
     auto *annualCk = new QCheckBox(I18n::tr("oe_annual"), sl);
-    tabhelp::markNotImplemented(annualCk);   // 年平均の併記は未実装 (どこにも読まれない)
+    tabhelp::markNotImplemented(annualCk, I18n::tr(tabhelp::notimpl::kData));   // 年平均の併記は未実装 (どこにも読まれない)
     monthRow->addWidget(annualCk);
     monthRow->addStretch(1);
     sl->form()->addRow(I18n::tr("oe_month"), monthRow);

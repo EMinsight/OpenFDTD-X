@@ -941,7 +941,7 @@ QWidget *ThinFilmTab::buildSpecPage()
     auto *fieldBtn = new QPushButton(I18n::tr("tfc_btn_field"), s);
     auto *fdtdBtn  = new QPushButton(I18n::tr("tfc_btn_fdtd"), s);
     for (QPushButton *b : { rtaBtn, mapBtn, fieldBtn, fdtdBtn }) {
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         btnRow->addWidget(b);
     }
     btnRow->addStretch(1);
@@ -975,7 +975,7 @@ QWidget *ThinFilmTab::buildDesignPage()
     // 実装しているのは膜厚のシンプレックス法だけ。層数や材料を変える
     // needle / tunneling / GA は未実装なので選べないようにする。
     for (QAbstractButton *b : m_method->buttons())
-        if (m_method->id(b) != 0) tabhelp::markNotImplemented(b);
+        if (m_method->id(b) != 0) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     s->form()->addRow(I18n::tr("tfc_method"), mRow);
 
     auto *vRow = new QHBoxLayout();
@@ -983,8 +983,8 @@ QWidget *ThinFilmTab::buildDesignPage()
     m_varCount     = makeCheck(I18n::tr("tfc_v_count"), true,  s);
     m_varMaterial  = makeCheck(I18n::tr("tfc_v_mat"),   false, s);
     // 動かせるのは膜厚だけ (層数・材料の探索は未実装)
-    tabhelp::markNotImplemented(m_varCount);
-    tabhelp::markNotImplemented(m_varMaterial);
+    tabhelp::markNotImplemented(m_varCount, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(m_varMaterial, I18n::tr(tabhelp::notimpl::kEngine));
     for (QCheckBox *c : { m_varThickness, m_varCount, m_varMaterial })
         vRow->addWidget(c);
     vRow->addStretch(1);
@@ -1042,7 +1042,7 @@ QWidget *ThinFilmTab::buildMfgPage()
                                   I18n::tr("tfc_d_ald"), I18n::tr("tfc_d_sput") },
                           1, s);                 // 既定 "ibs"
     // 成膜法ごとの誤差モデルは未実装 (代表値を勝手に当てはめない)
-    for (QAbstractButton *b : m_deposition->buttons()) tabhelp::markNotImplemented(b);
+    for (QAbstractButton *b : m_deposition->buttons()) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     s->form()->addRow(I18n::tr("tfc_depo"), dRow);
 
     auto *eRow = new QHBoxLayout();
@@ -1055,7 +1055,7 @@ QWidget *ThinFilmTab::buildMfgPage()
     auto *cRow = new QHBoxLayout();
     m_systematic = makeCheck(I18n::tr("tfc_systematic"), true,  s);
     m_correlated = makeCheck(I18n::tr("tfc_correlated"), false, s);
-    tabhelp::markNotImplemented(m_correlated);   // 相関モデルは未実装
+    tabhelp::markNotImplemented(m_correlated, I18n::tr(tabhelp::notimpl::kModel));   // 相関モデルは未実装
     cRow->addWidget(m_systematic);
     cRow->addWidget(m_correlated);
     cRow->addStretch(1);
@@ -1068,7 +1068,7 @@ QWidget *ThinFilmTab::buildMfgPage()
                                     I18n::tr("tfc_mon_both") },
                           1, s);                 // 既定 "optical"
     // モニタリング方式による誤差の違いは未実装
-    for (QAbstractButton *b : m_monitoring->buttons()) tabhelp::markNotImplemented(b);
+    for (QAbstractButton *b : m_monitoring->buttons()) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     s->form()->addRow(I18n::tr("tfc_monitor"), monRow);
 
     auto *mcRow = new QHBoxLayout();

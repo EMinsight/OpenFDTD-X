@@ -701,7 +701,7 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     connect(btnPolar, &QPushButton::clicked, this, &IlluminationTab::showPolarPlot);
     connect(btnIllum, &QPushButton::clicked, this, &IlluminationTab::showIlluminanceMap);
     connect(btnIes,   &QPushButton::clicked, this, &IlluminationTab::exportIes);
-    for (QPushButton *b : { btnCie, btnLdt }) tabhelp::markNotImplemented(b);
+    for (QPushButton *b : { btnCie, btnLdt }) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kFormat));
     for (QPushButton *b : { btnPolar, btnIllum, btnIes, btnCie, btnLdt })
         btnRow->addWidget(b);
     btnRow->addStretch(1);

@@ -179,9 +179,9 @@ AnalysisGroupsTab::AnalysisGroupsTab(Project *project, QWidget *parent)
     auto *libStd  = new QPushButton(I18n::tr("ag_lib_std"), sl);
     auto *libComm = new QPushButton(I18n::tr("ag_lib_community"), sl);
     auto *libFile = new QPushButton(I18n::tr("ag_lib_file"), sl);
-    tabhelp::markNotImplemented(libStd);
-    tabhelp::markNotImplemented(libComm);
-    tabhelp::markNotImplemented(libFile);
+    tabhelp::markNotImplemented(libStd, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(libComm, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(libFile, I18n::tr(tabhelp::notimpl::kParser));
     lrow->addWidget(libStd);
     lrow->addWidget(libComm);
     lrow->addWidget(libFile);

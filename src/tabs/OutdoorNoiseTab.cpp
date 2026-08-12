@@ -645,7 +645,7 @@ OutdoorNoiseTab::OutdoorNoiseTab(Project *project, QWidget *parent)
     m_judge = makeBadge(QString(), kOk, sc);
     hm->addWidget(m_judge);
     auto *assessBtn = new QPushButton(I18n::tr("onz_assess_btn"), sc);
-    tabhelp::markNotImplemented(assessBtn);   // 報告書出力は未配線
+    tabhelp::markNotImplemented(assessBtn, I18n::tr(tabhelp::notimpl::kReport));   // 報告書出力は未配線
     hm->addWidget(assessBtn);
     hm->addStretch(1);
     sc->vbox()->addLayout(hm);

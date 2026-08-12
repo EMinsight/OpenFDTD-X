@@ -319,9 +319,13 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 | Post2Tab / EmcTab / CircuitSolversTab / CabinAcousticsTab / AntennaCharTab | 各 2 |
 | その他 15 タブ | 各 1 |
 
-`markNotImplemented()` はツールチップが「未実装」の一言だけで、**なぜ**
-押せないのかを言わない。主語付き注記と同じ問題を抱えているので、理由を
-取れるようにするのが次の改善点。
+**2026-08-12 に改善済み。** `markNotImplemented()` は理由を必須にした
+(`markNotImplemented(b, I18n::tr(tabhelp::notimpl::kXxx))`)。ツールチップは
+「未実装 — <何が足りないのか>」になり、よく使う理由は 11 種類の共有キーに
+まとめてある (書式の仕様 / パーサ / カーネル側の対応 / 同梱データ / 計算
+エンジン / 音声入出力 / 外部アプリ / 実行中の制御 / 報告書の様式 / 作図 /
+物理モデル)。**理由なしの呼び出しは selftest の `notimpl-reason` が
+ソースを走査して検出する**ので、新しく足すときも必ず理由が要る。
 
 ## 更新のしかた
 

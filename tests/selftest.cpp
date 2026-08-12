@@ -20206,6 +20206,77 @@ static void testPostPrereq()
 // ので、`**強調**` と書くとアスタリスクがそのまま画面に出る (実際に出ていた)。
 // RichText へ倒す手もあるが、UI 文字列には `<kernel>.log` のように山括弧を含む
 // ものがあり、タグとして食われるので採らない。**素の文字列で書く**のが正。
+
+// ── markNotImplemented は理由を必ず添える (notimpl-reason) ─────────────────
+// 「未実装」の一言だけでは、利用者は「対応予定が無いのか」「自分の操作が
+// 足りないのか」を区別できない。主語付き注記 (unwiredNote) と同じ問題なので、
+// **理由なしの呼び出しをソースから検出する**。
+static void testNotImplementedHasReason()
+{
+    g_file = "notimpl-reason";
+    const QString base = QCoreApplication::applicationDirPath();
+    QString srcDir;
+    for (const QString &c : { base + "/../src", base + "/../../src",
+                              QStringLiteral("src") }) {
+        if (QDir(c).exists()) { srcDir = c; break; }
+    }
+    if (srcDir.isEmpty()) {
+        std::printf("  (notimpl scan skipped: src/ not found)\n");
+        return;
+    }
+    // markNotImplemented(x) — 引数 1 個だけの呼び出し (理由なし)
+    static const QRegularExpression bare(
+        QStringLiteral("markNotImplemented\\(\\s*[A-Za-z_]\\w*\\s*\\)"));
+    static const QRegularExpression any(QStringLiteral("markNotImplemented\\("));
+
+    QStringList offenders;
+    int total = 0, withReason = 0;
+    QDirIterator it(srcDir, { QStringLiteral("*.cpp") }, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        if (path.endsWith(QStringLiteral("TabHelpers.cpp"))) continue;  // 実装側
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        int from = 0;
+        while (true) {
+            const QRegularExpressionMatch m = any.match(text, from);
+            if (!m.hasMatch()) break;
+            from = m.capturedEnd();
+            ++total;
+            const QRegularExpressionMatch b = bare.match(text, m.capturedStart());
+            if (b.hasMatch() && b.capturedStart() == m.capturedStart()) {
+                const int line = text.left(m.capturedStart()).count(QLatin1Char('\n')) + 1;
+                offenders << QStringLiteral("%1:%2")
+                                 .arg(QFileInfo(path).fileName()).arg(line);
+            } else {
+                ++withReason;
+            }
+        }
+    }
+    check(total > 0, "notimpl: the scan actually found call sites");
+    if (!offenders.isEmpty())
+        std::printf("  notimpl without a reason: %s\n",
+                    offenders.join(QStringLiteral(", ")).toUtf8().constData());
+    check(offenders.isEmpty(),
+          "notimpl: every disabled control says what is missing, not just \"not implemented\"");
+    check(withReason == total,
+          "notimpl: the reason-bearing overload is used everywhere");
+    // 理由の文言そのものが登録されていること (キーだけ書いて空文字列にしない)
+    for (const char *k : { "th_ni_format", "th_ni_parser", "th_ni_kernel",
+                           "th_ni_data", "th_ni_engine", "th_ni_audio",
+                           "th_ni_external", "th_ni_control", "th_ni_report",
+                           "th_ni_plot", "th_ni_model", "th_notimpl_why" }) {
+        const QString t = ofd::I18n::tr(k);
+        check(!t.isEmpty() && t != QLatin1String(k),
+              "notimpl: each shared reason string is registered");
+    }
+    // 「未実装 — <理由>」の形になること (理由が落ちない)
+    check(ofd::I18n::tr("th_notimpl_why").contains(QStringLiteral("%1")),
+          "notimpl: the tooltip format keeps a slot for the reason");
+}
+
 static void testNoMarkdownInUiStrings()
 {
     g_file = "ui-markdown";
@@ -21001,6 +21072,7 @@ int main(int argc, char *argv[])
     testRaySampling();
     testDensityField();
     testPostPrereq();
+    testNotImplementedHasReason();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();
     testNavCategories();

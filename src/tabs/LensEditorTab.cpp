@@ -688,7 +688,7 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     auto *optRow = new QHBoxLayout();
     // 最適化は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
     auto *optBtn = new QPushButton(I18n::tr("lde_optimize"), sMerit);
-    tabhelp::markNotImplemented(optBtn);
+    tabhelp::markNotImplemented(optBtn, I18n::tr(tabhelp::notimpl::kEngine));
     optRow->addWidget(optBtn);
     optRow->addWidget(mutedLabel("Damped Least-Squares / Hammer", sMerit));
     optRow->addStretch(1);
@@ -722,7 +722,7 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
         else {
-            tabhelp::markNotImplemented(b);
+            tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
             b->setToolTip(I18n::tr("lde_an_why"));
         }
         grid->addWidget(b, i / 2, i % 2);

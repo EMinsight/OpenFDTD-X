@@ -296,8 +296,8 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *dbBtns = new QHBoxLayout();
     auto *impNk = new QPushButton(I18n::tr("mex_import_nk"), sDb);
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
-    tabhelp::markNotImplemented(impNk);   // n,k 取込は未配線
-    tabhelp::markNotImplemented(riBtn);   // refractiveindex.info 連携は未配線
+    tabhelp::markNotImplemented(impNk, I18n::tr(tabhelp::notimpl::kParser));   // n,k 取込は未配線
+    tabhelp::markNotImplemented(riBtn, I18n::tr(tabhelp::notimpl::kExternal));   // refractiveindex.info 連携は未配線
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
@@ -482,8 +482,8 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     applyRow->addWidget(m_addBtn);
     auto *tempBtn  = new QPushButton(I18n::tr("mex_temp_table"), sApply);
     auto *anisoBtn = new QPushButton(I18n::tr("mex_aniso"), sApply);
-    tabhelp::markNotImplemented(tempBtn);    // 温度依存テーブルは未配線
-    tabhelp::markNotImplemented(anisoBtn);   // 異方性テンソルは未配線
+    tabhelp::markNotImplemented(tempBtn, I18n::tr(tabhelp::notimpl::kData));    // 温度依存テーブルは未配線
+    tabhelp::markNotImplemented(anisoBtn, I18n::tr(tabhelp::notimpl::kModel));   // 異方性テンソルは未配線
     applyRow->addWidget(tempBtn);
     applyRow->addWidget(anisoBtn);
     applyRow->addStretch(1);

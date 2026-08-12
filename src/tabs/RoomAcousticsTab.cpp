@@ -1047,8 +1047,8 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     // 可聴化 / ODEON・EASE エクスポートは未配線 (絶対規則 5)
     auto *auralBtn = new QPushButton(I18n::tr("rah_export_aural"), sExp);
     auto *easeBtn  = new QPushButton(I18n::tr("rah_export_ease"), sExp);
-    tabhelp::markNotImplemented(auralBtn);
-    tabhelp::markNotImplemented(easeBtn);
+    tabhelp::markNotImplemented(auralBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(easeBtn, I18n::tr(tabhelp::notimpl::kFormat));
     row->addWidget(auralBtn);
     row->addWidget(easeBtn);
     row->addStretch(1);
@@ -1121,7 +1121,7 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     crow->addWidget(m_hallBox, 1);
     auto *imp3dConcert = new QPushButton(I18n::tr("rah_import_3d"),
                                          m_concertPane);
-    tabhelp::markNotImplemented(imp3dConcert);   // 3D モデル取込は未配線
+    tabhelp::markNotImplemented(imp3dConcert, I18n::tr(tabhelp::notimpl::kParser));   // 3D モデル取込は未配線
     crow->addWidget(imp3dConcert);
     cv->addLayout(crow);
 
@@ -1155,7 +1155,7 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     }
     orow->addWidget(m_operaBox, 1);
     auto *imp3dOpera = new QPushButton(I18n::tr("rah_import_3d"), m_operaPane);
-    tabhelp::markNotImplemented(imp3dOpera);     // 3D モデル取込は未配線
+    tabhelp::markNotImplemented(imp3dOpera, I18n::tr(tabhelp::notimpl::kParser));     // 3D モデル取込は未配線
     orow->addWidget(imp3dOpera);
     ov->addLayout(orow);
 
@@ -1599,8 +1599,8 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
     // LF/BQI マップ表示は未配線 (絶対規則 5)
     auto *lfMapBtn  = new QPushButton(I18n::tr("rah_lf_map_btn"), sm);
     auto *bqiMapBtn = new QPushButton(I18n::tr("rah_bqi_map_btn"), sm);
-    tabhelp::markNotImplemented(lfMapBtn);
-    tabhelp::markNotImplemented(bqiMapBtn);
+    tabhelp::markNotImplemented(lfMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
+    tabhelp::markNotImplemented(bqiMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
     maps->addWidget(lfMapBtn);
     maps->addWidget(bqiMapBtn);
     maps->addStretch(1);
@@ -1677,7 +1677,7 @@ QWidget *RoomAcousticsTab::buildStagePage()
     auto *batch = new QHBoxLayout();
     auto *batchBtn = new QPushButton(I18n::tr("rah_va_batch"), sv);
     batchBtn->setStyleSheet("font-weight:600;");
-    tabhelp::markNotImplemented(batchBtn);   // 一括解析は未配線
+    tabhelp::markNotImplemented(batchBtn, I18n::tr(tabhelp::notimpl::kEngine));   // 一括解析は未配線
     batch->addWidget(batchBtn);
     batch->addWidget(makeHint(I18n::tr("rah_va_batch_hint"), sv), 1);
     sv->vbox()->addLayout(batch);
@@ -1710,7 +1710,7 @@ QWidget *RoomAcousticsTab::buildMaterialsPage()
     search->setPlaceholderText(I18n::tr("rah_mat_search"));
     tools->addWidget(search, 1);
     auto *matImport = new QPushButton(I18n::tr("rah_mat_import"), s);
-    tabhelp::markNotImplemented(matImport);   // 材質 DB 取込は未配線
+    tabhelp::markNotImplemented(matImport, I18n::tr(tabhelp::notimpl::kData));   // 材質 DB 取込は未配線
     tools->addWidget(matImport);
     s->vbox()->addLayout(tools);
     v->addWidget(s);
@@ -1835,9 +1835,9 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     auto *addSpBtn = new QPushButton(I18n::tr("rah_add_speaker"), sl);
     auto *aimBtn = new QPushButton(I18n::tr("rah_auto_aim"), sl);
     auto *gllBtn = new QPushButton(I18n::tr("rah_gll_lib"), sl);
-    tabhelp::markNotImplemented(addSpBtn);
-    tabhelp::markNotImplemented(aimBtn);
-    tabhelp::markNotImplemented(gllBtn);
+    tabhelp::markNotImplemented(addSpBtn, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(aimBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(gllBtn, I18n::tr(tabhelp::notimpl::kData));
     lsBtns->addWidget(addSpBtn);
     lsBtns->addWidget(aimBtn);
     lsBtns->addWidget(gllBtn);
@@ -1889,7 +1889,7 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     m_gbfNote = makeHint(QString(), sg);
     sg->vbox()->addWidget(m_gbfNote);
     auto *notch = makeCheck(I18n::tr("rah_notch"), false, sg);
-    tabhelp::markNotImplemented(notch);   // notch 自動提案は未実装
+    tabhelp::markNotImplemented(notch, I18n::tr(tabhelp::notimpl::kEngine));   // notch 自動提案は未実装
     sg->vbox()->addWidget(notch);
     v->addWidget(sg);
     v->addStretch(1);

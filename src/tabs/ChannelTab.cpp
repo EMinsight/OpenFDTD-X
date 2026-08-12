@@ -693,7 +693,7 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     auto *pdpBtn  = new QPushButton(I18n::tr("chn_btn_pdp"), sm);
     auto *h5Btn   = new QPushButton(I18n::tr("chn_btn_h5"), sm);
     for (QPushButton *b : { heatBtn, pdpBtn, h5Btn }) {
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         bb->addWidget(b);
     }
     bb->addStretch(1);

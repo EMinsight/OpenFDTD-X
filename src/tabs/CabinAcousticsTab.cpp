@@ -540,8 +540,8 @@ CabinAcousticsTab::CabinAcousticsTab(Project *project, QWidget *parent)
     auto *hBtn = new QHBoxLayout();
     auto *auralBtn = new QPushButton(I18n::tr("cab_aural_btn"), se);
     auto *tpaBtn   = new QPushButton(I18n::tr("cab_tpa_btn"), se);
-    tabhelp::markNotImplemented(auralBtn);
-    tabhelp::markNotImplemented(tpaBtn);
+    tabhelp::markNotImplemented(auralBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(tpaBtn, I18n::tr(tabhelp::notimpl::kEngine));
     hBtn->addWidget(auralBtn);
     hBtn->addWidget(tpaBtn);
     hBtn->addStretch(1);

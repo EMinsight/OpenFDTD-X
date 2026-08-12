@@ -715,7 +715,7 @@ QWidget *DisplayOpticsTab::buildArwgPage()
     m_threeGratings = makeCheck(I18n::tr("dpo_three_grat"), sWg);
     m_rcwaOptimize  = makeCheck(I18n::tr("dpo_rcwa_opt"),   sWg);
     // RCWA (orcwa) との最適化連携は未実装 — 押せる見た目にしない (絶対規則 5)
-    tabhelp::markNotImplemented(m_rcwaOptimize);
+    tabhelp::markNotImplemented(m_rcwaOptimize, I18n::tr(tabhelp::notimpl::kEngine));
     ckRow->addWidget(m_threeGratings);
     ckRow->addWidget(m_rcwaOptimize);
     ckRow->addStretch(1);
@@ -740,8 +740,8 @@ QWidget *DisplayOpticsTab::buildArwgPage()
     // プロット生成は未実装 — 無効化して明示する (絶対規則 5)
     auto *btnEyebox   = new QPushButton(I18n::tr("dpo_btn_eyebox"), sMe);
     auto *btnTradeoff = new QPushButton(I18n::tr("dpo_btn_tradeoff"), sMe);
-    tabhelp::markNotImplemented(btnEyebox);
-    tabhelp::markNotImplemented(btnTradeoff);
+    tabhelp::markNotImplemented(btnEyebox, I18n::tr(tabhelp::notimpl::kPlot));
+    tabhelp::markNotImplemented(btnTradeoff, I18n::tr(tabhelp::notimpl::kPlot));
     btnRow->addWidget(btnEyebox);
     btnRow->addWidget(btnTradeoff);
     btnRow->addStretch(1);

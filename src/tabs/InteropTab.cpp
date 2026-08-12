@@ -729,7 +729,7 @@ void InteropTab::rebuildBridges()
                        : badgeCell(I18n::tr("iop_sup_partial"), "warn"));
         // 取込/書出の実処理は未実装 — 無効化して明示する (絶対規則 5)
         auto *doBtn = new QPushButton(btn, m_bridges);
-        ofd::tabhelp::markNotImplemented(doBtn);
+        ofd::tabhelp::markNotImplemented(doBtn, I18n::tr(tabhelp::notimpl::kParser));
         m_bridges->setCellWidget(r, 4, doBtn);
     }
     m_bridges->resizeRowsToContents();
