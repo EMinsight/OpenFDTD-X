@@ -36,6 +36,24 @@ double rcsPerGeometric(double sigma_m2, double radius_m);
 // 電気サイズ ka = 2πa/λ。a ≤ 0 または f ≤ 0 なら 0。
 double sphereKa(double radius_m, double freqHz);
 
+// ── far1d.log の遠方界 → バイスタティック RCS ──────────────────────────────
+//
+// **平面波入射 (給電点なし) の問題に限り**、far1d.log の E-abs / E-theta /
+// E-phi の [dB] 列は σ を平方メートルで表した dBsm そのものになる。
+// カーネル側の理由:
+//   post/outputFar1d.c … 単位ラベルが `NFeed ? "[dB]" : "[dBsm]"`
+//   sol/farfield.c     … 給電点が無いとき ffctr = k/(E_inc·√(4π))
+//   sol/outputCross.c  … その係数で |Eθ|²+|Eφ| ² を取ったものが RCS [m²]
+// 表示側は 20log10(√σ) = 10log10(σ) を戻すだけでよい。
+//
+// **給電点がある問題 (アンテナ) では同じ列が相対利得 [dB]** なので、
+// RCS として読んではいけない。判定は呼び出し側が持つ (下の関数は素の換算)。
+double rcsFromFar1dDbsm(double dbsm);
+
+// far1d.log を RCS として読んでよい問題かどうか。
+// 平面波入射があり、給電点が 1 つも無いときだけ true。
+bool far1dIsRcs(bool hasPlanewave, int feedCount);
+
 } // namespace em
 } // namespace ofd
 

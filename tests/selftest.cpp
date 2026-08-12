@@ -15663,6 +15663,96 @@ static void testIlluminationTrace()
     }
 }
 
+// ── far1d.log → バイスタティック RCS (em/RadarCrossSection) ────────────────
+// カーネルの遠方界は **給電点が無いとき RCS 正規化**を含む (sol/farfield.c の
+// ffctr = k/(E_inc·√(4π)))。その結果 far1d.log の [dB] 列は 20log10(√σ) =
+// 10log10(σ) = dBsm になる。ここを 20 で割ると 2 倍ずれるので固定する。
+static void testFar1dRcs()
+{
+    g_file = "far1d-rcs";
+    namespace em = ofd::em;
+
+    // dBsm → m² は 10^(dB/10)。dBsm 往復が恒等になること
+    check(std::fabs(em::rcsFromFar1dDbsm(0.0) - 1.0) < 1e-12,
+          "far1drcs: 0 dBsm is exactly 1 m^2");
+    check(std::fabs(em::rcsFromFar1dDbsm(10.0) - 10.0) < 1e-9,
+          "far1drcs: +10 dBsm is 10 m^2 (10log10, not 20log10)");
+    check(std::fabs(em::rcsFromFar1dDbsm(-20.0) - 0.01) < 1e-12,
+          "far1drcs: -20 dBsm is 0.01 m^2");
+    for (double s : { 1e-4, 0.3, 1.0, 25.0 })
+        check(std::fabs(em::rcsFromFar1dDbsm(em::rcsDbsm(s)) - s) < 1e-9 * s,
+              "far1drcs: dBsm and m^2 round-trip through the pair");
+    // 20log10 で読むと 2 倍ずれる — 取り違えを名指しで固定する
+    check(std::fabs(em::rcsFromFar1dDbsm(20.0) - 100.0) < 1e-9
+              && std::fabs(std::pow(10.0, 20.0 / 20.0) - 10.0) < 1e-12,
+          "far1drcs: reading the column as 20log10 would be off by a factor "
+          "of ten here");
+
+    // RCS として読んでよい問題かどうか (給電点があると相対利得になる)
+    check(em::far1dIsRcs(true, 0),
+          "far1drcs: a plane-wave-only problem gives RCS in far1d.log");
+    check(!em::far1dIsRcs(true, 1),
+          "far1drcs: a feed makes the same column relative gain, not RCS");
+    check(!em::far1dIsRcs(false, 0),
+          "far1drcs: without a plane wave there is no RCS to read");
+    check(!em::far1dIsRcs(false, 2),
+          "far1drcs: an antenna problem is never read as RCS");
+
+    // far1d.log の列を実際に読み、偏波成分まで取れること
+    {
+        const QString text =
+            "#1 : X-plane, frequency[Hz] = 3.00000e+09\n"
+            "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+            "   E-phi[deg]  E-major[dB]\n"
+            "   0    0.0      10.0000      10.0000       0.0000    -300.0000"
+            "       0.0000      10.0000\n"
+            "   1   90.0       0.0000      -3.0000       0.0000      -3.0000"
+            "       0.0000       0.0000\n"
+            "   2  180.0     -20.0000     -20.0000       0.0000    -300.0000"
+            "       0.0000     -20.0000\n";
+        const QVector<FarPattern> pats = KernelResultReader::parseFar1d(text);
+        check(pats.size() == 1 && pats[0].deg.size() == 3,
+              "far1drcs: the pattern block parses");
+        check(pats[0].eThetaDb.size() == 3 && pats[0].ePhiDb.size() == 3,
+              "far1drcs: the polarisation columns are kept as well");
+        check(std::fabs(pats[0].eThetaDb[1] + 3.0) < 1e-9
+                  && std::fabs(pats[0].ePhiDb[1] + 3.0) < 1e-9,
+              "far1drcs: E-theta is column 4 and E-phi is column 6 "
+              "(the [deg] columns in between are skipped)");
+        // dBsm として読むと 10 / 1 / 0.01 m²
+        check(std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[0]) - 10.0) < 1e-9
+                  && std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[1]) - 1.0) < 1e-9
+                  && std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[2]) - 0.01)
+                         < 1e-12,
+              "far1drcs: the E-abs column reads straight back as square metres");
+        // 最大は 0°、最小は 180°
+        int imax = 0, imin = 0;
+        for (int i = 1; i < pats[0].eAbsDb.size(); ++i) {
+            if (pats[0].eAbsDb[i] > pats[0].eAbsDb[imax]) imax = i;
+            if (pats[0].eAbsDb[i] < pats[0].eAbsDb[imin]) imin = i;
+        }
+        check(pats[0].deg[imax] == 0.0 && pats[0].deg[imin] == 180.0,
+              "far1drcs: the maximum and minimum land on the right angles");
+        // 交差偏波が -300 dB のところは実質ゼロ (σ < 1e-30 m²)
+        check(em::rcsFromFar1dDbsm(pats[0].ePhiDb[0]) < 1e-29,
+              "far1drcs: a -300 dB cross-polarised entry is effectively zero");
+    }
+    // 列が 6 個に満たない古い出力では偏波成分を作らない (無い値を捏造しない)
+    {
+        const QString text =
+            "#1 : Z-plane, frequency[Hz] = 1.00000e+09\n"
+            "  No.   deg    E-abs[dB]\n"
+            "   0    0.0       1.0000\n"
+            "   1  180.0       2.0000\n";
+        const QVector<FarPattern> pats = KernelResultReader::parseFar1d(text);
+        check(pats.size() == 1 && pats[0].eAbsDb.size() == 2,
+              "far1drcs: a three-column pattern still parses");
+        check(pats[0].eThetaDb.isEmpty() && pats[0].ePhiDb.isEmpty(),
+              "far1drcs: missing polarisation columns stay empty rather than "
+              "being invented");
+    }
+}
+
 // ── tidy3d エクスポート設定 (io/Tidy3dExporter) ────────────────────────────
 // 判定は生成スクリプトの中身そのもの。**既定値では従来の出力と 1 バイトも
 // 変わらない**ことを最初に固定し (絶対規則 2)、設定を変えたときだけ差が出る
@@ -19144,6 +19234,7 @@ int main(int argc, char *argv[])
     testTransmissionLine();
     testReceiverNoise();
     testTidy3dExportOptions();
+    testFar1dRcs();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();

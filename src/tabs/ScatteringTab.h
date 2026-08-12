@@ -34,6 +34,7 @@ public:
     void refresh();   // model → widgets
     // <kernel>.log の "=== cross section ===" を読んで表に出す
     void refreshRcsResult();
+    void refreshBistatic();   // far1d.log → バイスタティック RCS / 散乱行列
 
     // 実行設定 (エンジン / スレッド数 / カーネル) は MainWindow が持つので
     // 外から与える。未設定なら CPU 既定で走る。
@@ -75,6 +76,9 @@ private:
     QCheckBox *m_rcsMono, *m_rcsBi, *m_rcsMatrix;
     QLabel       *m_rcsResultNote = nullptr;
     QTableWidget *m_rcsTable = nullptr;
+    QTableWidget *m_biTable = nullptr;     // バイスタティック RCS
+    QLabel       *m_biNote = nullptr;
+    QLabel       *m_mxNote = nullptr;      // 偏波散乱行列
     QComboBox *m_rcsUnit;                   // m² / dBsm / σ/λ²
 
     // NTFF

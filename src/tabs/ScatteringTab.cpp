@@ -21,6 +21,7 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -126,9 +127,13 @@ const bool s_i18n = [] {
     I18n::reg("sct_m_mie", "効率係数 Q_sca, Q_abs (Mie)",
               "Efficiency factors Q_sca, Q_abs (Mie)");
     I18n::reg("sct_uw_rcs_ok",
-              "単位 (m² / dBsm / σ/λ²) の選択 — 下の実行結果の表に効きます",
-              "the unit selection (m2 / dBsm / sigma over lambda^2), which "
-              "applies to the result table below");
+              "モノスタティック / バイスタティックの選択・単位 "
+              "(m² / dBsm / σ/λ²)・偏波散乱行列のうち入射偏波の列 — "
+              "いずれも下の結果表に効きます",
+              "the monostatic / bistatic selection, the unit "
+              "(m2 / dBsm / sigma over lambda^2) and the column of the "
+              "polarimetric matrix for the launched polarisation — they all "
+              "apply to the result tables below");
     I18n::reg("sct_res_freq", "周波数", "Frequency");
     I18n::reg("sct_res_back", "後方散乱 (モノスタティック)",
               "Backscatter (monostatic)");
@@ -168,8 +173,52 @@ const bool s_i18n = [] {
               "unit is converted here. ka uses the largest half-extent "
               "%3 m of the geometry (the radius itself for a sphere; only "
               "indicative for other shapes).");
-    I18n::reg("sct_uw_rcs", "RCS の出力形式 (モノ / バイ・単位・散乱行列) の選択",
-              "the RCS output options (monostatic / bistatic, unit, scattering matrix)");
+    I18n::reg("sct_uw_rcs",
+              "偏波散乱行列のうち入射偏波と直交する側の 2 要素 "
+              "(1 回の実行では入射させた偏波の列しか出ません — 直交偏波で"
+              "もう 1 回走らせる必要があります)",
+              "the two elements of the polarimetric matrix for the orthogonal "
+              "incidence (one run only yields the column for the polarisation "
+              "actually launched; the other needs a second run)");
+    I18n::reg("sct_bi_sec", "バイスタティック RCS (far1d.log)",
+              "Bistatic RCS (far1d.log)");
+    I18n::reg("sct_bi_col_plane", "面 / 周波数", "Plane / frequency");
+    I18n::reg("sct_bi_col_back", "後方 (θ_inc)", "Backward (theta_inc)");
+    I18n::reg("sct_bi_col_max", "最大", "Maximum");
+    I18n::reg("sct_bi_col_maxat", "最大の角度", "Angle of maximum");
+    I18n::reg("sct_bi_col_min", "最小", "Minimum");
+    I18n::reg("sct_bi_none",
+              "▸ far1d.log がまだありません (ポスト処理の「遠方界 1 次元」を"
+              "有効にして実行すると出ます)。",
+              "▸ There is no far1d.log yet (enable the 1-D far field in the "
+              "post-processing options and run).");
+    I18n::reg("sct_bi_notrcs",
+              "▸ この問題には給電点があるため、far1d.log の値は入力電力で"
+              "正規化された相対利得 [dB] であって RCS ではありません "
+              "(カーネルの単位ラベルも [dBsm] ではなく [dB] になります)。"
+              "バイスタティック RCS は平面波入射のみの問題で出ます。",
+              "▸ This problem has feed points, so the values in far1d.log are "
+              "relative gain [dB] normalised by the input power, not RCS (the "
+              "kernel labels them [dB] rather than [dBsm]). Bistatic RCS is "
+              "available for plane-wave-only problems.");
+    I18n::reg("sct_bi_ok",
+              "▸ %1 面 %2 本ぶん。平面波入射のみの問題なので far1d.log の "
+              "E-abs 列はそのまま dBsm です (sol/farfield.c の遠方界係数が "
+              "RCS 正規化を含むため)。",
+              "▸ %2 pattern(s) over %1 plane(s). For a plane-wave-only problem "
+              "the E-abs column of far1d.log is already dBsm (the far-field "
+              "factor in sol/farfield.c carries the RCS normalisation).");
+    I18n::reg("sct_mx_sec", "偏波散乱行列", "Polarimetric scattering matrix");
+    I18n::reg("sct_mx_fmt",
+              "入射 %1 偏波での後方散乱: σ_θ (co) = %2 / σ_φ (cross) = %3。\n"
+              "直交偏波の列 (残る 2 要素) は入射偏波を変えてもう 1 回実行すると"
+              "揃います。",
+              "Backscatter for %1-polarised incidence: sigma_theta (co) = %2 / "
+              "sigma_phi (cross) = %3.\nThe other column needs a second run "
+              "with the orthogonal incident polarisation.");
+    I18n::reg("sct_mx_nocols",
+              "▸ far1d.log に偏波成分の列がありません (E-theta / E-phi)。",
+              "▸ far1d.log carries no polarisation columns (E-theta / E-phi).");
     I18n::reg("sct_uw_ntff", "近傍界→遠方界変換の設定 (抽出面・広角オプション)",
               "the near-to-far-field settings (extraction surface, wide-angle option)");
     I18n::reg("sct_uw_misc", "SE・FSS・吸収率・消光のチェック",
@@ -311,6 +360,10 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sRcs->form()->addRow(
         tabhelp::unwiredNote(sRcs, I18n::tr("sct_uw_rcs"),
                              I18n::tr("sct_uw_rcs_ok")));
+    // モノ / バイ / 散乱行列は下の結果表の内容を決める (refreshRcsResult)
+    for (QCheckBox *c : { m_rcsMono, m_rcsBi, m_rcsMatrix })
+        connect(c, &QCheckBox::toggled, this,
+                [this](bool) { refreshRcsResult(); });
 
     // ── 実行結果の RCS (<kernel>.log の "=== cross section ===") ─────────
     // カーネルは平面波入射の問題について後方 / 前方散乱断面積を **m² の実値**
@@ -332,6 +385,29 @@ ScatteringTab::ScatteringTab(Project *project, QWidget *parent)
     sRcs->vbox()->addWidget(m_rcsTable);
     connect(m_rcsUnit, &QComboBox::currentIndexChanged,
             this, &ScatteringTab::refreshRcsResult);
+
+    // ── バイスタティック RCS / 偏波散乱行列 (far1d.log) ────────────────────
+    auto *sBi = new SectionBox(I18n::tr("sct_bi_sec"), sRcs);
+    m_biTable = new QTableWidget(0, 5, sBi);
+    m_biTable->setHorizontalHeaderLabels(
+        { I18n::tr("sct_bi_col_plane"), I18n::tr("sct_bi_col_back"),
+          I18n::tr("sct_bi_col_max"), I18n::tr("sct_bi_col_maxat"),
+          I18n::tr("sct_bi_col_min") });
+    m_biTable->horizontalHeader()->setStretchLastSection(true);
+    m_biTable->verticalHeader()->setVisible(false);
+    m_biTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_biTable->setMinimumHeight(110);
+    m_biTable->setVisible(false);
+    sBi->vbox()->addWidget(m_biTable);
+    m_biNote = new QLabel(sBi);
+    m_biNote->setWordWrap(true);
+    m_biNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sBi->vbox()->addWidget(m_biNote);
+    m_mxNote = new QLabel(sBi);
+    m_mxNote->setWordWrap(true);
+    m_mxNote->setVisible(false);
+    sBi->vbox()->addWidget(m_mxNote);
+    sRcs->vbox()->addWidget(sBi);
     v->addWidget(sRcs);
 
     // ── 近傍/遠方界変換 / NTFF ─────────────────────────────────────────────
@@ -559,8 +635,11 @@ void ScatteringTab::refreshRcsResult()
         cs = KernelResultReader::readCrossSection(alt);
         used = alt;
     }
-    if (cs.isEmpty()) {
-        m_rcsResultNote->setText(I18n::tr("sct_res_none"));
+    const bool wantMono = !m_rcsMono || m_rcsMono->isChecked();
+    if (cs.isEmpty() || !wantMono) {
+        if (cs.isEmpty()) m_rcsResultNote->setText(I18n::tr("sct_res_none"));
+        else              m_rcsResultNote->clear();
+        refreshBistatic();
         return;
     }
 
@@ -638,6 +717,121 @@ void ScatteringTab::refreshRcsResult()
     else if (wantMie)       note += QLatin1Char(' ')
                                   + I18n::tr("sct_mie_notsphere");
     m_rcsResultNote->setText(note);
+    refreshBistatic();
+}
+
+// ── バイスタティック RCS と偏波散乱行列 (far1d.log) ────────────────────────
+// far1d.log の [dB] 列が RCS になるのは **平面波入射で給電点が無い問題だけ**
+// (em::far1dIsRcs)。給電点があると同じ列が相対利得になるので、そのときは
+// 値を出さずに理由を出す (絶対規則 5)。
+void ScatteringTab::refreshBistatic()
+{
+    if (!m_biTable || !m_biNote) return;
+    const bool wantBi = m_rcsBi && m_rcsBi->isChecked();
+    const bool wantMx = m_rcsMatrix && m_rcsMatrix->isChecked();
+    m_biTable->setRowCount(0);
+    m_biTable->setVisible(false);
+    m_mxNote->setVisible(wantMx);
+    m_mxNote->clear();
+    m_biNote->setVisible(wantBi || wantMx);
+    if (!wantBi && !wantMx) return;
+
+    if (m_p->filePath().isEmpty()) {
+        m_biNote->setText(I18n::tr("sct_bi_none"));
+        return;
+    }
+    if (!em::far1dIsRcs(m_p->planewave().enabled, m_p->feeds().size())) {
+        m_biNote->setText(I18n::tr("sct_bi_notrcs"));
+        return;
+    }
+    const QFileInfo fi(m_p->filePath());
+    QVector<FarPattern> pats =
+        KernelResultReader::readFar1d(fi.path() + QStringLiteral("/far1d.log"));
+    if (pats.isEmpty()) {
+        m_biNote->setText(I18n::tr("sct_bi_none"));
+        return;
+    }
+
+    const int unit = m_rcsUnit ? m_rcsUnit->currentIndex() : 0;
+    auto fmt = [&](double sigma, double f) {
+        switch (unit) {
+        case 1: {
+            const double db = em::rcsDbsm(sigma);
+            return std::isfinite(db)
+                       ? QStringLiteral("%1 dBsm").arg(db, 0, 'f', 2)
+                       : QStringLiteral("−∞ dBsm");
+        }
+        case 2:
+            return QStringLiteral("%1 λ²")
+                .arg(em::rcsPerWavelengthSq(sigma, f), 0, 'g', 4);
+        default:
+            return QStringLiteral("%1 m²").arg(sigma, 0, 'g', 4);
+        }
+    };
+    auto ro = [](const QString &t) {
+        auto *it = new QTableWidgetItem(t);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        return it;
+    };
+
+    if (wantBi) {
+        QSet<QString> planes;
+        for (const FarPattern &fp : pats) {
+            if (fp.deg.isEmpty()) continue;
+            planes.insert(fp.plane);
+            int imax = 0, imin = 0;
+            for (int i = 1; i < fp.eAbsDb.size(); ++i) {
+                if (fp.eAbsDb[i] > fp.eAbsDb[imax]) imax = i;
+                if (fp.eAbsDb[i] < fp.eAbsDb[imin]) imin = i;
+            }
+            // 後方 = 入射方向 (θ_inc) にいちばん近い角度の点
+            const double back = m_p->planewave().theta;
+            int ib = 0;
+            for (int i = 1; i < fp.deg.size(); ++i)
+                if (std::fabs(fp.deg[i] - back) < std::fabs(fp.deg[ib] - back))
+                    ib = i;
+            const int r = m_biTable->rowCount();
+            m_biTable->insertRow(r);
+            m_biTable->setItem(r, 0, ro(QStringLiteral("%1 / %2 MHz")
+                                            .arg(fp.plane)
+                                            .arg(fp.freqHz * 1e-6, 0, 'g', 6)));
+            m_biTable->setItem(r, 1, ro(fmt(em::rcsFromFar1dDbsm(fp.eAbsDb[ib]),
+                                            fp.freqHz)));
+            m_biTable->setItem(r, 2, ro(fmt(em::rcsFromFar1dDbsm(fp.eAbsDb[imax]),
+                                            fp.freqHz)));
+            m_biTable->setItem(r, 3, ro(QStringLiteral("%1°")
+                                            .arg(fp.deg[imax], 0, 'f', 1)));
+            m_biTable->setItem(r, 4, ro(fmt(em::rcsFromFar1dDbsm(fp.eAbsDb[imin]),
+                                            fp.freqHz)));
+        }
+        m_biTable->resizeColumnsToContents();
+        m_biTable->setVisible(m_biTable->rowCount() > 0);
+        m_biNote->setText(I18n::tr("sct_bi_ok")
+                              .arg(planes.size()).arg(pats.size()));
+    }
+
+    if (wantMx) {
+        // 偏波散乱行列の「入射させた偏波の列」= 後方方向の θ / φ 散乱成分。
+        const FarPattern &fp = pats.first();
+        if (fp.eThetaDb.isEmpty() || fp.ePhiDb.isEmpty()) {
+            m_mxNote->setText(I18n::tr("sct_mx_nocols"));
+        } else {
+            const double back = m_p->planewave().theta;
+            int ib = 0;
+            for (int i = 1; i < fp.deg.size(); ++i)
+                if (std::fabs(fp.deg[i] - back) < std::fabs(fp.deg[ib] - back))
+                    ib = i;
+            const QString pol = (m_p->planewave().pol == 2)
+                                    ? QStringLiteral("H (φ)")
+                                    : QStringLiteral("V (θ)");
+            m_mxNote->setText(I18n::tr("sct_mx_fmt").arg(
+                pol,
+                fmt(em::rcsFromFar1dDbsm(fp.eThetaDb.value(ib, -300.0)),
+                    fp.freqHz),
+                fmt(em::rcsFromFar1dDbsm(fp.ePhiDb.value(ib, -300.0)),
+                    fp.freqHz)));
+        }
+    }
 }
 
 void ScatteringTab::refresh()

@@ -51,5 +51,19 @@ double sphereKa(double radius_m, double freqHz)
     return 2.0 * kPi * radius_m / lambda;
 }
 
+
+double rcsFromFar1dDbsm(double dbsm)
+{
+    // σ = 10^(dBsm/10)。dB は電力次元なので 10 で割る (20 ではない)。
+    return std::pow(10.0, dbsm / 10.0);
+}
+
+bool far1dIsRcs(bool hasPlanewave, int feedCount)
+{
+    // カーネルは給電点があると遠方界を入力電力で正規化した相対利得にする。
+    // その場合 far1d.log の値は RCS ではない (単位ラベルも [dB] になる)。
+    return hasPlanewave && feedCount <= 0;
+}
+
 } // namespace em
 } // namespace ofd

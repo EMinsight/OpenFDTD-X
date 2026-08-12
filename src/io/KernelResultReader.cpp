@@ -159,6 +159,11 @@ struct Far1dCollector {
             if (v.size() >= 3) {
                 cur.deg.push_back(v[1]);
                 cur.eAbsDb.push_back(v[2]);
+                // 列: No. deg E-abs E-theta[dB] E-theta[deg] E-phi[dB] ...
+                if (v.size() >= 6) {
+                    cur.eThetaDb.push_back(v[3]);
+                    cur.ePhiDb.push_back(v[5]);
+                }
             }
         } else if (line.startsWith(QStringLiteral("No."))) {
             // 列ヘッダ — 読み飛ばす
