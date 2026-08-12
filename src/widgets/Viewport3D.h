@@ -64,7 +64,10 @@ class Viewport3D : public QWidget {
 public:
     explicit Viewport3D(Project *project, QWidget *parent = nullptr);
 
-    void setDomain(Domain d) { m_domain = d; update(); }
+    // ドメイン切替。水中音響へ入ったときだけ視点を y 軸方向 (鉛直断面を
+    // 正面に見る向き) へ倒す — 解が y = 0 の 1 枚の面なので、斜めから見ると
+    // 線にしか見えないため。既に水中音響なら視点は触らない。
+    void setDomain(Domain d);
     void setSolidMode(bool solid) { m_solid = solid; update(); }
     bool solidMode() const { return m_solid; }
 
@@ -126,7 +129,13 @@ private:
 
     // ── シーンの範囲と投影変換 (paintEvent とドロップ処理で共用) ───────────
     // メッシュ領域 [lo, hi]。1 軸も広がりが無ければ既定の箱を入れて false。
+    // 水中音響ドメインでは代わりに海 (oceanBounds) を使う。
     bool sceneBounds(double lo[3], double hi[3]) const;
+    // 海のシーン範囲 (x = 距離, z = 深度を下向き負, y は 0)。距離か水深が
+    // 決まっていなければ false。
+    bool oceanBounds(double lo[3], double hi[3]) const;
+    // 海面・海底地形・音源位置を描く (水中音響ドメインのみ)
+    void drawOcean(QPainter &p);
     // m_cx/m_cy/m_cz/m_scale を現在のメッシュ・ウィジェット寸法から更新する
     void updateSceneTransform() const;
     // 3 軸すべてに広がりがあるか (ドロップ配置の前提条件)

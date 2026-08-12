@@ -4,7 +4,9 @@
 #include "core/Project.h"
 #include "io/H5Reader.h"
 #include "widgets/FieldHeatmap.h"
+#include "io/BellhopIO.h"
 #include "io/ShdReader.h"
+#include "io/TlSlice.h"
 #include "widgets/MeshPreview.h"
 #include "widgets/EvCanvas.h"
 #include "widgets/PlotPanel.h"
@@ -110,6 +112,10 @@ const bool s_i18n = [] {
         "folder contains a result HDF5 (time_series_data.h5)");
     ofd::I18n::reg("vp_slice3d_label",
         "%1: |E| z 中央断面 (%2)", "%1: |E| z-mid slice (%2)");
+    ofd::I18n::reg("vp_slice3d_tl",
+        "TL 鉛直断面 (基準 %1 dB から %2 dB 幅、届かない格子は透明)",
+        "TL vertical section (%2 dB below the %1 dB reference; cells with no "
+        "arrivals are transparent)");
     ofd::I18n::reg("vp_slice3d_nofield",
         "3D 空間へ配置できる節点場 (ofd/orcwa の |E|) がありません (%1)",
         "No node field that can be placed in 3D space (|E| of ofd/orcwa) "
@@ -596,8 +602,33 @@ bool CenterPane::loadTlField(const QString &shdPath)
     m_heatmap->setData(cells, f.nrr, f.nrz);
     m_heatmap->setTitle(I18n::tr("vp_slice_tl")
                             .arg(f.minTL, 0, 'f', 1).arg(hi, 0, 'f', 1));
+
+    // 3D シーンへも同じ場を重ねる。BELLHOP の解は距離 × 深度の鉛直面
+    // そのものなので、y = 0 の 1 枚の面として海面・海底と一緒に見える
+    // (io/TlSlice が座標と値の対応づけを持つ)。
+    applyTlSliceTo3D(f);
+
     m_tabs->setCurrentIndex(1);   // 2D 断面へ切り替える
     return true;
+}
+
+// TL 断面 → Viewport3D。距離と水深はプロジェクト (= .env を書いた側) から
+// 取る。範囲が決まらないときは 3D へ渡さない (置き場所を推測しない)。
+bool CenterPane::applyTlSliceTo3D(const ShdField &f)
+{
+    const UnderwaterOpts &u = m_p->underwater();
+    // 深さは .env を書くのと同じ関数から取る (受波器の下端 = 底)
+    const io::TlSlice3D s = io::tlSlice3D(f, u.tlRangeMin_km * 1000.0,
+                                          u.rangeMax_km * 1000.0,
+                                          BellhopIO::bottomDepth(u));
+    if (!s.valid()) { m_viewport->clearResultSlice(); return false; }
+    m_viewport->setResultSlice(s.cells, s.rows, s.cols, s.axis, s.pos_m,
+                               s.u0_m, s.u1_m, s.v0_m, s.v1_m,
+                               I18n::tr("vp_slice3d_tl")
+                                   .arg(QString::number(s.refTl_dB, 'f', 1),
+                                        QString::number(s.spanTl_dB, 'f', 1)));
+    updateOverlayUi();
+    return m_viewport->hasResultSlice();
 }
 
 // プロジェクトを開いたときに見つかった既存 HDF5 用 — 3D シーンだけへ流す。

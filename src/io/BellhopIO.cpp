@@ -80,6 +80,25 @@ double BellhopIO::surfaceSigma(const UnderwaterOpts &u)
     return u.waveHeight_m / 4.0;
 }
 
+double BellhopIO::bottomDepth(const UnderwaterOpts &u)
+{
+    // envText と同じ規則: SSP が 2 点未満なら等速 100 m の既定プロファイル、
+    // 地形断面がそれより深ければそこまで延ばす。
+    double d = (u.ssp.size() >= 2) ? u.ssp.last().depth_m : 100.0;
+    if (!(d > 0.0)) d = 100.0;
+    for (const BathyPoint &q : u.bathymetry)
+        if (std::isfinite(q.depth_m) && q.depth_m > d) d = q.depth_m;
+    return d;
+}
+
+double BellhopIO::sourceDepth(const UnderwaterOpts &u)
+{
+    const double bottom = bottomDepth(u);
+    return (u.srcDepth_m > 0.0)
+               ? std::min(u.srcDepth_m, bottom - 1.0)
+               : std::min(std::max(1.0, bottom * 0.1), bottom - 1.0);
+}
+
 bool BellhopIO::patternEnabled(const UnderwaterOpts &u)
 {
     return u.sbpPattern && u.sonarDir != 0 && u.beamWidth_deg > 0.0;
@@ -189,21 +208,15 @@ QString BellhopIO::envText(const Project &p)
     //    sound speed profile")、断面の最深点まで SSP を末尾の音速で延長する ──
     const QVector<BathyPoint> bathy = cleanBathymetry(u.bathymetry);
     const bool useBty = bathy.size() >= 2;
-    double bottomDepth = ssp.last().depth_m;
-    if (useBty) {
-        double deepest = 0.0;
-        for (const BathyPoint &q : bathy) deepest = std::max(deepest, q.depth_m);
-        if (deepest > bottomDepth) {
-            ssp.push_back({ deepest, ssp.last().c_mps });
-            bottomDepth = deepest;
-        }
-    }
+    // **底の深さと音源深度は純関数に出してある** (bottomDepth / sourceDepth)。
+    // 3D シーンの海がここと同じ値を使うためで、片方だけ直すと画面と .env が
+    // 食い違う (selftest がこの一致を判定している)。
+    const double bottomDepth = BellhopIO::bottomDepth(u);
+    if (useBty && bottomDepth > ssp.last().depth_m)
+        ssp.push_back({ bottomDepth, ssp.last().c_mps });
 
     // ── 音源深度: 既定 0 なら従来どおり自動 (最大深度の 10%、1 m 以上・底より上) ──
-    const double srcDepth =
-        (u.srcDepth_m > 0.0)
-            ? std::min(u.srcDepth_m, bottomDepth - 1.0)
-            : std::min(std::max(1.0, bottomDepth * 0.1), bottomDepth - 1.0);
+    const double srcDepth = BellhopIO::sourceDepth(u);
 
     QString text;
     QTextStream out(&text);

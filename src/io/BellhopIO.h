@@ -56,6 +56,12 @@ public:
     static dir::Shape patternShape(const UnderwaterOpts &u);
     // SSPOPT 文字列。体積吸収 (Thorp) を選ぶと 4 文字目 'T' が付く。
     static QString sspOption(const UnderwaterOpts &u);
+    // 底の深さ [m] — SSP の最深点 (2 点未満なら既定 100 m) と地形断面の
+    // 最深点の大きい方。.env の RD / 底面層 / ZBOX と 3D シーンの海が
+    // **同じ値**を使うための純関数。
+    static double bottomDepth(const UnderwaterOpts &u);
+    // 音源深度 [m]。0 指定なら自動 (底の 10%、1 m 以上・底より 1 m 上)。
+    static double sourceDepth(const UnderwaterOpts &u);
 };
 
 } // namespace ofd
