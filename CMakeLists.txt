@@ -107,6 +107,35 @@ set(CORE_SOURCES
     src/core/MeshRefine.cpp
     src/core/MeshRefine.h
 
+    # 微分を使わない箱制約付き最適化 (PSO / 実数値 GA) — Qt 非依存。
+    # OptimizeTab の PSO / GA 手法の実体で、selftest から解析的に最適解が
+    # 分かっているテスト関数と突き合わせる
+    src/core/Optimizer.cpp
+    src/core/Optimizer.h
+    # トポロジー最適化の密度場パラメータ化 (フィルタ/射影/矩形分解) — Qt Core のみ
+    src/core/DensityField.cpp
+    src/core/DensityField.h
+    # IlluminationOpts → レイトレースの系 (照明タブと光タブで共有)
+    src/core/IlluminationScene.cpp
+    src/core/IlluminationScene.h
+
+    # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
+    # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する
+    src/core/FlankingTransmission.cpp
+    src/core/FlankingTransmission.h
+
+    # 伝送線路の準 TEM 解析 (閉形式の Z0 / eps_eff / γ / S パラメータ) —
+    # Qt 非依存。TransmissionLineTab の計算実体で、selftest から厳密解
+    # (同軸・平行 2 線・等角写像) と突き合わせる
+    src/core/TransmissionLine.cpp
+    src/core/TransmissionLine.h
+
+    # 受光器 (フォトダイオード) の雑音収支 (ショット / 熱 / RIN) — Qt 非依存。
+    # SchematicTab「ノイズ・温度効果」の計算実体で、selftest から定義式と
+    # 漸近形 (RIN 支配の SNR 頭打ち) を検証する
+    src/core/ReceiverNoise.cpp
+    src/core/ReceiverNoise.h
+
     # 実材料の分散 (公刊 Sellmeier) — Qt 非依存。selftest からも直接検証する
     src/optics/MaterialDispersion.cpp
     src/optics/MaterialDispersion.h
@@ -308,6 +337,16 @@ set(CORE_SOURCES
     src/optics/RayTrace.cpp
     src/optics/RayTrace.h
 
+    # 非順次 (照明系) モンテカルロ・レイトレーサ — Qt 非依存。
+    # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体
+    src/optics/IlluminationTrace.cpp
+    src/optics/IlluminationTrace.h
+
+    # 配光ファイル (IES LM-63) の読み書き — 照明設計ソフトへの受け渡し。
+    # selftest からも直接検証するため CORE_SOURCES に置く
+    src/io/PhotometricIO.cpp
+    src/io/PhotometricIO.h
+
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/audio/AudioEditEngine.cpp
@@ -340,6 +379,9 @@ set(GUI_SOURCES
     src/widgets/SectionBox.h
     src/widgets/MiniPlot.cpp
     src/widgets/MiniPlot.h
+    # 配光曲線 (極座標) — IlluminationTab の配光表示
+    src/widgets/PolarPlot.cpp
+    src/widgets/PolarPlot.h
     src/widgets/FieldHeatmap.cpp
     src/widgets/FieldHeatmap.h
     src/widgets/MeshPreview.cpp

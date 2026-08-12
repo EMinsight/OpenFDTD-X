@@ -8,9 +8,14 @@
 // フォームは Project::illumination() (.ofdx "illumination") の View。
 // スペクトルは解析モデル (ガウシアンローブ / 黒体) で定義され、測色量
 // (色度 x,y・u',v'・CCT・Duv・発光効率) は `optics/Colorimetry` で **実計算**
-// する。配光に依存する量 (全光束・光学効率・ビーム角・均斉度・UGR) と
-// 分光反射率の数表が要る量 (Ra・TM-30) は値を出さず「—」と表示する
+// する。配光に依存する量 (系の全光束・光学効率・ビーム角・均斉度・軸上光度・
+// 中心照度) は `optics/IlluminationTrace` の非順次モンテカルロ・レイトレースで
+// **実計算**する。分光反射率の数表が要る量 (Ra・TM-30)、波長分解の追跡が要る
+// 色ムラ、輝度分布が要る UGR は値を出さず「—」と表示する
 // (絶対規則 5: 未実装を動作済みに見せない)。
+//
+// 追跡モデルに入っていない要素 (TIR レンズ・導光板・蛍光体散乱・BSDF 実測・
+// 実測レイデータ) が選ばれているときは、配光量を計算せずその理由を出す。
 #pragma once
 #include <QScrollArea>
 
@@ -25,6 +30,7 @@ class QTableWidget;
 namespace ofd {
 
 class Project;
+namespace illum { struct Result; }
 
 class IlluminationTab : public QScrollArea {
     Q_OBJECT
@@ -38,8 +44,15 @@ private slots:
     void onEdited();  // apply() + 測色量の再計算
 
 private:
-    void recompute();          // スペクトルモデル → 測色表
+    void recompute();          // スペクトルモデル → 測色表、追跡 → 配光量
     void updateSpectrumPage(); // スペクトル選択 → パラメータ欄の切替
+
+    // 現在の設定で追跡する。追跡モデルに入っていない選択や不正な幾何では
+    // false を返す (理由は測光・測色表の「未計算」行に出ている)
+    bool traceNow(illum::Result *out, long long *rays) const;
+    void showPolarPlot();       // 配光曲線 (極座標)
+    void showIlluminanceMap();  // 評価面の照度分布
+    void exportIes();           // IES LM-63 書出
 
     Project      *m_p;
     bool          m_updating = false;
@@ -73,6 +86,12 @@ private:
     QCheckBox    *m_lightGuide;
     QCheckBox    *m_phosphor;
     QButtonGroup *m_surface;        // 鏡面 / 拡散 / BSDF実測 / ABGモデル
+
+    // 非順次レイトレースの幾何 (optics/IlluminationTrace への入力)
+    QLineEdit    *m_reflF, *m_reflR, *m_reflRho;
+    QLineEdit    *m_diffZ, *m_diffR, *m_diffTau;
+    QLineEdit    *m_abgA, *m_abgB, *m_abgG;
+    QLineEdit    *m_tgtD, *m_tgtW, *m_chip;
 
     // 測光・測色
     QTableWidget *m_photoTable;

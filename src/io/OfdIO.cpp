@@ -872,16 +872,69 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                     {"num_rcv_depth", u.numRcvDepth},
                     {"num_rcv_range", u.numRcvRange} };
             }
+            // 海面 / 損失項 / 送信指向性 — 既定値のままなら書かない
+            if (u.waveHeight_m != d.waveHeight_m
+                || u.surfSpecular != d.surfSpecular
+                || u.surfBragg != d.surfBragg) {
+                uwObj["surface"] = QJsonObject{
+                    {"wave_height_m", u.waveHeight_m},
+                    {"specular", u.surfSpecular},
+                    {"bragg", u.surfBragg} };
+            }
+            if (u.tlAbsorb != d.tlAbsorb
+                || u.tlRangeMin_km != d.tlRangeMin_km) {
+                uwObj["tl"] = QJsonObject{
+                    {"absorption", u.tlAbsorb},
+                    {"range_min_km", u.tlRangeMin_km} };
+            }
+            if (u.sonarDir != d.sonarDir
+                || u.beamWidth_deg != d.beamWidth_deg) {
+                uwObj["beam"] = QJsonObject{
+                    {"directivity", u.sonarDir},
+                    {"width_deg", u.beamWidth_deg} };
+            }
         }
         root["underwater"] = uwObj;
+    }
+    // ── 伝送線路 (.ofdx "transmission_line") — 既定値のままなら書かない ────
+    {
+        auto toJson = [](const TransmissionLineOpts &t) {
+            return QJsonObject{
+                {"kind", t.kind},
+                {"w_mm", t.w_mm}, {"h_mm", t.h_mm},
+                {"a_mm", t.a_mm}, {"b_mm", t.b_mm},
+                {"d_mm", t.d_mm}, {"dia_mm", t.dia_mm},
+                {"slot_mm", t.slot_mm},
+                {"epsr", t.epsr}, {"tan_d", t.tanD},
+                {"sigma_sm", t.sigma_Sm},
+                {"length_mm", t.length_mm},
+                {"freq_ghz", t.freq_GHz},
+                {"z0_ref_ohm", t.z0Ref_ohm},
+                {"ports", t.ports},
+                {"show", QJsonObject{
+                    {"beta", t.showBeta}, {"vp", t.showVp}, {"vg", t.showVg},
+                    {"alpha", t.showAlpha}, {"eps_eff", t.showEpsEff},
+                    {"s_mag", t.showSmag}, {"il", t.showIL}, {"rl", t.showRL},
+                    {"delay", t.showDelay}, {"touchstone", t.showTouchstone},
+                    {"z0_freq_dep", t.z0FreqDep}, {"z0_reim", t.z0ReIm} }} };
+        };
+        const QJsonObject cur = toJson(p.tline());
+        if (cur != toJson(TransmissionLineOpts{}))
+            root["transmission_line"] = cur;
     }
     {
         // API key is NOT persisted here — it lives in QSettings
         const Tidy3dOpts &t = p.tidy3d();
-        root["tidy3d"] = QJsonObject{
+        QJsonObject tj{
             {"project_name", t.projectName},
             {"resolution", t.resolution},
             {"auto_pml", t.autoPml} };
+        // 追加キーは既定値と違うときだけ書く (旧 .ofdx とバイト一致)
+        const Tidy3dOpts d;
+        if (t.subpixel != d.subpixel) tj["subpixel"] = t.subpixel;
+        if (t.dftMonitors != d.dftMonitors) tj["dft_monitors"] = t.dftMonitors;
+        if (t.priority != d.priority) tj["priority"] = t.priority;
+        root["tidy3d"] = tj;
     }
     // ── ジオメトリ拡張 (.ofdx "geometry") — 追加キーのみ ────────────────────
     // メッシュ細分化領域 (GeometryTab の「細分化領域」表)。領域が 1 つも
@@ -1114,7 +1167,19 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                 {"targets", QJsonObject{
                     {"cct_k", i.cctTarget_K},
                     {"cct_tol_k", i.cctTol_K},
-                    {"duv_tol", i.duvTol} }} };
+                    {"duv_tol", i.duvTol} }},
+                // 非順次レイトレースの幾何 (追加キー)
+                {"trace", QJsonObject{
+                    {"reflector_focal_mm", i.reflFocal_mm},
+                    {"reflector_radius_mm", i.reflRadius_mm},
+                    {"reflector_reflectance", i.reflReflect},
+                    {"diffuser_z_mm", i.diffZ_mm},
+                    {"diffuser_radius_mm", i.diffRadius_mm},
+                    {"diffuser_transmittance", i.diffTrans},
+                    {"abg_a", i.abgA}, {"abg_b", i.abgB}, {"abg_g", i.abgG},
+                    {"target_distance_mm", i.targetDist_mm},
+                    {"target_half_mm", i.targetHalf_mm},
+                    {"chip_size_mm", i.chipSize_mm} }} };
         };
         const QJsonObject cur = toJson(p.illumination());
         if (cur != toJson(IlluminationOpts{})) root["illumination"] = cur;
@@ -1494,6 +1559,55 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             u.numRcvDepth = bh.value("num_rcv_depth").toInt(u.numRcvDepth);
             u.numRcvRange = bh.value("num_rcv_range").toInt(u.numRcvRange);
         }
+        if (uw.contains("surface")) {
+            const QJsonObject sf = uw["surface"].toObject();
+            u.waveHeight_m = sf.value("wave_height_m").toDouble(u.waveHeight_m);
+            u.surfSpecular = sf.value("specular").toBool(u.surfSpecular);
+            u.surfBragg = sf.value("bragg").toBool(u.surfBragg);
+        }
+        if (uw.contains("tl")) {
+            const QJsonObject tl = uw["tl"].toObject();
+            u.tlAbsorb = tl.value("absorption").toBool(u.tlAbsorb);
+            u.tlRangeMin_km = tl.value("range_min_km").toDouble(u.tlRangeMin_km);
+        }
+        if (uw.contains("beam")) {
+            const QJsonObject bm = uw["beam"].toObject();
+            u.sonarDir = qBound(0, bm.value("directivity").toInt(u.sonarDir), 2);
+            u.beamWidth_deg = bm.value("width_deg").toDouble(u.beamWidth_deg);
+        }
+    }
+    // 伝送線路 — キーが無い旧ファイルは既定値のまま
+    if (root.contains("transmission_line")) {
+        const QJsonObject tj = root["transmission_line"].toObject();
+        TransmissionLineOpts &t = p.tline();
+        t.kind = qBound(0, tj.value("kind").toInt(t.kind), 4);
+        t.w_mm = tj.value("w_mm").toDouble(t.w_mm);
+        t.h_mm = tj.value("h_mm").toDouble(t.h_mm);
+        t.a_mm = tj.value("a_mm").toDouble(t.a_mm);
+        t.b_mm = tj.value("b_mm").toDouble(t.b_mm);
+        t.d_mm = tj.value("d_mm").toDouble(t.d_mm);
+        t.dia_mm = tj.value("dia_mm").toDouble(t.dia_mm);
+        t.slot_mm = tj.value("slot_mm").toDouble(t.slot_mm);
+        t.epsr = tj.value("epsr").toDouble(t.epsr);
+        t.tanD = tj.value("tan_d").toDouble(t.tanD);
+        t.sigma_Sm = tj.value("sigma_sm").toDouble(t.sigma_Sm);
+        t.length_mm = tj.value("length_mm").toDouble(t.length_mm);
+        t.freq_GHz = tj.value("freq_ghz").toDouble(t.freq_GHz);
+        t.z0Ref_ohm = tj.value("z0_ref_ohm").toDouble(t.z0Ref_ohm);
+        t.ports = tj.value("ports").toInt(t.ports);
+        const QJsonObject sh = tj["show"].toObject();
+        t.showBeta = sh.value("beta").toBool(t.showBeta);
+        t.showVp = sh.value("vp").toBool(t.showVp);
+        t.showVg = sh.value("vg").toBool(t.showVg);
+        t.showAlpha = sh.value("alpha").toBool(t.showAlpha);
+        t.showEpsEff = sh.value("eps_eff").toBool(t.showEpsEff);
+        t.showSmag = sh.value("s_mag").toBool(t.showSmag);
+        t.showIL = sh.value("il").toBool(t.showIL);
+        t.showRL = sh.value("rl").toBool(t.showRL);
+        t.showDelay = sh.value("delay").toBool(t.showDelay);
+        t.showTouchstone = sh.value("touchstone").toBool(t.showTouchstone);
+        t.z0FreqDep = sh.value("z0_freq_dep").toBool(t.z0FreqDep);
+        t.z0ReIm = sh.value("z0_reim").toBool(t.z0ReIm);
     }
     if (root.contains("tidy3d")) {
         const QJsonObject t3 = root["tidy3d"].toObject();
@@ -1501,6 +1615,9 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         t.projectName = t3.value("project_name").toString(t.projectName);
         t.resolution = t3.value("resolution").toString(t.resolution);
         t.autoPml = t3.value("auto_pml").toBool(t.autoPml);
+        t.subpixel = t3.value("subpixel").toBool(t.subpixel);
+        t.dftMonitors = t3.value("dft_monitors").toBool(t.dftMonitors);
+        t.priority = qBound(0, t3.value("priority").toInt(t.priority), 1);
     }
     // ジオメトリ拡張 — キーが無い旧ファイルは細分化領域なし (既定値のまま)
     if (root.contains("geometry")) {
@@ -1733,6 +1850,20 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         i.cctTarget_K = tg.value("cct_k").toDouble(i.cctTarget_K);
         i.cctTol_K = tg.value("cct_tol_k").toDouble(i.cctTol_K);
         i.duvTol = tg.value("duv_tol").toDouble(i.duvTol);
+        // レイトレース幾何 — キーが無い旧ファイルは既定値のまま
+        const QJsonObject tr = ij["trace"].toObject();
+        i.reflFocal_mm = tr.value("reflector_focal_mm").toDouble(i.reflFocal_mm);
+        i.reflRadius_mm = tr.value("reflector_radius_mm").toDouble(i.reflRadius_mm);
+        i.reflReflect = tr.value("reflector_reflectance").toDouble(i.reflReflect);
+        i.diffZ_mm = tr.value("diffuser_z_mm").toDouble(i.diffZ_mm);
+        i.diffRadius_mm = tr.value("diffuser_radius_mm").toDouble(i.diffRadius_mm);
+        i.diffTrans = tr.value("diffuser_transmittance").toDouble(i.diffTrans);
+        i.abgA = tr.value("abg_a").toDouble(i.abgA);
+        i.abgB = tr.value("abg_b").toDouble(i.abgB);
+        i.abgG = tr.value("abg_g").toDouble(i.abgG);
+        i.targetDist_mm = tr.value("target_distance_mm").toDouble(i.targetDist_mm);
+        i.targetHalf_mm = tr.value("target_half_mm").toDouble(i.targetHalf_mm);
+        i.chipSize_mm = tr.value("chip_size_mm").toDouble(i.chipSize_mm);
     }
     return true;
 }

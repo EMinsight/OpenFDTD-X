@@ -35,6 +35,11 @@ struct FarPattern {
     double  freqHz = 0;
     QVector<double> deg;        // 角度 [deg]
     QVector<double> eAbsDb;     // E-abs [dB]
+    // 偏波成分 (列 4 と 6)。**平面波入射の問題ではこれらも [dBsm]** で、
+    // 偏波散乱行列の 1 列 (入射偏波に対する θ / φ 散乱成分) になる。
+    // 列が無い古い出力では空のまま。
+    QVector<double> eThetaDb;
+    QVector<double> ePhiDb;
 };
 
 // 熱解析レイヤの診断 1 点 (sol/solve.c が周波数ごとに 1 行書く)。

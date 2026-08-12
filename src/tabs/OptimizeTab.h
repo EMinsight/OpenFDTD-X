@@ -6,12 +6,17 @@
 //   - 手法別ハイパーパラメータ / 実行先 (ローカル・HPC・tidy3d)
 // トポロジー最適化と tidy3d 実行先は光ドメインのみ。状態はローカル保持
 // (Project に対応フィールドが無いため apply() での永続化は行わない)。
+// トポロジー節だけは core/DensityField へ配線してあり、設計領域・解像度・
+// フィルタ半径・射影から密度場を作って図と数値を出し、「密度場を形状へ変換」
+// で Project の形状ユニットを書き換える (結果は通常の geometry として残る)。
 #pragma once
 #include <QScrollArea>
 
+#include "../core/Optimizer.h"
 #include "../kernel/OptimizeFom.h"
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class QCheckBox;
 class QComboBox;
@@ -23,6 +28,7 @@ class QTableWidget;
 
 namespace ofd {
 
+class FieldHeatmap;
 class Project;
 class SectionBox;
 
@@ -39,9 +45,24 @@ private slots:
     void onPointFinished(int index, const SweepResult &r);
     void onSweepFinished(bool ok);
     void updateRunUi();       // 手法・実行状態 → ボタンと注記
+    // トポロジー: 設計領域・解像度・フィルタ・射影 → 画素格子と密度場の再計算
+    void updateTopology();
+    void applyTopology();     // 射影後の密度場 → 直方体ユニット
 
 private:
     void setMode(const QString &mode);
+
+    // ── 最適化ループ (PSO / GA) ────────────────────────────────────────────
+    // 掃引が「決めた点を順に回す」のに対し、こちらは 1 世代ぶんを回してから
+    // 次の世代を決める。SweepRunner の samples (複数パラメータ同時) を
+    // 1 世代 = 1 回の start() として使う。
+    void startOptimize();
+    bool runGeneration();          // 現世代を投入する (false = 開始できない)
+    void finishOptimize(bool ok);
+    // 変数表のチェック行 → 設計変数 (対象量の列で実在の量に結び付ける)。
+    // 1 行も取れなければ false。
+    bool collectOptVars(QVector<SweepColumn> *cols,
+                        std::vector<optim::Variable> *vars) const;
 
     Project   *m_p;
     QString    m_mode = "sweep";       // sweep|pso|adjoint|ga|bayes|topology
@@ -67,6 +88,14 @@ private:
     QWidget    *m_adjointWarnRow;        // 光以外での注意バッジ
     QLabel     *m_adjointWarn;
     QLineEdit  *m_pop, *m_iters, *m_lr, *m_res, *m_filter;
+    // トポロジー: 設計領域 (原点 μm/μm/nm・大きさ μm/μm/nm)・射影・材料番号
+    QLineEdit  *m_topoX0 = nullptr, *m_topoY0 = nullptr, *m_topoZ0 = nullptr;
+    QLineEdit  *m_topoW = nullptr,  *m_topoD = nullptr,  *m_topoT = nullptr;
+    QLineEdit  *m_topoBeta = nullptr, *m_topoEta = nullptr, *m_topoMat = nullptr;
+    QLabel     *m_topoGrid = nullptr, *m_topoFeat = nullptr, *m_topoFill = nullptr;
+    QLabel     *m_topoWarn = nullptr;
+    FieldHeatmap *m_topoMap = nullptr;
+    QPushButton  *m_topoApply = nullptr;
 
     // 実行 / Run
     QComboBox *m_target;                 // ローカル / HPC / tidy3d
@@ -86,6 +115,15 @@ private:
     SweepRunner  *m_sweeper = nullptr;
     RunConfig     m_runCfg;
     QVector<FomValue> m_foms;
+
+    // 最適化ループの状態 (m_optimizing = true の間だけ有効)
+    std::unique_ptr<optim::Optimizer> m_optimizer;
+    bool                 m_optimizing = false;
+    bool                 m_optStopped = false;
+    QVector<SweepColumn> m_optCols;
+    std::vector<double>  m_genFoms;      // 現世代の FoM (無効な点は NaN)
+    int                  m_optGens = 0;  // 総世代数
+    int                  m_optPop = 0;   // 1 世代の個体数
 };
 
 } // namespace ofd

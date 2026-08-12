@@ -62,6 +62,8 @@ private:
     void        refreshRcwaTable();
     void        refreshOpticalSystem();  // 面データ表 (レンズエディタと共有)
     void        updateGeoMethodView();   // 解法 → 波動ソルバー設定の有効・無効
+    // Raycast 節の設定で非順次レイトレースを実行し、結果を要約する
+    void        runRaycast();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -141,6 +143,10 @@ private:
     QCheckBox *m_raySpecular, *m_rayDiffuse;
     QCheckBox *m_rayPolarized, *m_rayDispersion, *m_rayFresnel;
     QCheckBox *m_rayVizEnable;
+    // 追跡の実行 (optics/IlluminationTrace)。系は照明タブと共有の
+    // IlluminationOpts から組む (core/IlluminationScene)
+    QPushButton *m_rayRunBtn = nullptr;
+    QLabel      *m_rayResult = nullptr;
 
     // ── 光学系定義 / Optical system (面データ表 + 解析オプション) ──
     QTableWidget *m_optSysTable;

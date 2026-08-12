@@ -196,13 +196,33 @@ const bool s_i18n = [] {
     I18n::reg("emc_pred_ground_scan",
               "▸ グランド反射: 指定アンテナ高 %1 m で %2 dB、"
               "規格の 1〜4 m 走査での最大は %3 dB "
-              "(EUT 高さ 0.8 m の卓上配置・水平偏波 Γ = −1 を仮定)。"
+              "(EUT 高さ 0.8 m の卓上配置、%4)。"
               "走査の最大を使いたい場合はアンテナ高をその値に合わせてください。",
               "▸ Ground reflection: %2 dB at the antenna height of %1 m; the "
               "maximum over the 1-4 m scan required by the standard is %3 dB "
-              "(assuming a 0.8 m tabletop EUT and horizontal polarisation with "
-              "gamma = -1). Set the antenna height to that value if you want "
-              "the scan maximum.");
+              "(0.8 m tabletop EUT, %4). Set the antenna height to that value "
+              "if you want the scan maximum.");
+    I18n::reg("emc_pol_both",
+              "水平・垂直の両偏波で計算し大きい方を採用 "
+              "(完全導体面の反射係数は水平 Γ = −1 / 垂直 Γ = +1)",
+              "computed for both polarisations and the larger taken (over a "
+              "perfect conductor the reflection coefficient is -1 for "
+              "horizontal and +1 for vertical)");
+    I18n::reg("emc_pol_h",
+              "水平偏波のみ (完全導体面で Γ = −1)",
+              "horizontal polarisation only (gamma = -1 over a perfect "
+              "conductor)");
+    I18n::reg("emc_pred_ground_nopec",
+              " · 金属床を模擬しない設定なのでグランド反射を加えていません",
+              " · the metal floor is not modelled, so no ground reflection is "
+              "added");
+    I18n::reg("emc_pred_turn_off",
+              "▸ ターンテーブルを回さない設定ですが、予測は far1d.log の"
+              "最大利得を使うので方位の最大値のままです (実測より上振れ側の"
+              "見積りになります)。",
+              "▸ The turntable is switched off, but the prediction still uses "
+              "the peak gain in far1d.log, i.e. the maximum over azimuth. It "
+              "is therefore an upper bound compared with such a measurement.");
     I18n::reg("emc_pred_caveat",
               "▸ 適用限界: (1) この換算は「給電のある問題」専用です — "
               "planewave 入射の far1d は RCS 系の量なので使えません。"
@@ -411,15 +431,20 @@ const bool s_i18n = [] {
               "setup for the field inside the enclosure plus a coupling model to "
               "the board traces. Running the kernel and importing its results is "
               "not implemented, so no verdict — and no estimate — is shown.");
-    I18n::reg("emc_uw_setup", "EUT 回転・偏波の切替・グランドプレーンの詳細",
-              "the EUT rotation, the polarisation switch and the ground-plane "
-              "details");
+    I18n::reg("emc_uw_setup",
+              "「ケーブル配線を含む」のチェック (ケーブルの等価放射モデルが"
+              "要ります)",
+              "the \"include the cable routing\" check box (it needs an "
+              "equivalent radiating model of the cable)");
     I18n::reg("emc_uw_setup_ok",
-              "サイト種別・測定距離・アンテナ高 "
-              "(限度値の距離換算と、予測のグランド反射に使われます)",
-              "the site type, the measurement distance and the antenna height "
+              "サイト種別・測定距離・アンテナ高・両偏波の切替・金属床 (PEC) の"
+              "模擬 (限度値の距離換算と、予測のグランド反射に使われます)。"
+              "ターンテーブルは far1d.log の最大利得が方位の最大に当たります",
+              "the site type, the measurement distance, the antenna height, "
+              "the both-polarisations switch and the metal-floor (PEC) option "
               "(used for the limit conversion and for the ground reflection in "
-              "the prediction above)");
+              "the prediction above). The turntable corresponds to using the "
+              "peak gain in far1d.log, i.e. the maximum over azimuth");
     I18n::reg("emc_uw_src", "放射源のチェックとクロック周波数",
               "the emission-source check boxes and the clock frequency");
     I18n::reg("emc_uw_cond", "伝導エミッションの設定 (LISN / プローブ・検波器)",
@@ -707,6 +732,9 @@ QWidget *EmcTab::buildEmissionPage()
     connect(m_antHeight, &QLineEdit::textChanged,
             this, &EmcTab::updateCompliance);
     connect(m_site, &QButtonGroup::idClicked, this, &EmcTab::updateCompliance);
+    // 偏波・金属床・ターンテーブルは予測のグランド反射に効く
+    for (QCheckBox *c : { m_bothPol, m_gndPec, m_turnTable })
+        connect(c, &QCheckBox::toggled, this, &EmcTab::updateCompliance);
     v->addWidget(ss);
 
     // 放射源 / Emission sources
@@ -976,6 +1004,13 @@ void EmcTab::rebuildPrediction(const em::emc::LimitSegment *seg, int n,
     const int siteIdx = m_site ? m_site->checkedId() : 0;
     const auto site = static_cast<EmcSite>(qBound(0, siteIdx, 3));
     const bool wantGnd = m_predGround->isChecked();
+    // 偏波: 規格は水平・垂直の両方で測って大きい方を採る。完全導体面では
+    // 水平 Γ = −1 / 垂直 Γ = +1 と厳密に決まるので、増分が偏波で変わる。
+    const auto pol = (m_bothPol && m_bothPol->isChecked())
+                         ? EmcPolarization::Both
+                         : EmcPolarization::Horizontal;
+    // 金属床を模擬しない設定なら反射そのものが無い
+    const bool pec = !m_gndPec || m_gndPec->isChecked();
     bool okD = false;
     const double maxDim = m_predMaxDim->text().trimmed().toDouble(&okD);
 
@@ -990,7 +1025,8 @@ void EmcTab::rebuildPrediction(const em::emc::LimitSegment *seg, int n,
         if (!fs.valid) continue;
         // 増分は周波数ごとに違う (2 波の行路差が波長に対して変わるため)
         const GroundEnhancement ge =
-            groundEnhancement(site, distM, okH ? antH : 0.0, freqs[i]);
+            groundEnhancement(site, distM, okH ? antH : 0.0, freqs[i],
+                              0.8, pol, pec);
         const double gnd = (wantGnd && ge.valid && ge.applies)
                                ? ge.atHeightDb : 0.0;
         gndLast = gnd;
@@ -1043,6 +1079,8 @@ void EmcTab::rebuildPrediction(const em::emc::LimitSegment *seg, int n,
         gndText = I18n::tr("emc_pred_ground_far");
     } else if (site == EmcSite::Reverberation) {
         gndText = I18n::tr("emc_pred_ground_rev");
+    } else if (!pec) {
+        gndText = I18n::tr("emc_pred_ground_nopec");
     } else if (gndApplies) {
         gndText = I18n::tr("emc_pred_ground_on")
                       .arg(gndLast, 0, 'f', 1).arg(antH, 0, 'g', 3);
@@ -1052,7 +1090,12 @@ void EmcTab::rebuildPrediction(const em::emc::LimitSegment *seg, int n,
         scanText = QLatin1Char('\n') + I18n::tr("emc_pred_ground_scan")
                        .arg(antH, 0, 'g', 3)
                        .arg(gndLast, 0, 'f', 1)
-                       .arg(gndScanLast, 0, 'f', 1);
+                       .arg(gndScanLast, 0, 'f', 1)
+                       .arg(I18n::tr(pol == EmcPolarization::Both
+                                         ? "emc_pol_both" : "emc_pol_h"));
+    // ターンテーブルを止めても予測は方位の最大値のまま (上振れ側)
+    if (m_turnTable && !m_turnTable->isChecked())
+        scanText += QLatin1Char('\n') + I18n::tr("emc_pred_turn_off");
     m_predStatus->setText(I18n::tr("emc_pred_ok")
                               .arg(file).arg(freqs.size())
                               .arg(pw, 0, 'g', 4).arg(distM, 0, 'g', 4)

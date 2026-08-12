@@ -278,6 +278,21 @@ struct IlluminationOpts {
     // 設計目標 (判定バッジのしきい値)
     double  cctTarget_K = 5000.0, cctTol_K = 300.0;
     double  duvTol = 0.006;
+
+    // 非順次レイトレース (optics/IlluminationTrace) の幾何。長さは mm。
+    // リフレクタは焦点に光源を置いた回転放物面で、開口半径は R > 2f が要る
+    // (R ≤ 2f だと開口の縁が焦点より下に来て光線を 1 本も捕まえられない)。
+    double  reflFocal_mm  = 5.0;    // 焦点距離 f
+    double  reflRadius_mm = 20.0;   // 開口半径 R
+    double  reflReflect   = 0.90;   // 反射率 ρ
+    double  diffZ_mm      = 25.0;   // 拡散板の位置 z
+    double  diffRadius_mm = 25.0;   // 拡散板の半径
+    double  diffTrans     = 0.85;   // 透過率 τ
+    // Harvey–Shack ABG: BSDF(Δβ) = A/(B + Δβ^g)
+    double  abgA = 0.02, abgB = 1.0e-4, abgG = 2.0;
+    double  targetDist_mm = 1000.0; // 評価面の距離 D
+    double  targetHalf_mm = 500.0;  // 評価面の半幅 W
+    double  chipSize_mm   = 1.0;    // LED チップの一辺 (srcModel = 2)
 };
 
 // ── 室内音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
@@ -571,6 +586,56 @@ struct UnderwaterOpts {
     double  srcDepth_m = 0.0;         // 0 = 自動 (水深の 10%、従来動作)
     int     numRcvDepth = 201;        // NRD
     int     numRcvRange = 501;        // NR
+
+    // ── 海面 (.ofdx "underwater.surface" — 追加キー) ────────────────────────
+    // BELLHOP の海面粗さ σ [m] は SSP 行の SIGMA。有義波高 Hs との関係は
+    // レイリー海面で σ = Hs/4。**既定は鏡面 (σ = 0) = 従来の .env と一致**で、
+    // 「Bragg 散乱」を明示的に選んだときだけ粗さが入る。
+    double  waveHeight_m = 1.5;       // 有義波高 Hs
+    bool    surfSpecular = true;      // 鏡面として扱う (σ = 0)
+    bool    surfBragg = false;        // 粗さによる散乱を含む (σ = Hs/4)
+
+    // ── 伝搬損失の項と距離範囲 (.ofdx "underwater.tl" — 追加キー) ───────────
+    // 幾何拡散は BELLHOP の解に内在するので切り替えられない。体積吸収
+    // (Thorp) は SSPOPT の 4 文字目 'T'。**既定は従来どおり付けない**。
+    bool    tlAbsorb = false;         // 体積吸収 (Thorp)
+    double  tlRangeMin_km = 0.0;      // 受波器距離の下限 (BELLHOP の R 行の始点)
+
+    // ── 送信指向性 (.ofdx "underwater.beam" — 追加キー) ─────────────────────
+    // 指向性を選ぶと射出角の扇を ±ビーム幅/2 と交差させる (ray モデルでの
+    // 指向性)。**ビーム内の重み付けは一様**で、実測パターンには .sbp が要る。
+    // 既定は無指向 = 従来の射出角範囲そのまま。
+    int     sonarDir = 0;             // 0=無指向 1=指向性 2=アレイ
+    double  beamWidth_deg = 15.0;
+};
+
+// ── 伝送線路タブ (.ofdx "transmission_line") ────────────────────────────────
+// 断面形状と材料から準 TEM の閉形式で Z₀ / ε_eff / γ / S を出す
+// (`core/TransmissionLine`)。既定値は FR-4 上の 50 Ω 級マイクロストリップ。
+struct TransmissionLineOpts {
+    // 0=マイクロストリップ 1=ストリップライン 2=同軸 3=平行2線 4=コプレーナ
+    int     kind = 0;
+    double  w_mm = 3.0;        // 線路幅 / CPW の中心導体幅
+    double  h_mm = 1.6;        // 基板厚 / ストリップラインの地板間隔
+    double  a_mm = 0.5;        // 同軸の内導体半径
+    double  b_mm = 1.68;       // 同軸の外導体内半径
+    double  d_mm = 3.0;        // 平行 2 線の中心間隔
+    double  dia_mm = 1.0;      // 平行 2 線の線径
+    double  slot_mm = 0.3;     // CPW のスロット幅
+    double  epsr = 4.4;
+    double  tanD = 0.02;
+    double  sigma_Sm = 5.8e7;  // 導体導電率 (0 = 無損失)
+    double  length_mm = 50.0;
+    double  freq_GHz = 1.0;
+    double  z0Ref_ohm = 50.0;
+    int     ports = 2;
+    // 表示の取捨 (既定はモックのチェック状態そのまま)
+    bool    showBeta = true, showVp = false, showVg = false;
+    bool    showAlpha = true, showEpsEff = true;
+    bool    showSmag = true, showIL = true, showRL = true;
+    bool    showDelay = false, showTouchstone = true;
+    bool    z0FreqDep = true;  // Z₀(f) を 3 点で出す
+    bool    z0ReIm = false;    // 複素 Z₀ を出す
 };
 
 // ── メッシュ細分化領域 (.ofdx "geometry.refine_regions") ────────────────────
@@ -831,6 +896,14 @@ struct Tidy3dOpts {
     QString projectName = "openfdtd-x";
     QString resolution  = "medium";   // coarse / medium / fine
     bool    autoPml     = true;
+    // ── エクスポートへの追加設定 (.ofdx "tidy3d" の追加キー) ────────────────
+    // 既定値は「生成スクリプトが従来と 1 バイトも変わらない」側に置いてある:
+    // subpixel は tidy3d 自身の既定が True なので、True のときは書かない
+    // (書かない = ライブラリ既定を使う、で意味が一致する)。
+    bool    subpixel = true;          // サブピクセル平均化
+    bool    dftMonitors = true;       // モニターで時間 DFT 記録
+                                      // (false = td.FieldTimeMonitor で時間波形)
+    int     priority = 0;             // 0=通常 1=高 (スクリプトには注記として出す)
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -856,6 +929,7 @@ public:
     AcousticOpts       &acoustic()    { return m_acoustic; }
     OperaAcousticSettings &operaAcoustic() { return m_operaAcoustic; }
     UnderwaterOpts     &underwater()  { return m_underwater; }
+    TransmissionLineOpts &tline()    { return m_tline; }
     Tidy3dOpts         &tidy3d()      { return m_tidy3d; }
     QVector<RefineRegion> &refineRegions() { return m_refineRegions; }
     QVector<CircuitPortRow> &circuitPorts() { return m_circuitPorts; }
@@ -880,6 +954,7 @@ public:
     const AcousticOpts      &acoustic()   const { return m_acoustic; }
     const OperaAcousticSettings &operaAcoustic() const { return m_operaAcoustic; }
     const UnderwaterOpts    &underwater() const { return m_underwater; }
+    const TransmissionLineOpts &tline() const { return m_tline; }
     const Tidy3dOpts        &tidy3d()     const { return m_tidy3d; }
     const QVector<RefineRegion> &refineRegions() const { return m_refineRegions; }
     const QVector<CircuitPortRow> &circuitPorts() const { return m_circuitPorts; }
@@ -944,6 +1019,7 @@ private:
     AcousticOpts       m_acoustic;
     OperaAcousticSettings m_operaAcoustic;
     UnderwaterOpts     m_underwater;
+    TransmissionLineOpts m_tline;
     Tidy3dOpts         m_tidy3d;
     QVector<RefineRegion> m_refineRegions;   // 既定は空 (.ofdx へ書かない)
     // 既定行のままなら .ofdx へキーを書かない (旧ファイルとバイト一致)

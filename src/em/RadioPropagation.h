@@ -55,10 +55,14 @@ double freeSpacePathLossDb(double dist_m, double freq_hz);
 // 2 波モデル (直接波 + 大地反射波) の経路損失 [dB] ([2] §4.6)。
 //   P_r/P_t = (λ/4π)²·|e^{-jk·d1}/d1 + Γ·e^{-jk·d2}/d2|²
 //   d1 = sqrt(d² + (ht−hr)²)、d2 = sqrt(d² + (ht+hr)²)
-// reflection は反射係数の**大きさ** (完全反射 = 1)。位相は π (Γ = −|Γ|) と
-// する (水平偏波の grazing 入射)。アンテナ利得は 0 dBi。
+// reflection は反射係数の**大きさ** (完全反射 = 1)。gammaSign は反射係数の
+// 符号で、既定の −1 は位相 π の反転 (水平偏波、あるいは grazing 入射)。
+// **完全導体面では水平偏波が Γ = −1、垂直偏波が Γ = +1** になる (境界条件
+// から厳密にそうなる) ので、垂直偏波は gammaSign = +1 を渡す。
+// アンテナ利得は 0 dBi。
 double twoRayPathLossDb(double dist_m, double hTx_m, double hRx_m,
-                        double freq_hz, double reflection = 1.0);
+                        double freq_hz, double reflection = 1.0,
+                        double gammaSign = -1.0);
 
 // ブレークポイント距離 d_bp = 4·ht·hr/λ [m] ([2] §4.6)。
 // これより遠方では 2 波モデルの損失が距離の 4 乗 (n = 4) で増える。

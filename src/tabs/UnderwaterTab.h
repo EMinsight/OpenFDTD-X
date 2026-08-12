@@ -125,6 +125,8 @@ private:
 
     QLabel         *m_c0;                 // 基準音速 c₀ (計算値)
     QLabel         *m_sofarHint;          // → SOFARチャネル深度 ~1200m
+    QLabel         *m_surfNote = nullptr; // σ = Hs/4 の導出 (海面の節)
+    QLabel         *m_beamNote = nullptr; // 射出角の扇 (ソナーの節)
     UwSspPlot      *m_sspPlot;
 
     QDoubleSpinBox *m_waveHeight;         // 波高 [m]

@@ -34,7 +34,8 @@ public:
     explicit SchematicTab(Project *project, QWidget *parent = nullptr);
 
 private slots:
-    void runCircuitSim();        // 素子 S 行列 → 波長掃引 → 指標
+    void runCircuitSim();
+    void updateNoiseBudget();   // 雑音項のチェック + 温度 → 雑音収支        // 素子 S 行列 → 波長掃引 → 指標
     void refreshNetlist();                        // model → widgets
     void refreshNetPath();                        // 経路表示を更新
     void onNetItemChanged(QTableWidgetItem *it);  // widgets → model
@@ -69,6 +70,13 @@ private:
     QCheckBox    *m_phase = nullptr, *m_toShift = nullptr;
     QLabel       *m_netPath = nullptr;   // ネットリストから辿った経路
     QLineEdit    *m_temp = nullptr;
+    // 受光器の雑音収支 (core/ReceiverNoise)
+    QLineEdit    *m_rxPower = nullptr;   // 受光パワー [mW]
+    QLineEdit    *m_rxResp = nullptr;    // 受光感度 [A/W]
+    QLineEdit    *m_rxLoad = nullptr;    // 負荷抵抗 [Ω]
+    QLineEdit    *m_rxBw = nullptr;      // 帯域 [GHz]
+    QLineEdit    *m_rxRin = nullptr;     // RIN [dB/Hz]
+    QLabel       *m_rxResult = nullptr;
 };
 
 } // namespace ofd

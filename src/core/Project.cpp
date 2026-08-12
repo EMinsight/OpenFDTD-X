@@ -190,6 +190,7 @@ void Project::clear()
     };
     m_operaAcoustic = OperaAcousticSettings{};
     m_underwater = UnderwaterOpts{};
+    m_tline = TransmissionLineOpts{};
     m_underwater.ssp = { {0, 1525}, {100, 1510}, {500, 1490}, {1000, 1485},
                          {1500, 1488}, {3000, 1510}, {5000, 1540} };
     m_tidy3d = Tidy3dOpts{};

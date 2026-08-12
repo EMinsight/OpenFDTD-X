@@ -155,12 +155,27 @@ const bool s_i18n = [] {
     I18n::reg("t3x_cmp_diff", "結果差分の自動チェック",
               "Auto-check result differences");
     I18n::reg("t3x_cmp_notify", "完了時に通知", "Notify when finished");
-    I18n::reg("t3x_uw_sub", "サブピクセル平均化と DFT 記録の設定",
-              "the subpixel-averaging and DFT-recording settings");
-    I18n::reg("t3x_uw_sub_ok", "自動 PML (エクスポートに反映されます)",
-              "the automatic PML setting (applied to the export)");
-    I18n::reg("t3x_uw_prio", "優先度の設定 (スクリプト生成にも反映されません)",
-              "the priority setting (it does not reach the generated script either)");
+    I18n::reg("t3x_exp_note",
+              "▸ 3 つとも生成スクリプトへ渡ります。自動 PML は "
+              "boundary_spec、サブピクセル平均化は subpixel "
+              "(tidy3d 自身の既定が有効なので、外したときだけ subpixel=False を"
+              "書きます)、DFT 記録は td.FieldMonitor (周波数領域) と "
+              "td.FieldTimeMonitor (時間波形) の切替です。",
+              "▸ All three reach the generated script. Automatic PML becomes "
+              "boundary_spec; sub-pixel averaging becomes subpixel (tidy3d "
+              "enables it by default, so subpixel=False is written only when "
+              "you clear it); the DFT setting switches between td.FieldMonitor "
+              "(frequency domain) and td.FieldTimeMonitor (time waveform).");
+    I18n::reg("t3x_uw_prio",
+              "優先度をジョブ API へ渡すこと (このスクリプトは送信までは"
+              "行わないため、優先度は tidy3d 側で設定します)",
+              "passing the priority to the job API (this script does not "
+              "submit, so the priority is set on the tidy3d side)");
+    I18n::reg("t3x_uw_prio_ok",
+              "優先度の選択そのもの (プロジェクトに保存し、生成スクリプトへ"
+              "注記として書き出します)",
+              "the priority selection itself (saved with the project and "
+              "written into the generated script as a note)");
     I18n::reg("t3x_uw_cmp", "ローカル計算との比較機能",
               "the comparison against the local computation");
     return true;
@@ -371,9 +386,9 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     se->vbox()->addWidget(m_autoPml);
     se->vbox()->addWidget(m_subpixel);
     se->vbox()->addWidget(m_dft);
-    // サブピクセル平均化・DFT 記録はまだエクスポートに反映されない
-    // (autoPml のみ apply() → Tidy3dExporter で使用)
-    se->vbox()->addWidget(tabhelp::unwiredNote(se, I18n::tr("t3x_uw_sub"), I18n::tr("t3x_uw_sub_ok")));
+    // サブピクセル平均化・DFT 記録・自動 PML はすべてエクスポートへ渡る。
+    // 生成スクリプトの意味は下の注記に書く (何がどう出るかを隠さない)。
+    se->vbox()->addWidget(mutedLabel(I18n::tr("t3x_exp_note"), se));
 
     // mock: "📤 {t3_export} (.py)" (primary) + "プレビュー (.json)"
     auto *exportBtn = new QPushButton("📤 " + I18n::tr("t3x_export") + " (.py)", se);
@@ -403,8 +418,10 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     m_priority->addItems({ I18n::tr("t3x_prio_normal"),
                            I18n::tr("t3x_prio_high") });
     sj->form()->addRow(I18n::tr("t3x_priority"), m_priority);
-    // 優先度はどこにも読まれない (スクリプト生成にも未反映)
-    sj->form()->addRow(tabhelp::unwiredNote(sj, I18n::tr("t3x_uw_prio")));
+    // 優先度はプロジェクトへ保存し、スクリプトには注記として出す。
+    // ジョブ API へ渡す先をここは持たない (送信は tidy3d 側の操作)。
+    sj->form()->addRow(tabhelp::unwiredNote(sj, I18n::tr("t3x_uw_prio"),
+                                            I18n::tr("t3x_uw_prio_ok")));
     // ジョブ状態: GUI から直接送信はしないので既定は「待機中」
     auto *stateRow = new QHBoxLayout();
     stateRow->addWidget(makeBadge(I18n::tr("t3_pending"), "warn", sj));
@@ -474,6 +491,10 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     connect(m_project, &QLineEdit::editingFinished, this, applyCb);
     connect(m_resolution, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_autoPml, &QCheckBox::toggled, this, applyCb);
+    // 新しくエクスポートへ効く設定も同じ経路で保存する
+    connect(m_subpixel, &QCheckBox::toggled, this, applyCb);
+    connect(m_dft, &QCheckBox::toggled, this, applyCb);
+    connect(m_priority, &QComboBox::currentIndexChanged, this, applyCb);
     connect(exportBtn, &QPushButton::clicked, this, &Tidy3dTab::exportScript);
     connect(previewBtn, &QPushButton::clicked, this, &Tidy3dTab::previewScript);
     connect(verifyBtn, &QPushButton::clicked, this, &Tidy3dTab::verifyKey);
@@ -490,6 +511,9 @@ void Tidy3dTab::apply()
     t.projectName = m_project->text();
     t.resolution = QLatin1String(kResKeys[qBound(0, m_resolution->currentIndex(), 2)]);
     t.autoPml = m_autoPml->isChecked();
+    t.subpixel = m_subpixel->isChecked();
+    t.dftMonitors = m_dft->isChecked();
+    t.priority = qBound(0, m_priority->currentIndex(), 1);
     m_p->touch();
 }
 
@@ -600,6 +624,9 @@ void Tidy3dTab::refresh()
     m_project->setText(m_p->tidy3d().projectName);
     m_resolution->setCurrentIndex(resIndexOf(m_p->tidy3d().resolution));
     m_autoPml->setChecked(m_p->tidy3d().autoPml);
+    m_subpixel->setChecked(m_p->tidy3d().subpixel);
+    m_dft->setChecked(m_p->tidy3d().dftMonitors);
+    m_priority->setCurrentIndex(qBound(0, m_p->tidy3d().priority, 1));
     updateConnBadge();
     rebuildJobs();
     m_updating = false;

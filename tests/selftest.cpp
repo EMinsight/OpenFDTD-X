@@ -77,6 +77,15 @@
 #include "core/LevelSum.h"
 #include "core/MeshRefine.h"
 #include "io/GdsGeometry.h"
+#include "core/FlankingTransmission.h"
+#include "core/ReceiverNoise.h"
+#include "core/TransmissionLine.h"
+#include "core/DensityField.h"
+#include "core/IlluminationScene.h"
+#include "core/Optimizer.h"
+#include "io/PhotometricIO.h"
+#include "io/Tidy3dExporter.h"
+#include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
@@ -7519,6 +7528,10 @@ static void testUnderwaterBathymetry()
         u.numRays = 3000;
         u.angleMin_deg = -20.0; u.angleMax_deg = 20.0;
         u.srcDepth_m = 50.0;
+        // 海面 / 損失項 / 送信指向性 (追加キー)
+        u.waveHeight_m = 3.2; u.surfSpecular = false; u.surfBragg = true;
+        u.tlAbsorb = true; u.tlRangeMin_km = 0.75;
+        u.sonarDir = 2; u.beamWidth_deg = 40.0;
         const QString j = btyTmpPath("uw_rt.ofdx");
         OfdxIO::save(j, p);
         Project q;
@@ -7540,6 +7553,11 @@ static void testUnderwaterBathymetry()
                   && r.numRays == 3000 && qFuzzyCompare(r.angleMax_deg, 20.0)
                   && qFuzzyCompare(r.srcDepth_m, 50.0),
               "bathy: bellhop run settings round-trip");
+        check(qFuzzyCompare(r.waveHeight_m, 3.2) && !r.surfSpecular
+                  && r.surfBragg && r.tlAbsorb
+                  && qFuzzyCompare(r.tlRangeMin_km, 0.75)
+                  && r.sonarDir == 2 && qFuzzyCompare(r.beamWidth_deg, 40.0),
+              "bathy: sea surface / loss / directivity round-trip");
 
         // (c) .env / .bty への反映
         const QString env = BellhopIO::envText(p);
@@ -7547,12 +7565,20 @@ static void testUnderwaterBathymetry()
               "bathy: bottom option becomes 'A~' so BELLHOP reads the .bty");
         check(env.contains("\n'IB'"), "bathy: RunType from the run settings");
         check(env.contains("\n3000\t"), "bathy: NBEAMS from the run settings");
+        // 射出角の扇は ±20° と ±20° (ビーム幅 40°) の交差なので変わらない
         check(env.contains("-20 20 /"), "bathy: beam angles from the settings");
         check(env.contains("\n50 /"), "bathy: explicit source depth");
         // SSP は断面の最深点 (1200 m) まで延長される — BELLHOP が
-        // 「地形が SSP より深い」をエラーにするため
-        check(env.contains("\n0 0.0 1200\t"),
-              "bathy: bottom depth is extended to the deepest bathymetry point");
+        // 「地形が SSP より深い」をエラーにするため。SIGMA は有義波高 3.2 m
+        // から σ = Hs/4 = 0.8 m。
+        check(env.contains("\n0 0.8 1200\t"),
+              "bathy: bottom depth is extended to the deepest bathymetry point, "
+              "and SIGMA comes from the wave height");
+        check(env.split('\n')[3].startsWith("'CVWT'"),
+              "bathy: volume absorption reaches SSPOPT");
+        check(env.contains(QStringLiteral("\n0.75 ")
+                           + QString::number(u.rangeMax_km) + " /"),
+              "bathy: the lower range bound reaches the receiver-range line");
         const QStringList bty = BellhopIO::btyText(p).split('\n');
         check(bty.value(0) == QLatin1String("'L'") && bty.value(1) == QLatin1String("3")
                   && bty.value(2) == QLatin1String("0 150"),
@@ -7680,6 +7706,78 @@ static void testBellhop()
     check(env.contains("\n'CG'"), "bellhop: coherent TL + geometric beams "
                                   "(same behaviour as the old 1-char 'C')");
     check(env.contains("0.0 3100 11"), "bellhop: STEP/ZBOX/RBOX line");
+
+    // (b2) 海面の粗さ / 体積吸収 / 距離の下限 / 送信指向性
+    //   いずれも「既定のままなら従来の .env と 1 バイトも変わらない」側に
+    //   既定を置いてある (絶対規則 2)。指定したときだけ .env が変わる。
+    //   Project はコピーできない (QObject) ので、その場で書き換えて戻す。
+    {
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: the default sea surface is specular (sigma = 0)");
+        check(BellhopIO::sspOption(u) == QStringLiteral("CVW"),
+              "bellhop: the default SSPOPT has no Thorp attenuation");
+        double a1 = 0.0, a2 = 0.0;
+        BellhopIO::beamAngles(u, &a1, &a2);
+        check(a1 == u.angleMin_deg && a2 == u.angleMax_deg,
+              "bellhop: an omnidirectional source leaves the launch fan alone");
+
+        // 体積吸収 (Thorp) → SSPOPT 4 文字目 'T'
+        u.tlAbsorb = true;
+        check(BellhopIO::sspOption(u) == QStringLiteral("CVWT"),
+              "bellhop: volume absorption adds Thorp attenuation to SSPOPT");
+        check(BellhopIO::envText(p).split('\n')[3].startsWith("'CVWT'"),
+              "bellhop: the SSPOPT line carries it into the .env");
+        u.tlAbsorb = false;
+
+        // 海面粗さ: レイリー海面で σ = Hs/4。鏡面のままでは効かない。
+        u.waveHeight_m = 2.0;
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: wave height alone does nothing while the surface is "
+              "treated as specular");
+        u.surfSpecular = false;
+        u.surfBragg = true;
+        check(BellhopIO::surfaceSigma(u) == 0.5,
+              "bellhop: Bragg scattering turns a 2 m sea into sigma = Hs/4");
+        check(BellhopIO::envText(p).split('\n')[4].startsWith("0 0.5 3000"),
+              "bellhop: sigma is written as SIGMA on the SSP line");
+        // 鏡面が優先 (両方チェックされても粗さは入らない)
+        u.surfSpecular = true;
+        check(BellhopIO::surfaceSigma(u) == 0.0,
+              "bellhop: specular wins over Bragg when both are set");
+        u.surfBragg = false;
+        u.waveHeight_m = UnderwaterOpts{}.waveHeight_m;
+
+        // 受波器距離の下限 → R 行の始点
+        u.tlRangeMin_km = 1.5;
+        check(BellhopIO::envText(p).contains(QStringLiteral("\n1.5 10 /")),
+              "bellhop: the lower range bound becomes the first receiver range");
+        u.tlRangeMin_km = 0.0;
+
+        // 指向性: 射出角の扇を ±ビーム幅/2 と交差させる
+        u.sonarDir = 1;
+        u.beamWidth_deg = 30.0;
+        double b1 = 0.0, b2 = 0.0;
+        BellhopIO::beamAngles(u, &b1, &b2);
+        check(b1 == -15.0 && b2 == 15.0,
+              "bellhop: a 30 deg beam narrows the fan to +/-15 deg");
+        check(BellhopIO::envText(p).contains(QStringLiteral("\n-15 15 /")),
+              "bellhop: the narrowed fan is written as ALPHA1,2");
+        // 既存の射出角範囲より広いビームでは範囲の方が残る (交差を採る)
+        u.beamWidth_deg = 180.0;
+        BellhopIO::beamAngles(u, &b1, &b2);
+        check(b1 == u.angleMin_deg && b2 == u.angleMax_deg,
+              "bellhop: the fan is the intersection, so a wide beam cannot "
+              "widen the launch-angle range");
+        u.sonarDir = 0;
+        u.beamWidth_deg = UnderwaterOpts{}.beamWidth_deg;
+
+        // 新設定を触らなければ .env は 1 バイトも変わらない
+        u.waveHeight_m = 7.0;   // 鏡面のままなので効かない
+        check(BellhopIO::envText(p) == env,
+              "bellhop: settings that are switched off change nothing in the "
+              ".env");
+        u.waveHeight_m = UnderwaterOpts{}.waveHeight_m;
+    }
 
     // (c) SSP 2 点未満でも実行可能な既定プロファイルで埋める
     {
@@ -12947,6 +13045,67 @@ static void testRadiatedEmission()
               && !groundEnhancement(EmcSite::OpenArea, d, 2.0, 0.0).valid,
               "radem: a non-positive distance, height or frequency is not "
               "computed");
+
+        // ── 偏波 (完全導体面の反射係数は水平 Γ = −1 / 垂直 Γ = +1) ──
+        // 既定は従来どおり水平偏波 (回帰の番人)
+        const GroundEnhancement h0 =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f, 0.8,
+                              EmcPolarization::Horizontal);
+        check(approx(h0.atHeightDb, oats.atHeightDb, 1e-12)
+                  && approx(h0.scanMaxDb, oats.scanMaxDb, 1e-12),
+              "radem: the default polarisation is horizontal (unchanged)");
+
+        // アンテナ高を 0 に近づけると行路差が消える。水平 (Γ = −1) は
+        // 打ち消して深いヌル、垂直 (Γ = +1) は同相で +6.02 dB になる。
+        // これは境界条件から厳密に決まる符号の違いそのもの。
+        {
+            const double tiny = 1e-4;
+            const GroundEnhancement gh =
+                groundEnhancement(EmcSite::OpenArea, d, tiny, f, 0.8,
+                                  EmcPolarization::Horizontal);
+            const GroundEnhancement gv =
+                groundEnhancement(EmcSite::OpenArea, d, tiny, f, 0.8,
+                                  EmcPolarization::Vertical);
+            check(gh.valid && gh.atHeightDb < -40.0,
+                  "radem: at grazing height the horizontal polarisation "
+                  "cancels against its image");
+            // 増分は自由空間 (距離 d) を基準にするので、斜距離
+            // d1 = sqrt(d² + h_eut²) との差も入る:
+            //   20·log10(2·d/d1) = 6.02 dB − 20·log10(d1/d)
+            const double d1 = std::sqrt(d * d + 0.8 * 0.8);
+            const double exact = 20.0 * std::log10(2.0 * d / d1);
+            check(gv.valid && approx(gv.atHeightDb, exact, 1e-2),
+                  "radem: at grazing height the vertical polarisation adds in "
+                  "phase (20log10(2d/d1), i.e. 6.02 dB less the slant-range "
+                  "term)");
+        }
+
+        // 「両偏波」は 2 つの大きい方 (規格の運用) — どちらも下回らない
+        bool bothIsMax = true;
+        for (double h = 1.0; h <= 4.0 + 1e-9; h += 0.05) {
+            const double hh = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Horizontal)
+                                  .atHeightDb;
+            const double vv = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Vertical)
+                                  .atHeightDb;
+            const double bb = groundEnhancement(EmcSite::OpenArea, d, h, f, 0.8,
+                                                EmcPolarization::Both)
+                                  .atHeightDb;
+            if (!approx(bb, std::max(hh, vv), 1e-12)) bothIsMax = false;
+            if (bb > 6.0206 + 1e-6) bothIsMax = false;
+        }
+        check(bothIsMax,
+              "radem: both-polarisation takes the larger of the two and still "
+              "respects the 6.02 dB ceiling");
+
+        // 金属床を模擬しない設定は反射なし (サイト種別に依らない)
+        const GroundEnhancement nopec =
+            groundEnhancement(EmcSite::OpenArea, d, 2.0, f, 0.8,
+                              EmcPolarization::Both, false);
+        check(nopec.valid && !nopec.applies && nopec.atHeightDb == 0.0,
+              "radem: without a conducting floor there is no ground reflection "
+              "even on an open area test site");
     }
 
     // 遠方界距離 2D²/λ と波長
@@ -15238,6 +15397,1489 @@ static void testChromaticFocalShift()
     }
 }
 
+// ── 非順次レイトレース (optics/IlluminationTrace) ──────────────────────────
+// 判定はすべて **閉形式で分かっている解**との比較で、数値の丸写しではない:
+//   1) ランバート点光源: I(θ) = I0 cosθ, I0 = Φ/π, FWHM = 120° (cosθ = 1/2)
+//   2) 評価面の照度: E = I0 cos⁴θ/D² (余弦四乗則) — セル平均まで数値積分して比較
+//   3) 焦点に光源を置いた回転放物面は**厳密に視準される**。捕捉率は開口だけで
+//      決まり ((u²−1)/(u²+1))², u = R/2f (u = 2 で 0.36) — 幾何の厳密解
+//   4) 反射率 ρ の吸収は (1−ρ)×捕捉率、光束収支 Φ_out + Φ_abs = Φ_in
+//   5) 拡散反射にすると視準が壊れ、広角へ光束が回る (鏡面との対比)
+//   6) 円板 (拡散板) の捕捉率は sin²(半頂角)、透過率 τ の吸収は (1−τ)×捕捉率
+//   7) ABG の累積分布は g = 2 で F = ln(1+Δβ²/B)/ln(1+Δβmax²/B) の閉形式
+//   8) 同じ入力からはビット単位で同じ結果 (準乱数 + ハッシュ乱数で状態を持たない)
+static void testIlluminationTrace()
+{
+    g_file = "illumtrace";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+    // ビン k の光束 [lm] = 強度 [cd] × 立体角 [sr] (強度は光束から作った量なので
+    // 逆算になるが、立体角の重みが正しいことの検算を兼ねる)
+    auto binFlux = [&](const il::Result &r, int k) {
+        const int n = static_cast<int>(r.intensity_cd.size());
+        const double a0 = PI * k / n, a1 = PI * (k + 1) / n;
+        return r.intensity_cd[static_cast<size_t>(k)]
+             * 2.0 * PI * (std::cos(a0) - std::cos(a1));
+    };
+    auto fluxBeyond = [&](const il::Result &r, double degFrom) {
+        const int n = static_cast<int>(r.intensity_cd.size());
+        double s = 0.0;
+        for (int k = 0; k < n; ++k)
+            if (180.0 * k / n >= degFrom) s += binFlux(r, k);
+        return s;
+    };
+
+    const double PHI = 1000.0;          // 光源光束 [lm]
+    const double I0 = PHI / PI;         // ランバート面の軸上光度 [cd]
+
+    // ── 1) 光学系なしのランバート点光源 ────────────────────────────────────
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    {
+        const il::Result r = il::trace(bare, 200000);
+        check(r.valid, "illumtrace: a bare Lambertian source traces");
+        // 吸収体が無いので光束は 1 lm も減らない
+        check(std::fabs(r.fluxOut_lm - PHI) < 1e-6 * PHI,
+              "illumtrace: with nothing to absorb, all the flux leaves");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - r.fluxIn_lm) < 1e-9 * PHI,
+              "illumtrace: the flux budget closes (out + absorbed = in)");
+        check(std::fabs(r.efficiency - 1.0) < 1e-9,
+              "illumtrace: efficiency is 1 when nothing absorbs");
+
+        // 先頭ビンは I(θ) = I0 cosθ の立体角平均なので I0·(1+cosΔ)/2 になる
+        const double dth = PI / static_cast<double>(r.intensity_cd.size());
+        const double expect = I0 * 0.5 * (1.0 + std::cos(dth));
+        check(rel(r.axialIntensity_cd, expect) < 3e-3,
+              "illumtrace: the axial intensity is the solid-angle average of "
+              "I0 cos(theta) with I0 = flux/pi");
+
+        // 半値は cosθ = 1/2 → θ = 60°、全角 120°
+        check(r.beamValid, "illumtrace: a Lambertian source has a half-power angle");
+        check(std::fabs(r.beamAngleFwhm_deg - 120.0) < 0.5,
+              "illumtrace: a Lambertian beam angle is 120 deg (cos = 1/2)");
+
+        // 放射は +z 半球だけ。90° より後ろへは 1 lm も出ない
+        check(fluxBeyond(r, 90.0) < 1e-9,
+              "illumtrace: a Lambertian emitter puts no flux behind itself");
+
+        // ビンごとの光束を全部足すと光源光束に戻る
+        double sum = 0.0;
+        for (int k = 0; k < static_cast<int>(r.intensity_cd.size()); ++k)
+            sum += binFlux(r, k);
+        check(rel(sum, PHI) < 1e-8,
+              "illumtrace: the binned intensity integrates back to the flux");
+    }
+
+    // ── 2) 余弦四乗則 (評価面の照度) ───────────────────────────────────────
+    // E(x,y) = I0 cos⁴θ / D²。セルは有限面積なので、比較する側もセル平均を
+    // 数値積分して作る (点の値と比べると数 % ずれ、判定の意味が薄れる)。
+    {
+        const il::Result r = il::trace(bare, 2000000);
+        check(r.valid && r.cells == 11, "illumtrace: the target grid is 11x11");
+        const double D = 1000.0, W = 1000.0;
+        const double cw = 2.0 * W / r.cells;
+        auto cellAverage = [&](int ix, int iy) {
+            const int ns = 21;
+            double acc = 0.0;
+            for (int a = 0; a < ns; ++a)
+                for (int b = 0; b < ns; ++b) {
+                    const double x = -W + cw * (ix + (a + 0.5) / ns);
+                    const double y = -W + cw * (iy + (b + 0.5) / ns);
+                    const double c = D / std::sqrt(x * x + y * y + D * D);
+                    // D は mm なので lx にするため m² へ直す
+                    acc += I0 * c * c * c * c / ((D * 1e-3) * (D * 1e-3));
+                }
+            return acc / (ns * ns);
+        };
+        const int mid = r.cells / 2;
+        check(rel(r.illumCenter_lx, cellAverage(mid, mid)) < 1.5e-2,
+              "illumtrace: the on-axis illuminance is I0/D^2 (cell-averaged)");
+        const double off = r.illuminance_lx[static_cast<size_t>(mid) * r.cells
+                                            + static_cast<size_t>(mid + 3)];
+        check(rel(off, cellAverage(mid + 3, mid)) < 2.5e-2,
+              "illumtrace: off-axis follows the cosine-fourth law");
+        // cos³ / cos² と取り違えていないこと (比が 10% 以上違う)
+        const double ratio = off / r.illumCenter_lx;
+        const double xc = -W + cw * (mid + 3.5);
+        const double c = D / std::sqrt(xc * xc + D * D);
+        check(rel(ratio, c * c * c * c) < 4e-2,
+              "illumtrace: the off-axis ratio is cos^4, not cos^3 or cos^2");
+        check(rel(ratio, c * c * c) > 8e-2,
+              "illumtrace: cos^3 would be measurably different (the test can "
+              "tell them apart)");
+    }
+
+    // ── 3) 回転放物面リフレクタ + 完全鏡面 ────────────────────────────────
+    // 焦点に置いた点光源は厳密に視準される。捕捉率は u = R/2f だけで決まる。
+    il::Scene para = bare;
+    para.reflector.enabled = true;
+    para.reflector.focal_mm = 5.0;
+    para.reflector.radius_mm = 20.0;      // u = 2
+    para.reflector.reflectance = 1.0;
+    para.reflector.model = il::Scatter::Specular;
+    const double uu = para.reflector.radius_mm / (2.0 * para.reflector.focal_mm);
+    const double cosAlpha = (uu * uu - 1.0) / (uu * uu + 1.0);   // 3/5
+    const double collected = cosAlpha * cosAlpha;                // 0.36
+    {
+        const il::Result r = il::trace(para, 200000);
+        check(r.valid, "illumtrace: the paraboloid reflector traces");
+        check(std::fabs(collected - 0.36) < 1e-12,
+              "illumtrace: R = 4f collects ((u^2-1)/(u^2+1))^2 = 0.36 of the "
+              "hemisphere");
+        check(rel(r.fluxOut_lm, PHI) < 1e-8,
+              "illumtrace: a perfect mirror absorbs nothing");
+
+        // 先頭ビン = 視準された分 + 直接光のうち θ < 1° の分 (sin²1°)
+        const double dth1 = PI / static_cast<double>(r.intensity_cd.size());
+        const double expect = PHI * (collected + std::sin(dth1) * std::sin(dth1));
+        check(rel(binFlux(r, 0), expect) < 5e-3,
+              "illumtrace: the collected flux comes out collimated (first bin)");
+
+        // 直接光は θ < α = 53.13° に収まり、反射光は θ = 0。その外は空
+        const double alphaDeg = std::acos(cosAlpha) * 180.0 / PI;
+        check(std::fabs(alphaDeg - 53.130102) < 1e-5,
+              "illumtrace: the rim half-angle is 53.13 deg for u = 2");
+        check(fluxBeyond(r, 54.0) < 1e-3 * PHI,
+              "illumtrace: nothing leaves beyond the rim angle (the mirror "
+              "turns every intercepted ray onto the axis)");
+    }
+
+    // ── 4) 反射率 — 吸収は (1−ρ) × 捕捉率 ─────────────────────────────────
+    {
+        il::Scene s = para;
+        s.reflector.reflectance = 0.85;
+        const il::Result r = il::trace(s, 200000);
+        check(r.valid, "illumtrace: a lossy mirror traces");
+        check(rel(r.fluxAbsorbed_lm, 0.15 * collected * PHI) < 5e-3,
+              "illumtrace: absorption is (1-rho) times the intercepted flux");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - PHI) < 1e-9 * PHI,
+              "illumtrace: the flux budget still closes with absorption");
+        check(rel(r.efficiency, 1.0 - 0.15 * collected) < 5e-3,
+              "illumtrace: optical efficiency is 1 - (1-rho) x intercepted");
+    }
+
+    // ── 5) 拡散反射にすると視準が壊れる (面の反射モデルが効いている証拠) ──
+    {
+        il::Scene s = para;
+        s.reflector.model = il::Scatter::Lambertian;
+        const il::Result r = il::trace(s, 200000);
+        const il::Result m = il::trace(para, 200000);
+        check(r.valid, "illumtrace: a diffuse reflector traces");
+        check(r.fluxAbsorbed_lm < 1e-3 * PHI,
+              "illumtrace: a diffuse but lossless reflector still conserves flux");
+        check(binFlux(r, 0) < 0.1 * binFlux(m, 0),
+              "illumtrace: diffuse reflection destroys the collimation that the "
+              "specular model produces");
+        check(fluxBeyond(r, 54.0) > 0.01 * PHI,
+              "illumtrace: diffuse reflection sends flux past the rim angle, "
+              "where the specular model sends none");
+    }
+
+    // ── 6) 拡散板 — 円板の捕捉率 sin²(半頂角) と透過率 ────────────────────
+    {
+        il::Scene s = bare;
+        s.diffuser.enabled = true;
+        s.diffuser.z_mm = 25.0;
+        s.diffuser.radius_mm = 25.0;      // 半頂角 45° → sin² = 1/2
+        s.diffuser.transmittance = 0.70;
+        s.diffuser.model = il::Scatter::Lambertian;
+        const il::Result r = il::trace(s, 200000);
+        check(r.valid, "illumtrace: the diffuser plate traces");
+        check(rel(r.fluxAbsorbed_lm, 0.30 * 0.5 * PHI) < 5e-3,
+              "illumtrace: a disk of half-angle 45 deg intercepts sin^2(45) = "
+              "1/2 of the flux, and (1-tau) of that is absorbed");
+        check(std::fabs(r.fluxOut_lm + r.fluxAbsorbed_lm - PHI) < 1e-9 * PHI,
+              "illumtrace: the flux budget closes through the diffuser");
+    }
+
+    // ── 7) ABG の累積分布 (g = 2 の閉形式) ────────────────────────────────
+    {
+        const double dmax = 2.0;
+        for (double B : { 1.0e-4, 1.0e-6 }) {
+            il::AbgParams p; p.A = 0.02; p.B = B; p.g = 2.0;
+            const il::AbgSampler smp(p, dmax);
+            check(smp.valid(), "illumtrace: the ABG sampler builds");
+            const double den = std::log(1.0 + dmax * dmax / B);
+            for (double d : { 0.01, 0.05, 0.2, 1.0 }) {
+                const double exact = std::log(1.0 + d * d / B) / den;
+                check(std::fabs(smp.cdf(d) - exact) < 2e-4,
+                      "illumtrace: the tabulated ABG CDF matches the g = 2 "
+                      "closed form ln(1+db^2/B)/ln(1+dbmax^2/B)");
+            }
+            // 中央値も閉形式で出る: Δβ² = B(sqrt(1+dmax²/B) − 1)
+            const double med = std::sqrt(B * (std::sqrt(1.0 + dmax * dmax / B) - 1.0));
+            check(rel(smp.sample(0.5), med) < 1e-2,
+                  "illumtrace: the sampled median scatter angle matches the "
+                  "closed form");
+            // 逆関数法の往復
+            for (double u : { 0.1, 0.5, 0.9 })
+                check(std::fabs(smp.cdf(smp.sample(u)) - u) < 1e-3,
+                      "illumtrace: sample() and cdf() are inverses");
+        }
+        // B を小さくすると散乱は鋭くなる (鏡面へ漸近する)
+        il::AbgParams a1; a1.B = 1.0e-4;
+        il::AbgParams a2; a2.B = 1.0e-6;
+        check(il::AbgSampler(a2).sample(0.5) < il::AbgSampler(a1).sample(0.5),
+              "illumtrace: a smaller B narrows the ABG scatter lobe");
+        // 不正な係数はサンプラを作らない (既定の鏡面へ落ちる)
+        il::AbgParams bad; bad.A = 0.0;
+        check(!il::AbgSampler(bad).valid(),
+              "illumtrace: A = 0 is not a usable ABG model");
+    }
+
+    // ── 8) 再現性と不正入力 ───────────────────────────────────────────────
+    {
+        il::Scene s = para;
+        s.reflector.model = il::Scatter::ABG;      // 乱数を最も多く使う経路
+        const il::Result a = il::trace(s, 50000);
+        const il::Result b = il::trace(s, 50000);
+        check(a.valid && b.valid, "illumtrace: the ABG reflector traces");
+        check(a.fluxOut_lm == b.fluxOut_lm && a.fluxTarget_lm == b.fluxTarget_lm,
+              "illumtrace: the same scene gives bit-identical flux");
+        bool same = a.intensity_cd.size() == b.intensity_cd.size();
+        for (size_t k = 0; same && k < a.intensity_cd.size(); ++k)
+            same = (a.intensity_cd[k] == b.intensity_cd[k]);
+        check(same, "illumtrace: the whole intensity distribution is reproducible");
+    }
+    {
+        check(!il::trace(bare, 0).valid, "illumtrace: zero rays is not a result");
+        il::Scene s = bare; s.source.flux_lm = 0.0;
+        check(!il::trace(s, 1000).valid, "illumtrace: zero flux is not a result");
+        check(std::string(il::traceBlocker(s, 1000)) == "flux",
+              "illumtrace: the blocker names the flux");
+        il::Scene t = para; t.reflector.radius_mm = 10.0;   // R = 2f
+        check(std::string(il::traceBlocker(t, 1000)) == "radius",
+              "illumtrace: a rim at the focus height catches nothing (R > 2f)");
+        il::Scene v = para; v.target.distance_mm = 1.0;     // 系の内側
+        check(std::string(il::traceBlocker(v, 1000)) == "target",
+              "illumtrace: a target plane inside the system is rejected");
+        check(il::traceBlocker(para, 1000) == nullptr,
+              "illumtrace: a valid scene has no blocker");
+    }
+}
+
+// ── far1d.log → バイスタティック RCS (em/RadarCrossSection) ────────────────
+// カーネルの遠方界は **給電点が無いとき RCS 正規化**を含む (sol/farfield.c の
+// ffctr = k/(E_inc·√(4π)))。その結果 far1d.log の [dB] 列は 20log10(√σ) =
+// 10log10(σ) = dBsm になる。ここを 20 で割ると 2 倍ずれるので固定する。
+static void testFar1dRcs()
+{
+    g_file = "far1d-rcs";
+    namespace em = ofd::em;
+
+    // dBsm → m² は 10^(dB/10)。dBsm 往復が恒等になること
+    check(std::fabs(em::rcsFromFar1dDbsm(0.0) - 1.0) < 1e-12,
+          "far1drcs: 0 dBsm is exactly 1 m^2");
+    check(std::fabs(em::rcsFromFar1dDbsm(10.0) - 10.0) < 1e-9,
+          "far1drcs: +10 dBsm is 10 m^2 (10log10, not 20log10)");
+    check(std::fabs(em::rcsFromFar1dDbsm(-20.0) - 0.01) < 1e-12,
+          "far1drcs: -20 dBsm is 0.01 m^2");
+    for (double s : { 1e-4, 0.3, 1.0, 25.0 })
+        check(std::fabs(em::rcsFromFar1dDbsm(em::rcsDbsm(s)) - s) < 1e-9 * s,
+              "far1drcs: dBsm and m^2 round-trip through the pair");
+    // 20log10 で読むと 2 倍ずれる — 取り違えを名指しで固定する
+    check(std::fabs(em::rcsFromFar1dDbsm(20.0) - 100.0) < 1e-9
+              && std::fabs(std::pow(10.0, 20.0 / 20.0) - 10.0) < 1e-12,
+          "far1drcs: reading the column as 20log10 would be off by a factor "
+          "of ten here");
+
+    // RCS として読んでよい問題かどうか (給電点があると相対利得になる)
+    check(em::far1dIsRcs(true, 0),
+          "far1drcs: a plane-wave-only problem gives RCS in far1d.log");
+    check(!em::far1dIsRcs(true, 1),
+          "far1drcs: a feed makes the same column relative gain, not RCS");
+    check(!em::far1dIsRcs(false, 0),
+          "far1drcs: without a plane wave there is no RCS to read");
+    check(!em::far1dIsRcs(false, 2),
+          "far1drcs: an antenna problem is never read as RCS");
+
+    // far1d.log の列を実際に読み、偏波成分まで取れること
+    {
+        const QString text =
+            "#1 : X-plane, frequency[Hz] = 3.00000e+09\n"
+            "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+            "   E-phi[deg]  E-major[dB]\n"
+            "   0    0.0      10.0000      10.0000       0.0000    -300.0000"
+            "       0.0000      10.0000\n"
+            "   1   90.0       0.0000      -3.0000       0.0000      -3.0000"
+            "       0.0000       0.0000\n"
+            "   2  180.0     -20.0000     -20.0000       0.0000    -300.0000"
+            "       0.0000     -20.0000\n";
+        const QVector<FarPattern> pats = KernelResultReader::parseFar1d(text);
+        check(pats.size() == 1 && pats[0].deg.size() == 3,
+              "far1drcs: the pattern block parses");
+        check(pats[0].eThetaDb.size() == 3 && pats[0].ePhiDb.size() == 3,
+              "far1drcs: the polarisation columns are kept as well");
+        check(std::fabs(pats[0].eThetaDb[1] + 3.0) < 1e-9
+                  && std::fabs(pats[0].ePhiDb[1] + 3.0) < 1e-9,
+              "far1drcs: E-theta is column 4 and E-phi is column 6 "
+              "(the [deg] columns in between are skipped)");
+        // dBsm として読むと 10 / 1 / 0.01 m²
+        check(std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[0]) - 10.0) < 1e-9
+                  && std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[1]) - 1.0) < 1e-9
+                  && std::fabs(em::rcsFromFar1dDbsm(pats[0].eAbsDb[2]) - 0.01)
+                         < 1e-12,
+              "far1drcs: the E-abs column reads straight back as square metres");
+        // 最大は 0°、最小は 180°
+        int imax = 0, imin = 0;
+        for (int i = 1; i < pats[0].eAbsDb.size(); ++i) {
+            if (pats[0].eAbsDb[i] > pats[0].eAbsDb[imax]) imax = i;
+            if (pats[0].eAbsDb[i] < pats[0].eAbsDb[imin]) imin = i;
+        }
+        check(pats[0].deg[imax] == 0.0 && pats[0].deg[imin] == 180.0,
+              "far1drcs: the maximum and minimum land on the right angles");
+        // 交差偏波が -300 dB のところは実質ゼロ (σ < 1e-30 m²)
+        check(em::rcsFromFar1dDbsm(pats[0].ePhiDb[0]) < 1e-29,
+              "far1drcs: a -300 dB cross-polarised entry is effectively zero");
+    }
+    // 列が 6 個に満たない古い出力では偏波成分を作らない (無い値を捏造しない)
+    {
+        const QString text =
+            "#1 : Z-plane, frequency[Hz] = 1.00000e+09\n"
+            "  No.   deg    E-abs[dB]\n"
+            "   0    0.0       1.0000\n"
+            "   1  180.0       2.0000\n";
+        const QVector<FarPattern> pats = KernelResultReader::parseFar1d(text);
+        check(pats.size() == 1 && pats[0].eAbsDb.size() == 2,
+              "far1drcs: a three-column pattern still parses");
+        check(pats[0].eThetaDb.isEmpty() && pats[0].ePhiDb.isEmpty(),
+              "far1drcs: missing polarisation columns stay empty rather than "
+              "being invented");
+    }
+}
+
+// ── tidy3d エクスポート設定 (io/Tidy3dExporter) ────────────────────────────
+// 判定は生成スクリプトの中身そのもの。**既定値では従来の出力と 1 バイトも
+// 変わらない**ことを最初に固定し (絶対規則 2)、設定を変えたときだけ差が出る
+// ことを見る。
+static void testTidy3dExportOptions()
+{
+    g_file = "tidy3d-export";
+
+    Project p;
+    p.setActiveDomain(Domain::Optical);
+    Probe pr; pr.x = 0.001; pr.y = 0.002; pr.z = 0.003;
+    p.probes().push_back(pr);
+    const QString base = Tidy3dExporter::generatePython(p);
+    check(!base.isEmpty(), "t3export: the default project generates a script");
+
+    // 既定: subpixel 行は書かない (tidy3d 自身の既定が有効なので、
+    // 書かないことと subpixel=True は同義)
+    check(!base.contains(QLatin1String("subpixel")),
+          "t3export: the default writes no subpixel line at all");
+    check(base.contains(QLatin1String("td.FieldMonitor("))
+              && base.contains(QLatin1String("freqs=freqs")),
+          "t3export: the default records a frequency-domain (DFT) monitor");
+    check(!base.contains(QLatin1String("job priority")),
+          "t3export: normal priority leaves no note");
+
+    // 既定値を明示代入しても出力は 1 バイトも変わらない
+    {
+        Project q;
+        q.setActiveDomain(Domain::Optical);
+        q.probes().push_back(pr);
+        const Tidy3dOpts d;
+        q.tidy3d().subpixel = d.subpixel;
+        q.tidy3d().dftMonitors = d.dftMonitors;
+        q.tidy3d().priority = d.priority;
+        check(Tidy3dExporter::generatePython(q) == base,
+              "t3export: assigning the defaults changes nothing in the script");
+    }
+
+    // サブピクセル平均化を外すと subpixel=False が入る
+    {
+        p.tidy3d().subpixel = false;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("subpixel=False")),
+              "t3export: clearing sub-pixel averaging writes subpixel=False");
+        check(s2.contains(QLatin1String("td.Simulation(")),
+              "t3export: it goes inside the Simulation call");
+        p.tidy3d().subpixel = true;
+    }
+    // DFT を外すと時間波形モニターへ変わる
+    {
+        p.tidy3d().dftMonitors = false;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("td.FieldTimeMonitor(")),
+              "t3export: clearing the DFT setting switches to a time monitor");
+        check(!s2.contains(QLatin1String("td.FieldMonitor(")),
+              "t3export: and the frequency-domain monitor is gone");
+        // 時間モニターに周波数の指定は付かない
+        const int idx = s2.indexOf(QLatin1String("td.FieldTimeMonitor("));
+        check(idx > 0
+                  && !s2.mid(idx, 120).contains(QLatin1String("freqs=")),
+              "t3export: a time monitor carries no freqs argument");
+        p.tidy3d().dftMonitors = true;
+    }
+    // 優先度「高」は注記として出る (ジョブ API へは渡さない)
+    {
+        p.tidy3d().priority = 1;
+        const QString s2 = Tidy3dExporter::generatePython(p);
+        check(s2.contains(QLatin1String("# job priority: high")),
+              "t3export: high priority is written as a comment");
+        check(s2.contains(QLatin1String("does not pass it to web.Job")),
+              "t3export: the comment says the script does not submit it");
+        p.tidy3d().priority = 0;
+    }
+    // 全部戻せば最初と一致する (状態が残らない)
+    check(Tidy3dExporter::generatePython(p) == base,
+          "t3export: restoring the settings restores the script exactly");
+
+    // .ofdx のラウンドトリップと旧ファイル互換
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "t3export: temp dir");
+        const QString j = dir.path() + QStringLiteral("/t3.ofdx");
+        p.tidy3d().subpixel = false;
+        p.tidy3d().dftMonitors = false;
+        p.tidy3d().priority = 1;
+        check(OfdxIO::save(j, p), "t3export: sidecar save");
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "t3export: sidecar reload");
+        check(!q.tidy3d().subpixel && !q.tidy3d().dftMonitors
+                  && q.tidy3d().priority == 1,
+              "t3export: the export options round-trip");
+
+        // 既定値なら追加キー自体を書かない
+        Project z;
+        const QString jz = dir.path() + QStringLiteral("/t3def.ofdx");
+        check(OfdxIO::save(jz, z), "t3export: default sidecar save");
+        QFile f(jz);
+        check(f.open(QIODevice::ReadOnly), "t3export: default sidecar read");
+        const QString txt = QString::fromUtf8(f.readAll());
+        check(!txt.contains(QLatin1String("subpixel"))
+                  && !txt.contains(QLatin1String("dft_monitors"))
+                  && !txt.contains(QLatin1String("priority")),
+              "t3export: default export options are not written at all");
+        // 追加キーの無い旧ファイルは既定値のまま
+        Project w;
+        check(OfdxIO::load(jz, w, &err), "t3export: legacy sidecar reload");
+        check(w.tidy3d().subpixel && w.tidy3d().dftMonitors
+                  && w.tidy3d().priority == 0,
+              "t3export: a sidecar without the keys keeps the defaults");
+    }
+}
+
+// ── 受光器の雑音収支 (core/ReceiverNoise) ──────────────────────────────────
+// 判定は **定義式そのもの**と、そこから出る漸近形:
+//   ショット 2qIB / 熱 4kTB/R_L / RIN rin(RP)²B  — 手計算で確かめられる
+//   帯域 2 倍で全項 2 倍 → SNR は 3.01 dB 悪化
+//   高パワー極限は RIN が支配して SNR → 1/(rin·B) で頭打ち
+//   熱雑音は **絶対温度**に比例する (0 ℃ でゼロにならない)
+static void testReceiverNoise()
+{
+    g_file = "rxnoise";
+    namespace rn = ofd::rxnoise;
+
+    const double Q = 1.602176634e-19, KB = 1.380649e-23;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    rn::Receiver rx;                 // 既定: R=0.9, P=1mW, 50Ω, 25℃, 1GHz
+    const rn::Noise n = rn::analyze(rx);
+    check(n.valid, "rxnoise: the default receiver analyses");
+    check(rel(n.signalCurrent_A, 0.9e-3) < 1e-12,
+          "rxnoise: the signal photocurrent is R*P");
+    check(rel(n.photocurrent_A, 0.9e-3 + 1e-9) < 1e-12,
+          "rxnoise: the dark current adds to the total photocurrent");
+
+    // 各項が定義式そのものであること
+    check(rel(n.shot_A2, 2.0 * Q * n.photocurrent_A * rx.bandwidth_Hz) < 1e-12,
+          "rxnoise: the shot noise is 2qIB");
+    check(rel(n.thermal_A2,
+              4.0 * KB * (25.0 + 273.15) * rx.bandwidth_Hz / 50.0) < 1e-12,
+          "rxnoise: the thermal noise is 4kTB/R_L with T in kelvin");
+    check(rel(n.rin_A2, std::pow(10.0, -15.5) * 0.9e-3 * 0.9e-3
+                            * rx.bandwidth_Hz) < 1e-12,
+          "rxnoise: the RIN term is rin*(RP)^2*B");
+    check(rel(n.total_A2, n.shot_A2 + n.thermal_A2 + n.rin_A2) < 1e-12
+              && rel(n.rms_A, std::sqrt(n.total_A2)) < 1e-12,
+          "rxnoise: the terms add as variances");
+    check(rel(n.snr_dB, 10.0 * std::log10(n.signalCurrent_A * n.signalCurrent_A
+                                          / n.total_A2)) < 1e-12,
+          "rxnoise: SNR is the signal power over the total noise power");
+
+    // 熱雑音: 絶対温度に比例し、負荷抵抗に反比例する
+    {
+        rn::Receiver a = rx; a.temperature_C = -273.15 + 298.15 * 2.0;
+        check(rel(rn::analyze(a).thermal_A2, 2.0 * n.thermal_A2) < 1e-9,
+              "rxnoise: doubling the absolute temperature doubles the thermal "
+              "noise");
+        rn::Receiver z = rx; z.temperature_C = 0.0;
+        check(rn::analyze(z).thermal_A2 > 0.0,
+              "rxnoise: 0 degC is not zero thermal noise (kelvin, not celsius)");
+        rn::Receiver r2 = rx; r2.loadResistance_ohm = 100.0;
+        check(rel(rn::analyze(r2).thermal_A2, 0.5 * n.thermal_A2) < 1e-12,
+              "rxnoise: the thermal noise falls as 1/R_L");
+        check(rel(rn::analyze(r2).shot_A2, n.shot_A2) < 1e-12,
+              "rxnoise: the load resistance does not touch the shot noise");
+    }
+    // パワー依存: ショットは I に比例、熱は不変、RIN は P² に比例
+    {
+        rn::Receiver p2 = rx; p2.opticalPower_W = 2.0e-3;
+        const rn::Noise m = rn::analyze(p2);
+        check(rel(m.shot_A2 / n.shot_A2, 2.0) < 1e-5,
+              "rxnoise: the shot noise doubles with the photocurrent");
+        check(rel(m.thermal_A2, n.thermal_A2) < 1e-12,
+              "rxnoise: the thermal noise does not depend on the light");
+        check(rel(m.rin_A2, 4.0 * n.rin_A2) < 1e-12,
+              "rxnoise: the RIN term goes as the square of the power");
+    }
+    // 帯域: 全項が B に比例 → SNR はちょうど 3.01 dB 悪化
+    {
+        rn::Receiver b2 = rx; b2.bandwidth_Hz = 2.0e9;
+        const rn::Noise m = rn::analyze(b2);
+        check(rel(m.total_A2, 2.0 * n.total_A2) < 1e-12,
+              "rxnoise: every term is proportional to the bandwidth");
+        check(std::fabs((n.snr_dB - m.snr_dB) - 10.0 * std::log10(2.0)) < 1e-9,
+              "rxnoise: doubling the bandwidth costs exactly 3.01 dB of SNR");
+    }
+    // 項の入切: 外した項がちょうど抜ける
+    {
+        rn::Receiver only = rx;
+        only.thermal = false; only.rin = false;
+        const rn::Noise m = rn::analyze(only);
+        check(m.thermal_A2 == 0.0 && m.rin_A2 == 0.0
+                  && rel(m.shot_A2, n.shot_A2) < 1e-12,
+              "rxnoise: switching a term off removes exactly that term");
+        // ショット雑音限界の SNR = R P/(2qB) — 定義から出る閉形式
+        check(rel(m.snr_dB, 10.0 * std::log10(0.9e-3 / (2.0 * Q * 1.0e9)))
+                  < 2e-6,
+              "rxnoise: the shot-noise-limited SNR is R*P/(2qB)");
+    }
+    // 高パワー極限では RIN が支配して SNR が頭打ちになる
+    {
+        rn::Receiver hi = rx; hi.opticalPower_W = 10.0;   // 10 W
+        const rn::Noise m = rn::analyze(hi);
+        const double lim = rn::rinLimitedSnrDb(rx.rin_dBHz, rx.bandwidth_Hz);
+        check(rel(m.snr_dB, lim) < 1e-3,
+              "rxnoise: at high power the SNR saturates at the RIN limit "
+              "1/(rin*B)");
+        check(std::fabs(lim - (155.0 - 90.0)) < 1e-9,
+              "rxnoise: that limit is -RIN - 10log10(B) = 65 dB here");
+        // さらに強くしても改善しない (頭打ちであることの直接確認)
+        rn::Receiver hi2 = hi; hi2.opticalPower_W = 100.0;
+        check(std::fabs(rn::analyze(hi2).snr_dB - m.snr_dB) < 1e-3,
+              "rxnoise: ten times more light buys nothing once RIN dominates");
+    }
+    // NEP: 全雑音を感度で割った等価入力パワー密度
+    {
+        check(rel(n.nep_W_rtHz,
+                  std::sqrt(n.total_A2 / rx.bandwidth_Hz) / rx.responsivity_A_W)
+                  < 1e-12,
+              "rxnoise: NEP is the input-referred noise density");
+    }
+    // 不正な設定
+    {
+        rn::Receiver b0 = rx; b0.bandwidth_Hz = 0.0;
+        check(!rn::analyze(b0).valid, "rxnoise: zero bandwidth is not a result");
+        rn::Receiver r0 = rx; r0.loadResistance_ohm = 0.0;
+        check(!rn::analyze(r0).valid, "rxnoise: zero load is not a result");
+        rn::Receiver s0 = rx; s0.responsivity_A_W = 0.0;
+        check(!rn::analyze(s0).valid,
+              "rxnoise: a photodiode with no responsivity is not a result");
+        rn::Receiver t0 = rx; t0.temperature_C = -300.0;
+        check(!rn::analyze(t0).valid,
+              "rxnoise: below absolute zero there is no thermal noise to speak "
+              "of");
+        rn::Receiver none = rx;
+        none.shot = none.thermal = none.rin = false;
+        const rn::Noise m = rn::analyze(none);
+        check(m.valid && m.total_A2 == 0.0 && !m.snrValid,
+              "rxnoise: with every term off there is no SNR to report");
+        check(rn::rinLimitedSnrDb(-155.0, 0.0) == 0.0,
+              "rxnoise: the RIN limit needs a bandwidth");
+    }
+}
+
+// ── 伝送線路の準 TEM 解析 (core/TransmissionLine) ──────────────────────────
+// 判定は **厳密解が分かっている形状** (同軸・平行 2 線・等角写像で解ける
+// ストリップライン / CPW) と、近似式でも成り立つ極限で行う:
+//   同軸        Z0 = (eta0/2pi)ln(b/a)/sqrt(eps)          — 閉形式そのもの
+//   平行 2 線   Z0 = (eta0/pi)acosh(D/d)/sqrt(eps)        — 同上
+//   自己補対称  K(k)/K(k') = 1 at k = 1/sqrt(2)           — 楕円積分の恒等式
+//     → ストリップラインは eta0/4、CPW は 30pi (誘電率で割る前) に厳密に一致
+//   マイクロストリップは近似式なので、代わりに **満たすべき性質**で見る
+//     (eps=1 なら eps_eff=1 厳密 / W→大 で eps_eff→eps / Z0 は単調減少)
+//   半波長線路は Z0 に依らず透過 (|S11|=0, |S21|=1) — 分布定数の恒等式
+//   1/4 波長変成器は Zin = Z0^2/ZL                        — 同上
+static void testTransmissionLine()
+{
+    g_file = "tline";
+    namespace tl = ofd::tline;
+
+    const double PI = 3.14159265358979323846;
+    const double ETA0 = 376.730313668;
+    const double C0 = 299792458.0;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    // ── 1) 楕円積分の比 ───────────────────────────────────────────────────
+    {
+        check(std::fabs(tl::ellipticRatio(1.0 / std::sqrt(2.0)) - 1.0) < 1e-12,
+              "tline: K(k)/K(k') is exactly 1 at the self-complementary "
+              "k = 1/sqrt(2)");
+        // k が小さいほど K(k')/K(k) は大きい (単調減少)
+        check(tl::ellipticRatio(0.1) > tl::ellipticRatio(0.5)
+                  && tl::ellipticRatio(0.5) > tl::ellipticRatio(0.9),
+              "tline: the ratio decreases monotonically with k");
+        check(tl::ellipticRatio(0.0) == 0.0 && tl::ellipticRatio(1.0) == 0.0,
+              "tline: k outside (0,1) has no ratio");
+    }
+
+    // ── 2) 同軸 (厳密) ────────────────────────────────────────────────────
+    {
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 1.674; c.epsr = 2.1;
+        c.tanD = 0.0; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+        check(r.valid, "tline: the coax line analyses");
+        const double exact = (ETA0 / (2.0 * PI)) * std::log(c.b_mm / c.a_mm)
+                           / std::sqrt(c.epsr);
+        check(rel(r.z0_ohm, exact) < 1e-12,
+              "tline: coax Z0 is (eta0/2pi)ln(b/a)/sqrt(epsr) exactly");
+        check(rel(r.epsEff, c.epsr) < 1e-12,
+              "tline: a homogeneous line has eps_eff = epsr");
+        check(rel(r.vp_mps, C0 / std::sqrt(c.epsr)) < 1e-12,
+              "tline: the phase velocity is c/sqrt(eps_eff)");
+        check(rel(r.beta_radm, 2.0 * PI * 1.0e9 / r.vp_mps) < 1e-12,
+              "tline: beta = omega / v_p");
+        // 半径を両方 2 倍しても Z0 は変わらない (比だけで決まる)
+        tl::Line c2 = c; c2.a_mm *= 2.0; c2.b_mm *= 2.0;
+        check(rel(tl::analyze(c2, 1.0e9).z0_ohm, r.z0_ohm) < 1e-12,
+              "tline: coax Z0 depends only on the ratio b/a");
+        // 不正な幾何 (b <= a) は結果を返さない
+        tl::Line bad = c; bad.b_mm = bad.a_mm;
+        check(!tl::analyze(bad, 1.0e9).valid,
+              "tline: an outer radius not larger than the inner one is rejected");
+        check(!tl::analyze(c, 0.0).valid, "tline: zero frequency is rejected");
+    }
+
+    // ── 3) 平行 2 線 (厳密) ───────────────────────────────────────────────
+    {
+        tl::Line t;
+        t.kind = tl::Kind::TwoWire;
+        t.d_mm = 3.0; t.dia_mm = 1.0; t.epsr = 1.0;
+        t.tanD = 0.0; t.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(t, 1.0e9);
+        const double exact = (ETA0 / PI) * std::acosh(3.0);
+        check(rel(r.z0_ohm, exact) < 1e-12,
+              "tline: two-wire Z0 is (eta0/pi)acosh(D/d)/sqrt(epsr) exactly");
+        tl::Line bad = t; bad.d_mm = bad.dia_mm;
+        check(!tl::analyze(bad, 1.0e9).valid,
+              "tline: touching wires (D = d) are rejected");
+    }
+
+    // ── 4) ストリップライン / CPW — 自己補対称の厳密値 ────────────────────
+    {
+        tl::Line s;
+        s.kind = tl::Kind::Stripline;
+        s.h_mm = 1.0;                                   // 地板間隔 B
+        s.w_mm = (2.0 / PI) * std::acosh(std::sqrt(2.0)); // k = 1/sqrt(2)
+        s.epsr = 1.0; s.tanD = 0.0; s.sigma_Sm = 0.0;
+        check(rel(tl::analyze(s, 1.0e9).z0_ohm, ETA0 / 4.0) < 1e-9,
+              "tline: a self-complementary stripline is exactly eta0/4");
+        // 誘電体を入れると 1/sqrt(epsr) 倍
+        tl::Line s4 = s; s4.epsr = 4.0;
+        check(rel(tl::analyze(s4, 1.0e9).z0_ohm, ETA0 / 8.0) < 1e-9,
+              "tline: filling the stripline with epsr = 4 halves Z0");
+
+        tl::Line p;
+        p.kind = tl::Kind::Coplanar;
+        p.w_mm = 1.0;
+        p.slot_mm = 0.5 * (std::sqrt(2.0) - 1.0) * p.w_mm;  // k = 1/sqrt(2)
+        p.epsr = 1.0; p.tanD = 0.0; p.sigma_Sm = 0.0;
+        const tl::Result pr = tl::analyze(p, 1.0e9);
+        check(rel(pr.z0_ohm, 30.0 * PI) < 1e-9,
+              "tline: a self-complementary CPW in air is exactly 30pi ohm");
+        check(rel(pr.epsEff, 1.0) < 1e-12,
+              "tline: a CPW in air has eps_eff = 1");
+        tl::Line p10 = p; p10.epsr = 10.0;
+        check(rel(tl::analyze(p10, 1.0e9).epsEff, 5.5) < 1e-12,
+              "tline: the CPW eps_eff is the average (epsr+1)/2 for a thick "
+              "substrate");
+    }
+
+    // ── 5) マイクロストリップ — 近似式が満たすべき性質 ────────────────────
+    {
+        tl::Line m;
+        m.kind = tl::Kind::Microstrip;
+        m.h_mm = 1.6; m.w_mm = 3.0; m.epsr = 4.4;
+        m.tanD = 0.0; m.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(m, 1.0e9);
+        check(r.valid, "tline: the microstrip analyses");
+        // eps=1 (基板が空気) では実効誘電率も厳密に 1
+        tl::Line air = m; air.epsr = 1.0;
+        check(rel(tl::analyze(air, 1.0e9).epsEff, 1.0) < 1e-12,
+              "tline: an air microstrip has eps_eff = 1 exactly");
+        // 実効誘電率は (epsr+1)/2 と epsr の間 (部分充填)
+        check(r.epsEff > 0.5 * (m.epsr + 1.0) && r.epsEff < m.epsr,
+              "tline: eps_eff lies between the half-filled limit and epsr");
+        // W を広げると eps_eff は epsr へ、Z0 は単調に下がる
+        double prevZ = 1e9, prevE = 0.0;
+        bool zDown = true, eUp = true;
+        for (double u : { 0.2, 0.5, 1.0, 2.0, 5.0, 20.0, 100.0 }) {
+            tl::Line q = m; q.w_mm = u * q.h_mm;
+            const tl::Result qr = tl::analyze(q, 1.0e9);
+            if (!(qr.z0_ohm < prevZ)) zDown = false;
+            if (!(qr.epsEff > prevE)) eUp = false;
+            prevZ = qr.z0_ohm; prevE = qr.epsEff;
+        }
+        check(zDown, "tline: microstrip Z0 falls monotonically with W/h");
+        check(eUp, "tline: eps_eff rises monotonically with W/h");
+        tl::Line wide = m; wide.w_mm = 1000.0 * wide.h_mm;
+        check(rel(tl::analyze(wide, 1.0e9).epsEff, m.epsr) < 0.02,
+              "tline: a very wide microstrip approaches the filled limit "
+              "eps_eff -> epsr");
+        // 教科書的な FR-4 の 50 ohm 級であること (W/h = 1.875, epsr = 4.4)
+        check(r.z0_ohm > 45.0 && r.z0_ohm < 55.0,
+              "tline: FR-4 with W/h = 1.875 lands in the 50 ohm class");
+        check(!tl::analyze(tl::Line{ tl::Kind::Microstrip, 0.0 }, 1.0e9).valid,
+              "tline: a zero-width strip is rejected");
+    }
+
+    // ── 6) 損失 ───────────────────────────────────────────────────────────
+    {
+        // 均質線路では誘電損が厳密に beta*tan(delta)/2 になる
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 1.674; c.epsr = 2.1;
+        c.tanD = 0.001; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+        check(rel(r.alphaD_Npm, 0.5 * r.beta_radm * c.tanD) < 1e-12,
+              "tline: for a homogeneous line the dielectric loss is exactly "
+              "beta*tan(delta)/2");
+        check(r.alphaC_Npm == 0.0,
+              "tline: a perfect conductor contributes no loss");
+        // 同軸の導体損は厳密式 (近似フラグが立たない)
+        tl::Line c2 = c; c2.sigma_Sm = 5.8e7;
+        const tl::Result r2 = tl::analyze(c2, 1.0e9);
+        check(!r2.alphaCApprox,
+              "tline: the coax conductor loss is the exact expression");
+        check(r2.alphaC_Npm > 0.0 && r2.alpha_dBm
+                  > (r2.alphaC_Npm + r2.alphaD_Npm) * 8.68 * 0.999,
+              "tline: the total attenuation is the Np/m sum in dB/m");
+        // 表皮効果: 周波数 4 倍で導体損は 2 倍 (Rs ∝ sqrt(f))
+        const tl::Result r4 = tl::analyze(c2, 4.0e9);
+        check(rel(r4.alphaC_Npm, 2.0 * r2.alphaC_Npm) < 1e-9,
+              "tline: the conductor loss follows the skin-effect sqrt(f)");
+        // 誘電損は f に比例
+        check(rel(r4.alphaD_Npm, 4.0 * r2.alphaD_Npm) < 1e-9,
+              "tline: the dielectric loss is proportional to frequency");
+        // マイクロストリップの導体損は広線路近似であることを申告する
+        tl::Line m; m.kind = tl::Kind::Microstrip; m.sigma_Sm = 5.8e7;
+        check(tl::analyze(m, 1.0e9).alphaCApprox,
+              "tline: the microstrip conductor loss declares itself an "
+              "approximation");
+
+        // 複素 Z0: 無損失なら虚部は厳密に 0 で実部は z0_ohm に一致する
+        tl::Line loss0 = c; loss0.tanD = 0.0; loss0.sigma_Sm = 0.0;
+        const tl::Result rl0 = tl::analyze(loss0, 1.0e9);
+        check(rl0.z0Complex.imag() == 0.0
+                  && rel(rl0.z0Complex.real(), rl0.z0_ohm) < 1e-12,
+              "tline: a lossless line has a purely real Z0");
+        // 損失があると虚部は負 (誘導性の R' が効く) で、大きさは小さい
+        const std::complex<double> zc = r2.z0Complex;
+        check(zc.imag() < 0.0 && std::fabs(zc.imag()) < 0.05 * zc.real(),
+              "tline: loss makes Z0 slightly complex with a negative "
+              "imaginary part");
+        check(rel(zc.real(), r2.z0_ohm) < 1e-3,
+              "tline: the real part stays close to the lossless Z0 for a "
+              "low-loss line");
+    }
+
+    // ── 7) S パラメータ — 分布定数の恒等式 ────────────────────────────────
+    {
+        tl::Line c;
+        c.kind = tl::Kind::Coax;
+        c.a_mm = 0.5; c.b_mm = 2.0; c.epsr = 1.0;
+        c.tanD = 0.0; c.sigma_Sm = 0.0;
+        const tl::Result r = tl::analyze(c, 1.0e9);
+
+        // 整合線路 (Z0 = Zref): 反射ゼロ・振幅 1・位相 = −beta*l
+        const double len = 100.0;
+        const tl::SParam m = tl::sParameters(r, len, r.z0_ohm);
+        check(m.valid && std::abs(m.s11) < 1e-12,
+              "tline: a matched line reflects nothing");
+        check(std::fabs(std::abs(m.s21) - 1.0) < 1e-12,
+              "tline: a lossless matched line passes everything");
+        const double phase = std::arg(m.s21);
+        const double want = -r.beta_radm * len * 1e-3;
+        check(std::fabs(std::remainder(phase - want, 2.0 * PI)) < 1e-9,
+              "tline: the phase of S21 is -beta*l");
+
+        // 半波長線路は Z0 に依らず透過する (整合していなくても)
+        const double half = 1000.0 * PI / r.beta_radm;
+        const tl::SParam h = tl::sParameters(r, half, 50.0);
+        check(std::abs(h.s11) < 1e-9 && std::fabs(std::abs(h.s21) - 1.0) < 1e-9,
+              "tline: a half-wave line is transparent whatever its Z0");
+
+        // 1/4 波長変成器: Zin = Z0^2/ZL。S11 から Zin を戻して確かめる
+        const double quarter = 0.5 * half;
+        const tl::SParam q = tl::sParameters(r, quarter, 50.0);
+        const std::complex<double> g = q.s11;
+        const std::complex<double> zin = 50.0 * (1.0 + g) / (1.0 - g);
+        check(rel(zin.real(), r.z0_ohm * r.z0_ohm / 50.0) < 1e-6
+                  && std::fabs(zin.imag()) < 1e-6 * std::fabs(zin.real()),
+              "tline: a quarter-wave section transforms 50 ohm into Z0^2/50");
+
+        // 損失があると |S11|^2 + |S21|^2 < 1 (エネルギーが減る)
+        tl::Line lossy = c; lossy.tanD = 0.02; lossy.sigma_Sm = 5.8e7;
+        const tl::Result lr = tl::analyze(lossy, 1.0e9);
+        const tl::SParam ls = tl::sParameters(lr, 500.0, lr.z0_ohm);
+        const double p = std::norm(ls.s11) + std::norm(ls.s21);
+        check(p < 1.0 - 1e-6, "tline: a lossy line does not conserve power");
+        const tl::SParam l0 = tl::sParameters(r, 500.0, r.z0_ohm);
+        check(std::fabs(std::norm(l0.s11) + std::norm(l0.s21) - 1.0) < 1e-12,
+              "tline: the lossless line does conserve it");
+
+        // 長さ 0 は素通し、不正な基準インピーダンスは結果を返さない
+        const tl::SParam z = tl::sParameters(r, 0.0, 50.0);
+        check(std::abs(z.s11) < 1e-15 && std::fabs(std::abs(z.s21) - 1.0) < 1e-15,
+              "tline: a zero-length section is a through");
+        check(!tl::sParameters(r, 100.0, 0.0).valid,
+              "tline: a non-positive reference impedance is rejected");
+        check(!tl::sParameters(tl::Result{}, 100.0, 50.0).valid,
+              "tline: an invalid line has no S-parameters");
+    }
+
+    // ── 8) .ofdx のラウンドトリップと旧ファイル互換 ───────────────────────
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "tline: temp dir");
+        const QString j = dir.path() + QStringLiteral("/tline.ofdx");
+
+        // 既定値のままならキー自体を書かない (旧 .ofdx とバイト一致)
+        {
+            Project a, b;
+            b.tline().epsr = TransmissionLineOpts{}.epsr;   // 既定値を明示代入
+            const QString ja = dir.path() + QStringLiteral("/def_a.ofdx");
+            const QString jb = dir.path() + QStringLiteral("/def_b.ofdx");
+            OfdxIO::save(ja, a);
+            OfdxIO::save(jb, b);
+            QFile fa(ja), fb(jb);
+            check(fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly)
+                      && fa.readAll() == fb.readAll(),
+                  "tline: default transmission-line settings are not written "
+                  "at all");
+            fa.seek(0);
+            check(!QString::fromUtf8(fa.readAll())
+                       .contains(QLatin1String("transmission_line")),
+                  "tline: no transmission_line key for a default project");
+        }
+
+        Project p;
+        TransmissionLineOpts &t = p.tline();
+        t.kind = 2; t.w_mm = 1.25; t.h_mm = 0.8;
+        t.a_mm = 0.45; t.b_mm = 1.5; t.d_mm = 4.0; t.dia_mm = 0.9;
+        t.slot_mm = 0.25; t.epsr = 2.2; t.tanD = 0.0009;
+        t.sigma_Sm = 4.1e7; t.length_mm = 120.0; t.freq_GHz = 6.5;
+        t.z0Ref_ohm = 75.0; t.ports = 4;
+        t.showVp = true; t.showVg = true; t.showDelay = true;
+        t.showBeta = false; t.showTouchstone = false;
+        t.z0FreqDep = false; t.z0ReIm = true;
+        check(OfdxIO::save(j, p), "tline: sidecar save");
+
+        Project q;
+        QString err;
+        check(OfdxIO::load(j, q, &err), "tline: sidecar reload");
+        const TransmissionLineOpts &r2 = q.tline();
+        check(r2.kind == 2 && qFuzzyCompare(r2.a_mm, 0.45)
+                  && qFuzzyCompare(r2.b_mm, 1.5)
+                  && qFuzzyCompare(r2.epsr, 2.2)
+                  && qFuzzyCompare(r2.freq_GHz, 6.5)
+                  && qFuzzyCompare(r2.z0Ref_ohm, 75.0) && r2.ports == 4,
+              "tline: geometry and materials round-trip");
+        check(r2.showVp && r2.showVg && r2.showDelay && !r2.showBeta
+                  && !r2.showTouchstone && !r2.z0FreqDep && r2.z0ReIm,
+              "tline: the display selections round-trip");
+        // 同じ設定なら同じ結果になる (モデル → 計算まで一貫していること)
+        tl::Line la, lb;
+        la.kind = lb.kind = tl::Kind::Coax;
+        la.a_mm = p.tline().a_mm;  lb.a_mm = r2.a_mm;
+        la.b_mm = p.tline().b_mm;  lb.b_mm = r2.b_mm;
+        la.epsr = p.tline().epsr;  lb.epsr = r2.epsr;
+        check(tl::analyze(la, 1e9).z0_ohm == tl::analyze(lb, 1e9).z0_ohm,
+              "tline: the reloaded settings reproduce the same Z0");
+
+        // キーの無い旧ファイルは既定値のまま
+        {
+            const QString legacy = dir.path() + QStringLiteral("/legacy.ofdx");
+            QFile f(legacy);
+            check(f.open(QIODevice::WriteOnly), "tline: legacy sidecar written");
+            f.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"em\" }");
+            f.close();
+            Project z;
+            check(OfdxIO::load(legacy, z, &err), "tline: legacy sidecar reload");
+            const TransmissionLineOpts d;
+            check(z.tline().kind == d.kind && z.tline().epsr == d.epsr
+                      && z.tline().freq_GHz == d.freq_GHz
+                      && z.tline().showBeta == d.showBeta,
+                  "tline: a sidecar without the key leaves the defaults");
+        }
+        // clear() で既定値へ戻る
+        p.clear();
+        check(p.tline().kind == 0 && p.tline().epsr == 4.4,
+              "tline: clear() resets the transmission-line settings");
+    }
+}
+
+// ── 側路伝搬の経路合成 (core/FlankingTransmission) ─────────────────────────
+// 判定は **合成則そのものの恒等式**。R'w = −10log10(Σ10^(−R/10)) は
+//   - 同じ R の経路が N 本なら R − 10log10(N)
+//   - 10 dB 強い経路を足すと +10log10(1.1) = 0.414 dB しか悪くならない
+//   - 経路を無限に良くすると、その経路を外したのと同じになる
+// といった性質を持ち、いずれも手計算で確かめられる。
+static void testFlankingTransmission()
+{
+    g_file = "flanking";
+    namespace fl = ofd::flanking;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+    auto mk = [](double r, double d = 0.0, bool on = true) {
+        fl::Path p; p.R_dB = r; p.deltaR_dB = d; p.enabled = on; return p;
+    };
+
+    // 1 本だけならその経路そのもの
+    {
+        const fl::Combined c = fl::combine({ mk(52.0) });
+        check(c.valid && c.paths == 1, "flanking: a single path is valid");
+        check(approx(c.rw_dB, 52.0, 1e-12),
+              "flanking: one path combines to itself");
+        check(c.weakestIndex == 0, "flanking: it is also the weakest");
+    }
+    // 同じ R の経路 N 本 → R − 10log10(N)
+    {
+        for (int n : { 2, 3, 5, 10 }) {
+            std::vector<fl::Path> v(size_t(n), mk(50.0));
+            const fl::Combined c = fl::combine(v);
+            check(approx(c.rw_dB, 50.0 - 10.0 * std::log10(double(n)), 1e-9),
+                  "flanking: N equal paths give R - 10log10(N)");
+        }
+        // 2 本ならちょうど 3.01 dB 悪化
+        const fl::Combined c = fl::combine({ mk(50.0), mk(50.0) });
+        check(approx(c.rw_dB, 50.0 - 3.0102999566, 1e-9),
+              "flanking: two equal paths are exactly 3.01 dB worse");
+    }
+    // 10 dB 強い経路の寄与は 10log10(1.1) = 0.414 dB だけ
+    {
+        const fl::Combined c = fl::combine({ mk(50.0), mk(60.0) });
+        check(approx(c.rw_dB, 50.0 - 10.0 * std::log10(1.1), 1e-9),
+              "flanking: a path 10 dB stronger only costs 0.41 dB");
+        check(c.weakestIndex == 0,
+              "flanking: the weakest path is the one with the lowest R");
+    }
+    // 改善量 ΔR: 経路を十分良くすると、その経路を外したのと同じに漸近する
+    {
+        const fl::Combined without = fl::combine({ mk(50.0), mk(55.0, 0.0, false) });
+        const fl::Combined huge = fl::combine({ mk(50.0), mk(55.0, 100.0) });
+        check(approx(huge.rw_dB, without.rw_dB, 1e-9),
+              "flanking: improving a path without limit is the same as "
+              "removing it");
+        check(approx(without.rw_dB, 50.0, 1e-12),
+              "flanking: a disabled path does not enter the combination");
+    }
+    // 改善量と改善前の関係
+    {
+        const fl::Combined c = fl::combine({ mk(52.0), mk(58.0, 8.0),
+                                             mk(62.0), mk(60.0, 6.0),
+                                             mk(65.0, 3.0) });
+        const fl::Combined b = fl::combine({ mk(52.0), mk(58.0), mk(62.0),
+                                             mk(60.0), mk(65.0) });
+        check(approx(c.base_dB, b.rw_dB, 1e-12),
+              "flanking: base_dB is the combination with every improvement "
+              "switched off");
+        check(c.gain_dB > 0.0 && approx(c.gain_dB, c.rw_dB - c.base_dB, 1e-12),
+              "flanking: the gain is the difference the improvements make");
+        // 直接透過 (52 dB) が最も弱いので、側路をいくら直しても頭打ちになる
+        check(c.rw_dB < 52.0 && c.rw_dB > c.base_dB,
+              "flanking: improving only the flanking paths cannot beat the "
+              "direct path");
+        check(c.weakestIndex == 0,
+              "flanking: the direct path is what caps the result");
+        // 最も弱い経路を直すと初めて大きく効く
+        const fl::Combined d = fl::combine({ mk(52.0, 10.0), mk(58.0, 8.0),
+                                             mk(62.0), mk(60.0, 6.0),
+                                             mk(65.0, 3.0) });
+        check(d.gain_dB > c.gain_dB + 3.0,
+              "flanking: fixing the weakest path is worth much more than "
+              "fixing the others");
+    }
+    // 有効な経路が無い / 数値でない入力
+    {
+        check(!fl::combine({}).valid, "flanking: no paths is not a result");
+        check(!fl::combine({ mk(50.0, 0.0, false) }).valid,
+              "flanking: every path disabled is not a result");
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const fl::Combined c = fl::combine({ mk(50.0), mk(nan) });
+        check(c.valid && c.paths == 1 && approx(c.rw_dB, 50.0, 1e-12),
+              "flanking: a non-finite R is skipped rather than poisoning the "
+              "sum");
+    }
+}
+
+// ── 微分なし最適化 PSO / GA (core/Optimizer) ───────────────────────────────
+// 判定は **最適解が解析的に分かっているテスト関数**との比較。数値の丸写しでは
+// なく「箱の中でランダムに取ると数十のオーダーの値が、4 桁以上落ちて既知の
+// 最適点へ収束すること」を見る:
+//   sphere    Σxᵢ²                      最小 0 (原点) — 単峰・条件数 1
+//   Rosenbrock (1−x)² + 100(y−x²)²      最小 0 (1,1)  — 細い谷
+//   Rastrigin 10n + Σ(xᵢ²−10cos2πxᵢ)   最小 0 (原点) — 局所解が格子状に並ぶ
+//                                        (最寄りの局所解は f ≈ 1 なので、
+//                                         f < 0.5 は大域解を捕まえた証拠)
+static void testOptimizer()
+{
+    g_file = "optimizer";
+    namespace op = ofd::optim;
+
+    auto sphere = [](const std::vector<double> &x) {
+        double s = 0.0;
+        for (double v : x) s += v * v;
+        return s;
+    };
+    auto rosenbrock = [](const std::vector<double> &x) {
+        const double a = 1.0 - x[0], b = x[1] - x[0] * x[0];
+        return a * a + 100.0 * b * b;
+    };
+    auto rastrigin = [](const std::vector<double> &x) {
+        double s = 10.0 * double(x.size());
+        for (double v : x)
+            s += v * v - 10.0 * std::cos(2.0 * 3.14159265358979323846 * v);
+        return s;
+    };
+
+    // 箱と設定をまとめて 1 回まわす小道具。境界の逸脱と最良値の悪化も見張る。
+    struct RunOut {
+        double best = 0.0;
+        std::vector<double> x;
+        bool hasBest = false, inBounds = true, monotone = true;
+        int evaluations = 0;
+    };
+    auto sweep = [](op::Method m, int nv, double lo, double hi, int P, int G,
+                    bool maximize, uint64_t seed,
+                    const std::function<double(const std::vector<double>&)> &f,
+                    RunOut *out) {
+        std::vector<op::Variable> vars(static_cast<size_t>(nv));
+        for (op::Variable &v : vars) { v.lo = lo; v.hi = hi; }
+        op::Options o;
+        o.method = m; o.population = P; o.generations = G;
+        o.maximize = maximize; o.seed = seed;
+        op::Optimizer opt(vars, o);
+        double prev = 0.0;
+        bool havePrev = false;
+        while (!opt.done()) {
+            const std::vector<std::vector<double>> &pts = opt.ask();
+            std::vector<double> vals;
+            vals.reserve(pts.size());
+            for (const std::vector<double> &p : pts) {
+                for (int j = 0; j < nv; ++j)
+                    if (p[size_t(j)] < lo - 1e-12 || p[size_t(j)] > hi + 1e-12)
+                        out->inBounds = false;
+                vals.push_back(f(p));
+            }
+            opt.tell(vals);
+            if (opt.hasBest()) {
+                if (havePrev) {
+                    const bool worse = maximize ? (opt.bestValue() < prev)
+                                                : (opt.bestValue() > prev);
+                    if (worse) out->monotone = false;
+                }
+                prev = opt.bestValue();
+                havePrev = true;
+            }
+        }
+        out->best = opt.bestValue();
+        out->x = opt.best();
+        out->hasBest = opt.hasBest();
+        out->evaluations = opt.evaluations();
+    };
+
+    // ── 1) 単峰 (sphere) ──────────────────────────────────────────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 3, -5.0, 5.0, 30, 40, false, 42, sphere, &r);
+        check(r.hasBest, "optimizer: sphere run produces a best point");
+        check(r.inBounds, "optimizer: every asked point stays inside the box");
+        check(r.monotone, "optimizer: the best value never gets worse "
+                          "(elitism / global best)");
+        check(r.best < 1e-2,
+              "optimizer: sphere converges to its analytic minimum 0 "
+              "(random points in this box are of order 25)");
+        double d = 0.0;
+        for (double v : r.x) d = std::max(d, std::fabs(v));
+        check(d < 0.1, "optimizer: the sphere minimiser is the origin");
+        check(r.evaluations == 30 * 40,
+              "optimizer: every point of every generation was counted");
+    }
+
+    // ── 2) 細い谷 (Rosenbrock) ───────────────────────────────────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 2, -2.0, 2.0, 40, 80, false, 7, rosenbrock, &r);
+        check(r.best < 1e-2,
+              "optimizer: Rosenbrock converges to its analytic minimum 0");
+        check(std::fabs(r.x[0] - 1.0) < 0.1 && std::fabs(r.x[1] - 1.0) < 0.1,
+              "optimizer: the Rosenbrock minimiser is (1, 1)");
+    }
+
+    // ── 3) 多峰 (Rastrigin) — 局所解でなく大域解を捕まえること ────────────
+    for (op::Method m : { op::Method::ParticleSwarm, op::Method::Genetic }) {
+        RunOut r;
+        sweep(m, 2, -5.12, 5.12, 40, 60, false, 3, rastrigin, &r);
+        check(r.best < 0.5,
+              "optimizer: Rastrigin lands in the global basin (the nearest "
+              "local minima sit at f = 1)");
+    }
+
+    // ── 4) 最大化 ─────────────────────────────────────────────────────────
+    {
+        auto negSphere = [&sphere](const std::vector<double> &x) {
+            return 10.0 - sphere(x);
+        };
+        RunOut r;
+        sweep(op::Method::ParticleSwarm, 3, -5.0, 5.0, 30, 40, true, 42,
+              negSphere, &r);
+        check(r.best > 9.99 && r.best <= 10.0,
+              "optimizer: maximisation finds the analytic maximum 10");
+        check(r.monotone, "optimizer: the best value never gets worse when "
+                          "maximising either");
+    }
+
+    // ── 5) 再現性 (同じ seed → 同じ設計点の列) ────────────────────────────
+    {
+        auto trajectory = [&](uint64_t seed) {
+            std::vector<op::Variable> vars(2);
+            for (op::Variable &v : vars) { v.lo = -3.0; v.hi = 3.0; }
+            op::Options o;
+            o.method = op::Method::Genetic;
+            o.population = 12; o.generations = 8; o.seed = seed;
+            op::Optimizer opt(vars, o);
+            std::vector<double> flat;
+            while (!opt.done()) {
+                const std::vector<std::vector<double>> &pts = opt.ask();
+                std::vector<double> vals;
+                for (const std::vector<double> &p : pts) {
+                    flat.push_back(p[0]);
+                    flat.push_back(p[1]);
+                    vals.push_back(sphere(p));
+                }
+                opt.tell(vals);
+            }
+            return flat;
+        };
+        const std::vector<double> a = trajectory(99), b = trajectory(99),
+                                  c = trajectory(100);
+        check(a == b, "optimizer: the same seed replays the same design points "
+                      "bit for bit");
+        check(a != c, "optimizer: a different seed explores differently");
+    }
+
+    // ── 6) 評価できなかった点 (NaN) ───────────────────────────────────────
+    // x0 > 0 の半空間ではカーネルが落ちた、という状況を模す。最適解は
+    // 残った半空間の端 x0 = 0 に寄る。NaN が最良に採られないことを見る。
+    {
+        std::vector<op::Variable> vars(2);
+        for (op::Variable &v : vars) { v.lo = -4.0; v.hi = 4.0; }
+        op::Options o;
+        o.method = op::Method::ParticleSwarm;
+        o.population = 30; o.generations = 40; o.seed = 5;
+        op::Optimizer opt(vars, o);
+        int nanCount = 0, okCount = 0;
+        while (!opt.done()) {
+            const std::vector<std::vector<double>> &pts = opt.ask();
+            std::vector<double> vals;
+            for (const std::vector<double> &p : pts) {
+                if (p[0] > 0.0) {
+                    vals.push_back(std::numeric_limits<double>::quiet_NaN());
+                    ++nanCount;
+                } else {
+                    vals.push_back(sphere(p));
+                    ++okCount;
+                }
+            }
+            opt.tell(vals);
+        }
+        check(nanCount > 0 && okCount > 0,
+              "optimizer: the NaN scenario really produced both outcomes");
+        check(opt.hasBest() && !std::isnan(opt.bestValue()),
+              "optimizer: a failed evaluation is never taken as the best");
+        check(opt.best()[0] <= 0.0,
+              "optimizer: the best point comes from the half-space that "
+              "actually evaluated");
+        check(opt.best()[0] > -0.1 && std::fabs(opt.best()[1]) < 0.1,
+              "optimizer: with the other half unusable the optimum sits on "
+              "the boundary x0 = 0");
+        check(opt.evaluations() == okCount,
+              "optimizer: only successful evaluations are counted");
+    }
+
+    // ── 7) 初期値と不正な設定 ─────────────────────────────────────────────
+    {
+        std::vector<op::Variable> vars(2);
+        vars[0].lo = -1.0; vars[0].hi = 1.0; vars[0].init = 0.25;
+        vars[0].hasInit = true;
+        vars[1].lo = -1.0; vars[1].hi = 1.0; vars[1].init = -0.5;
+        vars[1].hasInit = true;
+        op::Options o;
+        o.population = 6; o.generations = 3;
+        op::Optimizer opt(vars, o);
+        check(opt.valid() && opt.ask().size() == 6,
+              "optimizer: the first ask is one generation");
+        check(opt.ask()[0][0] == 0.25 && opt.ask()[0][1] == -0.5,
+              "optimizer: the first individual starts from the given initial "
+              "design");
+        // 範囲外の初期値は箱へ丸める (黙って箱の外を評価させない)
+        std::vector<op::Variable> v2 = vars;
+        v2[0].init = 99.0;
+        op::Optimizer o2(v2, o);
+        check(o2.ask()[0][0] == 1.0,
+              "optimizer: an initial value outside the box is clamped into it");
+    }
+    {
+        op::Options o;
+        check(!op::Optimizer(std::vector<op::Variable>{}, o).valid(),
+              "optimizer: no variables is not a problem to solve");
+        std::vector<op::Variable> bad(1);
+        bad[0].lo = 1.0; bad[0].hi = 1.0;      // 幅ゼロ
+        check(!op::Optimizer(bad, o).valid(),
+              "optimizer: a zero-width box is rejected");
+        std::vector<op::Variable> ok(1);
+        op::Options p1 = o; p1.population = 1;
+        check(!op::Optimizer(ok, p1).valid(),
+              "optimizer: a population of one cannot recombine");
+        op::Options g0 = o; g0.generations = 0;
+        check(!op::Optimizer(ok, g0).valid(),
+              "optimizer: zero generations is not a run");
+        // PSO は c1 + c2 > 4 でないと収縮係数が定義されない
+        op::Options phi = o;
+        phi.method = op::Method::ParticleSwarm; phi.c1 = 1.0; phi.c2 = 1.0;
+        check(!op::Optimizer(ok, phi).valid(),
+              "optimizer: PSO needs c1 + c2 > 4 for the constriction factor");
+        check(op::Optimizer(ok, phi).ask().empty(),
+              "optimizer: an invalid configuration asks for nothing");
+    }
+    // 評価値の数が合わなければ世代を進めない (黙って壊さない)
+    {
+        std::vector<op::Variable> vars(1);
+        op::Options o;
+        o.population = 4; o.generations = 3;
+        op::Optimizer opt(vars, o);
+        opt.tell(std::vector<double>(3, 1.0));    // 4 個体に 3 個
+        check(opt.generation() == 0 && !opt.hasBest(),
+              "optimizer: a mismatched number of results does not advance the "
+              "run");
+    }
+}
+
+// ── 配光ファイル IES LM-63 (io/PhotometricIO) ──────────────────────────────
+// 判定は (a) 追跡結果との厳密な突き合わせ、(b) 書いて読み直しての往復、
+// (c) 規格上受け取ってはいけないファイルを断ること、の 3 本立て。
+static void testPhotometricIO()
+{
+    g_file = "photometric";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    const double PHI = 1000.0;
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    const il::Result rBare = il::trace(bare, 200000);
+    check(rBare.valid, "photom: the reference trace is valid");
+
+    // ── 1) 追跡結果 → 配光データ ──────────────────────────────────────────
+    PhotometricData d = PhotometricIO::fromTrace(rBare, PHI);
+    check(!d.isEmpty(), "photom: fromTrace produces a distribution");
+    check(d.vertAngles_deg.size() == int(rBare.intensity_cd.size()) &&
+          d.horizAngles_deg.size() == 1,
+          "photom: one C-plane (axially symmetric) and one angle per bin");
+    check(d.lumensPerLamp == PHI && d.lamps == 1,
+          "photom: the lamp flux is the source flux");
+    {
+        const double dth = 180.0 / d.vertAngles_deg.size();
+        check(std::fabs(d.vertAngles_deg.first() - 0.5 * dth) < 1e-12 &&
+              std::fabs(d.vertAngles_deg.last() - (180.0 - 0.5 * dth)) < 1e-12,
+              "photom: the vertical angles are bin centres");
+    }
+    // 光度は I0 cos(theta) (ランバート面)。すれすれのビン (theta -> 90 deg) は
+    // 立体角そのものが小さく光線が数十本しか入らないので、統計誤差が支配する。
+    // 判定は光線の入る範囲で行い、90 deg より後ろは「厳密に 0」で見る。
+    {
+        const double I0 = PHI / PI;
+        int checked = 0;
+        for (int k : { 0, 10, 30, 60, 80 }) {
+            const double th = d.vertAngles_deg[k] * PI / 180.0;
+            if (rel(d.candela[0][k], I0 * std::cos(th)) < 5e-3) ++checked;
+        }
+        check(checked == 5,
+              "photom: the exported candela follow I0 cos(theta) for a "
+              "Lambertian source");
+        bool behind = true;
+        for (int k = 90; k < d.candela[0].size(); ++k)
+            behind = behind && (d.candela[0][k] == 0.0);
+        check(behind,
+              "photom: the exported distribution is exactly zero behind the "
+              "emitter (no invented back light)");
+    }
+    // **中点を境界にとると、積分が追跡の全光束を厳密に復元する**
+    check(rel(PhotometricIO::integratedFlux(d), rBare.fluxOut_lm) < 1e-9,
+          "photom: integrating the distribution over solid angle returns the "
+          "flux that left the system");
+    check(d.more.size() == 3,
+          "photom: the file records where the numbers came from ([MORE])");
+
+    // ── 2) 書いて読み直す ─────────────────────────────────────────────────
+    QTemporaryDir dir;
+    check(dir.isValid(), "photom: temp dir");
+    const QString path = dir.path() + QStringLiteral("/lum.ies");
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = QStringLiteral("test luminaire");
+    d.lamp = QStringLiteral("white LED");
+    d.inputWatts = 12.5;
+    QString err;
+    check(PhotometricIO::writeIes(path, d, &err), "photom: write IES");
+
+    PhotometricData q;
+    check(PhotometricIO::readIes(path, &q, &err), "photom: read IES back");
+    check(q.vertAngles_deg.size() == d.vertAngles_deg.size() &&
+          q.horizAngles_deg.size() == 1 && q.candela.size() == 1,
+          "photom: the angle counts survive the round trip");
+    check(q.manufacturer == QStringLiteral("OpenFDTD-X") &&
+          q.luminaire == QStringLiteral("test luminaire") &&
+          q.lamp == QStringLiteral("white LED") && q.more.size() == 3,
+          "photom: the keyword block survives the round trip");
+    check(rel(q.lumensPerLamp, PHI) < 1e-9 && rel(q.inputWatts, 12.5) < 1e-9,
+          "photom: the lamp flux and input watts survive the round trip");
+    {
+        double worst = 0.0;
+        for (int k = 0; k < q.vertAngles_deg.size(); ++k) {
+            worst = std::max(worst, rel(q.vertAngles_deg[k], d.vertAngles_deg[k]));
+            worst = std::max(worst, rel(q.candela[0][k], d.candela[0][k]));
+        }
+        check(worst < 1e-5,
+              "photom: angles and candela survive the round trip to the "
+              "written precision");
+    }
+    check(rel(PhotometricIO::integratedFlux(q), rBare.fluxOut_lm) < 1e-5,
+          "photom: the re-read distribution still carries the traced flux");
+
+    // ── 3) 光出力比 (LOR) が吸収のある系で効率と一致する ──────────────────
+    {
+        il::Scene s = bare;
+        s.reflector.enabled = true;
+        s.reflector.focal_mm = 5.0;
+        s.reflector.radius_mm = 20.0;
+        s.reflector.reflectance = 0.85;
+        const il::Result r = il::trace(s, 200000);
+        const PhotometricData p = PhotometricIO::fromTrace(r, r.fluxIn_lm);
+        check(rel(PhotometricIO::integratedFlux(p) / p.lumensPerLamp,
+                  r.efficiency) < 1e-9,
+              "photom: (distribution flux)/(lamp flux) is the optical "
+              "efficiency, so a lossy mirror shows up as LOR < 1");
+        check(PhotometricIO::integratedFlux(p) < 0.95 * p.lumensPerLamp,
+              "photom: the lossy mirror really does lose flux");
+    }
+
+    // ── 4) 倍率の適用と、受け取ってはいけないファイル ─────────────────────
+    auto writeRaw = [&dir](const char *name, const QByteArray &body) {
+        const QString p = dir.path() + QStringLiteral("/") + name;
+        QFile f(p);
+        if (!f.open(QIODevice::WriteOnly)) return QString();
+        f.write(body);
+        f.close();
+        return p;
+    };
+    {
+        // 倍率 2.5 — ファイル中の値 100 は実光度 250 cd
+        const QByteArray body =
+            "IESNA:LM-63-2002\n[TEST] x\nTILT=NONE\n"
+            "1 1000 2.5 3 1 1 2 0 0 0\n1 1 10\n"
+            "0 90 180\n0\n100 40 0\n";
+        const QString p = writeRaw("mult.ies", body);
+        PhotometricData m;
+        check(PhotometricIO::readIes(p, &m, &err), "photom: read a file with "
+              "a candela multiplier");
+        check(rel(m.candela[0][0], 250.0) < 1e-9 &&
+              rel(m.candela[0][1], 100.0) < 1e-9,
+              "photom: the candela multiplier is applied on read");
+    }
+    {
+        const QString p = writeRaw("notilt.ies",
+            "IESNA:LM-63-2002\n1 1000 1 3 1 1 2 0 0 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: a file without a TILT line is rejected");
+    }
+    {
+        // TILT=INCLUDE は傾斜補正表つき。黙って無視すると光度が食い違う
+        const QString p = writeRaw("tilt.ies",
+            "IESNA:LM-63-2002\nTILT=INCLUDE\n1 1000 1 3 1 1 2 0 0 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: TILT=INCLUDE is refused rather than silently ignored");
+    }
+    {
+        // 測光型 2 = Type B は座標系が違う。読み替えずに断る
+        const QString p = writeRaw("typeb.ies",
+            "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 2 2 0 0 0\n"
+            "1 1 10\n0 90 180\n0\n100 40 0\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: photometric type B is refused (different coordinates)");
+    }
+    {
+        // 光度の数が足りないファイル
+        const QString p = writeRaw("short.ies",
+            "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n"
+            "1 1 10\n0 90 180\n0\n100 40\n");
+        PhotometricData m;
+        check(!PhotometricIO::readIes(p, &m, &err),
+              "photom: a truncated candela block is rejected");
+    }
+    {
+        PhotometricData m;
+        check(!PhotometricIO::readIes(dir.path() + QStringLiteral("/none.ies"),
+                                      &m, &err),
+              "photom: a missing file is rejected");
+    }
+    // 書き側の整合 (角度の数と光度の数が合わない / 空)
+    {
+        PhotometricData bad;
+        check(!PhotometricIO::writeIes(path, bad, &err),
+              "photom: an empty distribution is not written");
+        bad.vertAngles_deg = { 0.0, 90.0 };
+        bad.horizAngles_deg = { 0.0 };
+        bad.candela = { { 1.0 } };          // 鉛直角 2 個に対して光度 1 個
+        check(!PhotometricIO::writeIes(path, bad, &err),
+              "photom: a distribution whose counts disagree is not written");
+    }
+    // 追跡していない結果からは配光を作らない
+    {
+        il::Result none;
+        check(PhotometricIO::fromTrace(none, 1000.0).isEmpty(),
+              "photom: an invalid trace produces no distribution");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -15480,6 +17122,16 @@ static void testDisplayIlluminationSettings()
         i.phosPeak_nm = 585.0;
         i.phosFwhm_nm = 120.0;
         i.phosRatio = 0.8;
+        i.reflFocal_mm = 7.5;
+        i.reflRadius_mm = 32.0;
+        i.reflReflect = 0.95;
+        i.diffZ_mm = 40.0;
+        i.diffRadius_mm = 35.0;
+        i.diffTrans = 0.72;
+        i.abgA = 0.05; i.abgB = 2.5e-5; i.abgG = 1.8;
+        i.targetDist_mm = 2500.0;
+        i.targetHalf_mm = 900.0;
+        i.chipSize_mm = 0.6;
         i.rPeak_nm = 625.0; i.rFwhm_nm = 18.0; i.rRatio = 1.5;
         i.gPeak_nm = 530.0; i.gFwhm_nm = 30.0; i.gRatio = 1.2;
         i.bPeak_nm = 465.0; i.bFwhm_nm = 24.0; i.bRatio = 0.9;
@@ -15574,6 +17226,14 @@ static void testDisplayIlluminationSettings()
             check(!i.reflector && i.tirLens && !i.diffuser && i.lightGuide &&
                   !i.phosphor && i.surface == 3,
                   "dispillum: illumination optics round-trip");
+            check(nearlyEq(i.reflFocal_mm, 7.5) && nearlyEq(i.reflRadius_mm, 32.0) &&
+                  nearlyEq(i.reflReflect, 0.95) && nearlyEq(i.diffZ_mm, 40.0) &&
+                  nearlyEq(i.diffRadius_mm, 35.0) && nearlyEq(i.diffTrans, 0.72),
+                  "dispillum: ray-trace reflector / diffuser geometry round-trip");
+            check(nearlyEq(i.abgA, 0.05) && nearlyEq(i.abgB, 2.5e-5) &&
+                  nearlyEq(i.abgG, 1.8) && nearlyEq(i.targetDist_mm, 2500.0) &&
+                  nearlyEq(i.targetHalf_mm, 900.0) && nearlyEq(i.chipSize_mm, 0.6),
+                  "dispillum: ABG coefficients and target plane round-trip");
             check(nearlyEq(i.bluePeak_nm, 455.0) && nearlyEq(i.blueFwhm_nm, 25.0) &&
                   nearlyEq(i.phosPeak_nm, 585.0) &&
                   nearlyEq(i.phosFwhm_nm, 120.0) && nearlyEq(i.phosRatio, 0.8),
@@ -15637,6 +17297,13 @@ static void testDisplayIlluminationSettings()
                   i.bluePeak_nm == 450.0 && i.phosPeak_nm == 570.0 &&
                   i.cctTarget_K == 5000.0,
                   "dispillum: legacy file leaves illumination defaults");
+            // "trace" キーが無い旧ファイルはレイトレース幾何も既定値のまま
+            check(i.reflFocal_mm == 5.0 && i.reflRadius_mm == 20.0 &&
+                  i.reflReflect == 0.90 && i.diffZ_mm == 25.0 &&
+                  i.diffTrans == 0.85 && i.abgB == 1.0e-4 &&
+                  i.targetDist_mm == 1000.0 && i.chipSize_mm == 1.0,
+                  "dispillum: a sidecar without the trace key leaves the "
+                  "ray-trace geometry at its defaults");
         }
     }
 
@@ -15675,6 +17342,9 @@ static void testDisplayIlluminationSettings()
               "dispillum: clear() resets display_optics");
         check(p.illumination().spectrum == 0 && p.illumination().flux_lm == 1200.0,
               "dispillum: clear() resets illumination");
+        check(p.illumination().reflRadius_mm == 20.0 &&
+              p.illumination().targetHalf_mm == 500.0,
+              "dispillum: clear() resets the ray-trace geometry");
     }
 }
 
@@ -16651,6 +18321,565 @@ static void testRadarCrossSection()
 //   post/plot2dFreq.c:64           coupling         → NFeed かつ NPoint
 //   post/post.c:33    周波数特性は NFreq1 > 0 のときだけ
 //   post/post.c:37    遠方界・近傍界は NFreq2 > 0 のときだけ
+// ── トポロジー最適化の密度場パラメータ化 (core/DensityField) ────────────────
+// フィルタ・射影・矩形分解は、いずれも **厳密に成り立つ恒等式**を持っている。
+// 記録した数値ではなくその恒等式で判定する。
+// ── 放射方向のサンプリング方式と追跡の打ち切り (optics/IlluminationTrace) ───
+// 4 つの方式は**どれも同じ量を推定する** (不偏)。違うのは分散だけ。
+// 「答えが変わらないこと」と「分散が下がること」の両方を判定する。
+
+// ── IlluminationOpts → 系 の共有写像 (core/IlluminationScene) ───────────────
+// 照明タブと光タブが同じ設定から同じ系を組み立てることを保証する部分。
+static void testIlluminationScene()
+{
+    g_file = "illumscene";
+    namespace il = ofd::illum;
+
+    ofd::IlluminationOpts o;             // 既定 (レイデータ + BSDF 実測 + 蛍光体)
+    il::Scene sc;
+    long long n = 0;
+
+    // 追跡モデルに入っていない選択は、識別子で理由が返る (無言で 0 にしない)
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "raydata") == 0,
+          "illumscene: a measured ray-data source is reported as raydata");
+    o.srcModel = 0;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "bsdf") == 0,
+          "illumscene: a measured BSDF is reported as bsdf");
+    o.surface = 1;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "elem") == 0,
+          "illumscene: phosphor scattering is reported as elem");
+    o.phosphor = false;
+    o.tirLens = true;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "elem") == 0,
+          "illumscene: a TIR lens is reported the same way");
+    o.tirLens = false;
+
+    // ここまで外すと追跡できる系になる
+    const char *why = il::sceneFromOpts(o, &sc, &n);
+    check(why == nullptr, "illumscene: the remaining setup traces");
+    check(sc.source.kind == il::Source::Point && sc.source.flux_lm == o.flux_lm,
+          "illumscene: the source carries the flux from the options");
+    check(sc.reflector.enabled == o.reflector
+          && sc.reflector.focal_mm == o.reflFocal_mm
+          && sc.reflector.radius_mm == o.reflRadius_mm
+          && sc.reflector.reflectance == o.reflReflect,
+          "illumscene: the reflector geometry comes straight from the options");
+    check(sc.diffuser.enabled == o.diffuser && sc.diffuser.z_mm == o.diffZ_mm
+          && sc.diffuser.transmittance == o.diffTrans,
+          "illumscene: so does the diffuser");
+    check(sc.target.distance_mm == o.targetDist_mm
+          && sc.target.half_mm == o.targetHalf_mm,
+          "illumscene: and the target plane");
+    check(sc.reflector.model == il::Scatter::Lambertian,
+          "illumscene: surface = 1 selects the Lambertian model");
+    o.surface = 3;
+    il::sceneFromOpts(o, &sc, &n);
+    check(sc.reflector.model == il::Scatter::ABG,
+          "illumscene: surface = 3 selects the ABG model");
+    o.surface = 0;
+    il::sceneFromOpts(o, &sc, &n);
+    check(sc.reflector.model == il::Scatter::Specular,
+          "illumscene: surface = 0 selects the specular model");
+    o.surface = 1;
+
+    // 光線数の上限: 既定は 200k で頭打ち、0 を渡すと上限なし
+    o.rays = 1.0e7;
+    il::sceneFromOpts(o, &sc, &n);
+    check(n == 200000, "illumscene: the ray count is capped for live editing");
+    il::sceneFromOpts(o, &sc, &n, 0);
+    check(n == 10000000, "illumscene: passing 0 removes the cap");
+    o.rays = 5000.0;
+    il::sceneFromOpts(o, &sc, &n);
+    check(n == 5000, "illumscene: a count below the cap is used as-is");
+
+    // 幾何が不正なときは traceBlocker と同じ識別子がそのまま出る
+    o.reflFocal_mm = 0.0;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "focal") == 0,
+          "illumscene: an invalid focal length is reported as focal");
+    o.reflFocal_mm = 5.0;
+    o.reflRadius_mm = 1.0;               // R <= 2f
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "radius") == 0,
+          "illumscene: an aperture that cannot catch a ray is reported as radius");
+}
+
+static void testRaySampling()
+{
+    g_file = "raysample";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    const double PHI = 1000.0;
+
+    // 評価面を狭く取った系 — 放射の大半が評価面を外れるので、円錐へ光線を
+    // 寄せる重要度サンプリングが効く配置になる
+    il::Scene sc;
+    sc.source.flux_lm = PHI;
+    sc.target.distance_mm = 1000.0;
+    sc.target.half_mm = 100.0;      // 見込み半角 atan(0.1) ≈ 5.71°
+    sc.target.cells = 11;
+
+    const double I0 = PHI / PI;     // ランバート点光源の軸上光度 [cd]
+    const double E0 = I0 / (1.0 * 1.0);   // 中心照度 [lx] (D = 1 m)
+
+    auto run = [&](il::Sampling m, long long n) {
+        il::TraceOptions o;
+        o.sampling = m;
+        return il::trace(sc, n, o);
+    };
+
+    // ── 既定は従来どおり (QMC) ──────────────────────────────────────────
+    {
+        const il::Result a = il::trace(sc, 20000);
+        const il::Result b = run(il::Sampling::Qmc, 20000);
+        check(a.valid && b.valid, "raysample: both traces run");
+        check(a.illumCenter_lx == b.illumCenter_lx
+              && a.fluxOut_lm == b.fluxOut_lm && a.fluxTarget_lm == b.fluxTarget_lm,
+              "raysample: the default options are bit-identical to QMC");
+    }
+
+    // ── どの方式も同じ中心照度を推定する (不偏) ─────────────────────────
+    {
+        const long long N = 200000;
+        const il::Result q = run(il::Sampling::Qmc, N);
+        const il::Result j = run(il::Sampling::Jittered, N);
+        const il::Result u = run(il::Sampling::Uniform, N);
+        const il::Result p = run(il::Sampling::Importance, N);
+        check(q.valid && j.valid && u.valid && p.valid,
+              "raysample: every sampling mode traces");
+        // 解析解は E(0) = I0/D² = Φ/(π D²)。セル平均なので数 % の幅を見る
+        for (const il::Result *r : { &q, &j, &u, &p })
+            check(std::fabs(r->illumCenter_lx - E0) < 0.05 * E0,
+                  "raysample: every mode reproduces the analytic centre illuminance");
+        // 方式どうしの食い違いも同じ程度に収まる (系統誤差が無い)
+        check(std::fabs(p.illumCenter_lx - q.illumCenter_lx) < 0.05 * E0,
+              "raysample: importance sampling agrees with QMC (it is unbiased)");
+        check(std::fabs(u.illumCenter_lx - q.illumCenter_lx) < 0.10 * E0,
+              "raysample: uniform sampling agrees with QMC too");
+    }
+
+    // ── 重要度サンプリングは分散を下げる ────────────────────────────────
+    // 同じ光線数で「評価面に当たった本数」が増える = 推定に使える標本が増える。
+    {
+        const long long N = 100000;
+        const il::Result q = run(il::Sampling::Qmc, N);
+        const il::Result p = run(il::Sampling::Importance, N);
+        check(p.raysOnTarget > q.raysOnTarget,
+              "raysample: importance sampling puts more rays on the target");
+        // 評価面の見込みは sin^2(atan(0.1)) ≈ 0.0098 なので、半分を円錐へ
+        // 配ると当たる本数はおよそ 50 倍になる (下限だけ判定する)
+        check(p.raysOnTarget > 10 * q.raysOnTarget,
+              "raysample: the gain is large when the target subtends little solid angle");
+    }
+
+    // ── 層化しても光束は増えも減りもしない ──────────────────────────────
+    {
+        const il::Result p = run(il::Sampling::Importance, 50000);
+        // 本数を決め打ちで配るので、初期重みの総和は厳密に Φ のまま
+        check(std::fabs(p.fluxEmitted_lm - PHI) < 1e-9 * PHI,
+              "raysample: stratifying keeps the emitted flux exactly at phi");
+        check(std::fabs(p.fluxOut_lm + p.fluxAbsorbed_lm - p.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the flux budget still closes exactly");
+        // 評価面へ届く光束も方式に依らない (重みで割り戻しているから)
+        const il::Result q = run(il::Sampling::Qmc, 200000);
+        const il::Result p2 = run(il::Sampling::Importance, 200000);
+        check(std::fabs(p2.fluxTarget_lm - q.fluxTarget_lm) < 0.05 * q.fluxTarget_lm,
+              "raysample: the flux on the target is the same either way");
+    }
+
+    // ── Uniform は重みが揺らぐので放射光束が Φ からずれる ───────────────
+    {
+        const il::Result u1 = run(il::Sampling::Uniform, 2000);
+        const il::Result u2 = run(il::Sampling::Uniform, 200000);
+        check(std::fabs(u1.fluxEmitted_lm - PHI) > 0.0,
+              "raysample: uniform sampling only estimates the emitted flux");
+        // 本数を 100 倍にすると誤差は縮む (推定量として収束している)
+        check(std::fabs(u2.fluxEmitted_lm - PHI) < std::fabs(u1.fluxEmitted_lm - PHI),
+              "raysample: that estimate converges as the ray count grows");
+        check(std::fabs(u2.fluxEmitted_lm - PHI) < 0.02 * PHI,
+              "raysample: and it is within a couple of percent at 200k rays");
+        // それでも収支は放射した重みに対して厳密に閉じる
+        check(std::fabs(u2.fluxOut_lm + u2.fluxAbsorbed_lm - u2.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes against what was actually emitted");
+        // QMC / Jittered / Importance は厳密に Φ
+        for (il::Sampling m : { il::Sampling::Qmc, il::Sampling::Jittered,
+                                il::Sampling::Importance }) {
+            const il::Result r = run(m, 40000);
+            check(std::fabs(r.fluxEmitted_lm - PHI) < 1e-9 * PHI,
+                  "raysample: the other modes emit exactly phi");
+        }
+    }
+
+    // ── 再現性 (状態を持たない) ─────────────────────────────────────────
+    {
+        for (il::Sampling m : { il::Sampling::Uniform, il::Sampling::Jittered,
+                                il::Sampling::Qmc, il::Sampling::Importance }) {
+            const il::Result a = run(m, 20000);
+            const il::Result b = run(m, 20000);
+            check(a.illumCenter_lx == b.illumCenter_lx
+                  && a.fluxTarget_lm == b.fluxTarget_lm
+                  && a.raysOnTarget == b.raysOnTarget,
+                  "raysample: the same input gives bit-identical results");
+        }
+    }
+
+    // ── 打ち切り: 最大反射回数 ──────────────────────────────────────────
+    // 拡散反射のリフレクタは光線を何度も跳ね返すので、回数を絞ると
+    // 打ち切りが出て、その分が吸収へ回る (収支は閉じたまま)。
+    {
+        il::Scene box = sc;
+        box.reflector.enabled = true;
+        box.reflector.focal_mm = 5.0;
+        box.reflector.radius_mm = 40.0;
+        box.reflector.reflectance = 1.0;          // 吸収ゼロ = 打ち切りだけが損失
+        box.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions few;
+        few.maxBounces = 1;
+        const il::Result a = il::trace(box, 20000, few);
+        const il::Result b = il::trace(box, 20000);      // 既定 64 回
+        check(a.valid && b.valid, "raysample: the bounce cap traces");
+        check(a.raysTrapped > b.raysTrapped,
+              "raysample: a tighter bounce cap traps more rays");
+        check(a.fluxAbsorbed_lm > b.fluxAbsorbed_lm,
+              "raysample: what is cut off is counted as absorbed, not lost");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes even when rays are cut off");
+        // 反射率 1 なら、打ち切りが無い限り光束は 1 lm も減らない
+        check(b.raysTrapped == 0 && std::fabs(b.fluxAbsorbed_lm) < 1e-9 * PHI,
+              "raysample: a perfect mirror absorbs nothing at the default cap");
+    }
+
+    // ── 打ち切り: 最小エネルギー ────────────────────────────────────────
+    {
+        il::Scene lossy = sc;
+        lossy.reflector.enabled = true;
+        lossy.reflector.focal_mm = 5.0;
+        lossy.reflector.radius_mm = 40.0;
+        lossy.reflector.reflectance = 0.5;        // 1 回で −3 dB
+        lossy.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions hi;
+        hi.minEnergy_dB = -6.0;                   // 2 回反射で打ち切り
+        const il::Result a = il::trace(lossy, 20000, hi);
+        const il::Result b = il::trace(lossy, 20000);   // 既定 −90 dB
+        check(a.valid && b.valid, "raysample: the energy cut-off traces");
+        check(a.fluxOut_lm <= b.fluxOut_lm + 1e-12,
+              "raysample: cutting rays off early cannot increase the escaping flux");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes with an early energy cut-off");
+        // 0 dB は「最初の反射で必ず打ち切る」ので、鏡での反射光は 1 本も出ない
+        il::TraceOptions zero;
+        zero.minEnergy_dB = 0.0;
+        const il::Result z = il::trace(lossy, 20000, zero);
+        check(z.fluxOut_lm < b.fluxOut_lm,
+              "raysample: a 0 dB threshold stops every reflected ray");
+    }
+
+    // ── 打ち切り: 拡散次数 ──────────────────────────────────────────────
+    {
+        il::Scene diff = sc;
+        diff.reflector.enabled = true;
+        diff.reflector.focal_mm = 5.0;
+        diff.reflector.radius_mm = 40.0;
+        diff.reflector.reflectance = 1.0;
+        diff.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions one;
+        one.maxDiffuse = 1;
+        const il::Result a = il::trace(diff, 20000, one);
+        check(a.raysDiffuseCut > 0,
+              "raysample: a diffuse-order cap actually cuts rays");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes with a diffuse-order cap");
+        // 鏡面反射は「拡散次数」に数えない
+        il::Scene spec = diff;
+        spec.reflector.model = il::Scatter::Specular;
+        const il::Result s2 = il::trace(spec, 20000, one);
+        check(s2.raysDiffuseCut == 0,
+              "raysample: specular bounces do not count towards the diffuse order");
+        check(il::trace(diff, 20000).raysDiffuseCut == 0,
+              "raysample: the default places no diffuse-order limit");
+    }
+}
+
+static void testDensityField()
+{
+    g_file = "density";
+    using namespace ofd::topo;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    Region r;                       // 既定 = 5 μm × 5 μm × 220 nm
+    // ── 格子 ───────────────────────────────────────────────────────────
+    {
+        const Grid g = gridFor(r, 20e-9);
+        check(g.nx == 250 && g.ny == 250, "density: 5 um at 20 nm gives 250 pixels");
+        check(approx(g.pitchX_m, 20e-9, 1e-18) && approx(g.pitchY_m, 20e-9, 1e-18),
+              "density: the pitch divides the region exactly");
+        // 割り切れないときは切り上げるので、ピッチは指定解像度**以下**になる
+        const Grid h = gridFor(r, 30e-9);
+        check(h.nx == 167, "density: a non-dividing resolution rounds the count up");
+        check(h.pitchX_m < 30e-9 + 1e-18,
+              "density: rounding up keeps the pitch at or below the resolution");
+        check(approx(h.pitchX_m * h.nx, r.width_m(), 1e-15),
+              "density: the pixels tile the region with no remainder");
+        check(!gridFor(r, 0.0).valid() && !gridFor(r, -1e-9).valid(),
+              "density: a non-positive resolution gives no grid");
+    }
+
+    const Grid g = gridFor(r, 100e-9);          // 50 × 50 = 2500 画素
+    const int N = g.count();
+    check(N == 2500, "density: the working grid is 50 x 50");
+
+    // ── フィルタ: 定数不変 / 最大値原理 / 半径が小さいと恒等 ────────────
+    {
+        std::vector<double> c(static_cast<size_t>(N), 0.37);
+        const std::vector<double> f = filter(c, g, 250e-9);
+        double worst = 0.0;
+        for (double v : f) worst = std::max(worst, std::fabs(v - 0.37));
+        // 行和を 1 に正規化しているので、境界の画素でも定数は落ちない
+        check(worst < 1e-15, "density: a constant field is unchanged by the filter");
+
+        std::vector<double> spike(static_cast<size_t>(N), 0.0);
+        spike[static_cast<size_t>(25) * g.nx + 25] = 1.0;
+        const std::vector<double> fs = filter(spike, g, 250e-9);
+        double lo = 1e30, hi = -1e30, sum = 0.0;
+        for (double v : fs) { lo = std::min(lo, v); hi = std::max(hi, v); sum += v; }
+        check(lo >= 0.0 && hi <= 1.0,
+              "density: the filtered field stays between the input min and max");
+        check(hi < 1.0,
+              "density: a single pixel cannot survive the filter at full weight");
+        // フィルタは広がりを持つので、1 画素は必ず近傍へ滲む
+        int nz = 0;
+        for (double v : fs) if (v > 0.0) ++nz;
+        check(nz > 1, "density: the filter spreads one pixel over its neighbours");
+        check(sum > 0.0, "density: the filter does not annihilate the field");
+
+        // 半径 < ピッチ → 自分しか重みを持たない = 恒等写像
+        std::vector<double> rnd(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N; ++k)
+            rnd[static_cast<size_t>(k)] = ((k * 2654435761u) % 1000) / 1000.0;
+        const std::vector<double> fi = filter(rnd, g, 0.5 * g.pitchX_m);
+        double dmax = 0.0;
+        for (int k = 0; k < N; ++k)
+            dmax = std::max(dmax, std::fabs(fi[static_cast<size_t>(k)]
+                                            - rnd[static_cast<size_t>(k)]));
+        check(dmax < 1e-15,
+              "density: a radius below one pitch leaves the field untouched");
+        check(filter(rnd, g, 0.0) == rnd,
+              "density: a zero radius is the identity");
+
+        // 最大値原理 (任意の入力で)
+        const std::vector<double> fr = filter(rnd, g, 300e-9);
+        double rlo = 1e30, rhi = -1e30, flo = 1e30, fhi = -1e30;
+        for (double v : rnd) { rlo = std::min(rlo, v); rhi = std::max(rhi, v); }
+        for (double v : fr)  { flo = std::min(flo, v); fhi = std::max(fhi, v); }
+        check(flo >= rlo - 1e-15 && fhi <= rhi + 1e-15,
+              "density: the filter obeys the maximum principle");
+        // 平均は完全には保たれない (境界で行和を張り直すため) が、
+        // 差は境界の帯ぶんに限られる
+        check(std::fabs(volumeFraction(fr) - volumeFraction(rnd)) < 0.05,
+              "density: the filter moves the volume fraction only near the edges");
+    }
+
+    // ── 射影: 端点が厳密 / η=0.5 の中点 / β→0 で恒等 / 単調 ─────────────
+    {
+        for (double beta : { 1.0, 8.0, 64.0 }) {
+            for (double eta : { 0.3, 0.5, 0.7 }) {
+                check(project(0.0, beta, eta) == 0.0,
+                      "density: rho = 0 projects to exactly 0");
+                check(project(1.0, beta, eta) == 1.0,
+                      "density: rho = 1 projects to exactly 1");
+            }
+        }
+        check(approx(project(0.5, 8.0, 0.5), 0.5, 1e-15),
+              "density: eta = 0.5 keeps the midpoint at 0.5");
+        // β → 0 は恒等写像
+        double worst = 0.0;
+        for (int k = 0; k <= 100; ++k) {
+            const double x = k / 100.0;
+            worst = std::max(worst, std::fabs(project(x, 1e-6, 0.5) - x));
+        }
+        check(worst < 1e-6, "density: beta -> 0 is the identity map");
+        // β → ∞ は閾値 η の階段関数
+        check(project(0.51, 1e4, 0.5) > 1.0 - 1e-9
+              && project(0.49, 1e4, 0.5) < 1e-9,
+              "density: a large beta becomes a step at eta");
+        // 単調増加 (これが崩れると体積制約が意味を失う)
+        bool mono = true;
+        double prev = -1.0;
+        for (int k = 0; k <= 200; ++k) {
+            const double v = project(k / 200.0, 12.0, 0.4);
+            if (v < prev - 1e-15) mono = false;
+            prev = v;
+        }
+        check(mono, "density: the projection is monotone in rho");
+        check(project(0.3, 0.0, 0.5) == 0.3,
+              "density: beta = 0 is stored as the identity, not as a step");
+    }
+
+    // ── 指標 ───────────────────────────────────────────────────────────
+    {
+        std::vector<double> bin(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N / 2; ++k) bin[static_cast<size_t>(k)] = 1.0;
+        check(approx(volumeFraction(bin), 0.5, 1e-15),
+              "density: half the pixels give a 0.5 volume fraction");
+        check(nonDiscreteness(bin) == 0.0,
+              "density: a binary field has zero non-discreteness");
+        std::vector<double> grey(static_cast<size_t>(N), 0.5);
+        check(approx(nonDiscreteness(grey), 1.0, 1e-15),
+              "density: an all-grey field has M_nd = 1");
+        check(approx(nonDiscreteness(std::vector<double>(4, 0.25)), 0.75, 1e-15),
+              "density: M_nd = 4 rho (1 - rho) elementwise");
+    }
+
+    // ── 誘電率補間 ─────────────────────────────────────────────────────
+    {
+        check(epsFromDensity(0.0, 1.0, 12.0) == 1.0,
+              "density: rho = 0 is exactly the background permittivity");
+        check(epsFromDensity(1.0, 1.0, 12.0) == 12.0,
+              "density: rho = 1 is exactly the structure permittivity");
+        check(approx(epsFromDensity(0.5, 1.0, 12.0), 6.5, 1e-15),
+              "density: p = 1 interpolates linearly");
+        // SIMP の p > 1 は中間値を背景側へ押す (灰色を損にする)
+        check(epsFromDensity(0.5, 1.0, 12.0, 3.0) < epsFromDensity(0.5, 1.0, 12.0),
+              "density: a SIMP exponent above 1 penalises grey");
+    }
+
+    // ── 矩形分解: 重なりなし / 画素数が厳密に一致 ───────────────────────
+    {
+        std::vector<double> full(static_cast<size_t>(N), 1.0);
+        const std::vector<Rect> one = rectangles(full, g, 0.5);
+        check(one.size() == 1, "density: a full field becomes a single rectangle");
+        check(one[0].i0 == 0 && one[0].j0 == 0 && one[0].i1 == g.nx
+              && one[0].j1 == g.ny, "density: that rectangle is the whole grid");
+
+        // 市松模様は 1 画素の矩形にしかならない (貪欲が伸ばせない最悪形)
+        std::vector<double> checker(static_cast<size_t>(N), 0.0);
+        int on = 0;
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 0; i < g.nx; ++i)
+                if ((i + j) % 2 == 0) { checker[static_cast<size_t>(j) * g.nx + i] = 1.0; ++on; }
+        const std::vector<Rect> cs = rectangles(checker, g, 0.5);
+        check(static_cast<int>(cs.size()) == on,
+              "density: a checkerboard cannot be merged (one rectangle per pixel)");
+
+        // 任意の模様で「重ならない」「合計面積が閾値以上の画素数と一致する」
+        std::vector<double> pat(static_cast<size_t>(N), 0.0);
+        int above = 0;
+        for (int k = 0; k < N; ++k) {
+            const double v = ((k * 2246822519u) % 1000) / 1000.0;
+            pat[static_cast<size_t>(k)] = v;
+            if (v >= 0.5) ++above;
+        }
+        const std::vector<Rect> rs = rectangles(pat, g, 0.5);
+        std::vector<int> cover(static_cast<size_t>(N), 0);
+        long long area = 0;
+        for (const Rect &q : rs) {
+            area += static_cast<long long>(q.i1 - q.i0) * (q.j1 - q.j0);
+            for (int j = q.j0; j < q.j1; ++j)
+                for (int i = q.i0; i < q.i1; ++i)
+                    ++cover[static_cast<size_t>(j) * g.nx + i];
+        }
+        check(area == above,
+              "density: the rectangles cover exactly the pixels above the threshold");
+        bool disjoint = true, exact = true;
+        for (int k = 0; k < N; ++k) {
+            if (cover[static_cast<size_t>(k)] > 1) disjoint = false;
+            const bool want = pat[static_cast<size_t>(k)] >= 0.5;
+            if (want != (cover[static_cast<size_t>(k)] == 1)) exact = false;
+        }
+        check(disjoint, "density: the rectangles do not overlap");
+        check(exact, "density: the covered set is exactly the thresholded set");
+        check(rectangles(std::vector<double>(static_cast<size_t>(N), 0.0), g, 0.5).empty(),
+              "density: an empty field yields no rectangle");
+    }
+
+    // ── 形状 → 密度場 → 形状 の往復 ─────────────────────────────────────
+    {
+        // 画素境界にちょうど乗る直方体を置く (格子に表せる形なので厳密に戻る)
+        ofd::Geometry box;
+        box.shape = 1;
+        box.materialId = 2;
+        box.g[0] = r.x0_m + 10 * g.pitchX_m;
+        box.g[1] = r.x0_m + 30 * g.pitchX_m;
+        box.g[2] = r.y0_m + 5  * g.pitchY_m;
+        box.g[3] = r.y0_m + 40 * g.pitchY_m;
+        box.g[4] = r.z0_m;
+        box.g[5] = r.z1_m;
+        int skipped = -1;
+        const std::vector<double> rho = rasterize(&box, 1, r, g, &skipped);
+        check(skipped == 0, "density: a box is a shape the rasteriser understands");
+        check(approx(volumeFraction(rho), (20.0 * 35.0) / N, 1e-15),
+              "density: the rasterised area matches the box area exactly");
+
+        const std::vector<Rect> rs = rectangles(rho, g, 0.5);
+        check(rs.size() == 1, "density: the box comes back as one rectangle");
+        const std::vector<ofd::Geometry> back = toGeometry(rs, r, g, 2);
+        check(back.size() == 1 && back[0].shape == 1 && back[0].materialId == 2,
+              "density: the rectangle becomes one box unit of the given material");
+        for (int k = 0; k < 6; ++k)
+            check(approx(back[0].g[k], box.g[k], 1e-18),
+                  "density: geometry -> density -> geometry reproduces the box");
+        // 再ラスタ化しても同じ密度場 (往復が閉じている)
+        check(rasterize(back.data(), 1, r, g, nullptr) == rho,
+              "density: re-rasterising the result gives the identical field");
+    }
+
+    // ── ラスタ化の細部 ─────────────────────────────────────────────────
+    {
+        ofd::Geometry air;                    // 材料 0 は背景なので密度にしない
+        air.shape = 1; air.materialId = 0;
+        air.g[0] = r.x0_m; air.g[1] = r.x1_m;
+        air.g[2] = r.y0_m; air.g[3] = r.y1_m;
+        air.g[4] = r.z0_m; air.g[5] = r.z1_m;
+        check(volumeFraction(rasterize(&air, 1, r, g, nullptr)) == 0.0,
+              "density: a material-0 unit is background, not structure");
+
+        // 後のユニットが優先 (本家の重なり規則)
+        ofd::Geometry fill = air;
+        fill.materialId = 2;
+        ofd::Geometry hole = air;
+        hole.materialId = 0;
+        hole.g[0] = r.x0_m; hole.g[1] = r.x0_m + 25 * g.pitchX_m;
+        const ofd::Geometry pair[2] = { fill, hole };
+        check(approx(volumeFraction(rasterize(pair, 2, r, g, nullptr)), 0.5, 1e-15),
+              "density: a later air unit carves the earlier structure");
+
+        // 円柱 Z は面積 πr² に収束する (画素中心判定なので概ね一致)
+        ofd::Geometry cyl;
+        cyl.shape = 13; cyl.materialId = 2;
+        cyl.g[0] = r.x0_m; cyl.g[1] = r.x1_m;      // 直径 = 領域の幅
+        cyl.g[2] = r.y0_m; cyl.g[3] = r.y1_m;
+        cyl.g[4] = r.z0_m; cyl.g[5] = r.z1_m;
+        // 画素中心の判定なので、格子を細かくすると面積比が pi/4 に収束する
+        const Grid fine = gridFor(r, 12.5e-9);     // 400 x 400
+        const double f1 = volumeFraction(rasterize(&cyl, 1, r, g, nullptr));
+        const double f2 = volumeFraction(rasterize(&cyl, 1, r, fine, nullptr));
+        check(std::fabs(f2 - M_PI / 4.0) < std::fabs(f1 - M_PI / 4.0),
+              "density: refining the grid moves the disk area towards pi/4");
+        check(approx(f2, M_PI / 4.0, 1e-3),
+              "density: an inscribed z-cylinder fills pi/4 of the square region");
+
+        // 内外判定を持たない形状は数えて飛ばす (黙って無視しない)
+        ofd::Geometry prism;
+        prism.shape = 33; prism.materialId = 2;
+        int skipped = -1;
+        const std::vector<double> none = rasterize(&prism, 1, r, g, &skipped);
+        check(skipped == 1, "density: a prism is reported as skipped");
+        check(volumeFraction(none) == 0.0,
+              "density: a skipped shape contributes nothing to the field");
+    }
+
+    // ── 最小形状寸法 ───────────────────────────────────────────────────
+    {
+        check(approx(minFeature_m(80e-9), 160e-9, 1e-18),
+              "density: the minimum feature size is the filter diameter");
+    }
+}
+
 static void testPostPrereq()
 {
     g_file = "post-prereq";
@@ -17559,6 +19788,14 @@ int main(int argc, char *argv[])
     testWaveformSpectrum();
     testSeidelAberration();
     testRayTrace();
+    testIlluminationTrace();
+    testPhotometricIO();
+    testOptimizer();
+    testFlankingTransmission();
+    testTransmissionLine();
+    testReceiverNoise();
+    testTidy3dExportOptions();
+    testFar1dRcs();
     testLensSurfacePersistence();
     testChromaticFocalShift();
     testDisplayIlluminationSettings();
@@ -17570,6 +19807,9 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testIlluminationScene();
+    testRaySampling();
+    testDensityField();
     testPostPrereq();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();

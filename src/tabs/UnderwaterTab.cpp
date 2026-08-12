@@ -2,6 +2,7 @@
 #include "UnderwaterTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/BellhopIO.h"
 #include "../io/ShdReader.h"
 #include "../io/ArrReader.h"
 #include "../acoustics/core/AudioBuffer.h"
@@ -169,18 +170,45 @@ const bool s_i18nUnderwater = [] {
               " ※ WAV はピークで正規化しています (絶対音圧ではありません)",
               " Note: the WAV is peak-normalised (it is not an absolute "
               "pressure level)");
-    I18n::reg("uwx_uw_solver", "ソルバーの選択と BELLHOP / PE のパラメータ",
-              "the solver selection and the BELLHOP / PE parameters");
-    I18n::reg("uwx_uw_surface", "海面の設定",
-              "the sea-surface settings");
-    I18n::reg("uwx_uw_beam", "直上の指向性とビーム幅",
-              "the directivity and beam width just above");
-    I18n::reg("uwx_uw_beam_ok", "周波数・音源レベル・距離",
-              "the frequency, source level and range");
-    I18n::reg("uwx_uw_loss", "損失項の選択と距離の下限",
-              "the loss-term selection and the lower range bound");
-    I18n::reg("uwx_uw_loss_ok", "距離の上限 (「最大距離」と同期します)",
-              "the upper range bound (kept in sync with the maximum range)");
+    I18n::reg("uwx_surf_note",
+              "▸ 有義波高から海面の RMS 粗さ σ = Hs/4 を作り、BELLHOP の "
+              "SIGMA として .env へ渡します。「鏡面」(既定) では σ = 0 で "
+              "従来と同じ計算になり、「Bragg 散乱」を選んだときだけ粗さが"
+              "入ります。現在: σ = %1 m",
+              "▸ The sea-surface RMS roughness sigma = Hs/4 is derived from the "
+              "significant wave height and passed to BELLHOP as SIGMA. With "
+              "“specular” (the default) sigma = 0 and the run is unchanged; "
+              "roughness only enters when “Bragg scattering” is selected. "
+              "Now: sigma = %1 m");
+    I18n::reg("uwx_beam_note",
+              "▸ 指向性を選ぶと射出角の扇を ±ビーム幅/2 と交差させます "
+              "(現在: %1° 〜 %2°)。ビーム内の重み付けは一様で、実測の指向"
+              "パターンを与えるには BELLHOP の .sbp が要ります (未実装)。",
+              "▸ Choosing a directional source intersects the launch-angle fan "
+              "with +/- half the beam width (now: %1 to %2 deg). The weighting "
+              "inside the beam is uniform; a measured pattern needs BELLHOP's "
+              ".sbp file (not implemented).");
+    I18n::reg("uwx_tl_note",
+              "▸ 幾何拡散は BELLHOP の解に内在するので切り替えられません。"
+              "体積吸収は Thorp の式で、選ぶと SSPOPT に 'T' が付きます。"
+              "散乱・海面反射損失は海面の節の σ で決まるので、ここでは状態を"
+              "表示するだけです。",
+              "▸ Geometric spreading is inherent in the BELLHOP solution and "
+              "cannot be switched off. Volume absorption uses Thorp's formula "
+              "and adds 'T' to SSPOPT. Scattering and surface-reflection loss "
+              "are governed by sigma in the sea-surface section, so they are "
+              "shown here as state only.");
+    I18n::reg("uwx_tl_fixed", "BELLHOP の解に内在します (切り替えられません)",
+              "Inherent in the BELLHOP solution (cannot be switched off)");
+    I18n::reg("uwx_tl_from_surface",
+              "海面の節の設定 (粗さ σ) で決まります",
+              "Determined by the sea-surface section (roughness sigma)");
+    I18n::reg("uwx_uw_solver",
+              "ソルバーの選択と PE のパラメータ (PE ソルバーのカーネルが無い"
+              "ため。BELLHOP は下の設定がそのまま .env になります)",
+              "the solver selection and the PE parameters (there is no PE "
+              "solver kernel; for BELLHOP the settings below become the .env "
+              "directly)");
     return true;
 }();
 
@@ -587,8 +615,10 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     surfRow->addWidget(m_surfBragg);
     surfRow->addStretch(1);
     ssf->vbox()->addLayout(surfRow);
-    // 海面の設定はすべてローカル状態 (apply() 非対象)
-    ssf->vbox()->addWidget(tabhelp::unwiredNote(ssf, I18n::tr("uwx_uw_surface")));
+    // 波高と鏡面 / Bragg の選択は σ (BELLHOP の SIGMA) になって .env へ渡る
+    m_surfNote = mutedLabel(QString(), ssf);
+    m_surfNote->setWordWrap(true);
+    ssf->vbox()->addWidget(m_surfNote);
     v->addWidget(ssf);
 
     // sonar
@@ -606,8 +636,10 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     ss->form()->addRow(I18n::tr("uwx_sonar_dir"), m_sonarDir);
     m_beamWidth = makeSpin(ss, 1.0, 180.0, 15.0, 0);
     ss->form()->addRow(I18n::tr("uwx_beam_width"), m_beamWidth);
-    // 直上の指向性・ビーム幅のみローカル状態 (周波数・SL・距離は apply() 済み)
-    ss->form()->addRow(tabhelp::unwiredNote(ss, I18n::tr("uwx_uw_beam"), I18n::tr("uwx_uw_beam_ok")));
+    // 指向性・ビーム幅は射出角の扇 (ALPHA1,2) になって .env へ渡る
+    m_beamNote = mutedLabel(QString(), ss);
+    m_beamNote->setWordWrap(true);
+    ss->form()->addRow(m_beamNote);
     ss->form()->addRow(I18n::tr("uw_sl"), m_sonarSL);
     ss->form()->addRow(I18n::tr("uw_range"), m_rangeMax);
     v->addWidget(ss);
@@ -629,8 +661,17 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     loss2->addWidget(m_tlSurface);
     loss2->addStretch(1);
     st->vbox()->addLayout(loss2);
-    // 損失項の選択と距離下限はローカル状態 (距離上限のみ「最大距離」と同期)
-    st->vbox()->addWidget(tabhelp::unwiredNote(st, I18n::tr("uwx_uw_loss"), I18n::tr("uwx_uw_loss_ok")));
+    // 幾何拡散は切り替えられない (BELLHOP の解に内在)。散乱・海面反射損失は
+    // 海面の節の σ で決まるので、ここでは状態を映すだけ (二重の操作子を
+    // 作らない)。切り替えられるのは体積吸収と距離の下限。
+    m_tlSpread->setChecked(true);
+    m_tlSpread->setEnabled(false);
+    m_tlSpread->setToolTip(I18n::tr("uwx_tl_fixed"));
+    for (QCheckBox *c : { m_tlScatter, m_tlSurface }) {
+        c->setEnabled(false);
+        c->setToolTip(I18n::tr("uwx_tl_from_surface"));
+    }
+    st->vbox()->addWidget(mutedLabel(I18n::tr("uwx_tl_note"), st));
     // 上限は既存の m_rangeMax と同じ刻み (decimals) にして値ズレを防ぐ
     m_tlRangeMin = makeSpin(st, 0.0, 10000.0, 0.0, 2);
     m_tlRangeMax = makeSpin(st, 0.1, 10000.0, 50.0, 2);
@@ -666,6 +707,13 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     connect(m_solver, &QComboBox::currentIndexChanged,
             this, &UnderwaterTab::updateSolverView);
     updateSolverView();
+
+    // 海面 / 損失項 / 指向性 — .ofdx へ永続化し .env へ渡る
+    for (QCheckBox *c : { m_surfSpecular, m_surfBragg, m_tlAbsorb })
+        connect(c, &QCheckBox::toggled, this, applyCb);
+    for (auto *sp : { m_waveHeight, m_beamWidth, m_tlRangeMin })
+        connect(sp, &QDoubleSpinBox::valueChanged, this, applyCb);
+    connect(m_sonarDir, &QComboBox::currentIndexChanged, this, applyCb);
 
     // TL セクションの距離上限は既存の「最大距離」と同じ値 (二重編集を避ける)
     connect(m_tlRangeMax, &QDoubleSpinBox::valueChanged, this, [this](double val) {
@@ -724,6 +772,14 @@ void UnderwaterTab::apply()
     u.numRays = m_numRays->value();
     u.angleMin_deg = m_angMin->value();
     u.angleMax_deg = m_angMax->value();
+    // 海面 (σ) / 体積吸収 / 距離の下限 / 送信指向性
+    u.waveHeight_m = m_waveHeight->value();
+    u.surfSpecular = m_surfSpecular->isChecked();
+    u.surfBragg = m_surfBragg->isChecked();
+    u.tlAbsorb = m_tlAbsorb->isChecked();
+    u.tlRangeMin_km = m_tlRangeMin->value();
+    u.sonarDir = qBound(0, m_sonarDir->currentIndex(), 2);
+    u.beamWidth_deg = m_beamWidth->value();
     if (m_tlRangeMax->value() != u.rangeMax_km) {
         QSignalBlocker block(m_tlRangeMax);
         m_tlRangeMax->setValue(u.rangeMax_km);
@@ -756,6 +812,24 @@ void UnderwaterTab::updateSolverView()
 void UnderwaterTab::updateDerived()
 {
     const UnderwaterOpts &u = m_p->underwater();
+    // 海面の粗さ σ と射出角の扇は .env へ渡る導出量。画面にも出して、
+    // どの設定がどう効いたかを数字で見えるようにする。
+    if (m_surfNote)
+        m_surfNote->setText(I18n::tr("uwx_surf_note")
+            .arg(QString::number(BellhopIO::surfaceSigma(u), 'f', 3)));
+    if (m_beamNote) {
+        double a1 = 0.0, a2 = 0.0;
+        BellhopIO::beamAngles(u, &a1, &a2);
+        m_beamNote->setText(I18n::tr("uwx_beam_note")
+            .arg(QString::number(a1, 'f', 1), QString::number(a2, 'f', 1)));
+    }
+    // 散乱・海面反射損失は σ の状態を映すだけ (操作子ではない)
+    if (m_tlScatter && m_tlSurface) {
+        const bool rough = BellhopIO::surfaceSigma(u) > 0.0;
+        QSignalBlocker b1(m_tlScatter), b2(m_tlSurface);
+        m_tlScatter->setChecked(rough);
+        m_tlSurface->setChecked(rough);
+    }
     m_c0->setText(QStringLiteral("%1 m/s")
         .arg(refSoundSpeed(u.waterTemp_C, u.salinity_psu), 0, 'f', 1));
 
@@ -926,6 +1000,13 @@ void UnderwaterTab::refresh()
     m_sonarSL->setValue(u.sonarSL_dB);
     m_rangeMax->setValue(u.rangeMax_km);
     m_tlRangeMax->setValue(u.rangeMax_km);
+    m_waveHeight->setValue(u.waveHeight_m);
+    m_surfSpecular->setChecked(u.surfSpecular);
+    m_surfBragg->setChecked(u.surfBragg);
+    m_tlAbsorb->setChecked(u.tlAbsorb);
+    m_tlRangeMin->setValue(u.tlRangeMin_km);
+    m_sonarDir->setCurrentIndex(qBound(0, u.sonarDir, 2));
+    m_beamWidth->setValue(u.beamWidth_deg);
     {
         static const char *kModes[4] = { "eigenray", "coherent", "incoherent",
                                          "arrivals" };

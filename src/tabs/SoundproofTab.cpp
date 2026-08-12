@@ -1,5 +1,6 @@
 // SoundproofTab.cpp
 #include "SoundproofTab.h"
+#include "../core/FlankingTransmission.h"
 #include "../core/Project.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
@@ -629,8 +630,33 @@ const bool s_i18n = [] {
               "🎧 Auralization (listen at receiver)");
     I18n::reg("sp_exp_std", "📑 規格対応書式 (ISO/ASTM)",
               "📑 Standard forms (ISO/ASTM)");
-    I18n::reg("sp_uw_flank", "改善案のチェック",
-              "the improvement-proposal check boxes");
+    I18n::reg("sp_impr_after_fmt", "改善後 R'w = %1 dB  (+%2 dB)",
+              "R'w with improvements = %1 dB  (+%2 dB)");
+    I18n::reg("sp_impr_none", "改善案を選ぶと合成 R'w への効果が出ます",
+              "Select an improvement to see its effect on the combined R'w");
+    I18n::reg("sp_impr_weakest_fmt",
+              "▸ 合成は最も弱い経路で頭打ちになります。改善後に最も弱いのは"
+              "「%1」(%2 dB) — ここを直さない限り全体はこれ以上良くなりません。",
+              "▸ The combination is capped by the weakest path. After the "
+              "improvements the weakest is “%1” (%2 dB); nothing else helps "
+              "until that one is fixed.");
+    I18n::reg("sp_impr_note",
+              "▸ 改善量は各項目に書いてある値を、対応する経路の R に足して"
+              "合成し直したものです (表の入力値そのものは書き換えません)。"
+              "梁の弾性分離は接合部の経路として Df (壁→床→壁) に計上します。",
+              "▸ Each improvement adds the stated amount to its path's R and "
+              "the combination is recomputed (the values in the table itself "
+              "are left alone). Elastic separation of the beams is counted "
+              "against Df (wall-floor-wall) as the junction path.");
+    I18n::reg("sp_uw_flank_kij",
+              "経路別 R の予測 (EN 12354-1 の振動低減指数 Kij)",
+              "per-path prediction of R (the EN 12354-1 vibration reduction "
+              "index Kij)");
+    I18n::reg("sp_uw_flank_ok",
+              "経路の R と改善案 — 合成 R'w = −10log10(Σ10^(−R/10)) の入力に"
+              "なります",
+              "the path R values and the improvements, which feed the "
+              "combination R'w = -10log10(sum 10^(-R/10))");
     return true;
 }();
 
@@ -1534,59 +1560,112 @@ QWidget *SoundproofTab::buildFlankingPage()
     hb->addWidget(noteLbl);
     hb->addStretch(1);
     sp->vbox()->addLayout(hb);
+    // 改善案 — 各項目の改善量と、それが効く経路 (表の行番号) はモックの
+    // 文言そのまま。梁の弾性分離だけは表に「梁」の行が無いので、接合部の
+    // 経路である Df (壁→床→壁) に計上する (注記で明示する)。
+    struct Improvement { const char *key; int row; double delta_dB; };
+    static const Improvement kImprovements[4] = {
+        { "sp_impr_float",   1, 8.0 },   // 床: 浮き床 → Ff (床)
+        { "sp_impr_hanger",  3, 6.0 },   // 天井: 防振吊金具 → Fd (天井)
+        { "sp_impr_tape",    4, 3.0 },   // 柱: 制振テープ → Ff (柱)
+        { "sp_impr_elastic", 2, 5.0 },   // 梁: 弾性分離 → Df (壁→床→壁)
+    };
+    auto *si = new SectionBox(I18n::tr("sp_improve_section"), page);
+    QVector<QCheckBox*> imprBoxes;
+    for (const Improvement &im : kImprovements) {
+        auto *c = makeCheck(I18n::tr(im.key), false, si);
+        imprBoxes.push_back(c);
+        si->vbox()->addWidget(c);
+    }
+    auto *afterLbl = new QLabel(si);
+    afterLbl->setWordWrap(true);
+    auto *weakLbl = new QLabel(si);
+    weakLbl->setWordWrap(true);
+
     // 合成 R'w = −10·log10(Σ 10^(−R_i/10)) を、チェック ON の経路の入力 R
-    // からエネルギー合成で計算する (EN 12354-1 の経路合成式)。
+    // からエネルギー合成で計算する (core/FlankingTransmission)。
     // 経路別 R そのものの予測 (Kij) は未実装 — 下の注記で明示する。
-    auto recompute = [t, totalBadge, noteLbl]() {
-        double sum = 0;
-        int n = 0;
+    auto recompute = [t, totalBadge, noteLbl, afterLbl, weakLbl, imprBoxes]() {
+        std::vector<flanking::Path> paths;
+        paths.reserve(t->rowCount());
         double direct = 0;
         bool haveDirect = false;
         for (int r = 0; r < t->rowCount(); ++r) {
+            flanking::Path pth;
             const QTableWidgetItem *chk = t->item(r, 0);
-            if (!chk || chk->checkState() != Qt::Checked) continue;
             bool ok = false;
             const double R = cellNum(t, r, 3, &ok);
-            if (!ok) continue;   // 数値でない R の行は合成に含めない
-            sum += std::pow(10.0, -R / 10.0);
-            ++n;
-            if (r == 0) { direct = R; haveDirect = true; }   // Dd (直接) 行
+            // 数値でない R の行・チェック OFF の行は合成に含めない
+            pth.enabled = ok && chk && chk->checkState() == Qt::Checked;
+            pth.R_dB = ok ? R : 0.0;
+            paths.push_back(pth);
+            if (r == 0 && pth.enabled) { direct = R; haveDirect = true; }
         }
-        if (n == 0 || sum <= 0) {
+        // 改善量を対応する経路へ (表の入力値そのものは書き換えない)
+        for (int i = 0; i < imprBoxes.size(); ++i) {
+            if (!imprBoxes[i]->isChecked()) continue;
+            const int row = kImprovements[i].row;
+            if (row >= 0 && row < int(paths.size()))
+                paths[size_t(row)].deltaR_dB += kImprovements[i].delta_dB;
+        }
+
+        const flanking::Combined c = flanking::combine(paths);
+        if (!c.valid) {
             totalBadge->setText(I18n::tr("sp_flank_total_fmt").arg("—"));
             noteLbl->clear();
+            afterLbl->clear();
+            weakLbl->clear();
             return;
         }
-        const double Rw = -10.0 * std::log10(sum);
         totalBadge->setText(I18n::tr("sp_flank_total_fmt")
-                                .arg(QString::number(Rw, 'f', 1)));
+                                .arg(QString::number(c.base_dB, 'f', 1)));
         // 直接透過のみとの比較 (Dd がチェック ON で側路もあるときのみ)
-        noteLbl->setText(haveDirect && n > 1
+        noteLbl->setText(haveDirect && c.paths > 1
                              ? I18n::tr("sp_flank_note_fmt")
                                    .arg(QString::number(direct, 'g', 4),
-                                        QString::number(direct - Rw, 'f', 1))
+                                        QString::number(direct - c.base_dB, 'f', 1))
                              : QString());
+        if (c.gain_dB > 0.0) {
+            afterLbl->setText(I18n::tr("sp_impr_after_fmt")
+                                  .arg(QString::number(c.rw_dB, 'f', 1),
+                                       QString::number(c.gain_dB, 'f', 1)));
+            // 合成は最も弱い経路で頭打ちになる — どこが効いていないかを言う
+            const int w = c.weakestIndex;
+            const QTableWidgetItem *nameIt = (w >= 0) ? t->item(w, 1) : nullptr;
+            weakLbl->setText(nameIt
+                ? I18n::tr("sp_impr_weakest_fmt")
+                      .arg(nameIt->text(),
+                           QString::number(paths[size_t(w)].R_dB
+                                               + paths[size_t(w)].deltaR_dB,
+                                           'f', 1))
+                : QString());
+        } else {
+            afterLbl->setText(I18n::tr("sp_impr_none"));
+            weakLbl->clear();
+        }
     };
     connect(t, &QTableWidget::itemChanged, this,
             [recompute](QTableWidgetItem *) { recompute(); });
-    recompute();
+    for (QCheckBox *c : imprBoxes)
+        connect(c, &QCheckBox::toggled, this, [recompute](bool) { recompute(); });
     sp->vbox()->addWidget(makeHint(I18n::tr("sp_flank_pred_note"), sp));
     v->addWidget(sp);
 
-    auto *si = new SectionBox(I18n::tr("sp_improve_section"), page);
-    si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_float"), false, si));
-    si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_hanger"), false, si));
-    si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_tape"), false, si));
-    si->vbox()->addWidget(makeCheck(I18n::tr("sp_impr_elastic"), false, si));
-    // 改善案チェックはどこにも反映されない (絶対規則 5)
-    si->vbox()->addWidget(tabhelp::unwiredNote(si, I18n::tr("sp_uw_flank")));
+    si->vbox()->addWidget(afterLbl);
+    si->vbox()->addWidget(weakLbl);
+    si->vbox()->addWidget(makeHint(I18n::tr("sp_impr_note"), si));
+    // 改善案と経路の R は合成へ入る。残る未実装は経路別 R の予測 (Kij)。
+    si->vbox()->addWidget(tabhelp::unwiredNote(si, I18n::tr("sp_uw_flank_kij"),
+                                               I18n::tr("sp_uw_flank_ok")));
     auto *hr = new QHBoxLayout();
     auto *recalcBtn = new QPushButton(I18n::tr("sp_recalc_btn"), si);
-    tabhelp::markNotImplemented(recalcBtn);   // 再計算は未実装
+    connect(recalcBtn, &QPushButton::clicked, this,
+            [recompute] { recompute(); });
     hr->addWidget(recalcBtn);
     hr->addStretch(1);
     si->vbox()->addLayout(hr);
     v->addWidget(si);
+    recompute();
 
     v->addStretch(1);
     return page;

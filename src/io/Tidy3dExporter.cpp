@@ -128,10 +128,20 @@ QString Tidy3dExporter::generatePython(const Project &p)
         << qMax(2, o.lambdaDiv) << ")\n";
     out << "monitors = [\n";
     int mi = 0;
-    for (const Probe &pr : p.probes())
-        out << "    td.FieldMonitor(center=(" << py(pr.x) << ", " << py(pr.y)
-            << ", " << py(pr.z) << "), size=(0, 0, 0), freqs=freqs, name='point"
-            << ++mi << "'),\n";
+    // 「モニターで時間 DFT 記録」= 周波数領域モニター (td.FieldMonitor は
+    // 走行中に DFT を取る)。外すと時間波形をそのまま records する
+    // td.FieldTimeMonitor になる。
+    const bool dft = p.tidy3d().dftMonitors;
+    for (const Probe &pr : p.probes()) {
+        if (dft)
+            out << "    td.FieldMonitor(center=(" << py(pr.x) << ", " << py(pr.y)
+                << ", " << py(pr.z) << "), size=(0, 0, 0), freqs=freqs, name='point"
+                << ++mi << "'),\n";
+        else
+            out << "    td.FieldTimeMonitor(center=(" << py(pr.x) << ", "
+                << py(pr.y) << ", " << py(pr.z)
+                << "), size=(0, 0, 0), name='point" << ++mi << "'),\n";
+    }
     out << "]\n\n";
 
     const QString res = p.tidy3d().resolution;
@@ -146,7 +156,16 @@ QString Tidy3dExporter::generatePython(const Project &p)
     out << "    run_time=" << py(g.maxiter * 1e-15) << ",  # adjust as needed\n";
     if (p.tidy3d().autoPml)
         out << "    boundary_spec=td.BoundarySpec.all_sides(boundary=td.PML()),\n";
+    // サブピクセル平均化: tidy3d 自身の既定が True なので、切ったときだけ書く
+    // (書かない = ライブラリ既定、で意味が一致し、従来の出力とも一致する)
+    if (!p.tidy3d().subpixel)
+        out << "    subpixel=False,\n";
     out << ")\n\n";
+    // 優先度はジョブ API へ渡さず注記として残す (ここが渡す先を持たないため、
+    // 送信側の設定であることを利用者へ伝える)
+    if (p.tidy3d().priority > 0)
+        out << "# job priority: high — set it in the tidy3d web console; this "
+               "script does not pass it to web.Job\n";
     out << "job = web.Job(simulation=sim, task_name="
         << '"' << p.tidy3d().projectName << '"' << ")\n";
     out << "print(f'estimated cost: {job.estimate_cost()} FlexCredits')\n";

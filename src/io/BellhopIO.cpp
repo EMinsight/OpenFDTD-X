@@ -67,6 +67,41 @@ char beamTypeChar(const QString &type)
 
 } // namespace
 
+// ── 設定 → .env の値 ───────────────────────────────────────────────────────
+// いずれも「既定値のままなら従来の .env と 1 バイトも変わらない」ように
+// 既定を選んである (絶対規則 2)。
+
+double BellhopIO::surfaceSigma(const UnderwaterOpts &u)
+{
+    // 鏡面として扱う (既定) なら粗さ無し。Bragg 散乱を選んだときだけ、
+    // 有義波高から RMS 粗さ σ = Hs/4 (レイリー海面) を作る。
+    if (u.surfSpecular || !u.surfBragg) return 0.0;
+    if (!(u.waveHeight_m > 0.0)) return 0.0;
+    return u.waveHeight_m / 4.0;
+}
+
+void BellhopIO::beamAngles(const UnderwaterOpts &u, double *a1, double *a2)
+{
+    double lo = u.angleMin_deg, hi = u.angleMax_deg;
+    if (u.sonarDir != 0 && u.beamWidth_deg > 0.0) {
+        // 指向性 / アレイ: 水平 (0°) を中心に ±ビーム幅/2 で扇を絞る。
+        // 既存の射出角範囲との積 (どちらか狭い方) を採る。
+        const double half = 0.5 * u.beamWidth_deg;
+        lo = std::max(lo, -half);
+        hi = std::min(hi,  half);
+        if (!(hi > lo)) { lo = -half; hi = half; }   // 交差が空なら扇そのもの
+    }
+    if (a1) *a1 = lo;
+    if (a2) *a2 = hi;
+}
+
+QString BellhopIO::sspOption(const UnderwaterOpts &u)
+{
+    // C = SSP 区分線形, V = 海面は真空 (完全反射), W = 減衰は dB/波長。
+    // 4 文字目 'T' で Thorp の体積吸収が加わる (BELLHOP の SSPOPT)。
+    return u.tlAbsorb ? QStringLiteral("CVWT") : QStringLiteral("CVW");
+}
+
 QString BellhopIO::btyText(const Project &p)
 {
     const QVector<BathyPoint> b = cleanBathymetry(p.underwater().bathymetry);
@@ -127,8 +162,15 @@ QString BellhopIO::envText(const Project &p)
     out << "'OpenFDTD-X underwater (" << u.bottomType << " bottom)'\t! TITLE\n";
     out << num(u.sonarFreq_kHz * 1000.0) << "\t\t\t! FREQ (Hz)\n";
     out << "1\t\t\t! NMEDIA\n";
-    out << "'CVW'\t\t\t! SSPOPT (C-linear, vacuum surface, dB/wavelength)\n";
-    out << "0 0.0 " << num(bottomDepth) << "\t\t! NMESH, SIGMA, DEPTH of bottom (m)\n";
+    out << "'" << sspOption(u)
+        << "'\t\t\t! SSPOPT (C-linear, vacuum surface, dB/wavelength"
+        << (u.tlAbsorb ? ", Thorp volume attenuation" : "") << ")\n";
+    // SIGMA = 海面の RMS 粗さ [m] (有義波高から。既定は鏡面 = 0)
+    // 0 は "0.0" と書く — 従来の .env と 1 バイトも変えないため (絶対規則 2)
+    const double sigma = surfaceSigma(u);
+    out << "0 " << (sigma > 0.0 ? num(sigma) : QStringLiteral("0.0"))
+        << " " << num(bottomDepth)
+        << "\t\t! NMESH, SIGMA, DEPTH of bottom (m)\n";
     for (const SSPPoint &s : ssp)
         out << num(s.depth_m) << " " << num(s.c_mps) << " /\n";
 
@@ -149,15 +191,19 @@ QString BellhopIO::envText(const Project &p)
     out << num(u.numRcvDepth) << "\t\t\t! NRD\n";
     out << "0.0 " << num(bottomDepth) << " /\t\t! RD (m)\n";
     out << num(u.numRcvRange) << "\t\t\t! NR\n";
-    out << "0.0 " << num(u.rangeMax_km) << " /\t\t! R (km)\n";
+    // 受波器距離の下限 (既定 0 = 従来どおり) と上限
+    out << (u.tlRangeMin_km > 0.0 ? num(u.tlRangeMin_km)
+                                  : QStringLiteral("0.0"))
+        << " " << num(u.rangeMax_km) << " /\t\t! R (km)\n";
 
     // RunType (1 文字目 = 計算モード, 2 文字目 = ビーム種別) と
     // ビーム本数・射出角。いずれも UnderwaterTab の設定から。
     const char rt[3] = { runTypeChar(u.runMode), beamTypeChar(u.beamType), 0 };
     out << "'" << QString::fromLatin1(rt, 2) << "'\t\t\t! RunType, beam type\n";
     out << num(u.numRays) << "\t\t\t! NBEAMS (0 = auto)\n";
-    out << num(u.angleMin_deg) << " " << num(u.angleMax_deg)
-        << " /\t\t! ALPHA1,2 (degrees)\n";
+    double a1 = 0.0, a2 = 0.0;
+    beamAngles(u, &a1, &a2);
+    out << num(a1) << " " << num(a2) << " /\t\t! ALPHA1,2 (degrees)\n";
     out << "0.0 " << num(bottomDepth + 100.0) << " "
         << num(u.rangeMax_km + 1.0) << "\t! STEP (m), ZBOX (m), RBOX (km)\n";
     return text;
