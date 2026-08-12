@@ -2,6 +2,7 @@
 #include "Viewport3D.h"
 #include "../core/ComponentCatalog.h"   // 部品→ドメイン許可表 (ComponentsTab と共有)
 #include "../core/Project.h"
+#include "../io/BellhopIO.h"
 #include "../core/AimDirection.h"
 #include "../I18n.h"
 #include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
@@ -413,6 +414,17 @@ void Viewport3D::setElevation(double deg)
 }
 
 // モックの [XY][YZ][ZX] 軸タグ相当: 正射影で各主平面を正面に向ける
+void Viewport3D::setDomain(Domain d)
+{
+    const bool entering = (d == Domain::Underwater && m_domain != d);
+    m_domain = d;
+    // 画面 y に z が乗る向き (projectPoint: el = 90° で y2 = −dz) にする。
+    // az = 0 / el = 0 は x-y が画面に乗る向きなので、y ≡ 0 の海は**線に
+    // しか見えない**。ツールバーの視点ボタン 0 と同じ角度を使う。
+    if (entering) setViewPlane(0);
+    update();
+}
+
 void Viewport3D::setViewPlane(int plane)
 {
     switch (plane) {
@@ -427,8 +439,27 @@ void Viewport3D::setViewPlane(int plane)
 
 // メッシュ領域の範囲。1 軸も広がりが無ければ既定の箱を入れて false を返す
 // (paintEvent の従来の挙動そのまま — 空プロジェクトでも軸が描けるように)。
+// 水中音響のシーン範囲 — .ofd のメッシュではなく**海**で決まる。
+// x = 距離 [m] (受波器距離の範囲)、z = 深度を下向き負、y は 0 のまま
+// (BELLHOP の 2D 解に横の広がりは無いので、厚みのある箱にしない)。
+bool Viewport3D::oceanBounds(double lo[3], double hi[3]) const
+{
+    const UnderwaterOpts &u = m_project->underwater();
+    const double x0 = u.tlRangeMin_km * 1000.0;
+    const double x1 = u.rangeMax_km * 1000.0;
+    // **深さは .env を書くのと同じ関数から取る** — 別に数え直すと画面と
+    // カーネル入力が食い違う。
+    const double depth = BellhopIO::bottomDepth(u);
+    if (!(x1 > x0) || !(depth > 0.0)) return false;
+    lo[0] = x0;    hi[0] = x1;
+    lo[1] = 0.0;   hi[1] = 0.0;       // 面 (厚みを持たせない)
+    lo[2] = -depth; hi[2] = 0.0;      // 海面 z = 0、海底 z = −水深
+    return true;
+}
+
 bool Viewport3D::sceneBounds(double lo[3], double hi[3]) const
 {
+    if (m_domain == Domain::Underwater && oceanBounds(lo, hi)) return true;
     bool any = false;
     for (int a = 0; a < 3; ++a) {
         const MeshAxis &ax = m_project->mesh(a);
@@ -694,6 +725,9 @@ void Viewport3D::paintEvent(QPaintEvent *)
         p.drawEllipse(c, 4, 4);
     }
 
+    // 水中音響: 海面・海底地形・音源。TL 断面はこの面の上に重なる。
+    if (m_domain == Domain::Underwater) drawOcean(p);
+
     // 室内音響: スピーカーの位置と **向き** を法線矢印で描く。
     // aim ("+X" / "-Z 30°" / "0,0,-1") が解けたものだけ矢印を出す —
     // 解けない文字列に適当な向きを描くと、間違った情報を見せることになる
@@ -834,6 +868,49 @@ void Viewport3D::drawResultSlice(QPainter &p)
     p.drawPolygon(outline);
 
     drawSliceLegend(p, m_sliceDecim);
+}
+
+// ── 水中音響の「舞台」 ─────────────────────────────────────────────────────
+// 海面 (z = 0) と海底地形と音源を、TL 断面と**同じ鉛直面 (y = 0)** の上に描く。
+// メッシュ領域とは無関係で、距離と水深 (SSP / 地形断面) だけで決まる。
+// 地形断面が無いときは平坦海底 — 「地形がある」ように描かない。
+void Viewport3D::drawOcean(QPainter &p)
+{
+    double lo[3], hi[3];
+    if (!oceanBounds(lo, hi)) return;
+    const UnderwaterOpts &u = m_project->underwater();
+    const double x0 = lo[0], x1 = hi[0], depth = -lo[2];
+
+    // 海面 (z = 0)
+    p.setPen(QPen(QColor(120, 190, 255, 190), 2));
+    p.drawLine(projectPoint(x0, 0.0, 0.0), projectPoint(x1, 0.0, 0.0));
+
+    // 海底 — 地形断面があればその折れ線、無ければ平坦
+    QPolygonF bottom;
+    if (u.bathymetry.size() >= 2) {
+        for (const BathyPoint &b : u.bathymetry) {
+            const double x = b.range_km * 1000.0;
+            if (x < x0 || x > x1) continue;
+            bottom << projectPoint(x, 0.0, -b.depth_m);
+        }
+    }
+    if (bottom.size() < 2) {
+        bottom.clear();
+        bottom << projectPoint(x0, 0.0, -depth) << projectPoint(x1, 0.0, -depth);
+    }
+    p.setPen(QPen(QColor(190, 150, 100, 200), 2));
+    p.drawPolyline(bottom);
+
+    // 側面の枠 (断面がどこに載るのかを示す)
+    p.setPen(QPen(QColor(255, 255, 255, 45), 1, Qt::DashLine));
+    p.drawLine(projectPoint(x0, 0.0, 0.0), projectPoint(x0, 0.0, -depth));
+    p.drawLine(projectPoint(x1, 0.0, 0.0), projectPoint(x1, 0.0, -depth));
+
+    // 音源 — 深度は .env と同じ規則 (BellhopIO::sourceDepth)
+    const QPointF sc = projectPoint(x0, 0.0, -BellhopIO::sourceDepth(u));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor("#ffb02e"));
+    p.drawEllipse(sc, 4, 4);
 }
 
 // 断面データ → 色画像 (行 0 = 第 2 軸の +側)。setResultSlice のたびに 1 回

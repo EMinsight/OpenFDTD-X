@@ -127,6 +127,9 @@ set(CORE_SOURCES
     # 送波器の指向パターン (BELLHOP .sbp の元) — Qt 非依存
     src/core/SourceDirectivity.cpp
     src/core/SourceDirectivity.h
+    # BELLHOP の TL 断面 → 3D シーンの鉛直面 (座標と値の対応づけ)
+    src/io/TlSlice.cpp
+    src/io/TlSlice.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する

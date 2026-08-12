@@ -14,6 +14,8 @@
 #include "core/Domain.h"
 #include "io/KernelResultReader.h"
 
+namespace ofd { struct ShdField; }
+
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QCheckBox;
@@ -98,6 +100,8 @@ private:
     // HDF5 の z 中央断面 + 節点座標 → Viewport3D::setResultSlice。
     // 座標が取れない (obpm の /field/Ixz 等) ときは 3D へ渡さず why に理由。
     bool applyResultSliceTo3D(const QString &h5Path, QString *why);
+    // BELLHOP の TL 断面 → Viewport3D の鉛直面 (io/TlSlice)。
+    bool applyTlSliceTo3D(const ShdField &f);
     // 「結果断面を重ねる」トグルの有効/ツールチップ更新
     void updateOverlayUi();
     // コンポーネントのドラッグ通過時の共通処理 (3D シーンへの自動切替)

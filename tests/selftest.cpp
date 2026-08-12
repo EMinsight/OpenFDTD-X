@@ -26,6 +26,8 @@
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "io/BellhopIO.h"
+#include "io/ShdReader.h"
+#include "io/TlSlice.h"
 #include "io/ArrReader.h"
 #include "io/CircuitIO.h"
 #include "io/SpiceNetlist.h"
@@ -19030,6 +19032,158 @@ static void testSourceDirectivity()
     }
 }
 
+// ── TL 断面 → 3D シーンの鉛直面 (io/TlSlice) ───────────────────────────────
+// 座標と値の対応づけだけを持つ部分。**向きと符号を間違えると静かに嘘の絵に
+// なる** ので、そこを重点的に判定する (色が裏返る / 上下が逆になる)。
+static void testTlSlice3D()
+{
+    g_file = "tlslice";
+
+    // 深度 3 行 × 距離 4 列。行 0 = 海面側 (ShdField の規約)。
+    auto make = [](std::initializer_list<float> v, int nrz, int nrr) {
+        ofd::ShdField f;
+        f.nrz = nrz; f.nrr = nrr;
+        f.nfreq = f.ntheta = f.nsx = f.nsy = f.nsz = 1;
+        f.tl_dB = QVector<float>(v);
+        return f;
+    };
+    const ofd::ShdField f = make({ 40.0f, 50.0f, 60.0f, 70.0f,      // 海面側
+                                   45.0f, 55.0f, 65.0f, 75.0f,
+                                   50.0f, 60.0f, 70.0f, 80.0f }, 3, 4);
+    check(f.isValid(), "tlslice: the fixture is a well-formed TL section");
+
+    const ofd::io::TlSlice3D s = ofd::io::tlSlice3D(f, 0.0, 10000.0, 500.0);
+    check(s.valid() && s.rows == 3 && s.cols == 4,
+          "tlslice: the section keeps its shape (depth rows x range columns)");
+
+    // ── 面の置き方 ────────────────────────────────────────────────────────
+    check(s.axis == 1 && s.pos_m == 0.0,
+          "tlslice: it is the y = 0 vertical plane (a 2D solution has no width)");
+    check(s.u0_m == 0.0 && s.u1_m == 10000.0,
+          "tlslice: the in-plane first axis is the receiver range in metres");
+    check(s.v0_m == -500.0 && s.v1_m == 0.0,
+          "tlslice: depth goes downward as negative z, the sea surface at 0");
+    // Viewport3D の規約は「行 0 = 第 2 軸の + 側」。第 2 軸は z で、海面が
+    // 最大 (0) なので **ShdField の行 0 (海面側) とそのまま一致する**。
+    check(s.v1_m > s.v0_m,
+          "tlslice: so row 0 (the sea surface) is the plus side of that axis");
+
+    // ── 値の向き (ここが裏返ると遠方が赤くなる) ───────────────────────────
+    check(s.refTl_dB == 80.0,
+          "tlslice: the reference is the largest TL, i.e. the quietest cell");
+    check(s.spanTl_dB == 40.0, "tlslice: and the span is the dB range present");
+    check(s.cells[0] == 40.0,
+          "tlslice: the loudest cell gets the largest value, not the smallest");
+    check(s.cells[s.cells.size() - 1] == 0.0,
+          "tlslice: the quietest cell sits at zero");
+    bool nonNegative = true, ordered = true;
+    for (qsizetype i = 0; i < s.cells.size(); ++i) {
+        if (s.cells[i] < 0.0) nonNegative = false;
+        // 同じ行では距離が伸びるほど TL が大きい ⇒ 値は小さくなる
+        if ((i % 4) && s.cells[i] > s.cells[i - 1]) ordered = false;
+    }
+    check(nonNegative, "tlslice: every relative level is at or above zero");
+    check(ordered,
+          "tlslice: the level falls with range, so the near field stays hottest");
+
+    // ── レイの届かない格子は NaN (透明) にする ────────────────────────────
+    {
+        ofd::ShdField g = f;
+        g.tl_dB[5] = ofd::ShdField::kNoField;
+        const ofd::io::TlSlice3D t = ofd::io::tlSlice3D(g, 0.0, 1000.0, 100.0);
+        check(t.valid() && t.noFieldCells == 1,
+              "tlslice: cells with no arrivals are counted");
+        check(std::isnan(t.cells[5]),
+              "tlslice: and become NaN so the widget leaves them transparent");
+        check(t.refTl_dB == 80.0,
+              "tlslice: they do not enter the reference (999 is not a level)");
+        // **0 を入れて「無音」と塗ってはいけない** — 下の海底が透けるべき
+        check(!(t.cells[5] == 0.0),
+              "tlslice: filling them with zero would paint silence that is not "
+              "in the data");
+    }
+
+    // ── 描けないものは描かない ────────────────────────────────────────────
+    {
+        check(!ofd::io::tlSlice3D(ofd::ShdField(), 0.0, 1000.0, 100.0).valid(),
+              "tlslice: an invalid section produces no plane");
+        check(!ofd::io::tlSlice3D(f, 0.0, 0.0, 100.0).valid(),
+              "tlslice: a range with no extent produces no plane");
+        check(!ofd::io::tlSlice3D(f, 0.0, 1000.0, 0.0).valid(),
+              "tlslice: a depth of zero produces no plane");
+        const ofd::ShdField flat = make({ 50.0f, 50.0f, 50.0f, 50.0f }, 1, 4);
+        check(!ofd::io::tlSlice3D(flat, 0.0, 1000.0, 100.0).valid(),
+              "tlslice: a uniform field has no contrast, so no plane is made");
+        ofd::ShdField none = f;
+        for (float &v : none.tl_dB) v = ofd::ShdField::kNoField;
+        check(!ofd::io::tlSlice3D(none, 0.0, 1000.0, 100.0).valid(),
+              "tlslice: a section where nothing arrives produces no plane");
+    }
+
+    // ── 距離の下限が 0 でないとき (受波器距離の始点) ──────────────────────
+    {
+        const ofd::io::TlSlice3D t = ofd::io::tlSlice3D(f, 2000.0, 10000.0, 500.0);
+        check(t.valid() && t.u0_m == 2000.0 && t.u1_m == 10000.0,
+              "tlslice: the plane starts where the receiver range starts");
+    }
+
+    // ── 3D シーンの海と .env が同じ深さを使うこと ─────────────────────────
+    // 画面が .env と違う深さで描いたら、正しい結果を間違った場所に置くことに
+    // なる。深さの規則は BellhopIO の純関数 1 個に集約してあるので、それが
+    // **実際に書かれた .env と一致する**ことを文字列から確かめる。
+    {
+        auto rdOf = [](const ofd::Project &p) {
+            // "0.0 <bottom> /   ! RD (m)" の行から底の深さを読む
+            const QStringList lines =
+                ofd::BellhopIO::envText(p).split(QLatin1Char('\n'));
+            for (const QString &l : lines) {
+                if (!l.contains(QStringLiteral("! RD (m)"))) continue;
+                const QStringList t = l.section(QLatin1Char('!'), 0, 0)
+                                          .split(QRegularExpression(
+                                                     QStringLiteral("[\\s/]+")),
+                                                 Qt::SkipEmptyParts);
+                if (t.size() >= 2) return t[1].toDouble();
+            }
+            return -1.0;
+        };
+
+        ofd::Project p;
+        ofd::UnderwaterOpts &u = p.underwater();
+
+        // SSP が空 → .env は既定の 100 m プロファイルを書く
+        u.ssp.clear();
+        u.bathymetry.clear();
+        check(ofd::BellhopIO::bottomDepth(u) == 100.0,
+              "tlslice: with no profile the depth falls back to the .env default");
+        check(rdOf(p) == ofd::BellhopIO::bottomDepth(u),
+              "tlslice: and that is exactly what the .env receiver depth says");
+
+        // SSP を入れるとその最深点
+        u.ssp = { { 0.0, 1500.0 }, { 1200.0, 1520.0 } };
+        check(ofd::BellhopIO::bottomDepth(u) == 1200.0
+                  && rdOf(p) == 1200.0,
+              "tlslice: the profile's deepest point becomes the bottom");
+
+        // 地形断面がもっと深ければそちら (BELLHOP はここでエラーになるので
+        // .env 側も SSP を延ばしている — 深さは一致していなければならない)
+        u.bathymetry = { { 0.0, 1200.0 }, { 5.0, 2500.0 }, { 10.0, 1800.0 } };
+        check(ofd::BellhopIO::bottomDepth(u) == 2500.0
+                  && rdOf(p) == 2500.0,
+              "tlslice: a deeper bathymetry section wins, in the view and the file");
+
+        // 音源深度も同じ規則 (自動は底の 10 %)
+        u.srcDepth_m = 0.0;
+        check(ofd::BellhopIO::sourceDepth(u) == 250.0,
+              "tlslice: an automatic source sits at a tenth of the bottom depth");
+        u.srcDepth_m = 40.0;
+        check(ofd::BellhopIO::sourceDepth(u) == 40.0,
+              "tlslice: an explicit source depth is used as given");
+        u.srcDepth_m = 9999.0;
+        check(ofd::BellhopIO::sourceDepth(u) == 2499.0,
+              "tlslice: and one below the bottom is pulled back above it");
+    }
+}
+
 static void testSeriesCsv()
 {
     g_file = "seriescsv";
@@ -21496,6 +21650,7 @@ int main(int argc, char *argv[])
     testRadarCrossSection();
     testDispersionModels();
     testSourceDirectivity();
+    testTlSlice3D();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
