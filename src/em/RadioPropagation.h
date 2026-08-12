@@ -190,6 +190,60 @@ CoverageGrid coverageMap(double halfSpan_m, int n,
                          double reflection = 1.0,
                          double minDistance_m = 1.0);
 
+// ── 複数 AP の配置とカバレッジ ─────────────────────────────────────────────
+//
+// 1 局のカバレッジ図が距離依存を見るためのものだったのに対し、複数局では
+// **どの局に繋ぐか (最良サーバ)** と**他局が干渉になること**が本題になる。
+// 各点で
+//   受信電力 C   = max_k P_k        (最も強い局に繋ぐ)
+//   干渉電力 I   = Σ_{k≠best} P_k   (残りは同一チャネル干渉)
+//   SINR        = C / (I + N)
+// を取る。**電力の和は dBm ではなく真値で足す** (dB のまま足すのは誤り)。
+//
+// 経路損失は 1 局のときと同じ 2 波モデルを使う (同じ図の延長として読めるように
+// するため)。局ごとに高さと EIRP を変えられる。
+struct AccessPoint {
+    double x_m = 0.0, y_m = 0.0;   // 水平位置 (格子の中心が原点)
+    double h_m = 10.0;             // 空中線高
+    double eirpDbm = 30.0;
+};
+
+// count 局を半径 radius_m の円周上に等間隔で置く (1 局のときは中心)。
+// 等間隔なので配置は回転対称で、カバレッジ図もその対称性を持つ。
+// count <= 0 なら空。
+std::vector<AccessPoint> apRing(int count, double radius_m, double h_m,
+                                double eirpDbm);
+
+struct MultiCoverage {
+    int n = 0;
+    double halfSpan_m = 0.0;
+    std::vector<double> bestDbm;    // n*n: 最良サーバの受信電力 [dBm]
+    std::vector<int>    server;     // n*n: 最良サーバの AP 番号 (-1 = 無し)
+    std::vector<double> sinrDb;     // n*n: SINR [dB]
+    double minDbm = 0.0, maxDbm = 0.0;
+    double coveredFraction = 0.0;   // 閾値以上の点の割合
+    bool valid() const
+    {
+        return n > 0 && halfSpan_m > 0.0
+            && bestDbm.size() == std::size_t(n) * std::size_t(n);
+    }
+    double coord(int i) const
+    {
+        return (n > 1) ? (-halfSpan_m + 2.0 * halfSpan_m * i / (n - 1)) : 0.0;
+    }
+};
+
+// 複数 AP のカバレッジ格子。noiseDbm は熱雑音電力 (thermalNoiseDbm で作る)、
+// thresholdDbm はカバー率の判定閾値。
+// **AP が 1 局で原点にあるとき、bestDbm は coverageMap の dbm と厳密に一致**
+// する (同じ経路損失を使っているため — selftest で判定している)。
+MultiCoverage coverageMapMulti(const std::vector<AccessPoint> &aps,
+                               double halfSpan_m, int n,
+                               double hRx_m, double freq_hz, double rxGainDbi,
+                               double noiseDbm, double thresholdDbm,
+                               double reflection = 1.0,
+                               double minDistance_m = 1.0);
+
 } // namespace propagation
 } // namespace em
 } // namespace ofd

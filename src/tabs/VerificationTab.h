@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../core/FdtdVerification.h"
+#include "../core/SeriesCompare.h"
 
 class QComboBox;
 class QLabel;
@@ -51,6 +52,9 @@ protected:
     void showEvent(QShowEvent *e) override;
 
 private slots:
+    // ④ クロスバリデーション: 参照 CSV の読み込みと突き合わせ
+    void loadReferenceCsv();
+    void updateCrossCompare();
     void refreshDomain();     // ドメイン依存表示 (チェック量・比較ソルバ) を更新
     void increasePmlLayers(); // ② PML層数を増加 (Project::general を実際に変更)
     void addBoundaryMargin(); // ② 境界余裕 +λ/4 (メッシュ各軸の両端を拡張)
@@ -103,6 +107,11 @@ private:
     QLabel       *m_timeSource;   // ③ 読込元ログのパスと点数
 
     QComboBox    *m_crossBox;     // ④ 比較ソルバ (ドメイン別リスト)
+    // ④ 参照データとの突き合わせ (core/SeriesCompare)
+    QComboBox    *m_crossScaleA = nullptr, *m_crossScaleB = nullptr;
+    QLabel       *m_crossResult = nullptr;
+    ofd::cmp::Series m_reference;
+    QString       m_referenceName;
     QTableWidget *m_diag;         // 自動診断表
     QLabel       *m_diagBadge[DiagRowCount] = {};   // 各行の判定バッジ
     QLabel       *m_diagNote;     // 判定閾値の根拠と仮定

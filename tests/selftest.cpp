@@ -11,6 +11,7 @@
 #include <QSet>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -82,6 +83,12 @@
 #include "core/TransmissionLine.h"
 #include "core/DensityField.h"
 #include "core/IlluminationScene.h"
+#include "core/ParetoFront.h"
+#include "core/SeriesCompare.h"
+#include "em/Directivity.h"
+#include "io/RcwaEfficiency.h"
+#include "io/SeriesCsv.h"
+#include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -11397,6 +11404,166 @@ static void testRadioPropagation()
               && !pr::coverageMap(half, n, ht, hr, 0.0, eirp, grx).valid(),
               "coverage: bad inputs yield an invalid grid");
     }
+
+    // ── 複数 AP のカバレッジ (最良サーバと同一チャネル干渉) ────────────────
+    {
+        const double half = 200.0, ht = 10.0, hr = 1.5, f = 3.5e9;
+        const double eirp = 30.0, grx = 2.0, refl = 1.0, minD = 1.0;
+        const int n = 41;
+        const double noise = pr::thermalNoiseDbm(100e6, 7.0);
+        const double thr = -90.0;
+
+        // ── 1 局は従来の図と厳密に一致する (同じ経路損失で描いている証拠) ──
+        const pr::CoverageGrid one =
+            pr::coverageMap(half, n, ht, hr, f, eirp, grx, refl, minD);
+        const pr::MultiCoverage m1 =
+            pr::coverageMapMulti(pr::apRing(1, 50.0, ht, eirp), half, n, hr, f,
+                                 grx, noise, thr, refl, minD);
+        check(m1.valid() && m1.n == n, "multiap: a single AP gives a valid grid");
+        bool same = true;
+        for (std::size_t c = 0; c < one.dbm.size(); ++c)
+            if (one.dbm[c] != m1.bestDbm[c]) { same = false; break; }
+        check(same, "multiap: one AP at the centre matches the single-AP map exactly");
+        // 干渉源が無いので SINR = C − N (dB の引き算がそのまま成り立つ)
+        bool sinrOk = true;
+        for (std::size_t c = 0; c < m1.sinrDb.size(); ++c)
+            if (std::fabs(m1.sinrDb[c] - (m1.bestDbm[c] - noise)) > 1e-9)
+                { sinrOk = false; break; }
+        check(sinrOk, "multiap: with no interferer the SINR is just C - N");
+        check(m1.server[0] == 0, "multiap: the only AP is always the server");
+
+        // ── 同じ場所に N 局を重ねる ────────────────────────────────────────
+        // 最良サーバの電力は 1 局と厳密に同じ (最大であって和ではない)。
+        // 干渉は残り N−1 局ぶんなので、雑音が無視できる点では
+        //   SINR → 1/(N−1)  ⇔  −10log10(N−1) [dB]
+        // が厳密に成り立つ。
+        for (int N : { 2, 3, 5 }) {
+            std::vector<pr::AccessPoint> stack;
+            for (int k = 0; k < N; ++k) stack.push_back({ 0.0, 0.0, ht, eirp });
+            const pr::MultiCoverage ms =
+                pr::coverageMapMulti(stack, half, n, hr, f, grx, noise, thr,
+                                     refl, minD);
+            bool best = true, sinr = true;
+            for (std::size_t c = 0; c < ms.bestDbm.size(); ++c) {
+                if (ms.bestDbm[c] != one.dbm[c]) { best = false; break; }
+                // C/N がじゅうぶん大きい点だけで判定する (雑音が効くと崩れる)
+                if (ms.bestDbm[c] - noise > 40.0
+                    && std::fabs(ms.sinrDb[c] + 10.0 * std::log10(double(N - 1)))
+                       > 1e-3)
+                    { sinr = false; break; }
+            }
+            check(best, "multiap: co-located APs do not raise the best-server power");
+            check(sinr, "multiap: N co-located APs give SINR = -10log10(N-1)");
+        }
+
+        // ── 最良サーバは最も近い局 (同じ EIRP・同じ高さなら Voronoi) ───────
+        const std::vector<pr::AccessPoint> ring = pr::apRing(4, 120.0, ht, eirp);
+        check(ring.size() == 4, "multiap: the ring layout places every AP");
+        check(std::fabs(ring[0].x_m - 120.0) < 1e-12 && std::fabs(ring[0].y_m) < 1e-12,
+              "multiap: the first AP sits on the +x axis");
+        check(std::fabs(ring[2].x_m + 120.0) < 1e-9,
+              "multiap: the APs are evenly spaced around the ring");
+        check(pr::apRing(1, 120.0, ht, eirp)[0].x_m == 0.0
+              && pr::apRing(1, 120.0, ht, eirp)[0].y_m == 0.0,
+              "multiap: a single AP is placed at the centre, not on the ring");
+        check(pr::apRing(0, 120.0, ht, eirp).empty(),
+              "multiap: no AP means no layout");
+
+        const pr::MultiCoverage m4 =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, thr, refl, minD);
+
+        // 最良サーバは「最も強い局」であって「最も近い局」ではない。
+        // まず定義どおりであることを直接評価と突き合わせる (図が別の式で
+        // 描かれていないことの検査)。
+        bool argmax = true;
+        long long notNearest = 0;
+        for (int iy = 0; iy < n && argmax; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = m4.coord(ix), y = m4.coord(iy);
+                double want = -1e300, dmin = 1e300;
+                int wantK = -1, nearest = -1;
+                for (int k = 0; k < 4; ++k) {
+                    const double dx = x - ring[std::size_t(k)].x_m;
+                    const double dy = y - ring[std::size_t(k)].y_m;
+                    const double dd = dx * dx + dy * dy;
+                    double d = std::sqrt(dd);
+                    if (d < minD) d = minD;
+                    const double p = pr::receivedPowerDbm(
+                        eirp, pr::twoRayPathLossDb(d, ht, hr, f, refl), grx);
+                    if (p > want) { want = p; wantK = k; }
+                    if (dd < dmin) { dmin = dd; nearest = k; }
+                }
+                const std::size_t c = std::size_t(iy) * n + ix;
+                if (std::fabs(m4.bestDbm[c] - want) > 1e-12 || m4.server[c] != wantK)
+                    { argmax = false; break; }
+                if (wantK != nearest) ++notNearest;
+            }
+        check(argmax,
+              "multiap: the serving AP is the strongest one, cell by cell");
+        // **2 波モデルでは最寄りの局が最強とは限らない。** 干渉のヌルに落ちた
+        // 近い局より、遠い局の方が強い点が実際に出る。「最寄り = サーバ」と
+        // 書き換えたくなる場所なので、そうではないことを固定しておく。
+        check(notNearest > 0,
+              "multiap: with two-ray nulls the nearest AP is not always the server");
+
+        // ── 局を増やしても、どの点でも受信電力は下がらない (最大の単調性) ──
+        const pr::MultiCoverage m8 =
+            pr::coverageMapMulti(pr::apRing(8, 120.0, ht, eirp), half, n, hr, f,
+                                 grx, noise, thr, refl, minD);
+        bool grew = true;
+        for (std::size_t c = 0; c < m4.bestDbm.size(); ++c)
+            if (m8.bestDbm[c] < m4.bestDbm[c] - 1e-9) { grew = false; break; }
+        check(grew, "multiap: adding APs never lowers the best-server power");
+        check(m8.coveredFraction >= m4.coveredFraction,
+              "multiap: and it never lowers the covered fraction");
+
+        // ── 回転対称な配置は対称な図を作る ────────────────────────────────
+        // 4 局を ±x/±y 軸に置いてあるので、図は 180 度回転で不変
+        bool sym = true;
+        for (int iy = 0; iy < n && sym; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double a = m4.bestDbm[std::size_t(iy) * n + ix];
+                const double b2 = m4.bestDbm[std::size_t(n - 1 - iy) * n + (n - 1 - ix)];
+                if (std::fabs(a - b2) > 1e-9) { sym = false; break; }
+            }
+        check(sym, "multiap: a rotationally symmetric layout gives a symmetric map");
+
+        // ── カバー率は閾値と送信電力の単調関数 ────────────────────────────
+        const pr::MultiCoverage lowThr =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, -300.0, refl, minD);
+        const pr::MultiCoverage hiThr =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, 300.0, refl, minD);
+        check(lowThr.coveredFraction == 1.0,
+              "multiap: an unreachable threshold covers everything");
+        check(hiThr.coveredFraction == 0.0,
+              "multiap: an impossible threshold covers nothing");
+        const pr::MultiCoverage strong =
+            pr::coverageMapMulti(pr::apRing(4, 120.0, ht, eirp + 10.0), half, n,
+                                 hr, f, grx, noise, thr, refl, minD);
+        check(strong.coveredFraction >= m4.coveredFraction,
+              "multiap: more transmit power cannot reduce coverage");
+        // EIRP を 10 dB 上げたら受信電力もちょうど 10 dB 上がる
+        bool up = true;
+        for (std::size_t c = 0; c < m4.bestDbm.size(); ++c)
+            if (std::fabs(strong.bestDbm[c] - m4.bestDbm[c] - 10.0) > 1e-9)
+                { up = false; break; }
+        check(up, "multiap: +10 dB of EIRP is exactly +10 dB of received power");
+        // 同じだけ上げても SINR は変わらない (干渉も一緒に上がるため)
+        bool sinrSame = true;
+        for (std::size_t c = 0; c < m4.sinrDb.size(); ++c)
+            if (std::fabs(strong.sinrDb[c] - m4.sinrDb[c]) > 0.5)
+                { sinrSame = false; break; }
+        check(sinrSame,
+              "multiap: raising every AP together barely moves the SINR");
+
+        // ── 不正な入力 ────────────────────────────────────────────────────
+        check(!pr::coverageMapMulti({}, half, n, hr, f, grx, noise, thr).valid(),
+              "multiap: no AP yields an invalid grid");
+        check(!pr::coverageMapMulti(ring, half, 0, hr, f, grx, noise, thr).valid()
+              && !pr::coverageMapMulti(ring, 0.0, n, hr, f, grx, noise, thr).valid()
+              && !pr::coverageMapMulti(ring, half, n, hr, 0.0, grx, noise, thr).valid(),
+              "multiap: bad inputs yield an invalid grid");
+    }
 }
 
 // ── 分散モデルのフィット (src/optics/DispersionFit) ─────────────────────────
@@ -18330,6 +18497,900 @@ static void testRadarCrossSection()
 
 // ── IlluminationOpts → 系 の共有写像 (core/IlluminationScene) ───────────────
 // 照明タブと光タブが同じ設定から同じ系を組み立てることを保証する部分。
+
+// ── 2 目的の非劣解集合 (core/ParetoFront) ──────────────────────────────────
+// 支配関係は定義がすべてなので、定義から**厳密に従う性質**で判定する。
+
+// ── ガウシアンビームの伝搬 (optics/GaussianBeam) ───────────────────────────
+// 波動 → 幾何 の橋渡し。閉形式しか無いので、**厳密に成り立つ恒等式**で判定する。
+
+// ── 系列どうしの突き合わせ (core/SeriesCompare) ────────────────────────────
+// クロスバリデーションの本体は「共通の軸・共通の単位へ揃える」部分。
+// 指標は定義から厳密に決まるので、そこで判定する。
+
+// ── rcwa_efficiency.csv の読み込み (io/RcwaEfficiency) ─────────────────────
+// 書式はカーネル (OpenRCWA/sol/rcwa_bridge.cpp) の writer が正:
+//   frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM
+static void testRcwaEfficiency()
+{
+    g_file = "rcwaeff";
+    namespace re = ofd::rcwa;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    const QString csv = QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,2.99792458e-06,0.10,0.90,0.20,0.80\n"
+        "2.0e+14,1.49896229e-06,0.25,0.74,0.30,0.70\n"
+        "3.0e+14,9.99308193e-07,0.40,0.60,0.45,0.55\n");
+    const re::Efficiency e = re::parse(csv);
+    check(e.valid() && e.points.size() == 3,
+          "rcwaeff: the three data rows are read and the header is skipped");
+    check(approx(e.points[0].freqHz, 1.0e14, 1.0)
+          && approx(e.points[0].rTE, 0.10, 1e-15)
+          && approx(e.points[0].tTE, 0.90, 1e-15)
+          && approx(e.points[0].rTM, 0.20, 1e-15)
+          && approx(e.points[0].tTM, 0.80, 1e-15),
+          "rcwaeff: the columns land in the order the kernel writes them");
+    // λ = c/f がそのまま入っている (単位の取り違えの検出)
+    check(approx(e.points[0].lambda_m * e.points[0].freqHz, 2.99792458e8, 1.0),
+          "rcwaeff: lambda times frequency is the speed of light");
+
+    // エネルギー保存: 行 1 は 1.0 ちょうど、行 2 は TE が 0.99 (−0.01)、
+    // 行 3 は TM が 1.00 だが TE が 1.00 — 最悪は行 2 の 0.01
+    check(approx(e.worstEnergyError(), 0.01, 1e-12),
+          "rcwaeff: the worst energy error is the largest |R+T-1| over both polarisations");
+    check(approx(e.worstEnergyFreqHz(), 2.0e14, 1.0),
+          "rcwaeff: and it reports the frequency where that happened");
+    // 完全に保存している表なら誤差 0
+    const re::Efficiency ok = re::parse(QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,3.0e-06,0.3,0.7,0.4,0.6\n"));
+    check(ok.worstEnergyError() == 0.0,
+          "rcwaeff: a perfectly conserving table reports exactly zero error");
+
+    // 列が足りない行・数字でない行は**捨てる** (0 で埋めない)
+    const re::Efficiency bad = re::parse(QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,3.0e-06,0.3,0.7\n"                    // 列不足
+        "# comment line\n"
+        "abc,def,ghi,jkl,mno,pqr\n"                    // 数字でない
+        "2.0e+14,1.5e-06,0.3,0.7,0.4,0.6\n"));
+    check(bad.points.size() == 1 && approx(bad.points[0].freqHz, 2.0e14, 1.0),
+          "rcwaeff: short and non-numeric rows are dropped, not padded with zeros");
+    check(!re::parse(QString()).valid(),
+          "rcwaeff: an empty file yields nothing");
+    check(re::parse(QStringLiteral("frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"))
+              .points.isEmpty(),
+          "rcwaeff: a header with no data yields no points");
+    check(!re::read(QStringLiteral("/nonexistent/rcwa_efficiency.csv")).valid(),
+          "rcwaeff: a missing file yields nothing (no invented values)");
+
+    // 空白区切り・セミコロン区切りでも読める (書式ゆれへの耐性)
+    check(re::parse(QStringLiteral("1e14 3e-6 0.3 0.7 0.4 0.6\n")).points.size() == 1,
+          "rcwaeff: whitespace separated rows are accepted too");
+
+    // ── 突き合わせに載せる (core/SeriesCompare との組み合わせ) ─────────
+    {
+        namespace sc = ofd::cmp;
+        sc::Series a, b;
+        for (const re::EfficiencyPoint &p : e.points) {
+            a.x.push_back(p.freqHz);
+            a.y.push_back(p.rTE);
+            b.x.push_back(p.freqHz);
+            b.y.push_back(p.rTE + 1.0e-4);        // 同一手法なら僅差のはず
+        }
+        const sc::Agreement g = sc::compare(a, b);
+        check(g.valid && g.n == 3,
+              "rcwaeff: two efficiency tables compare on the shared frequencies");
+        check(std::fabs(g.bias - 1.0e-4) < 1e-15,
+              "rcwaeff: a uniform 1e-4 difference shows up exactly as the bias");
+        check(g.correlation > 0.999,
+              "rcwaeff: and the shapes still match");
+    }
+}
+
+
+// ── 遠方界の全球積分から指向性 (em/Directivity) ────────────────────────────
+// 指向性は解析解が厳密に分かる量なので、そこで判定する。
+
+// ── 参照データの (x, y) CSV (io/SeriesCsv) ─────────────────────────────────
+// 検証タブと tidy3d タブが同じ規則で読むための共有部分。
+static void testSeriesCsv()
+{
+    g_file = "seriescsv";
+    namespace sc = ofd::cmp;
+
+    // 見出し行・コメント・空行が混ざった素直な CSV
+    const sc::Series a = ofd::io::parseSeriesCsv(QStringLiteral(
+        "# reference data\n"
+        "freq[Hz],value[dB]\n"
+        "\n"
+        "1.0e9, -10.0\n"
+        "2.0e9, -20.0\n"
+        "3.0e9, -30.0\n"));
+    check(a.valid() && a.x.size() == 3,
+          "seriescsv: the header, comment and blank lines are skipped");
+    check(a.x[0] == 1.0e9 && a.y[2] == -30.0,
+          "seriescsv: the first two columns become x and y");
+
+    // 区切りはカンマ・セミコロン・空白のいずれでもよい (混在も)
+    check(ofd::io::parseSeriesCsv(QStringLiteral("1 2\n3;4\n5,6\n")).x.size() == 3,
+          "seriescsv: comma, semicolon and whitespace all separate columns");
+
+    // **数値に読めない行は捨てる** (0 で埋めない)
+    const sc::Series b = ofd::io::parseSeriesCsv(QStringLiteral(
+        "1,2\n"
+        "abc,def\n"
+        "3\n"                       // 列不足
+        "4,5\n"));
+    check(b.x.size() == 2 && b.x[0] == 1.0 && b.x[1] == 4.0,
+          "seriescsv: rows that are not numeric or too short are dropped");
+
+    // 2 点に満たなければ無効 (compare が使えないので数字を作らない)
+    check(!ofd::io::parseSeriesCsv(QStringLiteral("1,2\n")).valid(),
+          "seriescsv: a single point is not a usable series");
+    check(!ofd::io::parseSeriesCsv(QString()).valid(),
+          "seriescsv: an empty text is not a usable series");
+    check(!ofd::io::readSeriesCsv(QStringLiteral("/nonexistent/ref.csv")).valid(),
+          "seriescsv: a missing file yields nothing");
+
+    // **x が降順でも昇順へ並べ替える** (補間が昇順を前提にしている)
+    const sc::Series d = ofd::io::parseSeriesCsv(QStringLiteral(
+        "3,30\n2,20\n1,10\n"));
+    check(d.valid() && d.x[0] == 1.0 && d.x[2] == 3.0,
+          "seriescsv: a descending x column is sorted ascending");
+    check(d.y[0] == 10.0 && d.y[2] == 30.0,
+          "seriescsv: and y follows its own x, not the row order");
+    // 既に昇順なら順序はそのまま (無駄に触らない)
+    const sc::Series e = ofd::io::parseSeriesCsv(QStringLiteral("1,10\n2,20\n"));
+    check(e.x[0] == 1.0 && e.y[1] == 20.0,
+          "seriescsv: an already sorted series is left alone");
+    // 同じ x が 2 度あっても落とさない (呼び出し側が気づけるように)
+    check(ofd::io::parseSeriesCsv(QStringLiteral("1,10\n1,11\n2,20\n")).x.size() == 3,
+          "seriescsv: duplicate x values are kept, not silently merged");
+
+    // 列の選択
+    ofd::io::SeriesCsvOptions opt;
+    opt.xCol = 0;
+    opt.yCol = 2;
+    const sc::Series f = ofd::io::parseSeriesCsv(
+        QStringLiteral("1,9,10\n2,9,20\n"), opt);
+    check(f.valid() && f.y[0] == 10.0 && f.y[1] == 20.0,
+          "seriescsv: a different y column can be selected");
+    opt.yCol = 9;                       // 存在しない列
+    check(!ofd::io::parseSeriesCsv(QStringLiteral("1,2\n3,4\n"), opt).valid(),
+          "seriescsv: asking for a column that is not there yields nothing");
+
+    // 読んだ系列がそのまま比較に載る (共有部分としての目的)
+    {
+        const sc::Agreement g = sc::compare(a, a);
+        check(g.valid && g.maxAbs == 0.0,
+              "seriescsv: what it returns can be fed straight into compare()");
+    }
+}
+
+static void testDirectivity()
+{
+    g_file = "directivity";
+    using namespace ofd::em;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+    // θ を等間隔、φ を等間隔に切った格子 (カーネルの far2d と同じ並び。
+    // 端点 θ=0,180 と φ=0,360 を含み、φ の端点は重複する)
+    auto grid = [](int nt, int np, const std::function<double(double, double)> &f) {
+        SphericalPattern p;
+        for (int i = 0; i <= nt; ++i) p.theta_deg.push_back(180.0 * i / nt);
+        for (int j = 0; j <= np; ++j) p.phi_deg.push_back(360.0 * j / np);
+        for (double th : p.theta_deg)
+            for (double ph : p.phi_deg)
+                p.u.push_back(f(th, ph));
+        return p;
+    };
+
+    // ── 単位の規約: far2d の dB は振幅の 20log10 ────────────────────────
+    {
+        // |E| が 10 倍 = +20 dB のとき、強度は 100 倍
+        check(rel(intensityFromEabsDb(20.0), 100.0) < 1e-12,
+              "directivity: +20 dB of amplitude is 100 times the intensity");
+        check(rel(intensityFromEabsDb(0.0), 1.0) < 1e-15,
+              "directivity: 0 dB is unit intensity");
+        // 3.01 dB でちょうど 2 倍 (強度比)
+        check(rel(intensityFromEabsDb(3.0102999566), 2.0) < 1e-9,
+              "directivity: 3.01 dB is a factor of two in intensity");
+    }
+
+    // ── 等方性は D = 1 (0 dBi) — u = cosθ で積分するので厳密 ────────────
+    {
+        const SphericalPattern iso = grid(36, 72, [](double, double) { return 1.0; });
+        const Directivity d = directivity(iso);
+        check(d.valid, "directivity: an isotropic pattern integrates");
+        check(rel(d.radiatedPower, 4.0 * PI) < 1e-12,
+              "directivity: the solid angle of the whole sphere comes out as 4 pi exactly");
+        check(rel(d.directivity, 1.0) < 1e-12,
+              "directivity: an isotropic pattern has D = 1 exactly");
+        check(std::fabs(d.directivityDbi) < 1e-12,
+              "directivity: which is 0 dBi");
+        check(rel(d.beamSolidAngle, 4.0 * PI) < 1e-12,
+              "directivity: and a beam solid angle of 4 pi");
+        // D = 4pi / Omega_A は定義そのもの (実装が両方を別々に壊していないか)
+        check(rel(d.directivity, 4.0 * PI / d.beamSolidAngle) < 1e-12,
+              "directivity: D and the beam solid angle satisfy D = 4 pi / Omega");
+        // **粗い格子でも厳密** (u 空間の台形則が定数を厳密に積分するため)
+        const Directivity coarse = directivity(grid(4, 4, [](double, double) { return 1.0; }));
+        check(rel(coarse.directivity, 1.0) < 1e-12,
+              "directivity: even a 4 x 4 grid gives exactly 1 for an isotropic pattern");
+    }
+
+    // ── 微小ダイポール U ∝ sin²θ は D = 1.5 ────────────────────────────
+    {
+        auto dip = [PI](double th, double) {
+            const double s = std::sin(th * PI / 180.0);
+            return s * s;
+        };
+        const Directivity d = directivity(grid(90, 72, dip));
+        check(d.valid && rel(d.directivity, 1.5) < 2e-3,
+              "directivity: a Hertzian dipole has D = 1.5");
+        check(std::fabs(d.peakTheta_deg - 90.0) < 1e-9,
+              "directivity: its peak is broadside at theta = 90 deg");
+        // 格子を細かくすると誤差は**単調に減る**。u = cosθ の刻みが極付近で
+        // 詰まる非等間隔格子なので、次数をきれいに 2 と主張はできない
+        // (実測 5.1e-3 → 6.1e-4 → 3.0e-4 → 7.6e-5)。単調性と最終的な
+        // 小ささで判定する。
+        double prev = 1e300;
+        bool mono = true;
+        for (int n : { 22, 45, 90, 180 }) {
+            const double e = std::fabs(directivity(grid(n, 72, dip)).directivity - 1.5);
+            if (e >= prev) mono = false;
+            prev = e;
+        }
+        check(mono, "directivity: refining the grid always reduces the error");
+        check(prev < 1e-4,
+              "directivity: and at 1 degree steps it is under 1e-4 in absolute terms");
+    }
+
+    // ── U ∝ cos²θ は D = 3 ─────────────────────────────────────────────
+    {
+        const Directivity d = directivity(grid(90, 72, [PI](double th, double) {
+            const double c = std::cos(th * PI / 180.0);
+            return c * c;
+        }));
+        check(rel(d.directivity, 3.0) < 2e-3,
+              "directivity: a cos^2 pattern has D = 3");
+    }
+
+    // ── 正規化に不変 (これがあるから指向性だけは取り出せる) ─────────────
+    {
+        auto dip = [PI](double th, double) {
+            const double s = std::sin(th * PI / 180.0);
+            return s * s;
+        };
+        const Directivity a = directivity(grid(60, 60, dip));
+        SphericalPattern scaled = grid(60, 60, dip);
+        for (double &v : scaled.u) v *= 1.234e6;      // 任意の定数倍
+        const Directivity b = directivity(scaled);
+        check(rel(b.directivity, a.directivity) < 1e-12,
+              "directivity: scaling the whole pattern leaves D unchanged");
+        check(rel(b.radiatedPower / b.peak, a.radiatedPower / a.peak) < 1e-12,
+              "directivity: the beam solid angle is scale invariant too");
+    }
+
+    // ── φ の重複端点を二重に数えていないか ─────────────────────────────
+    {
+        // U = 1 + cos φ は φ 方向の平均が 1。等方性と同じ D = 1 になるはず…
+        // ではなく、ピークが 2 なので D = 2。**φ の重複を二重に数えると
+        // 分母だけが増えて D が小さく出る**ので、その検出になる。
+        const Directivity d = directivity(grid(60, 72, [PI](double, double ph) {
+            return 1.0 + std::cos(ph * PI / 180.0);
+        }));
+        check(rel(d.directivity, 2.0) < 1e-6,
+              "directivity: the duplicated phi endpoint is not counted twice");
+    }
+
+    // ── 集中したビームは D ≈ 4π/Ω ───────────────────────────────────
+    {
+        // 半頂角 10° の円錐だけに一様に放射する
+        const double halfDeg = 10.0;
+        auto cone = [halfDeg](double th, double) {
+            return (th <= halfDeg) ? 1.0 : 0.0;
+        };
+        const double omega = 2.0 * PI * (1.0 - std::cos(halfDeg * PI / 180.0));
+        const Directivity d = directivity(grid(720, 72, cone));
+        // **不連続な分布は 1 次でしか収束しない。** 円錐の縁はどんな滑らかな
+        // 求積でも解像できないので、細かい格子でも数 % 残る。この事実ごと
+        // 固定しておく (「ずれている = バグ」と読み違えないため)。
+        check(rel(d.beamSolidAngle, omega) < 5e-2,
+              "directivity: a narrow cone has the solid angle of that cone");
+        check(rel(d.directivity, 4.0 * PI / omega) < 5e-2,
+              "directivity: and its directivity is 4 pi over that solid angle");
+        const double e1 = rel(directivity(grid(180, 72, cone)).beamSolidAngle, omega);
+        const double e2 = rel(directivity(grid(360, 72, cone)).beamSolidAngle, omega);
+        const double e3 = rel(directivity(grid(720, 72, cone)).beamSolidAngle, omega);
+        check(e2 < 0.6 * e1 && e3 < 0.6 * e2 && e3 > 0.35 * e2,
+              "directivity: a hard edge converges only first order (halving the step halves the error)");
+        check(d.directivity > 100.0,
+              "directivity: a 10 degree cone is well over 20 dBi");
+    }
+
+    // ── 不正な入力 ─────────────────────────────────────────────────────
+    {
+        check(!directivity(SphericalPattern()).valid,
+              "directivity: an empty pattern is refused");
+        SphericalPattern zero = grid(10, 10, [](double, double) { return 0.0; });
+        check(!directivity(zero).valid,
+              "directivity: an all-zero pattern gives no directivity (no 0/0)");
+        SphericalPattern ragged;
+        ragged.theta_deg = { 0.0, 90.0, 180.0 };
+        ragged.phi_deg = { 0.0, 180.0, 360.0 };
+        ragged.u = { 1.0, 1.0 };                     // 個数が合わない
+        check(!ragged.valid() && !directivity(ragged).valid,
+              "directivity: a size mismatch is refused rather than read past the end");
+    }
+}
+
+static void testSeriesCompare()
+{
+    g_file = "seriescmp";
+    namespace sc = ofd::cmp;
+
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+
+    // 直線 y = 3x + 1 を粗い刻みで
+    sc::Series a;
+    for (int k = 0; k <= 10; ++k) { a.x.push_back(k); a.y.push_back(3.0 * k + 1.0); }
+    check(a.valid(), "seriescmp: the reference series is well formed");
+
+    // ── 単位の換算 ─────────────────────────────────────────────────────
+    {
+        // **電力の dB と振幅の dB を混ぜない** — 同じ 20 dB でも別の値
+        check(rel(sc::toLinear(20.0, sc::Scale::PowerDb), 100.0) < 1e-12,
+              "seriescmp: 20 dB of power is a factor of 100");
+        check(rel(sc::toLinear(20.0, sc::Scale::AmplitudeDb), 10.0) < 1e-12,
+              "seriescmp: 20 dB of amplitude is a factor of 10");
+        // 取り違えると値がちょうど 2 乗ずれる (この関係を固定しておく)
+        const double p = sc::toLinear(13.0, sc::Scale::PowerDb);
+        const double q = sc::toLinear(13.0, sc::Scale::AmplitudeDb);
+        check(rel(p, q * q) < 1e-12,
+              "seriescmp: reading power dB as amplitude dB squares the value");
+        // 往復は厳密に戻る
+        for (sc::Scale s : { sc::Scale::PowerDb, sc::Scale::AmplitudeDb })
+            check(rel(sc::fromLinear(sc::toLinear(-7.25, s), s), -7.25) < 1e-12,
+                  "seriescmp: the dB round trip returns the same number");
+        check(sc::toLinear(3.0, sc::Scale::Linear) == 3.0
+              && sc::fromLinear(3.0, sc::Scale::Linear) == 3.0,
+              "seriescmp: the linear scale is the identity");
+        check(std::isinf(sc::fromLinear(0.0, sc::Scale::PowerDb))
+              && sc::fromLinear(0.0, sc::Scale::PowerDb) < 0.0,
+              "seriescmp: zero power is -inf dB, not a rounded number");
+        // 同じ単位への変換は 1 ビットも動かさない
+        check(sc::convert(a, sc::Scale::PowerDb, sc::Scale::PowerDb).y == a.y,
+              "seriescmp: converting to the same scale changes nothing");
+    }
+
+    // ── 載せ替え (線形補間) ────────────────────────────────────────────
+    {
+        // 同じ軸へ載せ替えると恒等 (ビット一致)
+        const sc::Series same = sc::resampleTo(a, a.x);
+        check(same.x == a.x && same.y == a.y,
+              "seriescmp: resampling onto its own axis is the identity");
+        // **直線は補間で厳密に再現される** (補間そのものの検算)
+        std::vector<double> fine;
+        for (int k = 0; k <= 100; ++k) fine.push_back(k * 0.1);
+        const sc::Series interp = sc::resampleTo(a, fine);
+        check(interp.x.size() == fine.size(),
+              "seriescmp: every requested point inside the range is produced");
+        double worst = 0.0;
+        for (std::size_t i = 0; i < interp.x.size(); ++i)
+            worst = std::max(worst, std::fabs(interp.y[i]
+                                              - (3.0 * interp.x[i] + 1.0)));
+        check(worst < 1e-12,
+              "seriescmp: linear interpolation reproduces a straight line exactly");
+        // **外挿はしない** — 範囲外は落ちる
+        const sc::Series out = sc::resampleTo(a, { -5.0, 2.0, 50.0 });
+        check(out.x.size() == 1 && out.x[0] == 2.0,
+              "seriescmp: points outside the range are dropped, not extrapolated");
+    }
+
+    // ── 一致の指標 ─────────────────────────────────────────────────────
+    {
+        // 自分自身との比較はすべて 0、相関は 1
+        const sc::Agreement self = sc::compare(a, a);
+        check(self.valid && self.n == int(a.x.size()),
+              "seriescmp: comparing a series with itself uses every point");
+        check(self.maxAbs == 0.0 && self.rms == 0.0 && self.bias == 0.0
+              && self.relL2 == 0.0,
+              "seriescmp: and every error metric is exactly zero");
+        check(rel(self.correlation, 1.0) < 1e-12,
+              "seriescmp: the correlation with itself is exactly 1");
+
+        // 一定オフセット: bias = c, rms = |c|, 相関は 1 のまま
+        sc::Series off = a;
+        for (double &v : off.y) v += 2.5;
+        const sc::Agreement go = sc::compare(a, off);
+        check(rel(go.bias, 2.5) < 1e-12 && rel(go.rms, 2.5) < 1e-12
+              && rel(go.maxAbs, 2.5) < 1e-12,
+              "seriescmp: a constant offset shows up exactly as the bias");
+        check(rel(go.correlation, 1.0) < 1e-12,
+              "seriescmp: an offset leaves the correlation at 1 (same shape)");
+
+        // 定数倍: relL2 = |k−1| ちょうど、相関は 1 のまま
+        sc::Series sc2 = a;
+        for (double &v : sc2.y) v *= 1.1;
+        const sc::Agreement gs = sc::compare(a, sc2);
+        check(rel(gs.relL2, 0.1) < 1e-12,
+              "seriescmp: scaling by k makes the relative L2 error exactly |k-1|");
+        check(rel(gs.correlation, 1.0) < 1e-12,
+              "seriescmp: and the correlation stays 1");
+
+        // 符号反転は相関 −1 (形が逆)
+        sc::Series neg = a;
+        for (double &v : neg.y) v = -v;
+        check(rel(sc::compare(a, neg).correlation, -1.0) < 1e-12,
+              "seriescmp: flipping the sign gives a correlation of -1");
+
+        // **bias と correlation は別のことを言う**: 形が違えば相関が落ちる
+        sc::Series bent = a;
+        for (std::size_t i = 0; i < bent.y.size(); ++i)
+            bent.y[i] = 3.0 * bent.x[i] + 1.0 + ((i % 2 == 0) ? 4.0 : -4.0);
+        const sc::Agreement gb = sc::compare(a, bent);
+        // 11 点で +4 が 6 個・−4 が 5 個なので、bias は素直に平均の 4/11。
+        // (「ぎざぎざなら bias は 0」は点数が偶数のときだけ — ここは
+        //  bias が「ただの平均」であることの確認になっている)
+        check(rel(gb.bias, 4.0 / 11.0) < 1e-12,
+              "seriescmp: the bias is just the mean difference, sign included");
+        // ずれの大きさは 1 点ごとに必ず 4 なので rms はちょうど 4
+        check(rel(gb.rms, 4.0) < 1e-12 && rel(gb.maxAbs, 4.0) < 1e-12,
+              "seriescmp: the rms and the worst case are exactly the zig-zag size");
+        check(gb.correlation < 1.0 - 1e-6,
+              "seriescmp: and the correlation drops below 1 (the shape differs)");
+        // 点数を偶数にすると ± が打ち消して bias は厳密に 0 になる
+        sc::Series even9;
+        for (int k = 0; k < 10; ++k) {
+            even9.x.push_back(k);
+            even9.y.push_back(3.0 * k + 1.0);
+        }
+        sc::Series zig = even9;
+        for (std::size_t i = 0; i < zig.y.size(); ++i)
+            zig.y[i] += (i % 2 == 0) ? 4.0 : -4.0;
+        const sc::Agreement ge = sc::compare(even9, zig);
+        check(std::fabs(ge.bias) < 1e-12 && rel(ge.rms, 4.0) < 1e-12,
+              "seriescmp: with an even count the zig-zag cancels in the bias only");
+    }
+
+    // ── 重なりが足りないとき ───────────────────────────────────────────
+    {
+        sc::Series far;
+        for (int k = 50; k <= 60; ++k) { far.x.push_back(k); far.y.push_back(k); }
+        check(!sc::compare(a, far).valid,
+              "seriescmp: series that do not overlap are refused, not guessed");
+        check(sc::overlapFraction(a, far) == 0.0,
+              "seriescmp: the overlap fraction says so");
+        // 半分だけ重なる
+        sc::Series half;
+        for (int k = 5; k <= 20; ++k) { half.x.push_back(k); half.y.push_back(3.0 * k + 1.0); }
+        const double frac = sc::overlapFraction(a, half);
+        check(rel(frac, 6.0 / 11.0) < 1e-12,
+              "seriescmp: a partial overlap is reported as a fraction");
+        const sc::Agreement gh = sc::compare(a, half);
+        check(gh.valid && gh.n == 6,
+              "seriescmp: only the overlapping points are compared");
+        check(gh.maxAbs < 1e-12,
+              "seriescmp: and on the overlap the two agree exactly");
+        // 点が足りない系列は最初から無効
+        sc::Series one;
+        one.x = { 1.0 };
+        one.y = { 2.0 };
+        check(!one.valid() && !sc::compare(a, one).valid,
+              "seriescmp: a single point cannot be compared");
+        check(!sc::compare(sc::Series(), a).valid,
+              "seriescmp: an empty series cannot be compared");
+    }
+
+    // ── 単位を揃えてから比べる (実際の使い方) ──────────────────────────
+    {
+        // 同じ物理量を、片方は線形・片方は電力 dB で持っている場合。
+        // **揃えずに比べると大きく食い違い、揃えると厳密に一致する。**
+        sc::Series lin;
+        for (int k = 1; k <= 10; ++k) { lin.x.push_back(k); lin.y.push_back(0.1 * k); }
+        sc::Series db = lin;
+        for (double &v : db.y) v = sc::fromLinear(v, sc::Scale::PowerDb);
+        check(sc::compare(lin, db).maxAbs > 1.0,
+              "seriescmp: comparing linear against dB without converting is far off");
+        const sc::Series back = sc::convert(db, sc::Scale::PowerDb, sc::Scale::Linear);
+        check(sc::compare(lin, back).maxAbs < 1e-12,
+              "seriescmp: converting to a common scale makes them agree exactly");
+    }
+}
+
+static void testGaussianBeam()
+{
+    g_file = "gaussbeam";
+    namespace gb = ofd::gauss;
+
+    const double PI = 3.14159265358979323846;
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+
+    const double lam = 1.55e-6;      // 光通信帯
+    const double w0 = 5.0e-6;        // ウエスト 5 μm
+    const double zr = gb::rayleighRange(w0, lam);
+
+    // ── レイリー長と w(z) ──────────────────────────────────────────────
+    {
+        check(approx(zr, PI * w0 * w0 / lam, 1e-18),
+              "gaussbeam: the Rayleigh range is pi w0^2 n / lambda");
+        check(gb::beamRadius(w0, 0.0, lam) == w0,
+              "gaussbeam: the radius at the waist is exactly w0");
+        // z = z_R でちょうど √2 倍 (定義そのもの)
+        check(rel(gb::beamRadius(w0, zr, lam), std::sqrt(2.0) * w0) < 1e-15,
+              "gaussbeam: at the Rayleigh range the radius is exactly sqrt(2) w0");
+        // 対称 (前後で同じ)
+        check(gb::beamRadius(w0, -3.0 * zr, lam) == gb::beamRadius(w0, 3.0 * zr, lam),
+              "gaussbeam: the beam is symmetric about the waist");
+        // 単調に広がる
+        check(gb::beamRadius(w0, 0.5 * zr, lam) < gb::beamRadius(w0, zr, lam)
+              && gb::beamRadius(w0, zr, lam) < gb::beamRadius(w0, 2.0 * zr, lam),
+              "gaussbeam: the radius grows monotonically away from the waist");
+        // 屈折率が上がるとレイリー長は比例して伸びる (媒質中で回折が緩む)
+        check(rel(gb::rayleighRange(w0, lam, 3.5), 3.5 * zr) < 1e-15,
+              "gaussbeam: the Rayleigh range scales with the refractive index");
+        check(gb::rayleighRange(0.0, lam) == 0.0
+              && gb::rayleighRange(w0, 0.0) == 0.0
+              && gb::beamRadius(w0, 1.0, 0.0) == 0.0,
+              "gaussbeam: non-positive inputs give 0, not a wrong number");
+    }
+
+    // ── 発散角とビームパラメータ積 ────────────────────────────────────
+    {
+        const double th = gb::divergence(w0, lam);
+        check(approx(th, lam / (PI * w0), 1e-18),
+              "gaussbeam: the divergence is lambda / (pi w0)");
+        // 遠方では w(z) → θ z (漸近線)
+        const double far = 1.0e5 * zr;
+        check(rel(gb::beamRadius(w0, far, lam), th * far) < 1e-9,
+              "gaussbeam: far from the waist the radius approaches theta z");
+        // **ビームパラメータ積は伝搬の不変量** — w0 を変えても λ/π のまま
+        for (double w : { 1.0e-6, 5.0e-6, 50.0e-6 })
+            check(rel(gb::beamParameterProduct(w, lam), lam / PI) < 1e-15,
+                  "gaussbeam: the beam parameter product is lambda / pi");
+        // 絞るほど広がる (w0 と θ は反比例)
+        check(gb::divergence(1.0e-6, lam) > gb::divergence(10.0e-6, lam),
+              "gaussbeam: a tighter waist diverges faster");
+    }
+
+    // ── 波面の曲率 ────────────────────────────────────────────────────
+    {
+        check(gb::radiusOfCurvature(0.0, w0, lam) == 0.0,
+              "gaussbeam: the wavefront is flat at the waist");
+        // R(z) は z = z_R で最小になり、その値はちょうど 2 z_R
+        check(rel(gb::radiusOfCurvature(zr, w0, lam), 2.0 * zr) < 1e-15,
+              "gaussbeam: the curvature radius is exactly 2 zR at the Rayleigh range");
+        bool minAtZr = true;
+        for (double f : { 0.3, 0.6, 0.9, 1.2, 2.0, 5.0 })
+            if (gb::radiusOfCurvature(f * zr, w0, lam)
+                < gb::radiusOfCurvature(zr, w0, lam) - 1e-18)
+                minAtZr = false;
+        check(minAtZr, "gaussbeam: no other distance gives a smaller radius");
+        // 遠方では R(z) → z (球面波)
+        check(rel(gb::radiusOfCurvature(1.0e6 * zr, w0, lam), 1.0e6 * zr) < 1e-9,
+              "gaussbeam: far away the wavefront becomes a sphere of radius z");
+    }
+
+    // ── Gouy 位相 ─────────────────────────────────────────────────────
+    {
+        check(gb::gouyPhase(0.0, w0, lam) == 0.0,
+              "gaussbeam: the Gouy phase is zero at the waist");
+        check(rel(gb::gouyPhase(zr, w0, lam), PI / 4.0) < 1e-15,
+              "gaussbeam: it is exactly pi/4 at the Rayleigh range");
+        // 焦点の前後で合計 π だけ回る (よく知られた性質)
+        const double span = gb::gouyPhase(1e9 * zr, w0, lam)
+                          - gb::gouyPhase(-1e9 * zr, w0, lam);
+        check(rel(span, PI) < 1e-8,
+              "gaussbeam: the total Gouy shift through the focus is pi");
+    }
+
+    // ── 幾何光学が使える距離 ──────────────────────────────────────────
+    {
+        const double z1 = gb::geometricValidDistance(w0, lam, 1.0, 0.01);
+        // 定義どおり、その距離では直線近似の誤差がちょうど 1 %
+        const double err = gb::beamRadius(w0, z1, lam)
+                         / (gb::divergence(w0, lam) * z1) - 1.0;
+        check(rel(err, 0.01) < 1e-9,
+              "gaussbeam: at that distance the straight-line error is exactly the tolerance");
+        // 許容誤差を緩めるほど手前で使えるようになる
+        check(gb::geometricValidDistance(w0, lam, 1.0, 0.05) < z1,
+              "gaussbeam: a looser tolerance moves the crossover closer");
+        check(z1 > zr,
+              "gaussbeam: geometrical optics only becomes valid beyond the Rayleigh range");
+        check(gb::geometricValidDistance(w0, lam, 1.0, 0.0) == 0.0,
+              "gaussbeam: a non-positive tolerance gives no distance");
+    }
+
+    // ── レンズ (ABCD) ─────────────────────────────────────────────────
+    {
+        // 平行光 (ウエストがレンズ位置にある大きなビーム) を f で絞る。
+        // z_R ≫ f の逆、すなわち f ≪ z_R のとき w0' → λ f / (π w)
+        const double wIn = 1.0e-3;                  // 1 mm のコリメート光
+        const double f = 10.0e-3;                   // 10 mm レンズ
+        const gb::Waist out = gb::lensWaist(wIn, 0.0, f, lam);
+        // 教科書式 λf/(πw) は f ≪ z_R の極限。**厳密解はこれより小さく**、
+        // ずれはちょうど 2 次の補正 f²/(2 z_R²) になる (この一致まで見る)。
+        const double thin = lam * f / (PI * wIn);
+        const double zrIn = gb::rayleighRange(wIn, lam);
+        check(rel(out.w0_m, thin) < 1e-4,
+              "gaussbeam: a collimated beam focuses to lambda f / (pi w)");
+        check(rel((thin - out.w0_m) / thin, f * f / (2.0 * zrIn * zrIn)) < 1e-3,
+              "gaussbeam: the deviation from the thin-lens formula is f^2 / 2 zR^2");
+        // f/z_R を 10 分の 1 にすると、ずれは 100 分の 1 になる (2 次の収束)
+        const gb::Waist finer = gb::lensWaist(wIn, 0.0, 0.1 * f, lam);
+        const double thin2 = lam * (0.1 * f) / (PI * wIn);
+        check(rel(finer.w0_m, thin2) < 0.011 * rel(out.w0_m, thin),
+              "gaussbeam: that deviation falls as the square of f / zR");
+        // ウエストは焦点面のすぐ近く (z_R ≫ f なのでほぼ f)
+        check(rel(out.z_m, f) < 1e-3,
+              "gaussbeam: and the waist sits essentially at the focal plane");
+        // 絞った先から見ると、もとの径へ戻る (可逆性)
+        const gb::Waist back = gb::lensWaist(out.w0_m, out.z_m, f, lam);
+        check(rel(back.w0_m, wIn) < 1e-6,
+              "gaussbeam: running the same lens backwards restores the input waist");
+        // レンズが無い (f → ∞) 極限では何も起きない
+        const gb::Waist huge = gb::lensWaist(w0, 0.0, 1.0e12, lam);
+        check(rel(huge.w0_m, w0) < 1e-6,
+              "gaussbeam: an infinitely weak lens leaves the waist alone");
+        check(gb::lensWaist(w0, 0.0, 0.0, lam).w0_m == 0.0,
+              "gaussbeam: a zero focal length is refused rather than divided by");
+    }
+
+    // ── 界分布からウエストを測る (ISO 11146 の 2 次モーメント) ─────────
+    {
+        // 理想ガウシアン I(x) = exp(-2x²/w²) を細かく標本化する。
+        // 2 次モーメントは σ = w/2 なので D4σ/2 = 2σ = w に戻るはず。
+        const double w = 8.0e-6, pitch = 0.05e-6;
+        const int n = 1201;                         // ±30 μm (裾まで入る)
+        std::vector<double> prof(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k) {
+            const double x = (k - (n - 1) / 2) * pitch;
+            prof[static_cast<std::size_t>(k)] = std::exp(-2.0 * x * x / (w * w));
+        }
+        check(rel(gb::waistFromIntensity(prof, pitch), w) < 1e-6,
+              "gaussbeam: the second moment of an ideal Gaussian returns its radius");
+        // 幅を 2 倍にすると測定値も 2 倍 (スケールに比例)。
+        // **2 次モーメントは裾を切ると小さく出る**ので、窓も 2 倍に取る。
+        const int nWide = 2 * n + 1;
+        std::vector<double> wide(static_cast<std::size_t>(nWide), 0.0);
+        for (int k = 0; k < nWide; ++k) {
+            const double x = (k - (nWide - 1) / 2) * pitch;
+            wide[static_cast<std::size_t>(k)] =
+                std::exp(-2.0 * x * x / (4.0 * w * w));
+        }
+        check(rel(gb::waistFromIntensity(wide, pitch), 2.0 * w) < 1e-4,
+              "gaussbeam: doubling the profile width doubles the measured radius");
+        // 同じ分布を狭い窓で測ると**必ず小さく出る** (D4σ の裾への敏感さ)。
+        // 「窓が足りないと過小評価になる」ことを固定しておく。
+        std::vector<double> clipped(wide.begin() + n / 2,
+                                    wide.end() - n / 2);
+        check(gb::waistFromIntensity(clipped, pitch)
+              < gb::waistFromIntensity(wide, pitch),
+              "gaussbeam: truncating the tails always underestimates the radius");
+        // 中心がずれていても幅は変わらない (1 次モーメントで中心を取るため)
+        std::vector<double> shifted(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k) {
+            const double x = (k - (n - 1) / 2) * pitch - 3.0e-6;
+            shifted[static_cast<std::size_t>(k)] =
+                std::exp(-2.0 * x * x / (w * w));
+        }
+        check(rel(gb::waistFromIntensity(shifted, pitch), w) < 1e-4,
+              "gaussbeam: an off-centre profile measures the same radius");
+        // **強度を渡す約束**: 振幅を渡すと √2 倍ずれる (取り違えの検出)
+        std::vector<double> amp(static_cast<std::size_t>(n), 0.0);
+        for (int k = 0; k < n; ++k)
+            amp[static_cast<std::size_t>(k)] =
+                std::sqrt(prof[static_cast<std::size_t>(k)]);
+        check(rel(gb::waistFromIntensity(amp, pitch), std::sqrt(2.0) * w) < 1e-4,
+              "gaussbeam: passing amplitude instead of intensity is off by sqrt(2)");
+        check(gb::waistFromIntensity({}, pitch) == 0.0
+              && gb::waistFromIntensity(prof, 0.0) == 0.0
+              && gb::waistFromIntensity(std::vector<double>(10, 0.0), pitch) == 0.0,
+              "gaussbeam: empty or zero input measures nothing");
+    }
+}
+
+static void testParetoFront()
+{
+    g_file = "pareto";
+    namespace pa = ofd::pareto;
+
+    auto P = [](double a, double b) { pa::Point p; p.a = a; p.b = b; p.valid = true; return p; };
+
+    // ── 支配関係の定義 ─────────────────────────────────────────────────
+    {
+        const pa::Point p = P(2.0, 2.0), q = P(1.0, 1.0);
+        check(pa::dominates(p, q, true, true),
+              "pareto: a point better in both objectives dominates");
+        check(!pa::dominates(q, p, true, true),
+              "pareto: and the dominated point does not dominate back");
+        check(!pa::dominates(p, p, true, true),
+              "pareto: no point dominates itself");
+        // 片方だけ良い = 支配しない (トレードオフ)
+        check(!pa::dominates(P(2.0, 1.0), P(1.0, 2.0), true, true)
+              && !pa::dominates(P(1.0, 2.0), P(2.0, 1.0), true, true),
+              "pareto: a trade-off pair dominates neither way");
+        // 片方が同値でもう片方が良ければ支配する
+        check(pa::dominates(P(2.0, 1.0), P(1.0, 1.0), true, true),
+              "pareto: an equal objective plus a better one still dominates");
+        // 完全に同じ点は互いに支配しない (どちらもフロントに残す)
+        check(!pa::dominates(P(1.0, 1.0), P(1.0, 1.0), true, true),
+              "pareto: identical points do not dominate each other");
+        // 無効な点は関わらない
+        pa::Point bad; bad.a = 9.0; bad.b = 9.0; bad.valid = false;
+        check(!pa::dominates(bad, P(1.0, 1.0), true, true)
+              && !pa::dominates(P(1.0, 1.0), bad, true, true),
+              "pareto: an invalid point neither dominates nor is dominated");
+        // 推移性 (a > b > c なら a > c)
+        const pa::Point a = P(3.0, 3.0), b2 = P(2.0, 2.0), c = P(1.0, 1.0);
+        check(pa::dominates(a, b2, true, true) && pa::dominates(b2, c, true, true)
+              && pa::dominates(a, c, true, true),
+              "pareto: dominance is transitive");
+        // 向きの反転は符号の反転と同じ (最小化 = −値の最大化)
+        check(pa::dominates(P(1.0, 1.0), P(2.0, 2.0), false, false),
+              "pareto: minimising flips the direction");
+    }
+
+    // ── フロントの性質 ─────────────────────────────────────────────────
+    {
+        // 1 点がすべてを支配する
+        std::vector<pa::Point> one = { P(0.0, 0.0), P(5.0, 5.0), P(1.0, 2.0),
+                                       P(2.0, 1.0) };
+        const std::vector<int> f1 = pa::front(one, true, true);
+        check(f1.size() == 1 && f1[0] == 1,
+              "pareto: a point better than every other is the whole front");
+
+        // トレードオフだけの集合はぜんぶ非劣解
+        std::vector<pa::Point> trade;
+        for (int k = 1; k <= 8; ++k)
+            trade.push_back(P(double(k), 1.0 / double(k)));   // b = 1/a
+        const std::vector<int> f2 = pa::front(trade, true, true);
+        check(f2.size() == trade.size(),
+              "pareto: a strict trade-off curve is entirely non-dominated");
+
+        // 一般の集合: フロントの点はどれにも支配されず、
+        // フロント外の点は必ずフロントの誰かに支配される (この 2 つが定義)
+        std::vector<pa::Point> mix = { P(1.0, 5.0), P(2.0, 4.0), P(3.0, 1.0),
+                                       P(2.0, 2.0), P(0.5, 0.5), P(3.0, 3.0),
+                                       P(1.5, 4.5) };
+        const std::vector<int> f3 = pa::front(mix, true, true);
+        std::vector<char> on(mix.size(), 0);
+        for (int i : f3) on[std::size_t(i)] = 1;
+        bool clean = true, covered = true;
+        for (std::size_t i = 0; i < mix.size(); ++i) {
+            for (std::size_t j = 0; j < mix.size(); ++j) {
+                if (i == j) continue;
+                if (on[i] && pa::dominates(mix[j], mix[i], true, true)) clean = false;
+            }
+            if (!on[i]) {
+                bool byFront = false;
+                for (int k : f3)
+                    if (pa::dominates(mix[std::size_t(k)], mix[i], true, true))
+                        byFront = true;
+                if (!byFront) covered = false;
+            }
+        }
+        check(clean, "pareto: no point on the front is dominated by anything");
+        check(covered,
+              "pareto: every point off the front is dominated by a front point");
+        check(!f3.empty() && f3.size() < mix.size(),
+              "pareto: the front is a strict non-empty subset here");
+
+        // 添字は入力順のまま (表の行と突き合わせるため)
+        bool ordered = true;
+        for (std::size_t k = 1; k < f3.size(); ++k)
+            if (f3[k] <= f3[k - 1]) ordered = false;
+        check(ordered, "pareto: front indices keep the input order");
+
+        // 無効な点はフロントに入らない
+        std::vector<pa::Point> withBad = mix;
+        pa::Point bad; bad.a = 99.0; bad.b = 99.0; bad.valid = false;
+        withBad.push_back(bad);
+        const std::vector<int> f4 = pa::front(withBad, true, true);
+        check(f4.size() == f3.size(),
+              "pareto: an invalid point never joins the front, however good");
+        std::vector<pa::Point> allBad(4, bad);
+        check(pa::front(allBad, true, true).empty(),
+              "pareto: a set with no valid point has an empty front");
+        check(pa::front({}, true, true).empty(),
+              "pareto: an empty set has an empty front");
+
+        // 同じ点が 2 回出たらどちらも残る (掃引で同点が出るため)
+        std::vector<pa::Point> dup = { P(1.0, 1.0), P(1.0, 1.0), P(0.0, 0.0) };
+        check(pa::front(dup, true, true).size() == 2,
+              "pareto: duplicate optima both stay on the front");
+    }
+
+    // ── 並べ替えたフロントはトレードオフになる (もう片方が単調) ──────────
+    {
+        std::vector<pa::Point> mix = { P(1.0, 5.0), P(3.0, 1.0), P(2.0, 3.0),
+                                       P(0.5, 0.5), P(4.0, 0.2) };
+        const std::vector<int> sorted = pa::frontSortedByA(mix, true, true);
+        bool monoA = true, monoB = true;
+        for (std::size_t k = 1; k < sorted.size(); ++k) {
+            if (mix[std::size_t(sorted[k])].a < mix[std::size_t(sorted[k - 1])].a)
+                monoA = false;
+            // A が増えるなら B は減る — これがトレードオフの定義そのもの
+            if (mix[std::size_t(sorted[k])].b > mix[std::size_t(sorted[k - 1])].b)
+                monoB = false;
+        }
+        check(monoA, "pareto: the sorted front increases in the first objective");
+        check(monoB, "pareto: and therefore decreases in the second one");
+        check(sorted.size() == pa::front(mix, true, true).size(),
+              "pareto: sorting does not change what is on the front");
+    }
+
+    // ── ハイパーボリューム ─────────────────────────────────────────────
+    {
+        // 1 点なら参照点との長方形の面積そのもの
+        std::vector<pa::Point> one = { P(3.0, 4.0) };
+        check(std::fabs(pa::hypervolume(one, true, true, 1.0, 1.0) - 2.0 * 3.0)
+              < 1e-12,
+              "pareto: one point gives the rectangle against the reference");
+        // 参照点より悪い点は寄与しない
+        std::vector<pa::Point> worse = { P(0.0, 0.0) };
+        check(pa::hypervolume(worse, true, true, 1.0, 1.0) == 0.0,
+              "pareto: a point worse than the reference contributes nothing");
+        // 支配される点を足しても面積は変わらない
+        std::vector<pa::Point> plus = { P(3.0, 4.0), P(2.0, 3.0) };
+        check(std::fabs(pa::hypervolume(plus, true, true, 1.0, 1.0)
+                        - pa::hypervolume(one, true, true, 1.0, 1.0)) < 1e-12,
+              "pareto: adding a dominated point leaves the hypervolume alone");
+        // 非劣解を足すと必ず増える
+        std::vector<pa::Point> two = { P(3.0, 4.0), P(5.0, 2.0) };
+        check(pa::hypervolume(two, true, true, 1.0, 1.0)
+              > pa::hypervolume(one, true, true, 1.0, 1.0),
+              "pareto: adding a non-dominated point increases it");
+        // 2 点の面積は手計算と一致する:
+        //   (5−1)×(2−1) + (3−1)×(4−2) = 4 + 4 = 8
+        check(std::fabs(pa::hypervolume(two, true, true, 1.0, 1.0) - 8.0) < 1e-12,
+              "pareto: the two-point hypervolume matches the hand calculation");
+        check(pa::hypervolume({}, true, true, 0.0, 0.0) == 0.0,
+              "pareto: an empty set has no hypervolume");
+        // 最小化でも同じ面積になる (符号を反転しただけ)
+        std::vector<pa::Point> mn = { P(-3.0, -4.0), P(-5.0, -2.0) };
+        check(std::fabs(pa::hypervolume(mn, false, false, -1.0, -1.0) - 8.0)
+              < 1e-12,
+              "pareto: minimising gives the same area with flipped signs");
+    }
+
+    // ── 向きは FoM の種別が持っている (呼び出し側で書かない) ───────────
+    {
+        check(!ofd::fomMaximizes(ofd::FomKind::MinReflectionDb)
+              && !ofd::fomMaximizes(ofd::FomKind::MinVswr)
+              && ofd::fomMaximizes(ofd::FomKind::MaxPeakGainDb)
+              && ofd::fomMaximizes(ofd::FomKind::MaxFrontToBackDb),
+              "pareto: the FoM kinds carry their own direction");
+        // 反射は小さいほど良い / 利得は大きいほど良い の組で、
+        // 「反射が小さく利得が大きい」点が支配する
+        const bool maxRef = ofd::fomMaximizes(ofd::FomKind::MinReflectionDb);
+        const bool maxGain = ofd::fomMaximizes(ofd::FomKind::MaxPeakGainDb);
+        check(pa::dominates(P(-20.0, 8.0), P(-10.0, 5.0), maxRef, maxGain),
+              "pareto: less reflection with more gain dominates");
+        check(!pa::dominates(P(-20.0, 3.0), P(-10.0, 5.0), maxRef, maxGain),
+              "pareto: less reflection but less gain is a trade-off, not dominance");
+    }
+}
+
 static void testIlluminationScene()
 {
     g_file = "illumscene";
@@ -18877,6 +19938,129 @@ static void testDensityField()
     {
         check(approx(minFeature_m(80e-9), 160e-9, 1e-18),
               "density: the minimum feature size is the filter diameter");
+    }
+
+    // ── 対称性の拘束 (鏡像との平均への射影) ─────────────────────────────
+    {
+        std::vector<double> rnd(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N; ++k)
+            rnd[static_cast<size_t>(k)] = ((k * 40503u + 7u) % 997) / 997.0;
+
+        for (Symmetry sym : { Symmetry::MirrorX, Symmetry::MirrorY,
+                              Symmetry::Quadrant, Symmetry::Rot90 }) {
+            const std::vector<double> a = symmetrize(rnd, g, sym);
+            check(isSymmetric(a, g, sym, 1e-12),
+                  "density: symmetrising really produces a symmetric field");
+            // 平均への射影なので 2 回かけても 1 回と同じ (冪等)
+            const std::vector<double> b = symmetrize(a, g, sym);
+            double worst = 0.0;
+            for (int k = 0; k < N; ++k)
+                worst = std::max(worst, std::fabs(a[static_cast<size_t>(k)]
+                                                  - b[static_cast<size_t>(k)]));
+            check(worst < 1e-15, "density: the symmetry projection is idempotent");
+            // 平均なので充填率は厳密に変わらない
+            check(approx(volumeFraction(a), volumeFraction(rnd), 1e-12),
+                  "density: symmetrising preserves the volume fraction exactly");
+            // 既に対称な場は動かない (4 枚平均は足す順で最下位ビットが
+            // 変わりうるので、ビット一致ではなく丸め誤差で判定する)
+            const std::vector<double> c2 = symmetrize(a, g, sym);
+            double moved = 0.0;
+            for (int k = 0; k < N; ++k)
+                moved = std::max(moved, std::fabs(c2[static_cast<size_t>(k)]
+                                                  - a[static_cast<size_t>(k)]));
+            check(moved < 1e-15,
+                  "density: an already symmetric field is left untouched");
+        }
+        check(symmetrize(rnd, g, Symmetry::None) == rnd,
+              "density: no symmetry is the identity");
+        // 対称化していない乱数場は (ほぼ確実に) 対称ではない — 判定が
+        // 何でも true を返していないことの確認
+        check(!isSymmetric(rnd, g, Symmetry::MirrorX, 1e-12),
+              "density: a random field is not reported as symmetric");
+
+        // Rot90 は正方格子でしか定義できない。長方形では何もせずに返す
+        Region wide = r;
+        wide.x1_m = r.x0_m + 2.0 * r.width_m();
+        const Grid gw = gridFor(wide, 100e-9);
+        check(gw.nx != gw.ny, "density: the test grid is deliberately not square");
+        std::vector<double> rw(static_cast<size_t>(gw.count()), 0.0);
+        for (int k = 0; k < gw.count(); ++k)
+            rw[static_cast<size_t>(k)] = ((k * 2654435761u) % 251) / 251.0;
+        check(!symmetryApplicable(gw, Symmetry::Rot90),
+              "density: 90-degree symmetry needs a square grid");
+        check(symmetrize(rw, gw, Symmetry::Rot90) == rw,
+              "density: on a non-square grid it changes nothing (no silent swap)");
+        check(symmetryApplicable(gw, Symmetry::MirrorX),
+              "density: mirror symmetry works on any grid");
+    }
+
+    // ── 最小連結長の実測 (製造ルールの判定) ─────────────────────────────
+    {
+        // 幅 6 画素の帯を中央に置く。行方向の材料の連なりは 6、
+        // 背景は帯の上下に分かれるがどちらも端で切れているので数えない。
+        std::vector<double> band(static_cast<size_t>(N), 0.0);
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 20; i < 26; ++i)
+                band[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths rl = minRunLength(band, g, 0.5);
+        check(rl.minOn == 6,
+              "density: a 6-pixel stripe measures a 6-pixel minimum run");
+        check(rl.minOff == 0,
+              "density: runs clipped by the border are not counted");
+
+        // 帯を 2 本にすると、その間の隙間が背景の最短連なりになる
+        std::vector<double> two = band;
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 29; i < 40; ++i)
+                two[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths r2 = minRunLength(two, g, 0.5);
+        check(r2.minOn == 6, "density: the narrower stripe still sets the minimum");
+        check(r2.minOff == 3, "density: the gap between the stripes is measured too");
+
+        // 市松模様は最短 1 画素 (最悪形)
+        std::vector<double> checker(static_cast<size_t>(N), 0.0);
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 0; i < g.nx; ++i)
+                if ((i + j) % 2 == 0) checker[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths rc = minRunLength(checker, g, 0.5);
+        check(rc.minOn == 1 && rc.minOff == 1,
+              "density: a checkerboard measures one pixel in both phases");
+
+        // 一様な場には「端で切れていない連なり」が無い
+        const RunLengths ru = minRunLength(std::vector<double>(static_cast<size_t>(N), 1.0),
+                                           g, 0.5);
+        check(ru.minOn == 0 && ru.minOff == 0,
+              "density: a uniform field has no interior run to measure");
+
+        // **公称の最小形状寸法 2R は保証ではない。**
+        // フィルタは対称なので、閾値のまわりで釣り合った市松模様は半径を
+        // いくら大きくしてもコントラストが縮むだけで閾値をまたがず、
+        // 閾値化するとそのまま市松に戻る。**測らないと分からない**という
+        // ことの実測 (これが minRunLength を別に持つ理由)。
+        double prevSpan = 1.0;
+        for (double f : { 1.5, 2.5, 3.5, 6.0 }) {
+            const std::vector<double> flt = filter(checker, g, f * g.pitchX_m);
+            double lo = 1e300, hi = -1e300;
+            for (double v : flt) { lo = std::min(lo, v); hi = std::max(hi, v); }
+            // 半径を上げるとコントラストは必ず縮む (フィルタは効いている)
+            check(hi - lo < prevSpan,
+                  "density: a larger filter radius shrinks the contrast");
+            prevSpan = hi - lo;
+            // それでも 0.5 をまたがないので、閾値化すると市松のまま
+            check(lo < 0.5 && hi > 0.5,
+                  "density: but the pattern still straddles the threshold");
+            const RunLengths rb = minRunLength(project(flt, 12.0, 0.5), g, 0.5);
+            check(rb.minOn == 1 && rb.minOff == 1,
+                  "density: so the thresholded checkerboard survives any radius");
+            // 充填率は 0.5 のまま (フィルタも射影も平均を動かさない配置)
+            check(approx(volumeFraction(project(flt, 12.0, 0.5)), 0.5, 1e-12),
+                  "density: and the volume fraction stays at one half");
+        }
+        // 公称値 2R はこの場合まったく達成されていない — だから両方出す
+        check(minFeature_m(6.0 * g.pitchX_m) > 6.0 * g.pitchX_m
+              && minRunLength(project(filter(checker, g, 6.0 * g.pitchX_m),
+                                      12.0, 0.5), g, 0.5).minOn == 1,
+              "density: the nominal 2R is not a guarantee, so both are reported");
     }
 }
 
@@ -19807,6 +20991,12 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testSeriesCsv();
+    testDirectivity();
+    testSeriesCompare();
+    testRcwaEfficiency();
+    testGaussianBeam();
+    testParetoFront();
     testIlluminationScene();
     testRaySampling();
     testDensityField();

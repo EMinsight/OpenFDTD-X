@@ -2,6 +2,7 @@
 #include "AntennaCharTab.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
+#include "../em/Directivity.h"
 #include "../em/PatternMetrics.h"
 #include "../io/KernelResultReader.h"
 #include <QFileDialog>
@@ -91,24 +92,51 @@ const bool s_i18n = [] {
     I18n::reg("ant_csv_fail", "書き出しに失敗しました: %1",
               "Export failed: %1");
     I18n::reg("ant_uw_items",
-              "指向性・放射効率・アンテナ効率・偏波成分/軸比/XPD・アレイ特性の"
-              "チェック",
-              "the directivity, radiation/total efficiency, polarisation "
-              "(components, axial ratio, XPD) and array check boxes");
+              "放射効率・アンテナ効率・偏波成分/軸比/XPD・アレイ特性のチェック",
+              "the radiation/total efficiency, polarisation (components, axial "
+              "ratio, XPD) and array check boxes");
     I18n::reg("ant_uw_items_ok",
               "放射パターン・主ビーム方向と 3 dB 幅・サイドローブレベル・"
-              "前後比・ゲイン (下の「パターン指標」表と CSV に出ます)",
+              "前後比・ゲイン (下の「パターン指標」表と CSV に出ます) と、"
+              "指向性 (far2d.log があれば全球積分から出します)",
               "the radiation pattern, main-beam direction and 3 dB width, "
               "side-lobe level, front-to-back ratio and gain (they appear in "
-              "the pattern-metrics table below and in the CSV)");
+              "the pattern-metrics table below and in the CSV), and the "
+              "directivity when a far2d.log is available");
     I18n::reg("ant_uw_items_why",
-              "指向性・効率は切断面だけでは出せません (全球積分が要ります — "
-              "far2d の出力が必要)。偏波成分・軸比・XPD は far1d.log が "
+              "放射効率とアンテナ効率は入力電力と放射電力の比なので、"
+              "パターンの形だけでは決まりません (指向性はパターンの定数倍に"
+              "不変なので出せます)。偏波成分・軸比・XPD は far1d.log が "
               "E-abs しか持たないため出せません。",
-              "The directivity and the efficiencies cannot be obtained from a "
-              "single cut (they need an integration over the full sphere - a "
-              "far2d output). The polarisation components, axial ratio and XPD "
-              "are not available because far1d.log carries only E-abs.");
+              "The radiation and total efficiencies are ratios of radiated to "
+              "input power, so the pattern shape alone does not determine them "
+              "(the directivity is obtainable because it is invariant under "
+              "scaling of the pattern). The polarisation components, axial "
+              "ratio and XPD are not available because far1d.log carries only "
+              "E-abs.");
+    // 指向性 (far2d.log の全球積分)
+    I18n::reg("ant_dir_title", "指向性 (far2d.log の全球積分)",
+              "Directivity (full-sphere integral of far2d.log)");
+    I18n::reg("ant_dir_none",
+              "far2d.log がまだありません。ポスト処理で「遠方界 2D」を出すと"
+              "全球積分から指向性を出します。",
+              "There is no far2d.log yet. Enable the 2D far field in the "
+              "post-processing to get the directivity from the full-sphere "
+              "integral.");
+    I18n::reg("ant_dir_fmt",
+              "%1 MHz: D = %2 dBi (真値 %3) / ビーム立体角 %4 sr / "
+              "最大は θ = %5°, φ = %6°",
+              "%1 MHz: D = %2 dBi (%3 as a ratio) / beam solid angle %4 sr / "
+              "peak at theta = %5 deg, phi = %6 deg");
+    I18n::reg("ant_dir_note",
+              "指向性はパターンの定数倍に不変なので、遠方界の正規化に依らず"
+              "求まります。利得にするには放射効率が要りますが、それは入力電力と"
+              "放射電力の比なのでパターンからは出ません。",
+              "The directivity is invariant under a constant scaling of the "
+              "pattern, so it does not depend on how the far field is "
+              "normalised. Turning it into gain needs the radiation "
+              "efficiency, which is a ratio of powers and cannot come from the "
+              "pattern.");
     I18n::reg("ant_met_title", "パターン指標 (far1d.log の切断面ごと)",
               "Pattern metrics (per cut in far1d.log)");
     I18n::reg("ant_met_none",
@@ -192,6 +220,11 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
         m_metrics->setMinimumHeight(110);
         m_metrics->setVisible(false);
         sMet->vbox()->addWidget(m_metrics);
+        // 指向性は切断面では出せない (全球積分)。far2d.log があれば出す。
+        m_dirNote = new QLabel(sMet);
+        m_dirNote->setWordWrap(true);
+        m_dirNote->setStyleSheet("font-size:11px; color:palette(mid);");
+        sMet->vbox()->addWidget(m_dirNote);
         v->addWidget(sMet);
         connect(project, &Project::loaded, this,
                 &AntennaCharTab::refreshMetrics);
@@ -382,4 +415,49 @@ void AntennaCharTab::refreshMetrics()
     m_metricsNote->setText(I18n::tr("ant_met_ok")
                                .arg(QDir::toNativeSeparators(path))
                                .arg(cuts.size()));
+    refreshDirectivity(dir);
+}
+
+// ── 指向性: far2d.log の全球積分 (em/Directivity) ──────────────────────────
+// far2d.log の E-abs[dB] は**振幅の 20log10** (カーネルの outputFar2d.c)。
+// 放射強度は U = |E|² なので 10^(dB/10) で線形へ戻す。
+// D はパターンの定数倍に不変なので、遠方界の正規化に依らず求まる。
+void AntennaCharTab::refreshDirectivity(const QString &dir)
+{
+    if (!m_dirNote) return;
+    const QString path = dir + QStringLiteral("/far2d.log");
+    const QVector<FieldMap> maps = KernelResultReader::readFar2d(path);
+    if (maps.isEmpty()) {
+        m_dirNote->setText(I18n::tr("ant_dir_none"));
+        return;
+    }
+    QStringList lines;
+    for (const FieldMap &m : maps) {
+        if (!m.isValid()) continue;
+        em::SphericalPattern sp;
+        for (int i = 0; i < m.rows; ++i)
+            sp.theta_deg.push_back(m.rows > 1
+                ? m.rowMin + (m.rowMax - m.rowMin) * i / (m.rows - 1) : m.rowMin);
+        for (int j = 0; j < m.cols; ++j)
+            sp.phi_deg.push_back(m.cols > 1
+                ? m.colMin + (m.colMax - m.colMin) * j / (m.cols - 1) : m.colMin);
+        sp.u.reserve(static_cast<size_t>(m.rows) * m.cols);
+        for (double v : m.values) sp.u.push_back(em::intensityFromEabsDb(v));
+        const em::Directivity d = em::directivity(sp);
+        if (!d.valid) continue;
+        lines << I18n::tr("ant_dir_fmt")
+                     .arg(m.freqHz * 1e-6, 0, 'g', 6)
+                     .arg(d.directivityDbi, 0, 'f', 2)
+                     .arg(d.directivity, 0, 'f', 3)
+                     .arg(d.beamSolidAngle, 0, 'g', 3)
+                     .arg(d.peakTheta_deg, 0, 'f', 1)
+                     .arg(d.peakPhi_deg, 0, 'f', 1);
+    }
+    if (lines.isEmpty()) {
+        m_dirNote->setText(I18n::tr("ant_dir_none"));
+        return;
+    }
+    m_dirNote->setText(I18n::tr("ant_dir_title") + QStringLiteral(" — ")
+                       + lines.join(QStringLiteral(" / ")) + QStringLiteral(" ")
+                       + I18n::tr("ant_dir_note"));
 }

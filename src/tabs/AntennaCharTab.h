@@ -29,7 +29,10 @@ private:
     // far1d.log から求めたパターン指標 (面ごと 1 行)
     QTableWidget *m_metrics = nullptr;
     QLabel *m_metricsNote = nullptr;
+    QLabel *m_dirNote = nullptr;     // 指向性 (far2d.log の全球積分)
     void refreshMetrics();
+    // far2d.log があれば全球積分から指向性を出す (em/Directivity)
+    void refreshDirectivity(const QString &dir);
 
     // 1セクション = チェックボックスの縦並び (モックの <Row><Check/></Row> 群)
     SectionBox *checkSection(QWidget *parent, const char *titleKey,

@@ -118,6 +118,12 @@ set(CORE_SOURCES
     # IlluminationOpts → レイトレースの系 (照明タブと光タブで共有)
     src/core/IlluminationScene.cpp
     src/core/IlluminationScene.h
+    # 2 目的の非劣解集合 (Pareto フロント) — Qt 非依存
+    src/core/ParetoFront.cpp
+    src/core/ParetoFront.h
+    # 系列どうしの突き合わせ (共通の軸・共通の単位へ揃える) — Qt 非依存
+    src/core/SeriesCompare.cpp
+    src/core/SeriesCompare.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する
@@ -192,6 +198,9 @@ set(CORE_SOURCES
     src/em/MieSphere.h
     src/em/PatternMetrics.cpp
     src/em/PatternMetrics.h
+    # 遠方界の全球積分から指向性 (far2d を使う) — Qt 非依存
+    src/em/Directivity.cpp
+    src/em/Directivity.h
     src/em/RadarCrossSection.cpp
     src/em/RadarCrossSection.h
 
@@ -341,11 +350,20 @@ set(CORE_SOURCES
     # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体
     src/optics/IlluminationTrace.cpp
     src/optics/IlluminationTrace.h
+    # 波動 → 幾何 の橋渡し (ガウシアンビームの伝搬) — Qt 非依存
+    src/optics/GaussianBeam.cpp
+    src/optics/GaussianBeam.h
 
     # 配光ファイル (IES LM-63) の読み書き — 照明設計ソフトへの受け渡し。
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/io/PhotometricIO.cpp
     src/io/PhotometricIO.h
+    # orcwa の rcwa_efficiency.csv (書式はカーネルの writer が正)
+    src/io/RcwaEfficiency.cpp
+    src/io/RcwaEfficiency.h
+    # 参照データの (x, y) CSV — 検証タブと tidy3d タブで共有
+    src/io/SeriesCsv.cpp
+    src/io/SeriesCsv.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

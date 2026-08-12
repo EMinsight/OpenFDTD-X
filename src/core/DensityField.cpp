@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace ofd {
 namespace topo {
@@ -202,6 +203,96 @@ std::vector<Rect> rectangles(const std::vector<double> &rho, const Grid &g,
         }
     }
     return out;
+}
+
+// ── 対称性 ────────────────────────────────────────────────────────────────
+std::vector<double> symmetrize(const std::vector<double> &rho, const Grid &g,
+                               Symmetry sym)
+{
+    const int n = g.count();
+    if (!g.valid() || static_cast<int>(rho.size()) != n) return rho;
+    if (sym == Symmetry::None) return rho;
+    if (!symmetryApplicable(g, sym)) return rho;   // Rot90 は正方格子のみ
+
+    auto at = [&](const std::vector<double> &v, int i, int j) {
+        return v[static_cast<size_t>(j) * g.nx + i];
+    };
+    std::vector<double> out(static_cast<size_t>(n), 0.0);
+    for (int j = 0; j < g.ny; ++j) {
+        for (int i = 0; i < g.nx; ++i) {
+            const int mi = g.nx - 1 - i, mj = g.ny - 1 - j;
+            double v = 0.0;
+            switch (sym) {
+                case Symmetry::MirrorX:            // x = 0 面での鏡像と平均
+                    v = 0.5 * (at(rho, i, j) + at(rho, mi, j));
+                    break;
+                case Symmetry::MirrorY:
+                    v = 0.5 * (at(rho, i, j) + at(rho, i, mj));
+                    break;
+                case Symmetry::Quadrant:           // 両軸の鏡像 (4 枚の平均)
+                    v = 0.25 * (at(rho, i, j) + at(rho, mi, j)
+                              + at(rho, i, mj) + at(rho, mi, mj));
+                    break;
+                case Symmetry::Rot90:              // 90 度回転 4 枚の平均
+                    v = 0.25 * (at(rho, i, j) + at(rho, j, mi)
+                              + at(rho, mi, mj) + at(rho, mj, i));
+                    break;
+                default:
+                    v = at(rho, i, j);
+                    break;
+            }
+            out[static_cast<size_t>(j) * g.nx + i] = v;
+        }
+    }
+    return out;
+}
+
+bool isSymmetric(const std::vector<double> &rho, const Grid &g, Symmetry sym,
+                 double tol)
+{
+    const int n = g.count();
+    if (!g.valid() || static_cast<int>(rho.size()) != n) return false;
+    if (sym == Symmetry::None) return true;
+    if (!symmetryApplicable(g, sym)) return false;
+    const std::vector<double> s2 = symmetrize(rho, g, sym);
+    for (int k = 0; k < n; ++k)
+        if (std::fabs(s2[static_cast<size_t>(k)] - rho[static_cast<size_t>(k)]) > tol)
+            return false;
+    return true;
+}
+
+// ── 最小形状寸法の実測 ────────────────────────────────────────────────────
+RunLengths minRunLength(const std::vector<double> &rho, const Grid &g,
+                        double threshold)
+{
+    RunLengths r;
+    const int n = g.count();
+    if (!g.valid() || static_cast<int>(rho.size()) != n) return r;
+
+    int onMin = 0, offMin = 0;
+    // 1 本の走査線を見て、両端で切れていない連なりだけを数える
+    auto scan = [&](int len, const std::function<double(int)> &get) {
+        int k = 0;
+        while (k < len) {
+            const bool on = get(k) >= threshold;
+            int k2 = k;
+            while (k2 < len && ((get(k2) >= threshold) == on)) ++k2;
+            const bool clipped = (k == 0) || (k2 == len);
+            if (!clipped) {
+                const int run = k2 - k;
+                int &best = on ? onMin : offMin;
+                if (best == 0 || run < best) best = run;
+            }
+            k = k2;
+        }
+    };
+    for (int j = 0; j < g.ny; ++j)
+        scan(g.nx, [&](int i) { return rho[static_cast<size_t>(j) * g.nx + i]; });
+    for (int i = 0; i < g.nx; ++i)
+        scan(g.ny, [&](int j) { return rho[static_cast<size_t>(j) * g.nx + i]; });
+    r.minOn = onMin;
+    r.minOff = offMin;
+    return r;
 }
 
 std::vector<double> rasterize(const Geometry *units, int count,

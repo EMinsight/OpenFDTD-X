@@ -97,6 +97,11 @@ public:
     //   他ドメイン: ofd
     static Kernel kernelForProject(const Project &project);
 
+    // ソルバー実行ログのファイル名 (カーネル別)。どのバイナリがどのログを
+    // 書くかは Runner の知識なのでここに置く (タブごとに書かない)。
+    // bellhopcxx は収束履歴を出さないので空文字列。
+    static QString runLogName(Kernel k);
+
     // start() が使う作業ディレクトリを、起動前に同じ規則で求める
     // (実行前に前回の出力を掃除したい呼び出し側のため)。start() 自身も使う。
     static QString resolveWorkingDir(const Project *project,

@@ -7,9 +7,15 @@
 //
 //     ρ  --(密度フィルタ 半径 R)-->  ρ̃  --(Heaviside 射影 β,η)-->  ρ̄
 //
-// の順に通す。フィルタが最小形状寸法 (≈ 2R) を決め、射影が中間値を
-// 0/1 へ寄せる。ここにあるのはこの写像そのものと、その結果を
+// の順に通す。フィルタが**長さの尺度**を与え (公称の最小形状寸法 2R)、
+// 射影が中間値を 0/1 へ寄せる。ここにあるのはこの写像そのものと、その結果を
 // **軸平行の直方体 (本家の shape=1)** へ落とす分解である。
+//
+// **2R は保証ではなく公称値である。** フィルタは対称なので、閾値 η の
+// まわりで釣り合った模様 (市松模様が典型) は、半径をいくら大きくしても
+// **コントラストが縮むだけで閾値をまたがない** — 閾値化するとそのまま
+// 市松模様に戻る (selftest で固定してある実測)。だから
+// `minRunLength()` で**実際の連なりを測る**手段を別に用意してある。
 //
 // このファイルは最適化ループを持たない。感度 (∂FoM/∂ρ) はカーネルが
 // 返さないため随伴法が組めず、画素数ぶんの設計変数を PSO / GA で回すのは
@@ -78,8 +84,38 @@ double nonDiscreteness(const std::vector<double> &rho);
 // SIMP 補間 eps(ρ) = eps1 + ρ^p (eps2 − eps1)。光では p = 1 (線形) が既定。
 double epsFromDensity(double rho, double eps1, double eps2, double p = 1.0);
 
-// フィルタが保証する最小形状寸法 (円錐フィルタの直径)
+// フィルタの公称最小形状寸法 (円錐フィルタの直径)。**保証ではない** —
+// 実際の寸法は `minRunLength()` で測る (ヘッダ冒頭の注意を参照)。
 inline double minFeature_m(double radius_m) { return 2.0 * radius_m; }
+
+// ── 対称性の拘束 ────────────────────────────────────────────────────────
+// 設計に対称性を課すのは、密度場を**対称な成分へ射影する** (鏡像との平均を
+// 取る) だけでよい。平均なので
+//   * 結果は厳密に対称
+//   * 2 回かけても 1 回と同じ (冪等)
+//   * 充填率 (平均) は厳密に変わらない
+// が成り立つ。Rot90 は正方格子 (nx == ny) でしか定義できないので、
+// そうでなければ**何もせずに入力を返す** (黙って別のものにしない)。
+enum class Symmetry { None = 0, MirrorX = 1, MirrorY = 2, Quadrant = 3, Rot90 = 4 };
+
+std::vector<double> symmetrize(const std::vector<double> &rho, const Grid &g,
+                               Symmetry sym);
+bool isSymmetric(const std::vector<double> &rho, const Grid &g, Symmetry sym,
+                 double tol = 1e-12);
+// Rot90 が使えるか (正方格子か)
+inline bool symmetryApplicable(const Grid &g, Symmetry sym)
+{ return (sym != Symmetry::Rot90) || (g.nx == g.ny); }
+
+// ── 最小形状寸法の実測 (製造ルールの判定) ───────────────────────────────
+// フィルタ半径が与えるのは「そうなるはず」の寸法で、射影と閾値を通した後の
+// 形が本当にその寸法を満たすかは別問題。閾値化した場について、行方向・列方向
+// の**連なりの最短長 (画素数)** を実際に数える。
+//   * 材料側 (on) と背景側 (off) を別に返す — 細い線と細い隙間は別の規則。
+//   * 端で切れている連なりは数えない (領域の外がどうなっているか分からない)。
+//   * 連なりが 1 本も無ければ 0。
+struct RunLengths { int minOn = 0, minOff = 0; };
+RunLengths minRunLength(const std::vector<double> &rho, const Grid &g,
+                        double threshold = 0.5);
 
 // ── 密度場 → 材料分布 ───────────────────────────────────────────────────
 // 閾値 threshold 以上の画素を、重なりの無い軸平行矩形へ貪欲に分解する。

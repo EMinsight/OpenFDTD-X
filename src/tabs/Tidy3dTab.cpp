@@ -1,5 +1,10 @@
 // Tidy3dTab.cpp
 #include "Tidy3dTab.h"
+#include "../core/SeriesCompare.h"
+#include "../io/SeriesCsv.h"
+#include "../io/KernelResultReader.h"
+#include "../kernel/Runner.h"
+#include <QDir>
 #include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../io/Tidy3dExporter.h"
@@ -155,6 +160,60 @@ const bool s_i18n = [] {
     I18n::reg("t3x_cmp_diff", "結果差分の自動チェック",
               "Auto-check result differences");
     I18n::reg("t3x_cmp_notify", "完了時に通知", "Notify when finished");
+    // 結果差分の自動チェック (io/SeriesCsv + core/SeriesCompare)
+    I18n::reg("t3x_cmp_load", "クラウドの結果を読む (CSV)",
+              "Load the cloud result (CSV)");
+    I18n::reg("t3x_cmp_hint2",
+              "tidy3d の結果を 2 列の CSV (1 列目 = 周波数 [Hz]、2 列目 = 値) で"
+              "書き出して読ませると、ローカルの <kernel>.log の給電点掃引 "
+              "(反射 Ref[dB]) と共通の周波数軸で突き合わせます。",
+              "Export the tidy3d result as a two-column CSV (column 1 = "
+              "frequency in Hz, column 2 = value) and load it here; it is then "
+              "compared against the local feed sweep (reflection Ref[dB]) in "
+              "<kernel>.log on a common frequency axis.");
+    I18n::reg("t3x_cmp_scale", "クラウド側の単位", "Scale of the cloud data");
+    I18n::reg("t3x_cmp_lin", "線形", "Linear");
+    I18n::reg("t3x_cmp_pdb", "dB (電力 10log10)", "dB (power, 10log10)");
+    I18n::reg("t3x_cmp_adb", "dB (振幅 20log10)", "dB (amplitude, 20log10)");
+    I18n::reg("t3x_cmp_res",
+              "%1 (%2 点) と %3 (%4 点): 重なり %5 点 / 最大差 %6 / RMS %7 / "
+              "系統差 %8 / 相関 %9。系統差が大きく相関が高いときは正規化の"
+              "ずれ、相関が低いときは設定そのものが違います。",
+              "%1 (%2 points) versus %3 (%4 points): %5 overlapping points / "
+              "worst difference %6 / rms %7 / bias %8 / correlation %9. A large "
+              "bias with a high correlation means a normalisation difference; a "
+              "low correlation means the setups differ.");
+    I18n::reg("t3x_cmp_nolocal",
+              "ローカルの結果がありません。先にこのプロジェクトを実行して"
+              "<kernel>.log を作ってください。",
+              "There is no local result yet - run this project first so that "
+              "<kernel>.log exists.");
+    I18n::reg("t3x_cmp_badcsv",
+              "CSV から数値の列を 2 つ以上読めませんでした "
+              "(1 列目 = 周波数 [Hz]、2 列目 = 値)。",
+              "Could not read two numeric columns from the CSV (column 1 = "
+              "frequency in Hz, column 2 = value).");
+    I18n::reg("t3x_cmp_nooverlap",
+              "周波数の範囲が重なっていないので比較できません "
+              "(クラウド側 %1 〜 %2 Hz、ローカル %3 〜 %4 Hz)。",
+              "The frequency ranges do not overlap, so nothing can be compared "
+              "(cloud %1 to %2 Hz, local %3 to %4 Hz).");
+    I18n::reg("t3x_uw_cmp2",
+              "「ローカル CPU と並列実行」と「完了時に通知」(このタブは"
+              "スクリプトを書き出すだけで送信しないので、並列に走らせる相手も"
+              "完了を知る手段もありません)",
+              "the \"run in parallel with the local CPU\" and \"notify when "
+              "finished\" options (this tab only writes the script and never "
+              "submits, so there is nothing to run in parallel with and no "
+              "completion to be notified of)");
+    I18n::reg("t3x_uw_cmp2_ok",
+              "「結果差分の自動チェック」— クラウドの結果 CSV を読み、"
+              "ローカルの給電点掃引と共通の周波数軸・共通の単位で突き合わせます "
+              "(io/SeriesCsv + core/SeriesCompare)",
+              "the automatic result-difference check - it loads the cloud "
+              "result CSV and compares it against the local feed sweep on a "
+              "common frequency axis and in common units (io/SeriesCsv + "
+              "core/SeriesCompare)");
     I18n::reg("t3x_exp_note",
               "▸ 3 つとも生成スクリプトへ渡ります。自動 PML は "
               "boundary_spec、サブピクセル平均化は subpixel "
@@ -176,8 +235,6 @@ const bool s_i18n = [] {
               "注記として書き出します)",
               "the priority selection itself (saved with the project and "
               "written into the generated script as a note)");
-    I18n::reg("t3x_uw_cmp", "ローカル計算との比較機能",
-              "the comparison against the local computation");
     return true;
 }();
 
@@ -473,8 +530,41 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     cmpRow->addWidget(m_cmpNotify);
     cmpRow->addStretch(1);
     sp->vbox()->addLayout(cmpRow);
-    // 比較機能はどこにも配線されていない
-    sp->vbox()->addWidget(tabhelp::unwiredNote(sp, I18n::tr("t3x_uw_cmp")));
+
+    // ── 結果差分の自動チェック (io/SeriesCsv + core/SeriesCompare) ────────
+    // このタブは送信しないので、クラウド側の結果はファイルで受け取る。
+    // 並列実行と通知は相手がいないので理由を添えて無効にする。
+    for (QCheckBox *c : { m_cmpParallel, m_cmpNotify }) {
+        c->setChecked(false);
+        c->setEnabled(false);
+    }
+    sp->vbox()->addWidget(hintLabel(I18n::tr("t3x_cmp_hint2"), sp));
+    m_cmpScale = new QComboBox(sp);
+    for (const char *k : { "t3x_cmp_lin", "t3x_cmp_pdb", "t3x_cmp_adb" })
+        m_cmpScale->addItem(I18n::tr(k));
+    m_cmpScale->setCurrentIndex(1);              // 反射は電力 dB
+    sp->form()->addRow(I18n::tr("t3x_cmp_scale"), m_cmpScale);
+    auto *loadRow = new QHBoxLayout();
+    m_cmpLoad = new QPushButton(I18n::tr("t3x_cmp_load"), sp);
+    connect(m_cmpLoad, &QPushButton::clicked, this, &Tidy3dTab::loadCloudResult);
+    loadRow->addWidget(m_cmpLoad);
+    loadRow->addStretch(1);
+    sp->vbox()->addLayout(loadRow);
+    m_cmpResult = hintLabel(QString(), sp);
+    m_cmpResult->setWordWrap(true);
+    sp->vbox()->addWidget(m_cmpResult);
+    connect(m_cmpScale, &QComboBox::currentIndexChanged,
+            this, &Tidy3dTab::updateCloudCompare);
+    connect(m_cmpDiff, &QCheckBox::toggled, this, [this](bool on) {
+        m_cmpLoad->setEnabled(on);
+        m_cmpScale->setEnabled(on);
+        if (on) updateCloudCompare(); else m_cmpResult->clear();
+    });
+    m_cmpLoad->setEnabled(m_cmpDiff->isChecked());
+    m_cmpScale->setEnabled(m_cmpDiff->isChecked());
+
+    sp->vbox()->addWidget(tabhelp::unwiredNote(sp, I18n::tr("t3x_uw_cmp2"),
+                                               I18n::tr("t3x_uw_cmp2_ok")));
     v->addWidget(sp);
 
     v->addStretch(1);
@@ -502,6 +592,80 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
 
     connect(project, &Project::loaded, this, &Tidy3dTab::refresh);
     refresh();
+}
+
+// ── 結果差分の自動チェック (io/SeriesCsv + core/SeriesCompare) ────────────
+// このタブはスクリプトを書き出すだけで送信しないので、クラウド側の結果は
+// ファイルで受け取る。ローカル側は <kernel>.log の給電点掃引 (周波数 vs
+// 反射 Ref[dB]) — 実行すれば実際に出る物理量。
+void Tidy3dTab::loadCloudResult()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("t3x_cmp_load"), QString(),
+        QStringLiteral("CSV (*.csv *.txt);;All files (*)"));
+    if (path.isEmpty()) return;
+    const cmp::Series s = ofd::io::readSeriesCsv(path);
+    if (!s.valid()) {
+        m_cloud = cmp::Series();
+        m_cloudName.clear();
+        m_cmpResult->setText(I18n::tr("t3x_cmp_badcsv"));
+        return;
+    }
+    m_cloud = s;
+    m_cloudName = QFileInfo(path).fileName();
+    updateCloudCompare();
+}
+
+void Tidy3dTab::updateCloudCompare()
+{
+    if (!m_cmpResult) return;
+    if (!m_cmpDiff->isChecked() || !m_cloud.valid()) { m_cmpResult->clear(); return; }
+
+    // ローカル側 = <kernel>.log の給電点掃引
+    cmp::Series local;
+    QString localName;
+    {
+        RunConfig cfg;
+        const QString dir = Runner::resolveWorkingDir(m_p, cfg);
+        const Kernel k = Runner::kernelForProject(*m_p);
+        const QString name = Runner::runLogName(k);
+        if (!dir.isEmpty() && !name.isEmpty()) {
+            const QVector<FeedSweep> fs =
+                KernelResultReader::readFeedSweeps(QDir(dir).filePath(name));
+            if (!fs.isEmpty() && fs[0].points.size() >= 2) {
+                for (const FeedSweepPoint &p : fs[0].points) {
+                    local.x.push_back(p.freqHz);
+                    local.y.push_back(p.refDb);
+                }
+                localName = name;
+            }
+        }
+    }
+    if (!local.valid()) {
+        m_cmpResult->setText(I18n::tr("t3x_cmp_nolocal"));
+        return;
+    }
+
+    // 単位を揃える (ローカルは電力 dB。10 と 20 の取り違えは値を 2 乗ずらす)
+    const cmp::Scale sb = (m_cmpScale->currentIndex() == 2) ? cmp::Scale::AmplitudeDb
+                        : (m_cmpScale->currentIndex() == 1) ? cmp::Scale::PowerDb
+                                                            : cmp::Scale::Linear;
+    const cmp::Series cloud = cmp::convert(m_cloud, sb, cmp::Scale::PowerDb);
+    const cmp::Agreement g = cmp::compare(local, cloud);
+    if (!g.valid) {
+        m_cmpResult->setText(I18n::tr("t3x_cmp_nooverlap")
+                                 .arg(m_cloud.x.front()).arg(m_cloud.x.back())
+                                 .arg(local.x.front()).arg(local.x.back()));
+        return;
+    }
+    m_cmpResult->setText(I18n::tr("t3x_cmp_res")
+                             .arg(localName).arg(local.x.size())
+                             .arg(m_cloudName).arg(m_cloud.x.size())
+                             .arg(g.n)
+                             .arg(g.maxAbs, 0, 'g', 4)
+                             .arg(g.rms, 0, 'g', 4)
+                             .arg(g.bias, 0, 'g', 4)
+                             .arg(g.correlation, 0, 'f', 4));
 }
 
 void Tidy3dTab::apply()

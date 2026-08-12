@@ -1,8 +1,10 @@
 // OptimizeTab.cpp
 #include "OptimizeTab.h"
 #include "../core/DensityField.h"
+#include "../core/ParetoFront.h"
 #include "../core/Project.h"
 #include "../widgets/FieldHeatmap.h"
+#include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -107,9 +109,35 @@ const bool s_i18n = [] {
     // 最適化ブロックが無いので英語は "Pareto front" とする。
     I18n::reg("opz_pareto", "Paretoフロント", "Pareto front");
     I18n::reg("opz_pareto_tip",
-              "多目的 FoM のとき非劣解集合 (Paretoフロント) を出力する予定 (未実装)。",
-              "Planned output of the non-dominated set (Pareto front) for a "
-              "multi-objective FoM (not implemented).");
+              "チェックすると各点で 2 つ目の評価量も計算し、どちらかを良くすると"
+              "もう片方が悪くなる境目 (非劣解集合) を結果表と下の図に出します。",
+              "When checked, a second figure of merit is evaluated at every "
+              "point and the non-dominated set — the trade-off boundary — is "
+              "marked in the result table and drawn below.");
+    I18n::reg("opz_fom_kind2", "第 2 の評価量", "Second figure of merit");
+    I18n::reg("opz_col_fom2", "第 2 の評価量", "FoM 2");
+    I18n::reg("opz_col_front", "非劣解", "Non-dominated");
+    I18n::reg("opz_front_yes", "はい", "yes");
+    I18n::reg("opz_front_no", "—", "-");
+    I18n::reg("opz_pareto_plot", "Pareto フロント", "Pareto front");
+    I18n::reg("opz_pareto_note",
+              "全 %1 点のうち非劣解は %2 点。図はフロントを「%3」の順に並べた"
+              "もので、%4 が単調に入れ替わる (これがトレードオフそのもの)。"
+              "ハイパーボリューム (最も悪い点を参照点にした改善面積) は %5。",
+              "%2 of the %1 points are non-dominated. The plot orders the front "
+              "by \"%3\"; \"%4\" then varies monotonically — that is the "
+              "trade-off itself. The hypervolume (improvement area against the "
+              "worst point as reference) is %5.");
+    I18n::reg("opz_pareto_none",
+              "非劣解を作れる点がありません (2 つの評価量が両方とも取れた点が"
+              "要ります)。",
+              "There is no point from which a front can be built — a point needs "
+              "both figures of merit to be evaluated.");
+    I18n::reg("opz_pareto_same",
+              "2 つの評価量に同じものが選ばれているので、非劣解は最良点 1 つに"
+              "なります。違う評価量を選んでください。",
+              "The two figures of merit are the same, so the front collapses to "
+              "the single best point. Pick a different second one.");
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
@@ -182,8 +210,49 @@ const bool s_i18n = [] {
               "There is no optimisation loop for this method (%1). Sweep, PSO "
               "and GA can run.");
     I18n::reg("opz_run_optimize2", "▶ 最適化を実行", "▶ Run optimisation");
-    I18n::reg("opz_uw_con", "制約条件の設定",
-              "the constraint settings");
+    I18n::reg("opz_uw_con",
+              "「物体寸法上限」と「吸音材厚さ上限」(形状寸法を動かす経路が"
+              "無いので拘束をかける先がありません)",
+              "the upper bounds on object size and absorber thickness (there is "
+              "no path that varies a geometry dimension, so there is nothing to "
+              "constrain)");
+    I18n::reg("opz_uw_con_ok",
+              "「対称性」と「最小製造ルール」— トポロジー最適化の密度場に"
+              "効きます (対称性は鏡像との平均への射影、製造ルールは閾値化した"
+              "形の最小連結長の判定)",
+              "symmetry and the minimum feature rule — they act on the "
+              "topology-optimisation density field (symmetry projects onto the "
+              "mirror average, and the rule checks the shortest run in the "
+              "thresholded shape)");
+    // 制約条件 (密度場へ効くもの)
+    I18n::reg("opz_topo_sym", "対称性の種類", "Symmetry kind");
+    I18n::reg("opz_sym_mx", "左右対称 (x)", "Mirror in x");
+    I18n::reg("opz_sym_my", "上下対称 (y)", "Mirror in y");
+    I18n::reg("opz_sym_quad", "4 分割対称 (x と y)", "Quadrant (x and y)");
+    I18n::reg("opz_sym_rot", "90° 回転対称", "90-degree rotation");
+    I18n::reg("opz_topo_rule", "最小製造ルール", "Minimum feature rule");
+    I18n::reg("opz_topo_rule_fmt",
+              "公称 %1 nm (フィルタ直径) / 実測 材料 %2 nm・隙間 %3 nm",
+              "nominal %1 nm (filter diameter) / measured %2 nm of material and "
+              "%3 nm of gap");
+    I18n::reg("opz_topo_rule_ng",
+              "実測が %1 nm で規則の %2 nm を下回っています。フィルタ半径を"
+              "上げるか解像度を粗くしてください。",
+              "The measured %1 nm is below the %2 nm rule — raise the filter "
+              "radius or coarsen the resolution.");
+    I18n::reg("opz_topo_rule_ok",
+              "実測が規則の %1 nm を満たしています。",
+              "The measured size meets the %1 nm rule.");
+    I18n::reg("opz_topo_rule_none",
+              "領域の内側で閉じた連なりが無いので実測できません。",
+              "There is no run closed inside the region, so nothing can be "
+              "measured.");
+    I18n::reg("opz_topo_sym_na",
+              "90° 回転対称は正方の画素格子でしか定義できません "
+              "(幅と奥行の画素数が違うので、この設定は効きません)。",
+              "90-degree rotational symmetry needs a square pixel grid — the "
+              "width and depth pixel counts differ, so this setting does "
+              "nothing.");
     I18n::reg("opz_uw_topo",
               "トポロジー最適化の反復そのもの (カーネルが感度 ∂FoM/∂ρ を返さない"
               "ので随伴法が組めず、画素数ぶんの設計変数を PSO / GA で回すのは"
@@ -316,15 +385,19 @@ const bool s_i18n = [] {
     I18n::reg("opz_state_ok", "正常", "ok");
     I18n::reg("opz_state_fail", "失敗", "failed");
     I18n::reg("opz_state_nofom", "評価不可", "no FoM");
-    I18n::reg("opz_uw_run", "実行先 (ローカル / HPC / tidy3d) と Pareto 出力の選択",
-              "the execution target (local / HPC / tidy3d) and the Pareto output "
-              "option");
+    I18n::reg("opz_uw_run", "実行先の選択 (ローカル / HPC / tidy3d — "
+              "投入経路が無いので常にローカルで回します)",
+              "the execution-target selection (local / HPC / tidy3d — there is "
+              "no submission path, so runs always happen locally)");
     I18n::reg("opz_uw_run_ok",
-              "掃引の実行そのもの — 変数表の最小 / 最大 / 分割と上の評価量を使い、"
-              "ローカルでカーネルを回します",
+              "掃引の実行そのもの (変数表の最小 / 最大 / 分割と上の評価量を使い、"
+              "ローカルでカーネルを回します) と、Pareto フロント出力 "
+              "(各点で 2 つ目の評価量も計算し、非劣解を表と図に出します)",
               "the sweep run itself — it uses min / max / divisions from the "
               "variable table and the figure of merit above, and runs the kernel "
-              "locally");
+              "locally — and the Pareto front output, which evaluates a second "
+              "figure of merit at every point and marks the non-dominated set in "
+              "the table and the plot");
     return true;
 }();
 
@@ -456,13 +529,17 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_cThickAc = new QCheckBox(I18n::tr("opz_c_thick"), sObj);
     m_cThickAc->setChecked(true);
     m_cSym = new QCheckBox(I18n::tr("opz_c_sym"), sObj);
+    // 対称性と最小製造ルールは密度場へ効くので、切り替えたら図を作り直す
+    for (QCheckBox *c : { m_cRuleOpt, m_cSym })
+        connect(c, &QCheckBox::toggled, this, &OptimizeTab::updateTopology);
     conRow->addWidget(m_cRuleOpt);
     conRow->addWidget(m_cSizeEm);
     conRow->addWidget(m_cThickAc);
     conRow->addWidget(m_cSym);
     conRow->addStretch(1);
     sObj->form()->addRow(I18n::tr("opz_constraint"), conRow);
-    sObj->form()->addRow(tabhelp::unwiredNote(sObj, I18n::tr("opz_uw_con")));
+    sObj->form()->addRow(tabhelp::unwiredNote(sObj, I18n::tr("opz_uw_con"),
+                                              I18n::tr("opz_uw_con_ok")));
     v->addWidget(sObj);
 
     // ── ハイパーパラメータ / Hyper-parameters (mode != sweep のみ) ───────────
@@ -558,6 +635,23 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         m_topoMat = numEdit("2", 62, m_pageTopology);
         f->addRow(I18n::tr("opz_topo_mat"), m_topoMat);
 
+        // 制約条件 (目的関数の節のチェック) が効く先。種類だけここで選ぶ
+        m_topoSym = new QComboBox(m_pageTopology);
+        for (const char *k : { "opz_sym_mx", "opz_sym_my", "opz_sym_quad",
+                               "opz_sym_rot" })
+            m_topoSym->addItem(I18n::tr(k));
+        m_topoSym->setCurrentIndex(2);       // 既定は 4 分割対称
+        f->addRow(I18n::tr("opz_topo_sym"), m_topoSym);
+        m_topoRule = numEdit("80", 62, m_pageTopology);
+        auto *ruleRow = new QHBoxLayout();
+        ruleRow->addWidget(m_topoRule);
+        ruleRow->addWidget(new QLabel(QStringLiteral("nm"), m_pageTopology));
+        ruleRow->addStretch(1);
+        f->addRow(I18n::tr("opz_topo_rule"), ruleRow);
+        m_topoRuleLabel = new QLabel(m_pageTopology);
+        m_topoRuleLabel->setWordWrap(true);
+        f->addRow(QString(), m_topoRuleLabel);
+
         m_topoGrid = new QLabel(m_pageTopology);
         m_topoGrid->setStyleSheet(Theme::monoQss());
         f->addRow(I18n::tr("opz_topo_grid"), m_topoGrid);
@@ -584,7 +678,10 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         const QVector<QLineEdit *> edits = { m_topoX0, m_topoY0, m_topoZ0,
                                              m_topoW,  m_topoD,  m_topoT,
                                              m_res,    m_filter,
-                                             m_topoBeta, m_topoEta, m_topoMat };
+                                             m_topoBeta, m_topoEta, m_topoMat,
+                                             m_topoRule };
+        connect(m_topoSym, &QComboBox::currentIndexChanged,
+                this, &OptimizeTab::updateTopology);
         for (QLineEdit *e : edits)
             connect(e, &QLineEdit::editingFinished, this, &OptimizeTab::updateTopology);
         connect(m_topoApply, &QPushButton::clicked, this, &OptimizeTab::applyTopology);
@@ -616,6 +713,12 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_fomKind->addItem(I18n::tr("opz_fom_gain"));     // 2 最大利得 (最大化)
     m_fomKind->addItem(I18n::tr("opz_fom_fb"));       // 3 前後比 (最大化)
     swForm->addRow(I18n::tr("opz_fom_kind"), m_fomKind);
+    m_fomKind2 = new QComboBox(sRun);
+    for (const char *k : { "opz_fom_ref", "opz_fom_vswr", "opz_fom_gain",
+                           "opz_fom_fb" })
+        m_fomKind2->addItem(I18n::tr(k));
+    m_fomKind2->setCurrentIndex(2);          // 既定は 1 つ目と別のものにする
+    swForm->addRow(I18n::tr("opz_fom_kind2"), m_fomKind2);
     m_fomFreq = new QLineEdit(sRun);
     m_fomFreq->setPlaceholderText(I18n::tr("opz_fom_freq_ph"));
     m_fomFreq->setMaximumWidth(140);
@@ -667,7 +770,19 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_pareto = new QCheckBox(I18n::tr("opz_pareto"), sRun);
     m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
     sRun->vbox()->addWidget(m_pareto);
-    // 実行先・Pareto 出力もローカル state のみ
+    // Pareto を外しているときは 2 つ目の評価量を選ぶ意味が無い
+    connect(m_pareto, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_fomKind2) m_fomKind2->setEnabled(on);
+    });
+    m_fomKind2->setEnabled(false);
+    m_paretoPlot = new MiniPlot(sRun);
+    m_paretoPlot->setMinimumHeight(150);
+    m_paretoPlot->setVisible(false);
+    sRun->vbox()->addWidget(m_paretoPlot);
+    m_paretoNote = hintLabel(QString(), sRun);
+    m_paretoNote->setVisible(false);
+    sRun->vbox()->addWidget(m_paretoNote);
+    // 実行先の選択だけがローカル state のまま
     sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun, I18n::tr("opz_uw_run"),
                                      I18n::tr("opz_uw_run_ok")));
     v->addWidget(sRun);
@@ -753,10 +868,7 @@ void OptimizeTab::startSweep()
     cfg.run.mode = RunMode::Both;
     cfg.run.kernel = Runner::kernelForProject(*m_p);
 
-    m_foms.clear();
-    m_resultTable->setRowCount(0);
-    m_resultTable->setVisible(true);
-    m_bestLabel->setVisible(false);
+    prepareResultTable();
     m_progress->setVisible(true);
     m_progress->setRange(0, cfg.points);
     m_progress->setValue(0);
@@ -776,6 +888,11 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
     const double freq = m_fomFreq->text().trimmed().toDouble(&okFreq);
     const FomValue fv = evaluateFom(kind, r, okFreq ? freq : 0.0);
     m_foms.push_back(fv);
+    const bool pareto = m_pareto && m_pareto->isChecked();
+    if (pareto) {
+        const FomKind kind2 = static_cast<FomKind>(m_fomKind2->currentIndex());
+        m_foms2.push_back(evaluateFom(kind2, r, okFreq ? freq : 0.0));
+    }
     if (m_optimizing) {
         // 評価できなかった点は NaN で返す (0 で埋めない — 最良に採られる)
         m_genFoms.push_back(fv.valid
@@ -809,7 +926,16 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
     m_resultTable->setItem(row, 1, ro(fv.valid
                                           ? QString::number(fv.value, 'f', 3)
                                           : QStringLiteral("—")));
-    m_resultTable->setItem(row, 2, ro(I18n::tr(
+    int col = 2;
+    if (pareto) {
+        const FomValue &f2 = m_foms2.back();
+        m_resultTable->setItem(row, col++, ro(f2.valid
+                                   ? QString::number(f2.value, 'f', 3)
+                                   : QStringLiteral("—")));
+        // 非劣解かどうかは全点が揃うまで決まらない (ここでは空にしておく)
+        m_resultTable->setItem(row, col++, ro(QString()));
+    }
+    m_resultTable->setItem(row, col, ro(I18n::tr(
         !r.ok ? "opz_state_fail" : (fv.valid ? "opz_state_ok"
                                              : "opz_state_nofom"))));
     m_progress->setValue(index + 1);
@@ -852,7 +978,107 @@ void OptimizeTab::onSweepFinished(bool ok)
         m_bestLabel->setText(I18n::tr("opz_best_none"));
         m_bestLabel->setVisible(true);
     }
+    updateParetoFront();
     updateRunUi();
+}
+
+// ── Pareto フロント (core/ParetoFront) ─────────────────────────────────────
+// 2 つの評価量を両方とも取れた点だけで非劣解集合を作り、結果表へ印を付けて
+// フロントを図にする。向きは FoM の種別が持っているので `fomMaximizes()` を
+// そのまま渡す (呼び出し側で符号を書かない — OptimizeFom.h)。
+void OptimizeTab::updateParetoFront()
+{
+    if (!m_pareto || !m_pareto->isChecked()) return;
+    if (m_foms2.size() != m_foms.size()) return;
+
+    const FomKind k1 = static_cast<FomKind>(m_fomKind->currentIndex());
+    const FomKind k2 = static_cast<FomKind>(m_fomKind2->currentIndex());
+    const bool max1 = fomMaximizes(k1), max2 = fomMaximizes(k2);
+
+    std::vector<pareto::Point> pts;
+    pts.reserve(static_cast<size_t>(m_foms.size()));
+    for (int i = 0; i < m_foms.size(); ++i) {
+        pareto::Point p;
+        p.a = m_foms[i].value;
+        p.b = m_foms2[i].value;
+        p.valid = m_foms[i].valid && m_foms2[i].valid;
+        pts.push_back(p);
+    }
+
+    const std::vector<int> sorted = pareto::frontSortedByA(pts, max1, max2);
+    m_paretoNote->setVisible(true);
+    if (sorted.empty()) {
+        m_paretoPlot->setVisible(false);
+        m_paretoNote->setText(I18n::tr("opz_pareto_none"));
+        return;
+    }
+
+    // 表へ印を付ける (「非劣解」列は 3 列目)
+    std::vector<char> onFront(static_cast<size_t>(m_foms.size()), 0);
+    for (int i : sorted) onFront[static_cast<size_t>(i)] = 1;
+    for (int r = 0; r < m_resultTable->rowCount()
+                    && r < static_cast<int>(onFront.size()); ++r)
+        if (auto *it = m_resultTable->item(r, 3))
+            it->setText(I18n::tr(onFront[static_cast<size_t>(r)]
+                                     ? "opz_front_yes" : "opz_front_no"));
+
+    // 参照点 = 両目的で最も悪い点。ハイパーボリュームはそこからの改善面積
+    double worstA = pts[static_cast<size_t>(sorted[0])].a;
+    double worstB = pts[static_cast<size_t>(sorted[0])].b;
+    for (const pareto::Point &p : pts) {
+        if (!p.valid) continue;
+        worstA = max1 ? std::min(worstA, p.a) : std::max(worstA, p.a);
+        worstB = max2 ? std::min(worstB, p.b) : std::max(worstB, p.b);
+    }
+    const double hv = pareto::hypervolume(pts, max1, max2, worstA, worstB);
+
+    QVector<MiniSeries> series;
+    MiniSeries f;
+    f.markers = true;
+    f.label = I18n::tr("opz_pareto_plot");
+    for (int i : sorted)
+        f.pts.push_back(QPointF(pts[static_cast<size_t>(i)].a,
+                                pts[static_cast<size_t>(i)].b));
+    series.push_back(f);
+    m_paretoPlot->setLabels(m_fomKind->currentText(), m_fomKind2->currentText());
+    m_paretoPlot->setSeries(series);
+    m_paretoPlot->setVisible(true);
+
+    int validCount = 0;
+    for (const pareto::Point &p : pts) if (p.valid) ++validCount;
+    m_paretoNote->setText(
+        (m_fomKind->currentIndex() == m_fomKind2->currentIndex())
+            ? I18n::tr("opz_pareto_same")
+            : I18n::tr("opz_pareto_note")
+                  .arg(validCount)
+                  .arg(static_cast<int>(sorted.size()))
+                  .arg(m_fomKind->currentText())
+                  .arg(m_fomKind2->currentText())
+                  .arg(QString::number(hv, 'g', 4)));
+}
+
+// 結果表を実行前の状態に戻す。Pareto を出すときだけ「第 2 の評価量」と
+// 「非劣解」の列を足す (掃引と最適化ループで同じ手順を踏むための共有部分)。
+void OptimizeTab::prepareResultTable()
+{
+    m_foms.clear();
+    m_foms2.clear();
+    m_resultTable->setRowCount(0);
+    const bool pareto = m_pareto && m_pareto->isChecked();
+    m_resultTable->setColumnCount(pareto ? 5 : 3);
+    if (pareto)
+        m_resultTable->setHorizontalHeaderLabels(
+            { I18n::tr("opz_col_value"), I18n::tr("opz_col_fom"),
+              I18n::tr("opz_col_fom2"), I18n::tr("opz_col_front"),
+              I18n::tr("opz_col_state") });
+    else
+        m_resultTable->setHorizontalHeaderLabels(
+            { I18n::tr("opz_col_value"), I18n::tr("opz_col_fom"),
+              I18n::tr("opz_col_state") });
+    m_resultTable->setVisible(true);
+    m_bestLabel->setVisible(false);
+    m_paretoPlot->setVisible(false);
+    m_paretoNote->setVisible(false);
 }
 
 // 実行ボタンの文言と有効・無効 (掃引 / PSO / GA だけが実行できる)
@@ -957,8 +1183,14 @@ void OptimizeTab::updateTopology()
 
     int skipped = 0;
     const QVector<Geometry> &units = m_p->geometries();
-    const std::vector<double> rho0 =
+    std::vector<double> rho0 =
         topo::rasterize(units.constData(), units.size(), r, g, &skipped);
+    // 制約条件「対称性」— 鏡像との平均へ射影する (充填率は変わらない)
+    const bool wantSym = m_cSym && m_cSym->isChecked();
+    const topo::Symmetry sym = wantSym
+        ? static_cast<topo::Symmetry>(m_topoSym->currentIndex() + 1)
+        : topo::Symmetry::None;
+    if (wantSym) rho0 = topo::symmetrize(rho0, g, sym);
     const std::vector<double> rho =
         topo::project(topo::filter(rho0, g, radius_m), beta, eta);
     const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
@@ -968,8 +1200,45 @@ void OptimizeTab::updateTopology()
                             .arg(topo::nonDiscreteness(rho), 0, 'f', 3)
                             .arg(static_cast<int>(rects.size())));
 
+    // 制約条件「最小製造ルール」— 公称 2R と実測の最小連結長を両方出す。
+    // 2R は保証ではないので (フィルタは閾値をまたがない模様を消せない)、
+    // 実測が規則を満たすかどうかで判定する (core/DensityField の注意参照)。
+    if (m_cRuleOpt && m_cRuleOpt->isChecked()) {
+        const double rule_nm = m_topoRule->text().toDouble();
+        const topo::RunLengths rl = topo::minRunLength(rho, g, eta);
+        const double on_nm = rl.minOn * g.pitchX_m * 1e9;
+        const double off_nm = rl.minOff * g.pitchY_m * 1e9;
+        QString text = I18n::tr("opz_topo_rule_fmt")
+                           .arg(topo::minFeature_m(radius_m) * 1e9, 0, 'f', 1)
+                           .arg(rl.minOn > 0 ? QString::number(on_nm, 'f', 1)
+                                             : QStringLiteral("—"))
+                           .arg(rl.minOff > 0 ? QString::number(off_nm, 'f', 1)
+                                              : QStringLiteral("—"));
+        if (rl.minOn == 0 && rl.minOff == 0) {
+            text += QStringLiteral(" ") + I18n::tr("opz_topo_rule_none");
+        } else {
+            double worst = 1e300;
+            if (rl.minOn > 0)  worst = std::min(worst, on_nm);
+            if (rl.minOff > 0) worst = std::min(worst, off_nm);
+            text += QStringLiteral(" ")
+                  + (worst < rule_nm
+                         ? I18n::tr("opz_topo_rule_ng")
+                               .arg(worst, 0, 'f', 1).arg(rule_nm, 0, 'f', 1)
+                         : I18n::tr("opz_topo_rule_ok").arg(rule_nm, 0, 'f', 1));
+        }
+        m_topoRuleLabel->setText(text);
+        m_topoRuleLabel->setVisible(true);
+    } else {
+        m_topoRuleLabel->setVisible(false);
+    }
+    m_topoSym->setEnabled(wantSym);
+    m_topoRule->setEnabled(m_cRuleOpt && m_cRuleOpt->isChecked());
+
     QStringList warn;
     if (skipped > 0) warn << I18n::tr("opz_topo_skip").arg(skipped);
+    // 90 度回転対称は正方格子でしか定義できない (黙って別のものにしない)
+    if (wantSym && !topo::symmetryApplicable(g, sym))
+        warn << I18n::tr("opz_topo_sym_na");
     if (radius_m < std::min(g.pitchX_m, g.pitchY_m))
         warn << I18n::tr("opz_topo_small");
     if (g.count() > 20000) warn << I18n::tr("opz_topo_big").arg(g.count());
@@ -995,10 +1264,14 @@ void OptimizeTab::applyTopology()
     const double radius_m = m_filter->text().toDouble() * 1e-9;
     const double eta = m_topoEta->text().toDouble();
     QVector<Geometry> &units = m_p->geometries();
+    std::vector<double> seed =
+        topo::rasterize(units.constData(), units.size(), r, g, nullptr);
+    // 図に出したものと同じ拘束を通す (画面と書き出しを食い違わせない)
+    if (m_cSym && m_cSym->isChecked())
+        seed = topo::symmetrize(seed, g,
+                    static_cast<topo::Symmetry>(m_topoSym->currentIndex() + 1));
     const std::vector<double> rho =
-        topo::project(topo::filter(topo::rasterize(units.constData(), units.size(),
-                                                   r, g, nullptr),
-                                   g, radius_m),
+        topo::project(topo::filter(seed, g, radius_m),
                       m_topoBeta->text().toDouble(), eta);
     const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
     if (rects.empty()) {
@@ -1226,10 +1499,7 @@ void OptimizeTab::startOptimize()
     m_optimizing = true;
     m_optStopped = false;
 
-    m_foms.clear();
-    m_resultTable->setRowCount(0);
-    m_resultTable->setVisible(true);
-    m_bestLabel->setVisible(false);
+    prepareResultTable();
     m_runStatus->setText(I18n::tr("opz_opt_cost")
                              .arg(pop).arg(gens).arg(pop * gens));
     if (!runGeneration()) {
