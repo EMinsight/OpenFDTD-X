@@ -26,6 +26,8 @@
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
+#include "optics/CircuitImpulse.h"
+#include "optics/PhotonicCircuit.h"
 #include "io/BeamPatternCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
@@ -19035,6 +19037,260 @@ static void testSourceDirectivity()
     }
 }
 
+// ── PIC 回路の時間領域応答 (optics/CircuitImpulse) ─────────────────────────
+// 「時間領域」モードの実体。**リングの全域通過は展開すると厳密な等比級数**
+// になるので、IFFT で得たタップ列をその閉形式と直接突き合わせられる。
+// 絵が出たかではなく、タップの位置・振幅・比で判定する。
+static void testCircuitImpulse()
+{
+    g_file = "picimp";
+    using namespace ofd::pic;
+    const double C0 = 299792458.0;
+
+    // ① 直線導波路 — 群遅延 τ = ng·L/c にただ 1 本のタップ
+    {
+        ofd::optics::Waveguide wg;
+        wg.neff = 2.44; wg.ng = 4.2; wg.lambda0_nm = 1550.0;
+        wg.loss_dBcm = 0.0;
+        const double L_um = 1000.0;
+        const double tau = wg.ng * (L_um * 1e-6) / C0;   // 14.0 ps
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        // τ がちょうど 8 標本になる帯域を選ぶ (dt = τ/8)
+        cfg.bandwidth_Hz = 8.0 / tau;
+        cfg.points = 256;
+        const ImpulseResult r =
+            impulse([&](double lam) { return wg.transfer(lam, L_um); }, cfg);
+        check(r.ok(), "picimp: a straight waveguide gives an impulse response");
+        check(std::fabs(r.mainDelay_s - tau) < 0.51 * r.dt_s,
+              qPrintable(QString("picimp: the arrival is the group delay "
+                                 "ng*L/c (%1 ps, got %2 ps)")
+                             .arg(tau * 1e12, 0, 'f', 3)
+                             .arg(r.mainDelay_s * 1e12, 0, 'f', 3)));
+        const std::vector<std::pair<double, double>> pk = peaks(r, 0.05);
+        check(pk.size() == 1,
+              qPrintable(QString("picimp: a plain delay has exactly one tap "
+                                 "(got %1)").arg(pk.size())));
+        // 無損失なら振幅は 1 (エネルギー保存)
+        check(std::fabs(r.energy - 1.0) < 1e-9,
+              "picimp: a lossless waveguide preserves energy (sum |h|^2 = 1)");
+    }
+
+    // ② MZI — アームが 2 本なのでタップも 2 本、位置は各アームの群遅延
+    {
+        ofd::optics::MachZehnder mzi;
+        mzi.wg.neff = 2.44; mzi.wg.ng = 4.2; mzi.wg.loss_dBcm = 0.0;
+        mzi.length1_um = 500.0;
+        mzi.length2_um = 1500.0;
+        const double t1 = mzi.wg.ng * (mzi.length1_um * 1e-6) / C0;
+        const double t2 = mzi.wg.ng * (mzi.length2_um * 1e-6) / C0;
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.bandwidth_Hz = 16.0 / (t2 - t1);   // 差がちょうど 16 標本
+        cfg.points = 512;
+        const ImpulseResult r =
+            impulse([&](double lam) { return mzi.bar(lam); }, cfg);
+        check(r.ok(), "picimp: an MZI gives an impulse response");
+        const std::vector<std::pair<double, double>> pk = peaks(r, 0.05);
+        check(pk.size() == 2,
+              qPrintable(QString("picimp: an MZI has exactly two taps "
+                                 "(got %1)").arg(pk.size())));
+        if (pk.size() == 2) {
+            check(std::fabs((pk[1].first - pk[0].first) - (t2 - t1))
+                      < 0.51 * r.dt_s,
+                  "picimp: the two taps are separated by the arm delay "
+                  "difference");
+            check(std::fabs(pk[0].second - pk[1].second) < 1e-6,
+                  "picimp: a 50:50 MZI splits equally between the two taps");
+        }
+    }
+
+    // ③ 全域通過リング — **厳密な等比級数**と突き合わせる。
+    //    H = (t1 − a·e^{−jφ})/(1 − t1·a·e^{−jφ}) を展開すると
+    //      h0 = t1,  hn = (t1² − 1)·t1^(n−1)·a^n   (n ≥ 1)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.neff = 2.44; ring.wg.ng = 4.2; ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 0.0;          // 無損失 → a = 1
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;                // 全域通過
+        const double Lring_um = 2.0 * M_PI * ring.radius_um;
+        const double tR = ring.wg.ng * (Lring_um * 1e-6) / C0;   // 1 周の時間
+        const double fsr = 1.0 / tR;
+        const double t1 = std::sqrt(1.0 - ring.kappa1 * ring.kappa1);
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.fsrHint_Hz = fsr;
+        cfg.fsrMultiple = 32;             // B = 32·FSR → 1 周 = 32 標本
+        cfg.points = 1024;                // 32 周ぶん見える
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: an all-pass ring gives an impulse response");
+
+        // ここで比べるのは**にじみ・間隔・減衰**といった分散に強い量に留める。
+        // タップの絶対値まで閉形式と厳密に合わせるには、導波路の分散
+        // (neff が λ に一次で効く = 群遅延が帯域内で変わる) が邪魔をする。
+        // **厳密な突き合わせは下の ③' で、分散のない解析的な伝達関数を
+        // こちらから与えて行う** (module の数学と素子の物理を分けて見る)。
+        const std::size_t step = 32;
+        double worst = 0.0;
+        for (int n = 1; n <= 4; ++n) {
+            const double want = std::fabs((t1 * t1 - 1.0) * std::pow(t1, n - 1));
+            worst = std::max(worst,
+                             std::fabs(std::abs(r.h[n * step]) - want) / want);
+        }
+        check(worst < 0.05,
+              qPrintable(QString("picimp: the ring taps follow the geometric "
+                                 "series to within dispersion (worst %1 %)")
+                             .arg(worst * 100.0, 0, 'f', 2)));
+
+        // タップとタップの間は空でなければならない (にじんでいない)
+        double between = 0.0;
+        for (std::size_t i = 1; i < step; ++i)
+            between = std::max(between, std::abs(r.h[i]));
+        check(between < 1e-9,
+              "picimp: nothing appears between taps when the band is an "
+              "integer multiple of the FSR");
+        // 隣り合うタップの比は t1 (1 周あたりの減衰) — 無損失なら結合だけで決まる
+        check(std::fabs(std::abs(r.h[2 * step]) / std::abs(r.h[step]) - t1)
+                  < 5e-3,
+              "picimp: successive taps decay by the self-coupling factor");
+        // 無損失の全域通過は |H| = 1 なのでエネルギーは 1
+        check(std::fabs(r.energy - 1.0) < 1e-6,
+              "picimp: a lossless all-pass ring preserves energy");
+        check(r.tailFraction > 0.0,
+              "picimp: the ring really does have a tail beyond the window "
+              "(it is reported, not hidden)");
+        // 読み取った 1 周時間が解析値と一致すること
+        check(std::fabs(r.tapSpacing_s - tR) < 0.51 * r.dt_s,
+              qPrintable(QString("picimp: the reported round-trip time is "
+                                 "ng*L/c (%1 ps, got %2 ps)")
+                             .arg(tR * 1e12, 0, 'f', 3)
+                             .arg(r.tapSpacing_s * 1e12, 0, 'f', 3)));
+    }
+
+    // ③' **分散のない解析的な全域通過**で module の数学を厳密に検める。
+    //     H(f) = (t − u)/(1 − t·u),  u = a·e^{−j2πf·τ}
+    //     展開すると h₀ = t、hₙ = (t²−1)·t^(n−1)·aⁿ (n ≥ 1)。
+    //     τ を標本の整数倍、帯域を 1/τ の整数倍に選べばタップは厳密に出る。
+    //     **見えている時間長より後ろは巡回して先頭へ足される**が、その和も
+    //     等比級数なので閉形式で書ける (位相を含めて 1/(1−z) の形になる)。
+    {
+        const double tau = 1.0e-12;          // 1 ps の 1 周
+        const double t1 = 0.95, a = 0.98;   // 巡回の足し込みが効く強さ
+        const double lam0 = 1550.0;
+        const double f0 = C0 / (lam0 * 1e-9);
+        const SpectrumFn Hfn = [&](double lam_nm) {
+            const double f = C0 / (lam_nm * 1e-9);
+            const double ph = -2.0 * M_PI * f * tau;
+            const cplx u = a * cplx(std::cos(ph), std::sin(ph));
+            return (t1 - u) / (1.0 - t1 * u);
+        };
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = lam0;
+        cfg.bandwidth_Hz = 16.0 / tau;       // 1 周 = 16 標本
+        cfg.points = 256;                    // 16 周ぶん見える
+        const ImpulseResult r = impulse(Hfn, cfg);
+        check(r.ok(), "picimp: the analytic all-pass builds an impulse response");
+
+        const std::size_t step = 16;
+        const double Nrt = 256.0 / double(step);         // 16 周
+        // 巡回して足される分は共通比 z (振幅 (t1·a)^Nrt、位相 −2πf0·τ·Nrt)
+        const double thN = -2.0 * M_PI * f0 * tau * Nrt;
+        const cplx z = std::pow(t1 * a, Nrt) * cplx(std::cos(thN), std::sin(thN));
+        double worst = 0.0;
+        for (int n = 1; n <= 5; ++n) {
+            const double cn = (t1 * t1 - 1.0) * std::pow(t1, n - 1)
+                              * std::pow(a, n);
+            const double want = std::fabs(cn) / std::abs(1.0 - z);
+            worst = std::max(worst,
+                             std::fabs(std::abs(r.h[n * step]) - want));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("picimp: the taps match the closed-form "
+                                 "geometric series including the cyclic wrap "
+                                 "(worst %1)").arg(worst, 0, 'e', 2)));
+        check(std::abs(z) > 0.02,
+              "picimp: this case really does wrap (the correction matters)");
+        // 長く見れば巡回分は消え、素の等比級数へ収束する
+        ImpulseConfig lon = cfg;
+        lon.points = 8192;                   // 512 周ぶん
+        const ImpulseResult rl = impulse(Hfn, lon);
+        double w2 = 0.0;
+        for (int n = 1; n <= 5; ++n) {
+            const double cn = (t1 * t1 - 1.0) * std::pow(t1, n - 1)
+                              * std::pow(a, n);
+            w2 = std::max(w2, std::fabs(std::abs(rl.h[n * step])
+                                        - std::fabs(cn)));
+        }
+        check(w2 < 1e-9,
+              qPrintable(QString("picimp: seen over 256 round trips the taps "
+                                 "are the plain geometric series (worst %1)")
+                             .arg(w2, 0, 'e', 2)));
+    }
+
+    // ④ 損失のあるリング — 1 周あたり a 倍で減る (a は損失から厳密に出る)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.neff = 2.44; ring.wg.ng = 4.2; ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 20.0;
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;
+        const double Lring_m = 2.0 * M_PI * ring.radius_um * 1e-6;
+        const double alpha = std::log(10.0) / 10.0 * ring.wg.loss_dBcm * 100.0;
+        const double a = std::exp(-0.5 * alpha * Lring_m);   // 1 周の振幅
+        const double t1 = std::sqrt(1.0 - ring.kappa1 * ring.kappa1);
+        const double tR = ring.wg.ng * Lring_m / 299792458.0;
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.fsrHint_Hz = 1.0 / tR;
+        cfg.fsrMultiple = 32;
+        cfg.points = 1024;
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: a lossy ring gives an impulse response");
+        const std::size_t step = 32;
+        check(std::fabs(std::abs(r.h[2 * step]) / std::abs(r.h[step])
+                        - t1 * a) < 5e-3,
+              "picimp: with loss the taps decay by t1*a per round trip");
+        check(r.energy < 1.0,
+              "picimp: a lossy ring does not preserve energy");
+        check(std::fabs(r.decayRatio - t1 * a) < 1e-3,
+              "picimp: the reported decay ratio is the per-round-trip factor");
+    }
+
+    // ⑤ 帯域が FSR の整数倍でないと**タップはにじむ** — 手法の限界なので、
+    //    「にじまない」と偽らないことを確認する (selftest で明示しておく)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.loss_dBcm = 0.0;
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        const double tR = ring.wg.ng * (2.0 * M_PI * ring.radius_um * 1e-6)
+                          / 299792458.0;
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.bandwidth_Hz = 31.4 / tR;      // 整数倍ではない
+        cfg.points = 1024;
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: a non-commensurate band still returns a result");
+        double between = 0.0;
+        const std::size_t near = std::size_t(tR / r.dt_s);
+        for (std::size_t i = 2; i + 2 < near; ++i)
+            between = std::max(between, std::abs(r.h[i]));
+        check(between > 1e-6,
+              "picimp: a band that is not an integer multiple of the FSR "
+              "smears the taps (the limitation is real, not hidden)");
+    }
+}
+
 // ── アイダイアグラム (core/EyeDiagram) ─────────────────────────────────────
 // 「絵が出た」では何も確かめたことにならないので、**独立に導ける正解**と
 // 突き合わせる。特に指数チャネルは巡回定常応答が等比級数で閉形式に書けるので、
@@ -22112,6 +22368,7 @@ int main(int argc, char *argv[])
     testTlSlice3D();
     testBeamPatternCsv();
     testEyeDiagram();
+    testCircuitImpulse();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

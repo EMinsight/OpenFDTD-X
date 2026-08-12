@@ -23,6 +23,7 @@ class QTableWidget;
 class QTableWidgetItem;
 
 namespace ofd {
+namespace optics { struct Waveguide; }
 
 class MiniPlot;
 
@@ -35,6 +36,8 @@ public:
 
 private slots:
     void runCircuitSim();
+    // 時間領域モード (複素包絡線のインパルス応答)
+    void showTimeDomain(const optics::Waveguide &wg, double length_um, int dev);
     void updateNoiseBudget();   // 雑音項のチェック + 温度 → 雑音収支        // 素子 S 行列 → 波長掃引 → 指標
     void refreshNetlist();                        // model → widgets
     void refreshNetPath();                        // 経路表示を更新

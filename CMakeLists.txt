@@ -315,6 +315,7 @@ set(CORE_SOURCES
     # フォトニック集積回路の回路レベル解析 (S 行列で素子を接続) — Qt 非依存。
     # SchematicTab の計算実体で、selftest からリング共振器の閉形式・
     # FSR = λ²/(ng L) と直接突き合わせる
+    src/optics/CircuitImpulse.cpp
     src/optics/PhotonicCircuit.cpp
     src/optics/PhotonicCircuit.h
 

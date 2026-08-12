@@ -3,6 +3,7 @@
 #include "../core/Project.h"
 #include "../core/ReceiverNoise.h"
 #include "../optics/PhotonicCircuit.h"
+#include "../optics/CircuitImpulse.h"
 #include "../widgets/MiniPlot.h"
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -111,6 +112,29 @@ const bool s_i18n = [] {
     I18n::reg("sch_mode",       "シミュレーションモード", "Simulation mode");
     I18n::reg("sch_mode_freq",  "周波数領域",             "Frequency domain");
     I18n::reg("sch_mode_time",  "時間領域",               "Time domain");
+    I18n::reg("sch_td_x", "時間 [ps]", "Time [ps]");
+    I18n::reg("sch_td_y", "|h(t)| (複素包絡線)", "|h(t)| (complex envelope)");
+    I18n::reg("sch_td_res",
+              "主到達 %1 ps / タップ間隔 %2 ps (解析値 ng·L/c = %3 ps) / "
+              "1 周あたりの振幅比 %4。見えている時間長は %5 ps です。"
+              "搬送波 (193 THz) は標本化できないので、λ0 まわりの帯域だけを"
+              "見た複素包絡線を描いています (搬送波の位相は含みません)。",
+              "Main arrival %1 ps / tap spacing %2 ps (analytic ng*L/c = %3 ps) "
+              "/ amplitude ratio per round trip %4. The window spans %5 ps. "
+              "The carrier (193 THz) cannot be sampled, so this is the complex "
+              "envelope over a band around lambda0 (no carrier phase).");
+    I18n::reg("sch_td_tail",
+              " ⚠ 窓の後ろ 1/4 に電力の %1 % が残っています — 応答が窓より"
+              "長いので、その分は先頭へ巡回して混ざります。",
+              " [!] %1 % of the power sits in the last quarter of the window -- "
+              "the response outlasts the window, so that part wraps around.");
+    I18n::reg("sch_td_nolen",
+              "時間領域はリングの周長 / MZI のアーム長差から時間軸を決めます。"
+              "長さが 0 なので描けません。",
+              "The time axis comes from the ring circumference or the MZI arm "
+              "length difference. It is zero, so nothing can be drawn.");
+    I18n::reg("sch_td_fail", "時間領域の計算に失敗しました",
+              "The time-domain calculation failed");
     I18n::reg("sch_mode_mixed", "混合 (光電子共存)",
               "Mixed (co-simulated opto-electronic)");
 
@@ -152,15 +176,17 @@ const bool s_i18n = [] {
     I18n::reg("sch_to_shift", "熱光学シフトを自動適用",
               "Apply the thermo-optic shift automatically");
     I18n::reg("sch_uw_sim",
-              "シミュレーションモードのうち「時間領域」「混合」"
-              "(素子応答は周波数掃引で解いているため — 時間領域には"
-              "インパルス応答の畳み込みが要ります)",
-              "the “time domain” and “mixed” simulation modes (the element "
-              "response is solved as a frequency sweep; the time domain needs "
-              "an impulse-response convolution)");
+              "シミュレーションモードのうち「混合 (光電子共存)」"
+              "(電気側の回路モデルと光電変換の連成が要ります)",
+              "the “mixed” simulation mode (it needs an electrical circuit "
+              "model coupled through the opto-electronic conversion)");
     I18n::reg("sch_uw_sim_ok",
-              "「周波数領域」— 下の「素子応答」がこのモードの計算です",
-              "“frequency domain” — the element response below is that mode");
+              "「周波数領域」— 下の「素子応答」がこのモードの計算です。"
+              "「時間領域」は同じ素子の H(λ) から複素包絡線のインパルス応答"
+              "を出します",
+              "“frequency domain” (the element response below) and "
+              "“time domain”, which turns the same element's H(lambda) into "
+              "a complex-envelope impulse response");
     I18n::reg("sch_uw_thermo",
               "位相雑音 (干渉計の遅延とレーザ線幅から強度雑音へ換算する"
               "モデルが要ります)",
@@ -263,12 +289,14 @@ SchematicTab::SchematicTab(Project *project, QWidget *parent)
     m_mode->addItem(I18n::tr("sch_mode_time"));
     m_mode->addItem(I18n::tr("sch_mode_mixed"));
     m_mode->setCurrentIndex(0);              // mock: value="freq"
-    // 素子応答は周波数掃引で解いている。時間領域 / 混合はその実体が無いので
+    // 時間領域は素子応答 H(λ) の複素包絡線インパルス応答として実装した
+    // (optics/CircuitImpulse)。**混合 (光電子共存) だけは実体が無い**ので
     // 選べるように見せない (絶対規則 5)。
-    for (int i = 1; i <= 2; ++i)
-        if (auto *item = qobject_cast<QStandardItemModel *>(m_mode->model())
-                             ->item(i))
-            item->setEnabled(false);
+    if (auto *item = qobject_cast<QStandardItemModel *>(m_mode->model())
+                         ->item(2))
+        item->setEnabled(false);
+    connect(m_mode, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { runCircuitSim(); });
     sSim->form()->addRow(I18n::tr("sch_mode"), m_mode);
     sSim->form()->addRow(tabhelp::unwiredNote(sSim, I18n::tr("sch_uw_sim"),
                                               I18n::tr("sch_uw_sim_ok")));
@@ -625,6 +653,14 @@ void SchematicTab::runCircuitSim()
         sweep = sweepMzi(mzi, l1, l2, n);
     }
 
+    // ── 時間領域モード — 同じ素子の H(λ) からインパルス応答を作る ────────
+    // 周波数掃引と**同じ素子・同じ設定**から作るので、2 つのモードが
+    // 食い違うことはない。
+    if (m_mode && m_mode->currentIndex() == 1) {
+        showTimeDomain(wg, length_um, dev);
+        return;
+    }
+
     QVector<QPointF> thr, drp;
     thr.reserve(int(sweep.size()));
     for (const SweepPoint &p : sweep) {
@@ -662,6 +698,70 @@ void SchematicTab::runCircuitSim()
                              + I18n::tr("sch_to_applied")
                                    .arg(m_temp->text().trimmed())
                                    .arg(shift_nm, 0, 'f', 3));
+}
+
+// ── 時間領域 (複素包絡線のインパルス応答) ─────────────────────────────────
+// リングなら 1 周ごとの遅延パルス列、MZI なら 2 本のアーム。搬送波
+// (193 THz) は標本化できないので、**λ0 まわりの帯域だけを見た包絡線**を
+// 出す — その約束と、窓から溢れた分 (尾) を必ず画面に書く。
+void SchematicTab::showTimeDomain(const ofd::optics::Waveguide &wg,
+                                  double length_um, int dev)
+{
+    using namespace ofd::optics;
+    if (!m_spectrum || !m_simResult) return;
+
+    const double lam0 = 0.5 * (m_lam1->value() + m_lam2->value());
+    const double C0 = 299792458.0;
+    // 素子の周期 (リングは 1 周、MZI はアーム長差) から帯域を決める
+    const double tau = wg.ng * (length_um * 1e-6) / C0;
+    if (!(tau > 0.0)) {
+        m_simResult->setText(I18n::tr("sch_td_nolen"));
+        return;
+    }
+
+    pic::SpectrumFn H;
+    RingResonator ring;
+    MachZehnder mzi;
+    if (dev <= 1) {
+        ring.wg = wg;
+        ring.radius_um = m_radius->value();
+        ring.kappa1 = m_k1->value();
+        ring.kappa2 = (dev == 1) ? m_k2->value() : 0.0;
+        H = [ring](double lam) { return ring.through(lam); };
+    } else {
+        mzi.wg = wg;
+        mzi.length1_um = 100.0;
+        mzi.length2_um = 100.0 + m_dL->value();
+        mzi.phaseShift_rad = m_shift->value();
+        H = [mzi](double lam) { return mzi.bar(lam); };
+    }
+
+    pic::ImpulseConfig cfg;
+    cfg.lambda0_nm = lam0;
+    cfg.fsrHint_Hz = 1.0 / tau;      // 素子の周期
+    cfg.fsrMultiple = 32;            // 1 周を 32 点で刻む
+    cfg.points = 1024;               // 32 周ぶん見える
+    const pic::ImpulseResult r = pic::impulse(H, cfg);
+    if (!r.ok()) { m_simResult->setText(I18n::tr("sch_td_fail")); return; }
+
+    MiniSeries a;
+    a.color = QColor("#0078D4");
+    a.label = "|h(t)|";
+    for (std::size_t i = 0; i < r.h.size(); ++i)
+        a.pts.push_back(QPointF(i * r.dt_s * 1e12, std::abs(r.h[i])));
+    m_spectrum->setLabels(I18n::tr("sch_td_x"), I18n::tr("sch_td_y"));
+    m_spectrum->setSeries({ a });
+
+    QString note = I18n::tr("sch_td_res")
+                       .arg(r.mainDelay_s * 1e12, 0, 'f', 3)
+                       .arg(r.tapSpacing_s * 1e12, 0, 'f', 3)
+                       .arg(tau * 1e12, 0, 'f', 3)
+                       .arg(r.decayRatio, 0, 'f', 4)
+                       .arg(r.span_s * 1e12, 0, 'f', 1);
+    // 窓から溢れた分は必ず書く (リングの応答は無限に続くので必ず溢れる)
+    if (r.tailFraction > 0.01)
+        note += I18n::tr("sch_td_tail").arg(r.tailFraction * 100.0, 0, 'f', 1);
+    m_simResult->setText(note);
 }
 
 // ── ネットリストから素子のつながりを辿る ───────────────────────────────────
