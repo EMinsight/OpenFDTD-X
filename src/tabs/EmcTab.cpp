@@ -789,8 +789,8 @@ QWidget *EmcTab::buildEmissionPage()
     auto *cb = new QHBoxLayout();
     auto *locateBtn = new QPushButton(I18n::tr("emc_btn_locate"), sc);
     auto *reportBtn = new QPushButton(I18n::tr("emc_btn_report"), sc);
-    ofd::tabhelp::markNotImplemented(locateBtn);
-    ofd::tabhelp::markNotImplemented(reportBtn);
+    ofd::tabhelp::markNotImplemented(locateBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    ofd::tabhelp::markNotImplemented(reportBtn, I18n::tr(tabhelp::notimpl::kReport));
     cb->addWidget(locateBtn);
     cb->addWidget(reportBtn);
     cb->addStretch(1);

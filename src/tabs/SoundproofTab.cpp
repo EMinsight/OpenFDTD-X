@@ -1018,7 +1018,7 @@ SoundproofTab::SoundproofTab(Project *project, QWidget *parent)
     for (const char *key : { "sp_exp_report", "sp_exp_csv",
                              "sp_exp_aural", "sp_exp_std" }) {
         auto *b = new QPushButton(I18n::tr(key), se);
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kData));
         he->addWidget(b);
     }
     he->addStretch(1);
@@ -1089,7 +1089,7 @@ QWidget *SoundproofTab::buildPartitionPage()
     auto *presetBtn = new QPushButton(I18n::tr("sp_preset_btn"), sb);
     hb->addWidget(presetBtn);
     auto *dxfBtn = new QPushButton(I18n::tr("sp_dxf_btn"), sb);
-    tabhelp::markNotImplemented(dxfBtn);      // .dxf 取込は未実装
+    tabhelp::markNotImplemented(dxfBtn, I18n::tr(tabhelp::notimpl::kParser));      // .dxf 取込は未実装
     hb->addWidget(dxfBtn);
     hb->addStretch(1);
     // 参考値 (同種構造の公表 Rw)。計算値は評価結果セクションに出す。

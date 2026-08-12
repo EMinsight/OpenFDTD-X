@@ -1042,7 +1042,7 @@ QWidget *AcousticSourceTab::buildSourcesPage()
     // CLF/GLL ライブラリはパーサ未実装のまま (ファイル名の記録のみ)。
     // 無効化だけでは「なぜ押せないのか」が分からないので、ボタン文言と
     // ツールチップの両方に理由と代替手段 (解析モデル) を書く。
-    tabhelp::markNotImplemented(libBtn);
+    tabhelp::markNotImplemented(libBtn, I18n::tr(tabhelp::notimpl::kParser));
     libBtn->setText(I18n::tr("asrc_btn_clflib_ni"));
     libBtn->setToolTip(I18n::tr("asrc_clflib_tip"));
     row->addWidget(addBtn);
@@ -2287,7 +2287,7 @@ QWidget *AcousticSourceTab::buildArrayPage()
     m_arrGrating->setChecked(true);
     auto *airabs = new QCheckBox(I18n::tr("asrc_airabs"), sd);
     // 空気吸収は距離に依存する量で、遠方界パターン (相対値) には効かない
-    tabhelp::markNotImplemented(airabs);
+    tabhelp::markNotImplemented(airabs, I18n::tr(tabhelp::notimpl::kModel));
     chkRow->addWidget(m_arrGrating);
     chkRow->addWidget(airabs);
     chkRow->addStretch(1);
@@ -2463,7 +2463,7 @@ QWidget *AcousticSourceTab::buildAuralPage()
     auto *listenBtn = new QPushButton(I18n::tr("asrc_btn_listen2"), sr);
     auto *abBtn     = new QPushButton(I18n::tr("asrc_btn_ab"), sr);
     // レンダリング (畳み込み) 自体は可聴化タブが担う — このページでは未実装
-    tabhelp::markNotImplemented(renderBtn);
+    tabhelp::markNotImplemented(renderBtn, I18n::tr(tabhelp::notimpl::kEngine));
     btnRow->addWidget(renderBtn);
     btnRow->addWidget(listenBtn);
     btnRow->addWidget(abBtn);
@@ -2491,7 +2491,7 @@ QWidget *AcousticSourceTab::buildAuralPage()
     seat->addItem(I18n::tr("asrc_seat4"));
     seatRow->addWidget(seat, 1);
     auto *playBtn = new QPushButton(I18n::tr("asrc_play"), sa);
-    tabhelp::markNotImplemented(playBtn);
+    tabhelp::markNotImplemented(playBtn, I18n::tr(tabhelp::notimpl::kAudio));
     seatRow->addWidget(playBtn);
     sa->form()->addRow(I18n::tr("asrc_seat"), seatRow);
     auto *abx = new QCheckBox(I18n::tr("asrc_abx_chk"), sa);

@@ -617,7 +617,7 @@ AcousticTab::AcousticTab(Project *project, QWidget *parent)
     auto *auralBtns = new QHBoxLayout();
     for (const char *k : { "ac2_play", "ac2_record" }) {
         auto *b = new QPushButton(I18n::tr(k), au);
-        tabhelp::markNotImplemented(b);   // 再生/録音は未実装 (QtMultimedia 禁止)
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kAudio));   // 再生/録音は未実装 (QtMultimedia 禁止)
         auralBtns->addWidget(b);
     }
     // 畳み込みは実装済みの可聴化経路 (可聴化タブと同じ

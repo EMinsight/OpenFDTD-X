@@ -991,7 +991,7 @@ QWidget *CircuitSolversTab::buildSpicePage()
 
     auto *runRow = new QHBoxLayout();
     auto *runBtn = new QPushButton(I18n::tr("cir_run_spice"), s);
-    tabhelp::markNotImplemented(runBtn);   // 共シミュレーション実行は未配線 (絶対規則 5)
+    tabhelp::markNotImplemented(runBtn, I18n::tr(tabhelp::notimpl::kExternal));   // 共シミュレーション実行は未配線 (絶対規則 5)
     runRow->addWidget(runBtn);
     runRow->addStretch(1);
     s->vbox()->addLayout(runRow);
@@ -1241,7 +1241,7 @@ QWidget *CircuitSolversTab::buildResultsPage()
     connect(expSpice, &QPushButton::clicked, this,
             &CircuitSolversTab::exportSpiceSubckt);
     for (QPushButton *b : { expSnp, expH5, expFdtd }) {
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     }
     for (QPushButton *b : { expSnp, expSpice, expH5, expFdtd })
         btnRow->addWidget(b);

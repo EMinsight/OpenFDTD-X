@@ -731,7 +731,7 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     connect(m_runBtn, &QPushButton::clicked, this, &OptimizeTab::startSweep);
     auto *pauseBtn = new QPushButton(I18n::tr("opz_pause"), sRun);
     // 一時停止はカーネル実行の中断・再開が要る (Runner に無い) ので未実装
-    tabhelp::markNotImplemented(pauseBtn);
+    tabhelp::markNotImplemented(pauseBtn, I18n::tr(tabhelp::notimpl::kControl));
     btnRow->addWidget(m_runBtn);
     btnRow->addWidget(pauseBtn);
     btnRow->addStretch(1);

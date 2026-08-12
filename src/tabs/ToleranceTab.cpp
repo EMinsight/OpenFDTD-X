@@ -426,7 +426,7 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     auto *sensBtn   = new QPushButton(I18n::tr("tol_sensitivity"), sRes);
     auto *robustBtn = new QPushButton(I18n::tr("tol_robust"), sRes);
     for (QPushButton *b : { reportBtn, sensBtn, robustBtn }) {
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
         btnRow->addWidget(b);
     }
     btnRow->addStretch(1);

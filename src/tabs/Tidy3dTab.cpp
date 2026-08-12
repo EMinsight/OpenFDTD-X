@@ -487,7 +487,7 @@ Tidy3dTab::Tidy3dTab(Project *project, QWidget *parent)
     auto *submitBtn = new QPushButton("🚀 " + I18n::tr("t3_submit"), sj);
     submitBtn->setStyleSheet("font-weight:600;");
     auto *pauseBtn = new QPushButton(I18n::tr("t3x_pause"), sj);
-    tabhelp::markNotImplemented(pauseBtn);   // ジョブ制御は未実装
+    tabhelp::markNotImplemented(pauseBtn, I18n::tr(tabhelp::notimpl::kControl));   // ジョブ制御は未実装
     auto *subRow = new QHBoxLayout();
     subRow->addWidget(submitBtn);
     subRow->addWidget(pauseBtn);

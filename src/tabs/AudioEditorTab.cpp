@@ -517,7 +517,7 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
     auto *bar = new QHBoxLayout();
     auto *btnLoad = new QPushButton(I18n::tr("ae_load"), sTop);
     auto *btnRec = new QPushButton(I18n::tr("ae_record"), sTop);
-    markNotImplemented(btnRec);   // アプリ内録音は未実装 (Qt Multimedia 不使用)
+    markNotImplemented(btnRec, I18n::tr(tabhelp::notimpl::kAudio));   // アプリ内録音は未実装 (Qt Multimedia 不使用)
     m_btnPlay = new QPushButton(I18n::tr("ae_play"), sTop);
     m_btnUndo = new QPushButton(I18n::tr("ae_undo"), sTop);
     m_btnExport = new QPushButton(I18n::tr("ae_export"), sTop);

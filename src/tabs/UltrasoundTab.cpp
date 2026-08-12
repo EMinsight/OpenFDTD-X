@@ -414,7 +414,7 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     auto *animBtn   = new QPushButton(I18n::tr("us_btn_anim"), so);
     auto *reportBtn = new QPushButton(I18n::tr("us_btn_report"), so);
     for (QPushButton *b : { beamBtn, animBtn, reportBtn }) {
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
         hb->addWidget(b);
     }
     hb->addStretch(1);

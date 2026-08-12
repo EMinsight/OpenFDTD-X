@@ -726,8 +726,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     // オーバーレイ 2 種はどこにも配線されていない → 未実装として無効化
     auto *ckOvGeom = new QCheckBox(I18n::tr("h5_overlay_geom"), sv);
     auto *ckOvMon  = new QCheckBox(I18n::tr("h5_overlay_mon"), sv);
-    ofd::tabhelp::markNotImplemented(ckOvGeom);
-    ofd::tabhelp::markNotImplemented(ckOvMon);
+    ofd::tabhelp::markNotImplemented(ckOvGeom, I18n::tr(tabhelp::notimpl::kPlot));
+    ofd::tabhelp::markNotImplemented(ckOvMon, I18n::tr(tabhelp::notimpl::kPlot));
     checks->addWidget(ckOvGeom);
     checks->addWidget(ckOvMon);
     checks->addStretch(1);
@@ -916,8 +916,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     // どうにもならない) — 明示して無効化する
     auto *ckEmbed = new QCheckBox(I18n::tr("h5_embed_bar"), se);
     auto *ckGeom = new QCheckBox(I18n::tr("h5_embed_geom"), se);
-    ofd::tabhelp::markNotImplemented(ckEmbed);
-    ofd::tabhelp::markNotImplemented(ckGeom);
+    ofd::tabhelp::markNotImplemented(ckEmbed, I18n::tr(tabhelp::notimpl::kPlot));
+    ofd::tabhelp::markNotImplemented(ckGeom, I18n::tr(tabhelp::notimpl::kPlot));
     echecks->addWidget(ckEmbed);
     echecks->addWidget(ckGeom);
     echecks->addStretch(1);
@@ -943,7 +943,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     for (const char *key : { "h5_stat_series", "h5_stat_schroeder",
                              "h5_stat_fft", "h5_stat_lineint" }) {
         auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
-        ofd::tabhelp::markNotImplemented(b);
+        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
         // Schroeder 減衰は室内音響の指標 — ドメイン別に表示を切り替える
         if (qstrcmp(key, "h5_stat_schroeder") == 0)
             m_schroederBtn = b;
@@ -964,7 +964,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     auto *pvBtn  = new QPushButton(I18n::tr("h5_int_paraview"), sg);
     auto *mlBtn  = new QPushButton(I18n::tr("h5_int_matlab"), sg);
     for (QPushButton *b : { pvBtn, mlBtn })
-        ofd::tabhelp::markNotImplemented(b);
+        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
     connect(pyBtn, &QPushButton::clicked, this,
             [this] { exportPythonScript(false); });
     connect(jupBtn, &QPushButton::clicked, this,

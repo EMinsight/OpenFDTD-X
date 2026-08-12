@@ -91,7 +91,29 @@ double rirBandWarnThresholdHz();
 // ── 仮対応 (モック) の明示 (CLAUDE.md 絶対規則 5) ───────────────────────────
 // 未実装機能のボタン/チェックを「押せるのに何も起きない」状態にしない。
 // 無効化して「未実装」ツールチップを付ける。
-void markNotImplemented(QAbstractButton *b);
+//
+// **理由を必ず添えること。** 「未実装」の一言だけでは、利用者は「対応予定が
+// 無いのか」「自分の操作が足りないのか」を区別できない — 主語付き注記
+// (`unwiredNote`) と同じ問題を抱える。why には**何が足りなくてできないのか**を
+// 書く。よく使う分類は下の `notimpl::` に用意してある (個別の事情があるときは
+// タブ固有の I18n キーを渡す)。
+// selftest の `notimpl-reason` が、理由なしの呼び出しを検出する。
+void markNotImplemented(QAbstractButton *b, const QString &why);
+
+// 使い回せる「できない理由」。I18n キーなので `I18n::tr()` を通して渡す。
+namespace notimpl {
+constexpr const char *kFormat   = "th_ni_format";    // 外部ファイル書式の仕様
+constexpr const char *kParser   = "th_ni_parser";    // 読み手 (パーサ)
+constexpr const char *kKernel   = "th_ni_kernel";    // カーネル側の対応
+constexpr const char *kData     = "th_ni_data";      // 同梱していないデータ
+constexpr const char *kEngine   = "th_ni_engine";    // 計算エンジンそのもの
+constexpr const char *kAudio    = "th_ni_audio";     // 音声入出力 (方針で持たない)
+constexpr const char *kExternal = "th_ni_external";  // 外部アプリの起動
+constexpr const char *kControl  = "th_ni_control";   // 実行中の中断・再開
+constexpr const char *kReport   = "th_ni_report";    // 報告書の様式
+constexpr const char *kPlot     = "th_ni_plot";      // 作図の実装
+constexpr const char *kModel    = "th_ni_model";     // 物理モデルそのもの
+} // namespace notimpl
 
 // コンボボックスの一部の項目だけを選べなくする (残りは通常どおり選べる)。
 // 「その選択肢が何故無いのか」を **項目のツールチップ**として残すため、

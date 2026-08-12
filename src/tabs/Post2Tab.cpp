@@ -337,8 +337,8 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
     auto *h5Btn  = new QPushButton(QString::fromUtf8("💾 ")
                                    + I18n::tr("pp_export_h5"), s5);
     // 書出しは未配線 (Runner 側の実行時出力のみ) — 押せる形で放置しない
-    tabhelp::markNotImplemented(csvBtn);
-    tabhelp::markNotImplemented(h5Btn);
+    tabhelp::markNotImplemented(csvBtn, I18n::tr(tabhelp::notimpl::kKernel));
+    tabhelp::markNotImplemented(h5Btn, I18n::tr(tabhelp::notimpl::kKernel));
     r5->addWidget(csvBtn);
     r5->addWidget(h5Btn);
     r5->addWidget(makeBadge("HDF5", s5));

@@ -501,7 +501,7 @@ SarTab::SarTab(Project *project, QWidget *parent)
     auto *animBtn   = new QPushButton(I18n::tr("sar_btn_anim"), so);
     auto *reportBtn = new QPushButton(I18n::tr("sar_btn_report"), so);
     for (auto *b : { distBtn, animBtn, reportBtn })
-        tabhelp::markNotImplemented(b);
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
     ob->addWidget(distBtn);
     ob->addWidget(animBtn);
     ob->addWidget(reportBtn);
