@@ -5,7 +5,9 @@
 #include "../io/ActivationCurve.h"
 #include "../io/Touchstone.h"
 #include "../kernel/Runner.h"
+#include "../optics/DispersionModels.h"
 #include "../optics/GaussianBeam.h"
+#include "../optics/PlasmaDispersion.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -259,6 +261,47 @@ const bool s_i18nOptRay = [] {
               "beyond which geometrical optics is valid");
     I18n::reg("optm_uw_hybrid", "波動 / 幾何のハイブリッド連携の設定",
               "the wave / geometrical hybrid settings");
+    // 分散モデルの曲線 (optics/DispersionModels)
+    I18n::reg("optdisp_lambda", "波長 λ", "Wavelength");
+    I18n::reg("optdisp_plot", "屈折率 n(λ)", "Refractive index n(lambda)");
+    I18n::reg("optdisp_sell",
+              "Sellmeier: BK7 の公表係数で n(λ) を描いています。d 線 "
+              "(587.6 nm) で n = %1、群屈折率 n_g = %2、長波長極限 %3。"
+              "この式は透明域のもので吸収を持ちません (吸収帯では使えません)。",
+              "Sellmeier: n(lambda) drawn with the published BK7 coefficients. "
+              "At the d line (587.6 nm) n = %1, the group index is %2 and the "
+              "long-wave limit is %3. This form is for the transparent region "
+              "and carries no absorption.");
+    I18n::reg("optdisp_lor",
+              "Lorentz: ε∞ = %1、Δε = %2、共鳴 %3 THz、減衰 %4 THz。"
+              "ε(0) = %5、共鳴での Im ε = %6。図は n(λ) (ε から換算)。",
+              "Lorentz: epsInf = %1, deltaEps = %2, resonance %3 THz, damping "
+              "%4 THz. eps(0) = %5 and Im eps at the resonance is %6. The plot "
+              "shows n(lambda) converted from eps.");
+    I18n::reg("optdisp_drude",
+              "Drude: ε∞ = %1、プラズマ周波数 %2 THz、散乱 %3 THz。"
+              "無損失なら Re ε = 0 になるのは %4 THz。図は n(λ) (ε から換算)。"
+              "計算は既存の optics/PlasmaDispersion を使っています "
+              "(同じ物理の実装を 2 つ持たないため)。",
+              "Drude: epsInf = %1, plasma frequency %2 THz, scattering %3 THz. "
+              "Without damping the permittivity would cross zero at %4 THz. The "
+              "plot shows n(lambda) converted from eps; the calculation reuses "
+              "optics/PlasmaDispersion so the same physics is not implemented "
+              "twice.");
+    I18n::reg("optm_uw_out2",
+              "この節の係数 (材料ごとの実測値は材料タブの担当で、ここは"
+              "モデルの形を見るための代表値です)",
+              "the coefficients in this section (per-material measured values "
+              "belong to the material tab; these are representative values that "
+              "show the shape of each model)");
+    I18n::reg("optm_uw_out2_ok",
+              "モデルの選択 — Drude / Lorentz / Sellmeier の n(λ) を実際に"
+              "描き、静的誘電率・共鳴・群屈折率などの決まった値を出します "
+              "(optics/DispersionModels)",
+              "the model selection - it actually draws n(lambda) for Drude, "
+              "Lorentz and Sellmeier and reports the fixed quantities such as "
+              "the static permittivity, the resonance and the group index "
+              "(optics/DispersionModels)");
     I18n::reg("optm_uw_out", "この節の設定",
               "the settings in this section");
     return true;
@@ -1016,8 +1059,24 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     m_dispModel->addItems({ "Drude", "Lorentz", "Sellmeier" });
     m_dispModel->setCurrentIndex(1);             // mock 既定 = Lorentz
     sdisp->vbox()->addWidget(m_dispModel);
-    // この節はローカル state のみ
-    sdisp->vbox()->addWidget(tabhelp::unwiredNote(sdisp, I18n::tr("optm_uw_out")));
+
+    // ── 選んだモデルの n(λ) を実際に描く (optics/DispersionModels) ────────
+    // Drude は既存の optics/PlasmaDispersion を呼ぶ (同じ物理の実装を
+    // 2 つ持たない)。係数は「モデルの形を見るための代表値」で、材料ごとの
+    // 実測値は材料タブの担当 — そう注記に書く。
+    m_dispPlot = new MiniPlot(sdisp);
+    m_dispPlot->setMinimumHeight(150);
+    m_dispPlot->setLabels(I18n::tr("optdisp_lambda"), I18n::tr("optdisp_plot"));
+    sdisp->vbox()->addWidget(m_dispPlot);
+    m_dispNote = mutedLabel(QString(), sdisp);
+    m_dispNote->setWordWrap(true);
+    sdisp->vbox()->addWidget(m_dispNote);
+    connect(m_dispModel, &QComboBox::currentIndexChanged,
+            this, &OpticalTab::updateDispersionPlot);
+    updateDispersionPlot();
+
+    sdisp->vbox()->addWidget(tabhelp::unwiredNote(sdisp, I18n::tr("optm_uw_out2"),
+                                                  I18n::tr("optm_uw_out2_ok")));
     v->addWidget(sdisp);
 
     // ── ONN 活性化カーブ結果 (obpm 実行後に activation_curve.csv を表示) ──
@@ -1691,6 +1750,71 @@ void OpticalTab::refreshOpticalSystem()
 // 解法 (波動 / 幾何 / ハイブリッド) → 波動ソルバー設定の有効・無効。
 // 幾何光学では外部カーネルを起動しないので、波動側の設定を触れなくして
 // 理由を出す (設定できるのに効かない状態を作らない)。
+// ── 分散モデル: 選んだモデルの n(λ) を描く ────────────────────────────────
+// 係数はモデルの形を見るための代表値 (材料ごとの実測値は材料タブの担当)。
+// Drude は既存の optics/PlasmaDispersion を呼ぶ — 同じ物理の実装を 2 つ
+// 持つと必ず食い違うため。
+void OpticalTab::updateDispersionPlot()
+{
+    if (!m_dispPlot) return;
+    namespace dm = ofd::disp;
+
+    // BK7 の公表係数 (Schott)
+    static const std::vector<dm::SellmeierTerm> kBk7 = {
+        { 1.03961212, 0.00600069867 },
+        { 0.231792344, 0.0200179144 },
+        { 1.01046945, 103.560653 },
+    };
+    const int kind = m_dispModel->currentIndex();   // 0=Drude 1=Lorentz 2=Sellmeier
+
+    MiniSeries se;
+    se.label = I18n::tr("optdisp_plot");
+    QString note;
+
+    if (kind == 2) {
+        for (int i = 0; i <= 100; ++i) {
+            const double lam = 0.35 + (2.5 - 0.35) * i / 100.0;   // 0.35〜2.5 μm
+            const double n = dm::sellmeierIndex(kBk7, lam);
+            if (n > 0.0) se.pts.push_back(QPointF(lam, n));
+        }
+        note = I18n::tr("optdisp_sell")
+                   .arg(dm::sellmeierIndex(kBk7, 0.5876), 0, 'f', 4)
+                   .arg(dm::sellmeierGroupIndex(kBk7, 0.5876), 0, 'f', 4)
+                   .arg(dm::sellmeierLongWaveIndex(kBk7), 0, 'f', 4);
+    } else if (kind == 1) {
+        const double einf = 2.25, de = 1.5, w0 = 3.0e15, g = 1.0e14;
+        for (int i = 0; i <= 100; ++i) {
+            const double lam = 0.35 + (2.5 - 0.35) * i / 100.0;
+            const dm::Complex e =
+                dm::lorentzPermittivity(einf, de, w0, g, dm::angularFrequency(lam));
+            se.pts.push_back(QPointF(lam, dm::indexFromPermittivity(e).re));
+        }
+        const dm::Complex e0 = dm::lorentzPermittivity(einf, de, w0, g, 0.0);
+        const dm::Complex er = dm::lorentzPermittivity(einf, de, w0, g, w0);
+        note = I18n::tr("optdisp_lor")
+                   .arg(einf, 0, 'f', 2).arg(de, 0, 'f', 2)
+                   .arg(w0 / (2.0 * 3.14159265358979323846) / 1e12, 0, 'f', 1)
+                   .arg(g / (2.0 * 3.14159265358979323846) / 1e12, 0, 'f', 1)
+                   .arg(e0.re, 0, 'f', 3).arg(er.im, 0, 'f', 1);
+    } else {
+        const double einf = 1.0, wp = 1.0e16, gam = 1.0e14;
+        for (int i = 0; i <= 100; ++i) {
+            const double lam = 0.35 + (2.5 - 0.35) * i / 100.0;
+            const optics::ComplexEps e =
+                optics::drudePermittivity(einf, dm::angularFrequency(lam), wp, gam);
+            se.pts.push_back(QPointF(lam, dm::indexFromPermittivity({ e.re, e.im }).re));
+        }
+        const double twoPi = 2.0 * 3.14159265358979323846;
+        note = I18n::tr("optdisp_drude")
+                   .arg(einf, 0, 'f', 2)
+                   .arg(wp / twoPi / 1e12, 0, 'f', 1)
+                   .arg(gam / twoPi / 1e12, 0, 'f', 1)
+                   .arg(wp / std::sqrt(einf) / twoPi / 1e12, 0, 'f', 1);
+    }
+    m_dispPlot->setSeries({ se });
+    m_dispNote->setText(note);
+}
+
 // ── ハイブリッド連携: 波動 → 幾何 の橋渡し (optics/GaussianBeam) ──────────
 // 境界のビーム半径・波長・屈折率から、回折の広がりと「直線で追跡してよい
 // 距離」を出す。幾何光学が使えるのは z ≫ z_R からで、そこを数値で示すのが

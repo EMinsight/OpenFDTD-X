@@ -66,6 +66,8 @@ private:
     void        runRaycast();
     // ハイブリッド連携: 境界のビーム半径 → 回折の広がりと幾何光学の適用距離
     void        updateHybridBeam();
+    // 分散モデルの選択 → n(λ) の曲線と決まった値
+    void        updateDispersionPlot();
 
     Project   *m_p;
     bool       m_updating = false;
@@ -164,6 +166,8 @@ private:
 
     // ── 分散モデル / Dispersion model (Drude / Lorentz / Sellmeier) ──
     QComboBox *m_dispModel;
+    MiniPlot  *m_dispPlot = nullptr;   // 選んだモデルの n(λ)
+    QLabel    *m_dispNote = nullptr;
 
     // ONN 活性化カーブ結果表示
     QLabel       *m_onnStatus;

@@ -701,7 +701,14 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     connect(btnPolar, &QPushButton::clicked, this, &IlluminationTab::showPolarPlot);
     connect(btnIllum, &QPushButton::clicked, this, &IlluminationTab::showIlluminanceMap);
     connect(btnIes,   &QPushButton::clicked, this, &IlluminationTab::exportIes);
-    for (QPushButton *b : { btnCie, btnLdt }) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kFormat));
+    // 2 つは押せない理由が別 — まとめて同じ理由にしない。
+    // CIE 色度図: 既存の等色関数は Wyman et al. の解析近似で、波長ごとに
+    //   正規化するスペクトル軌跡では末端が大きく外れる (700 nm で x = 0.568、
+    //   実測の表では 0.735)。CIE 1931 の数表とその出所・ライセンスが要る。
+    // EULUMDAT (.ldt): 書式の仕様を確認できていない (推測で書くと、開けるが
+    //   中身が違うファイルになる — いちばん質の悪い失敗)。
+    tabhelp::markNotImplemented(btnCie, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(btnLdt, I18n::tr(tabhelp::notimpl::kFormat));
     for (QPushButton *b : { btnPolar, btnIllum, btnIes, btnCie, btnLdt })
         btnRow->addWidget(b);
     btnRow->addStretch(1);

@@ -88,7 +88,9 @@
 #include "em/Directivity.h"
 #include "io/RcwaEfficiency.h"
 #include "io/SeriesCsv.h"
+#include "optics/DispersionModels.h"
 #include "optics/GaussianBeam.h"
+#include "optics/PlasmaDispersion.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -18598,6 +18600,151 @@ static void testRcwaEfficiency()
 
 // ── 参照データの (x, y) CSV (io/SeriesCsv) ─────────────────────────────────
 // 検証タブと tidy3d タブが同じ規則で読むための共有部分。
+
+// ── 分散モデルの閉形式 (optics/DispersionModels) ───────────────────────────
+// Lorentz と Sellmeier。Drude は optics/PlasmaDispersion にあるものを使うので
+// ここには足さない (同じ物理の実装を 2 つ持たない) — その一致も判定する。
+static void testDispersionModels()
+{
+    g_file = "dispmodel";
+    namespace dm = ofd::disp;
+
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+
+    // ── Lorentz ────────────────────────────────────────────────────────
+    {
+        const double einf = 2.25, de = 1.5, w0 = 3.0e15, g = 1.0e14;
+        // ε(0) = ε∞ + Δε (厳密)
+        const dm::Complex e0 = dm::lorentzPermittivity(einf, de, w0, g, 0.0);
+        check(rel(e0.re, einf + de) < 1e-12 && std::fabs(e0.im) < 1e-15,
+              "dispmodel: the Lorentz static permittivity is exactly epsInf + deltaEps");
+        // ε(∞) → ε∞
+        const dm::Complex ei = dm::lorentzPermittivity(einf, de, w0, g, 1.0e19);
+        check(rel(ei.re, einf) < 1e-6 && std::fabs(ei.im) < 1e-6,
+              "dispmodel: far above the resonance it returns to epsInf");
+        // 共鳴では Re ε = ε∞ ちょうど、Im ε = Δε ω₀/γ ちょうど
+        const dm::Complex er = dm::lorentzPermittivity(einf, de, w0, g, w0);
+        check(rel(er.re, einf) < 1e-12,
+              "dispmodel: at the resonance the real part is exactly epsInf");
+        check(rel(er.im, de * w0 / g) < 1e-12,
+              "dispmodel: and the imaginary part is exactly deltaEps w0 / gamma");
+        // **損失は正の虚部** (時間因子 exp(-iwt))。符号を反転させない
+        bool passive = true;
+        for (double w = 1e13; w < 1e17; w *= 1.5)
+            if (dm::lorentzPermittivity(einf, de, w0, g, w).im <= 0.0) passive = false;
+        check(passive, "dispmodel: the loss is a positive imaginary part at every frequency");
+        // 無損失 (γ = 0) では虚部が厳密に 0
+        check(dm::lorentzPermittivity(einf, de, w0, 0.0, 0.5 * w0).im == 0.0,
+              "dispmodel: with no damping the imaginary part is exactly zero");
+        // 共鳴の下では ε > ε∞、上では ε < ε∞ (異常分散の向き)
+        check(dm::lorentzPermittivity(einf, de, w0, g, 0.5 * w0).re > einf
+              && dm::lorentzPermittivity(einf, de, w0, g, 2.0 * w0).re < einf,
+              "dispmodel: the permittivity rises below the resonance and falls above it");
+        check(dm::lorentzPermittivity(einf, de, 0.0, g, w0).re == einf,
+              "dispmodel: a non-positive resonance frequency falls back to epsInf");
+    }
+
+    // ── Sellmeier ──────────────────────────────────────────────────────
+    {
+        // 1 項で C = 0 なら n² = 1 + B (波長に依らない) — 厳密
+        const std::vector<dm::SellmeierTerm> flat = { { 1.0, 0.0 } };
+        for (double l : { 0.4, 1.0, 5.0 })
+            check(rel(dm::sellmeierIndex(flat, l), std::sqrt(2.0)) < 1e-15,
+                  "dispmodel: a Sellmeier term with C = 0 is dispersionless");
+        check(std::fabs(dm::sellmeierIndexSlope(flat, 1.0)) < 1e-18,
+              "dispmodel: and its slope is exactly zero");
+        check(rel(dm::sellmeierGroupIndex(flat, 1.0), std::sqrt(2.0)) < 1e-15,
+              "dispmodel: so the group index equals the phase index");
+
+        // BK7 (Schott の公表値) — 長波長極限と実測値の再現
+        const std::vector<dm::SellmeierTerm> bk7 = {
+            { 1.03961212, 0.00600069867 },
+            { 0.231792344, 0.0200179144 },
+            { 1.01046945, 103.560653 },
+        };
+        // d 線 (587.6 nm) で n ≈ 1.5168 (カタログ値)
+        check(std::fabs(dm::sellmeierIndex(bk7, 0.5876) - 1.5168) < 5e-4,
+              "dispmodel: BK7 reproduces its catalogue index at the d line");
+        // 正常分散: 波長が伸びると n は下がる (可視〜近赤外)
+        check(dm::sellmeierIndex(bk7, 0.45) > dm::sellmeierIndex(bk7, 0.65)
+              && dm::sellmeierIndex(bk7, 0.65) > dm::sellmeierIndex(bk7, 1.0),
+              "dispmodel: BK7 shows normal dispersion across the visible");
+        // dn/dλ は負 (正常分散) で、解析微分が数値差分と一致する
+        const double h = 1e-6, l = 0.6;
+        const double num = (dm::sellmeierIndex(bk7, l + h)
+                          - dm::sellmeierIndex(bk7, l - h)) / (2.0 * h);
+        check(dm::sellmeierIndexSlope(bk7, l) < 0.0,
+              "dispmodel: the slope is negative in the normal-dispersion region");
+        check(rel(dm::sellmeierIndexSlope(bk7, l), num) < 1e-6,
+              "dispmodel: the analytic derivative matches a central difference");
+        // 群屈折率は位相屈折率より大きい (正常分散では必ず)
+        check(dm::sellmeierGroupIndex(bk7, l) > dm::sellmeierIndex(bk7, l),
+              "dispmodel: the group index exceeds the phase index there");
+        // λ → ∞ の極限 n² → 1 + ΣB
+        double sumB = 0.0;
+        for (const dm::SellmeierTerm &t : bk7) sumB += t.b;
+        check(rel(dm::sellmeierLongWaveIndex(bk7), std::sqrt(1.0 + sumB)) < 1e-15,
+              "dispmodel: the long-wave limit is exactly sqrt(1 + sum B)");
+        // 極そのもの・非正の波長では 0 を返す (虚数を実数として返さない)
+        check(dm::sellmeierIndex({ { 1.0, 0.25 } }, 0.5) == 0.0,
+              "dispmodel: a wavelength sitting exactly on a pole returns nothing");
+        check(dm::sellmeierIndex(bk7, 0.0) == 0.0 && dm::sellmeierIndex(bk7, -1.0) == 0.0,
+              "dispmodel: a non-positive wavelength returns nothing");
+        // 極の内側 (n² < 0) も返さない
+        check(dm::sellmeierIndex({ { -5.0, 0.04 } }, 0.3) == 0.0,
+              "dispmodel: a negative n^2 is refused rather than square-rooted");
+    }
+
+    // ── 誘電率 → 複素屈折率 ────────────────────────────────────────────
+    {
+        // 実数 ε = 4 → n = 2, k = 0 (厳密)
+        const dm::Complex n1 = dm::indexFromPermittivity({ 4.0, 0.0 });
+        check(rel(n1.re, 2.0) < 1e-15 && n1.im == 0.0,
+              "dispmodel: a real permittivity of 4 gives n = 2 exactly");
+        // ε = -1 (金属側) → 純虚数の屈折率
+        const dm::Complex n2 = dm::indexFromPermittivity({ -1.0, 0.0 });
+        check(n2.re < 1e-12 && rel(n2.im, 1.0) < 1e-12,
+              "dispmodel: a negative real permittivity gives a purely imaginary index");
+        // n² = ε の往復 (任意の複素数で)
+        const dm::Complex e = { 2.5, 0.8 };
+        const dm::Complex n = dm::indexFromPermittivity(e);
+        check(rel(n.re * n.re - n.im * n.im, e.re) < 1e-12
+              && rel(2.0 * n.re * n.im, e.im) < 1e-12,
+              "dispmodel: squaring the index returns the permittivity");
+        // **損失のある ε は k > 0** (時間因子の規約)
+        check(n.im > 0.0, "dispmodel: a lossy permittivity gives a positive k");
+    }
+
+    // ── Drude は既存の実装を使う (二重実装をしない) ────────────────────
+    {
+        namespace pl = ofd::optics;
+        const double einf = 1.0, wp = 1.0e16, g = 1.0e14, w = 5.0e15;
+        const pl::ComplexEps d = pl::drudePermittivity(einf, w, wp, g);
+        // 定義どおり ε = ε∞ − ωp²/(ω² + iωγ) を手計算と突き合わせる
+        const double den = w * w * w * w + w * w * g * g;
+        check(rel(d.re, einf - wp * wp * w * w / den) < 1e-12,
+              "dispmodel: the existing Drude real part matches the closed form");
+        check(rel(d.im, wp * wp * w * g / den) < 1e-12,
+              "dispmodel: and so does the imaginary part (loss is positive)");
+        // 無損失なら Re ε = 0 になるのは ω = ωp/√ε∞ ちょうど
+        const pl::ComplexEps z = pl::drudePermittivity(2.0, wp / std::sqrt(2.0), wp, 0.0);
+        check(std::fabs(z.re) < 1e-9,
+              "dispmodel: without damping the permittivity crosses zero at wp / sqrt(epsInf)");
+    }
+
+    // ── 波長 → 角周波数 ────────────────────────────────────────────────
+    {
+        check(rel(dm::angularFrequency(1.0), 2.0 * 3.14159265358979323846
+                                             * 2.99792458e8 / 1e-6) < 1e-15,
+              "dispmodel: 1 um maps to its angular frequency");
+        check(dm::angularFrequency(0.0) == 0.0,
+              "dispmodel: a non-positive wavelength has no frequency");
+    }
+}
+
 static void testSeriesCsv()
 {
     g_file = "seriescsv";
@@ -21062,6 +21209,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testDispersionModels();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
