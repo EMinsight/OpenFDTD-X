@@ -198,6 +198,9 @@ set(CORE_SOURCES
     src/em/MieSphere.h
     src/em/PatternMetrics.cpp
     src/em/PatternMetrics.h
+    # 遠方界の全球積分から指向性 (far2d を使う) — Qt 非依存
+    src/em/Directivity.cpp
+    src/em/Directivity.h
     src/em/RadarCrossSection.cpp
     src/em/RadarCrossSection.h
 

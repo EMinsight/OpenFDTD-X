@@ -11,6 +11,7 @@
 #include <QSet>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -84,6 +85,7 @@
 #include "core/IlluminationScene.h"
 #include "core/ParetoFront.h"
 #include "core/SeriesCompare.h"
+#include "em/Directivity.h"
 #include "io/RcwaEfficiency.h"
 #include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
@@ -18589,6 +18591,171 @@ static void testRcwaEfficiency()
     }
 }
 
+
+// ── 遠方界の全球積分から指向性 (em/Directivity) ────────────────────────────
+// 指向性は解析解が厳密に分かる量なので、そこで判定する。
+static void testDirectivity()
+{
+    g_file = "directivity";
+    using namespace ofd::em;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0.0) ? std::fabs(a - b) / std::fabs(b)
+                                    : std::fabs(a - b);
+    };
+    // θ を等間隔、φ を等間隔に切った格子 (カーネルの far2d と同じ並び。
+    // 端点 θ=0,180 と φ=0,360 を含み、φ の端点は重複する)
+    auto grid = [](int nt, int np, const std::function<double(double, double)> &f) {
+        SphericalPattern p;
+        for (int i = 0; i <= nt; ++i) p.theta_deg.push_back(180.0 * i / nt);
+        for (int j = 0; j <= np; ++j) p.phi_deg.push_back(360.0 * j / np);
+        for (double th : p.theta_deg)
+            for (double ph : p.phi_deg)
+                p.u.push_back(f(th, ph));
+        return p;
+    };
+
+    // ── 単位の規約: far2d の dB は振幅の 20log10 ────────────────────────
+    {
+        // |E| が 10 倍 = +20 dB のとき、強度は 100 倍
+        check(rel(intensityFromEabsDb(20.0), 100.0) < 1e-12,
+              "directivity: +20 dB of amplitude is 100 times the intensity");
+        check(rel(intensityFromEabsDb(0.0), 1.0) < 1e-15,
+              "directivity: 0 dB is unit intensity");
+        // 3.01 dB でちょうど 2 倍 (強度比)
+        check(rel(intensityFromEabsDb(3.0102999566), 2.0) < 1e-9,
+              "directivity: 3.01 dB is a factor of two in intensity");
+    }
+
+    // ── 等方性は D = 1 (0 dBi) — u = cosθ で積分するので厳密 ────────────
+    {
+        const SphericalPattern iso = grid(36, 72, [](double, double) { return 1.0; });
+        const Directivity d = directivity(iso);
+        check(d.valid, "directivity: an isotropic pattern integrates");
+        check(rel(d.radiatedPower, 4.0 * PI) < 1e-12,
+              "directivity: the solid angle of the whole sphere comes out as 4 pi exactly");
+        check(rel(d.directivity, 1.0) < 1e-12,
+              "directivity: an isotropic pattern has D = 1 exactly");
+        check(std::fabs(d.directivityDbi) < 1e-12,
+              "directivity: which is 0 dBi");
+        check(rel(d.beamSolidAngle, 4.0 * PI) < 1e-12,
+              "directivity: and a beam solid angle of 4 pi");
+        // D = 4pi / Omega_A は定義そのもの (実装が両方を別々に壊していないか)
+        check(rel(d.directivity, 4.0 * PI / d.beamSolidAngle) < 1e-12,
+              "directivity: D and the beam solid angle satisfy D = 4 pi / Omega");
+        // **粗い格子でも厳密** (u 空間の台形則が定数を厳密に積分するため)
+        const Directivity coarse = directivity(grid(4, 4, [](double, double) { return 1.0; }));
+        check(rel(coarse.directivity, 1.0) < 1e-12,
+              "directivity: even a 4 x 4 grid gives exactly 1 for an isotropic pattern");
+    }
+
+    // ── 微小ダイポール U ∝ sin²θ は D = 1.5 ────────────────────────────
+    {
+        auto dip = [PI](double th, double) {
+            const double s = std::sin(th * PI / 180.0);
+            return s * s;
+        };
+        const Directivity d = directivity(grid(90, 72, dip));
+        check(d.valid && rel(d.directivity, 1.5) < 2e-3,
+              "directivity: a Hertzian dipole has D = 1.5");
+        check(std::fabs(d.peakTheta_deg - 90.0) < 1e-9,
+              "directivity: its peak is broadside at theta = 90 deg");
+        // 格子を細かくすると誤差は**単調に減る**。u = cosθ の刻みが極付近で
+        // 詰まる非等間隔格子なので、次数をきれいに 2 と主張はできない
+        // (実測 5.1e-3 → 6.1e-4 → 3.0e-4 → 7.6e-5)。単調性と最終的な
+        // 小ささで判定する。
+        double prev = 1e300;
+        bool mono = true;
+        for (int n : { 22, 45, 90, 180 }) {
+            const double e = std::fabs(directivity(grid(n, 72, dip)).directivity - 1.5);
+            if (e >= prev) mono = false;
+            prev = e;
+        }
+        check(mono, "directivity: refining the grid always reduces the error");
+        check(prev < 1e-4,
+              "directivity: and at 1 degree steps it is under 1e-4 in absolute terms");
+    }
+
+    // ── U ∝ cos²θ は D = 3 ─────────────────────────────────────────────
+    {
+        const Directivity d = directivity(grid(90, 72, [PI](double th, double) {
+            const double c = std::cos(th * PI / 180.0);
+            return c * c;
+        }));
+        check(rel(d.directivity, 3.0) < 2e-3,
+              "directivity: a cos^2 pattern has D = 3");
+    }
+
+    // ── 正規化に不変 (これがあるから指向性だけは取り出せる) ─────────────
+    {
+        auto dip = [PI](double th, double) {
+            const double s = std::sin(th * PI / 180.0);
+            return s * s;
+        };
+        const Directivity a = directivity(grid(60, 60, dip));
+        SphericalPattern scaled = grid(60, 60, dip);
+        for (double &v : scaled.u) v *= 1.234e6;      // 任意の定数倍
+        const Directivity b = directivity(scaled);
+        check(rel(b.directivity, a.directivity) < 1e-12,
+              "directivity: scaling the whole pattern leaves D unchanged");
+        check(rel(b.radiatedPower / b.peak, a.radiatedPower / a.peak) < 1e-12,
+              "directivity: the beam solid angle is scale invariant too");
+    }
+
+    // ── φ の重複端点を二重に数えていないか ─────────────────────────────
+    {
+        // U = 1 + cos φ は φ 方向の平均が 1。等方性と同じ D = 1 になるはず…
+        // ではなく、ピークが 2 なので D = 2。**φ の重複を二重に数えると
+        // 分母だけが増えて D が小さく出る**ので、その検出になる。
+        const Directivity d = directivity(grid(60, 72, [PI](double, double ph) {
+            return 1.0 + std::cos(ph * PI / 180.0);
+        }));
+        check(rel(d.directivity, 2.0) < 1e-6,
+              "directivity: the duplicated phi endpoint is not counted twice");
+    }
+
+    // ── 集中したビームは D ≈ 4π/Ω ───────────────────────────────────
+    {
+        // 半頂角 10° の円錐だけに一様に放射する
+        const double halfDeg = 10.0;
+        auto cone = [halfDeg](double th, double) {
+            return (th <= halfDeg) ? 1.0 : 0.0;
+        };
+        const double omega = 2.0 * PI * (1.0 - std::cos(halfDeg * PI / 180.0));
+        const Directivity d = directivity(grid(720, 72, cone));
+        // **不連続な分布は 1 次でしか収束しない。** 円錐の縁はどんな滑らかな
+        // 求積でも解像できないので、細かい格子でも数 % 残る。この事実ごと
+        // 固定しておく (「ずれている = バグ」と読み違えないため)。
+        check(rel(d.beamSolidAngle, omega) < 5e-2,
+              "directivity: a narrow cone has the solid angle of that cone");
+        check(rel(d.directivity, 4.0 * PI / omega) < 5e-2,
+              "directivity: and its directivity is 4 pi over that solid angle");
+        const double e1 = rel(directivity(grid(180, 72, cone)).beamSolidAngle, omega);
+        const double e2 = rel(directivity(grid(360, 72, cone)).beamSolidAngle, omega);
+        const double e3 = rel(directivity(grid(720, 72, cone)).beamSolidAngle, omega);
+        check(e2 < 0.6 * e1 && e3 < 0.6 * e2 && e3 > 0.35 * e2,
+              "directivity: a hard edge converges only first order (halving the step halves the error)");
+        check(d.directivity > 100.0,
+              "directivity: a 10 degree cone is well over 20 dBi");
+    }
+
+    // ── 不正な入力 ─────────────────────────────────────────────────────
+    {
+        check(!directivity(SphericalPattern()).valid,
+              "directivity: an empty pattern is refused");
+        SphericalPattern zero = grid(10, 10, [](double, double) { return 0.0; });
+        check(!directivity(zero).valid,
+              "directivity: an all-zero pattern gives no directivity (no 0/0)");
+        SphericalPattern ragged;
+        ragged.theta_deg = { 0.0, 90.0, 180.0 };
+        ragged.phi_deg = { 0.0, 180.0, 360.0 };
+        ragged.u = { 1.0, 1.0 };                     // 個数が合わない
+        check(!ragged.valid() && !directivity(ragged).valid,
+              "directivity: a size mismatch is refused rather than read past the end");
+    }
+}
+
 static void testSeriesCompare()
 {
     g_file = "seriescmp";
@@ -20746,6 +20913,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testDirectivity();
     testSeriesCompare();
     testRcwaEfficiency();
     testGaussianBeam();
