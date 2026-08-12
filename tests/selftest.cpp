@@ -27,6 +27,7 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/EncircledEnergy.h"
 #include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
@@ -19039,6 +19040,105 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
+// 「数えるだけ」に見えるが、境界の扱い (r ちょうどを含むか) と、割合から
+// 半径を引くときの丸めで静かに 1 本ずれる。**答えが手で書ける配置**で確かめる。
+static void testEncircledEnergy()
+{
+    g_file = "ee";
+    using namespace ofd::optics;
+
+    // ① 半径 1, 2, 3 に 1 本ずつ — 答えが手で書ける
+    {
+        const std::vector<double> x = { 1.0, 2.0, 3.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0 };
+        const EeCurve c = encircledEnergy(x, y, 0.0, 0.0, 7);
+        check(c.valid(), "ee: the curve builds");
+        check(c.rays == 3, "ee: it counts every ray");
+        check(std::fabs(c.maxRadius_mm - 3.0) < 1e-15,
+              "ee: the outermost radius is the farthest ray");
+        // RMS = sqrt((1+4+9)/3)
+        check(std::fabs(c.rmsRadius_mm - std::sqrt(14.0 / 3.0)) < 1e-12,
+              "ee: the RMS radius is sqrt(mean of r^2)");
+        check(std::fabs(c.fraction.front()) < 1e-15,
+              "ee: nothing is enclosed at zero radius");
+        check(std::fabs(c.fraction.back() - 1.0) < 1e-15,
+              "ee: everything is enclosed at the outermost radius");
+        // 単調非減少
+        bool mono = true;
+        for (std::size_t i = 1; i < c.fraction.size(); ++i)
+            if (c.fraction[i] < c.fraction[i - 1] - 1e-15) mono = false;
+        check(mono, "ee: the fraction never decreases with radius");
+        // 半径ちょうどの点は「内側」に数える (境界の扱いを固定する)
+        const EeCurve c2 = encircledEnergy(x, y, 0.0, 0.0, 4);   // 0,1,2,3
+        check(std::fabs(c2.fraction[1] - 1.0 / 3.0) < 1e-15,
+              "ee: a ray exactly on the radius counts as inside");
+        check(std::fabs(c2.fraction[2] - 2.0 / 3.0) < 1e-15,
+              "ee: two of three rays are inside r = 2");
+    }
+
+    // ② 割合から半径を引く — **補間しない**ので、必ず実在の光線半径が返る
+    {
+        const std::vector<double> x = { 1.0, 2.0, 3.0, 4.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0, 0.0 };
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.25) - 1.0) < 1e-15,
+              "ee: 25 % of four rays is the first ray's radius");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.5) - 2.0) < 1e-15,
+              "ee: 50 % is the second");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.6) - 3.0) < 1e-15,
+              "ee: 60 % needs the third (it does not interpolate)");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 1.0) - 4.0) < 1e-15,
+              "ee: 100 % is the outermost");
+        check(radiusForFraction(x, y, 0, 0, 0.0) == 0.0
+                  && radiusForFraction(x, y, 0, 0, 1.5) == 0.0,
+              "ee: a fraction outside (0, 1] gives 0 rather than a guess");
+    }
+
+    // ③ 一様に散らした円板は EE(r) = (r/R)² に従う (面積比)。
+    //    半径を √ で刻んで面積等分に置けば**厳密に**そうなる。
+    {
+        const int n = 400;
+        const double R = 2.0;
+        std::vector<double> x, y;
+        for (int i = 0; i < n; ++i) {
+            // 面積等分: r_i = R·sqrt((i+0.5)/n)
+            const double r = R * std::sqrt((i + 0.5) / double(n));
+            const double th = 2.0 * M_PI * 0.618033988749895 * i;  // 黄金角
+            x.push_back(r * std::cos(th));
+            y.push_back(r * std::sin(th));
+        }
+        double worst = 0.0;
+        for (double frac : { 0.25, 0.5, 0.75 }) {
+            const double got = radiusForFraction(x, y, 0.0, 0.0, frac);
+            const double want = R * std::sqrt(frac);   // (r/R)² = frac
+            worst = std::max(worst, std::fabs(got - want) / want);
+        }
+        check(worst < 0.01,
+              qPrintable(QString("ee: a uniformly filled disc follows "
+                                 "EE(r) = (r/R)^2 (worst %1 %)")
+                             .arg(worst * 100.0, 0, 'f', 2)));
+    }
+
+    // ④ 中心の取り方で値が変わること (重心か主光線かを示す必要がある理由)
+    {
+        const std::vector<double> x = { 0.0, 1.0, 2.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0 };
+        const double atCentroid = radiusForFraction(x, y, 1.0, 0.0, 1.0);
+        const double atChief    = radiusForFraction(x, y, 0.0, 0.0, 1.0);
+        check(std::fabs(atCentroid - 1.0) < 1e-15,
+              "ee: measured from the centroid the spot radius is 1");
+        check(std::fabs(atChief - 2.0) < 1e-15,
+              "ee: measured from the chief ray it is 2 -- the centre matters");
+    }
+
+    // ⑤ 空の入力は空を返す (0 本を 100 % と言わない)
+    {
+        const EeCurve c = encircledEnergy({}, {}, 0.0, 0.0, 16);
+        check(!c.valid() && c.rays == 0,
+              "ee: no rays gives an empty curve rather than a full one");
+    }
+}
+
 // ── MTF (optics/Mtf) ──────────────────────────────────────────────────────
 // 回折限界は「2 つの円の重なり面積」の閉形式なので、**面積を数値積分で
 // 独立に出して**突き合わせる。幾何 MTF は等間隔に並べた光線なら
@@ -22885,6 +22985,7 @@ int main(int argc, char *argv[])
     testRayPaths();
     testCourantFromAccuracy();
     testMtf();
+    testEncircledEnergy();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

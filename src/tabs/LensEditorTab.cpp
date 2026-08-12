@@ -4,6 +4,7 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/EncircledEnergy.h"
 #include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
 #include "../optics/SeidelAberration.h"
@@ -193,13 +194,32 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "包絡エネルギー・像面湾曲図・歪曲格子・波面 (Zernike) は"
-              "未実装です。スポットダイアグラム・レイファン・色収差・MTF は"
+              "像面湾曲図・歪曲格子・波面 (Zernike) は未実装です。"
+              "スポットダイアグラム・レイファン・色収差・MTF・包絡エネルギーは"
               "実光線追跡で計算します。",
-              "Encircled energy, the field-curvature plot, the distortion "
-              "grid and the wavefront (Zernike) map are not implemented. The "
-              "spot diagram, the ray fan, the chromatic focal shift and the "
-              "MTF are computed by real ray tracing.");
+              "The field-curvature plot, the distortion grid and the wavefront "
+              "(Zernike) map are not implemented. The spot diagram, the ray "
+              "fan, the chromatic focal shift, the MTF and the encircled "
+              "energy are computed by real ray tracing.");
+    I18n::reg("lde_ee_x", "重心からの半径 [mm]", "Radius from the centroid [mm]");
+    I18n::reg("lde_ee_y", "包絡エネルギー", "Encircled energy");
+    I18n::reg("lde_ee_res",
+              "光線 %1 本、RMS スポット半径 %2 mm。重心から見て 50 %% が "
+              "%3 mm、80 %% が %4 mm、90 %% が %5 mm の円に入ります "
+              "(最外は %6 mm)。",
+              "%1 rays, RMS spot radius %2 mm. Measured from the centroid, "
+              "50 %% falls inside %3 mm, 80 %% inside %4 mm and 90 %% inside "
+              "%5 mm (the outermost ray is at %6 mm).");
+    I18n::reg("lde_ee_note",
+              " 光線 1 本を等しい重みとして数えた幾何の値で、回折は含みません "
+              "(エアリーの包絡エネルギーは第 1 種ベッセル関数が要り、MSVC に"
+              "無いため未実装)。半径は補間せず、実際にその割合を包む光線の"
+              "距離をそのまま出しています。",
+              " These are geometric values counting each ray equally; "
+              "diffraction is not included (the Airy encircled energy needs "
+              "Bessel functions, which MSVC lacks). Radii are not interpolated "
+              "-- each is the distance of the ray that actually encloses that "
+              "fraction.");
     I18n::reg("lde_mtf_x", "空間周波数 [cycles/mm]", "Spatial frequency [cyc/mm]");
     I18n::reg("lde_mtf_y", "MTF", "MTF");
     I18n::reg("lde_mtf_res",
@@ -749,6 +769,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                                  this, &LensEditorTab::runRayFan);
         else if (i == 2) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runMtf);
+        else if (i == 3) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runEncircled);
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
         else {
@@ -1581,6 +1603,67 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
+// MTF と同じ実光線追跡の交点を使う。中心は重心 (どこから測ったかを画面に
+// 書く — 主光線基準とは値が変わるため)。
+void LensEditorTab::runEncircled()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    const raytrace::SpotResult sp = raytrace::spotDiagram(sys, epd, field, 12);
+    if (!sp.valid || sp.x.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    const optics::EeCurve ee =
+        optics::encircledEnergy(sp.x, sp.y, sp.centroidX, sp.centroidY, 128);
+    if (!ee.valid()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    MiniSeries s;
+    s.color = QColor("#0078D4");
+    s.label = "encircled energy";
+    for (std::size_t i = 0; i < ee.radius_mm.size(); ++i)
+        s.pts.push_back(QPointF(ee.radius_mm[i], ee.fraction[i]));
+    m_fanPlot->setYRange(0.0, 1.05);
+    m_fanPlot->setSeries({ s });
+    m_fanPlot->setLabels(I18n::tr("lde_ee_x"), I18n::tr("lde_ee_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    auto rad = [&](double f) {
+        return optics::radiusForFraction(sp.x, sp.y, sp.centroidX,
+                                         sp.centroidY, f);
+    };
+    m_anInfo->setText(I18n::tr("lde_ee_res")
+                          .arg(ee.rays)
+                          .arg(QString::number(ee.rmsRadius_mm, 'f', 4),
+                               QString::number(rad(0.5), 'f', 4),
+                               QString::number(rad(0.8), 'f', 4),
+                               QString::number(rad(0.9), 'f', 4),
+                               QString::number(ee.maxRadius_mm, 'f', 4))
+                      + I18n::tr("lde_ee_note"));
+}
+
 // ── MTF (optics/Mtf) ───────────────────────────────────────────────────────
 // 回折限界 (円形瞳の自己相関の閉形式) と、実光線追跡の像面交点から出した
 // 幾何 MTF を**2 本並べて**描く。幾何は回折を含まないので高い周波数では
