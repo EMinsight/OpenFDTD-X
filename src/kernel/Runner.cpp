@@ -183,6 +183,16 @@ Runner::Availability Runner::checkAvailability(Kernel kernel)
     return a;
 }
 
+QString Runner::runLogName(Kernel k)
+{
+    switch (k) {
+    case Kernel::FDTD: return QStringLiteral("ofd.log");
+    case Kernel::RCWA: return QStringLiteral("orcwa.log");
+    case Kernel::BPM:  return QStringLiteral("obpm.log");
+    default:           return QString();
+    }
+}
+
 Kernel Runner::kernelForProject(const Project &project)
 {
     if (project.activeDomain() == Domain::Optical) {

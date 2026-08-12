@@ -87,6 +87,7 @@
 #include "core/SeriesCompare.h"
 #include "em/Directivity.h"
 #include "io/RcwaEfficiency.h"
+#include "io/SeriesCsv.h"
 #include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
@@ -18594,6 +18595,83 @@ static void testRcwaEfficiency()
 
 // ── 遠方界の全球積分から指向性 (em/Directivity) ────────────────────────────
 // 指向性は解析解が厳密に分かる量なので、そこで判定する。
+
+// ── 参照データの (x, y) CSV (io/SeriesCsv) ─────────────────────────────────
+// 検証タブと tidy3d タブが同じ規則で読むための共有部分。
+static void testSeriesCsv()
+{
+    g_file = "seriescsv";
+    namespace sc = ofd::cmp;
+
+    // 見出し行・コメント・空行が混ざった素直な CSV
+    const sc::Series a = ofd::io::parseSeriesCsv(QStringLiteral(
+        "# reference data\n"
+        "freq[Hz],value[dB]\n"
+        "\n"
+        "1.0e9, -10.0\n"
+        "2.0e9, -20.0\n"
+        "3.0e9, -30.0\n"));
+    check(a.valid() && a.x.size() == 3,
+          "seriescsv: the header, comment and blank lines are skipped");
+    check(a.x[0] == 1.0e9 && a.y[2] == -30.0,
+          "seriescsv: the first two columns become x and y");
+
+    // 区切りはカンマ・セミコロン・空白のいずれでもよい (混在も)
+    check(ofd::io::parseSeriesCsv(QStringLiteral("1 2\n3;4\n5,6\n")).x.size() == 3,
+          "seriescsv: comma, semicolon and whitespace all separate columns");
+
+    // **数値に読めない行は捨てる** (0 で埋めない)
+    const sc::Series b = ofd::io::parseSeriesCsv(QStringLiteral(
+        "1,2\n"
+        "abc,def\n"
+        "3\n"                       // 列不足
+        "4,5\n"));
+    check(b.x.size() == 2 && b.x[0] == 1.0 && b.x[1] == 4.0,
+          "seriescsv: rows that are not numeric or too short are dropped");
+
+    // 2 点に満たなければ無効 (compare が使えないので数字を作らない)
+    check(!ofd::io::parseSeriesCsv(QStringLiteral("1,2\n")).valid(),
+          "seriescsv: a single point is not a usable series");
+    check(!ofd::io::parseSeriesCsv(QString()).valid(),
+          "seriescsv: an empty text is not a usable series");
+    check(!ofd::io::readSeriesCsv(QStringLiteral("/nonexistent/ref.csv")).valid(),
+          "seriescsv: a missing file yields nothing");
+
+    // **x が降順でも昇順へ並べ替える** (補間が昇順を前提にしている)
+    const sc::Series d = ofd::io::parseSeriesCsv(QStringLiteral(
+        "3,30\n2,20\n1,10\n"));
+    check(d.valid() && d.x[0] == 1.0 && d.x[2] == 3.0,
+          "seriescsv: a descending x column is sorted ascending");
+    check(d.y[0] == 10.0 && d.y[2] == 30.0,
+          "seriescsv: and y follows its own x, not the row order");
+    // 既に昇順なら順序はそのまま (無駄に触らない)
+    const sc::Series e = ofd::io::parseSeriesCsv(QStringLiteral("1,10\n2,20\n"));
+    check(e.x[0] == 1.0 && e.y[1] == 20.0,
+          "seriescsv: an already sorted series is left alone");
+    // 同じ x が 2 度あっても落とさない (呼び出し側が気づけるように)
+    check(ofd::io::parseSeriesCsv(QStringLiteral("1,10\n1,11\n2,20\n")).x.size() == 3,
+          "seriescsv: duplicate x values are kept, not silently merged");
+
+    // 列の選択
+    ofd::io::SeriesCsvOptions opt;
+    opt.xCol = 0;
+    opt.yCol = 2;
+    const sc::Series f = ofd::io::parseSeriesCsv(
+        QStringLiteral("1,9,10\n2,9,20\n"), opt);
+    check(f.valid() && f.y[0] == 10.0 && f.y[1] == 20.0,
+          "seriescsv: a different y column can be selected");
+    opt.yCol = 9;                       // 存在しない列
+    check(!ofd::io::parseSeriesCsv(QStringLiteral("1,2\n3,4\n"), opt).valid(),
+          "seriescsv: asking for a column that is not there yields nothing");
+
+    // 読んだ系列がそのまま比較に載る (共有部分としての目的)
+    {
+        const sc::Agreement g = sc::compare(a, a);
+        check(g.valid && g.maxAbs == 0.0,
+              "seriescsv: what it returns can be fed straight into compare()");
+    }
+}
+
 static void testDirectivity()
 {
     g_file = "directivity";
@@ -20913,6 +20991,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
     testRcwaEfficiency();

@@ -12,9 +12,12 @@
 #pragma once
 #include <QScrollArea>
 
+#include "../core/SeriesCompare.h"
+
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
+class QPushButton;
 class QLabel;
 class QTableWidget;
 
@@ -28,6 +31,9 @@ public:
     explicit Tidy3dTab(Project *project, QWidget *parent = nullptr);
 
 private slots:
+    // 結果差分の自動チェック (クラウドの結果 CSV ↔ ローカルの給電点掃引)
+    void loadCloudResult();
+    void updateCloudCompare();
     void refresh();
     void exportScript();
     void previewScript();       // プレビュー (.json) — 生成スクリプトを表示
@@ -58,6 +64,12 @@ private:
     QCheckBox   *m_cmpParallel = nullptr;
     QCheckBox   *m_cmpDiff     = nullptr;
     QCheckBox   *m_cmpNotify   = nullptr;
+    // 結果差分の自動チェック (クラウドの結果 CSV ↔ ローカルの給電点掃引)
+    QComboBox   *m_cmpScale = nullptr;
+    QPushButton *m_cmpLoad = nullptr;
+    QLabel      *m_cmpResult = nullptr;
+    ofd::cmp::Series m_cloud;
+    QString     m_cloudName;
 };
 
 } // namespace ofd

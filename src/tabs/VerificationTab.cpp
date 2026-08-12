@@ -26,6 +26,7 @@
 #include <QTextStream>
 #include <QRegularExpression>
 #include "../io/KernelResultReader.h"
+#include "../io/SeriesCsv.h"
 #include "../core/SeriesCompare.h"
 #include <QVBoxLayout>
 #include <algorithm>
@@ -557,18 +558,6 @@ bool geometryBounds(const ofd::Project &p, double lo[3], double hi[3])
     return any;
 }
 
-// ソルバー実行ログのファイル名 (カーネル別)。水中 (bellhopcxx) は収束履歴を
-// 出さないので空文字列
-QString runLogName(ofd::Kernel k)
-{
-    switch (k) {
-    case ofd::Kernel::FDTD: return QStringLiteral("ofd.log");
-    case ofd::Kernel::RCWA: return QStringLiteral("orcwa.log");
-    case ofd::Kernel::BPM:  return QStringLiteral("obpm.log");
-    default:                return QString();
-    }
-}
-
 // 表示する解像度レベル (現在のメッシュに対する 1 軸あたり分割数の倍率)
 const double kRefineFactors[5] = { 0.5, 0.707106781, 1.0, 1.414213562, 2.0 };
 // 収束したとみなす差 [dB] (最細解像度の値との差がこれ以下)
@@ -1060,25 +1049,8 @@ void VerificationTab::loadReferenceCsv()
         QStringLiteral("CSV (*.csv *.txt);;All files (*)"));
     if (path.isEmpty()) return;
 
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        m_crossResult->setText(I18n::tr("ver_cross_badcsv"));
-        return;
-    }
-    cmp::Series ref;
-    QTextStream ts(&f);
-    while (!ts.atEnd()) {
-        const QString line = ts.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
-        const QStringList parts =
-            line.split(QRegularExpression(QStringLiteral("[,;\\s]+")),
-                       Qt::SkipEmptyParts);
-        if (parts.size() < 2) continue;
-        bool okx = false, oky = false;
-        const double x = parts[0].toDouble(&okx);
-        const double y = parts[1].toDouble(&oky);
-        if (okx && oky) { ref.x.push_back(x); ref.y.push_back(y); }
-    }
+    // 読み方の規則は tidy3d タブと共有 (io/SeriesCsv)
+    const cmp::Series ref = ofd::io::readSeriesCsv(path);
     if (!ref.valid()) {
         m_reference = cmp::Series();
         m_referenceName.clear();
@@ -1104,7 +1076,7 @@ void VerificationTab::updateCrossCompare()
     {
         RunConfig cfg;
         const QString dir = Runner::resolveWorkingDir(m_p, cfg);
-        const QString name = runLogName(Runner::kernelForProject(*m_p));
+        const QString name = Runner::runLogName(Runner::kernelForProject(*m_p));
         if (!dir.isEmpty() && !name.isEmpty()) {
             const QString path = QDir(dir).filePath(name);
             const QVector<FeedSweep> fs = KernelResultReader::readFeedSweeps(path);
@@ -1168,7 +1140,7 @@ void VerificationTab::reloadRunLog()
 {
     m_history.clear();
     m_logPath.clear();
-    m_logName = runLogName(Runner::kernelForProject(*m_p));
+    m_logName = Runner::runLogName(Runner::kernelForProject(*m_p));
 
     if (!m_logName.isEmpty()) {
         RunConfig cfg;   // 既定 = プロジェクトのあるディレクトリ
