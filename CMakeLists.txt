@@ -219,6 +219,7 @@ set(CORE_SOURCES
     src/io/OfdIO.h
     src/io/ActivationCurve.cpp
     src/io/ActivationCurve.h
+    src/io/BeamPatternCsv.cpp
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。

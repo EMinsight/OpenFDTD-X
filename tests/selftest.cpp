@@ -25,6 +25,7 @@
 #include "core/PostPrereq.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
+#include "io/BeamPatternCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
 #include "io/TlSlice.h"
@@ -19032,6 +19033,207 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 計測した指向パターンの取り込み (io/BeamPatternCsv) ─────────────────────
+// 取り込みは **静かに間違えると気づけない** 部分が 2 つある:
+//   ① 正規化 — 定数オフセットは全ビームを一様に増減させ TL の絶対値をずらす
+//   ② 並べ替え — 降順の表をそのまま .sbp へ書くと BELLHOP は補間で溶かす
+// どちらも「読めた/落ちない」では検出できないので、値で判定する。
+static void testBeamPatternCsv()
+{
+    g_file = "beamcsv";
+    using namespace ofd;
+
+    // ① 素直な表 (カンマ区切り、註釈と見出し行つき)
+    {
+        QString err;
+        const beamcsv::Result r = beamcsv::parse(
+            "# measured 2026-08-12\n"
+            "angle,level\n"
+            "-30, -18.0\n"
+            "  0, -6.0\n"
+            " 30, -18.0\n", &err);
+        check(r.ok(), "beamcsv: a comma table with a header and a comment reads");
+        check(r.points.size() == 3, "beamcsv: 3 data lines give 3 points");
+        check(r.skipped == 2, "beamcsv: the comment and the header are skipped");
+        // ピークは −6 dB だったので、その分だけ引かれて 0 dB になる
+        check(std::fabs(r.shift_dB - (-6.0)) < 1e-12,
+              "beamcsv: the reported shift is the original peak level");
+        check(std::fabs(r.points[1].level_dB) < 1e-12,
+              "beamcsv: the peak becomes exactly 0 dB");
+        check(std::fabs(r.points[0].level_dB - (-12.0)) < 1e-12,
+              "beamcsv: the shift is a translation (shape is preserved)");
+        // 形が保たれる = 点どうしの差が変わらないこと
+        check(std::fabs((r.points[0].level_dB - r.points[1].level_dB)
+                        - (-18.0 - (-6.0))) < 1e-12,
+              "beamcsv: differences between points are unchanged by normalising");
+    }
+
+    // ② 区切りと改行の揺れ (タブ / 空白 / セミコロン、CRLF)
+    {
+        const beamcsv::Result a = beamcsv::parse("-10\t-3\r\n0\t0\r\n10\t-3\r\n");
+        const beamcsv::Result b = beamcsv::parse("-10 -3\n0 0\n10 -3\n");
+        const beamcsv::Result c = beamcsv::parse("-10;-3\n0;0\n10;0\n");
+        check(a.ok() && b.ok() && c.ok(),
+              "beamcsv: tab, space and semicolon separators all read");
+        check(a.points.size() == b.points.size(),
+              "beamcsv: CRLF and LF give the same number of points");
+        check(std::fabs(a.points[0].level_dB - b.points[0].level_dB) < 1e-12,
+              "beamcsv: the separator does not change the values");
+    }
+
+    // ③ 降順の表は昇順へ並べ替える (BELLHOP は単調な表を前提にする)
+    {
+        const beamcsv::Result r = beamcsv::parse("20,-9\n0,0\n-20,-9\n");
+        check(r.ok(), "beamcsv: a descending table reads");
+        check(r.points[0].angle_deg < r.points[1].angle_deg
+                  && r.points[1].angle_deg < r.points[2].angle_deg,
+              "beamcsv: points come back sorted by angle");
+        check(std::fabs(r.points[0].angle_deg - (-20.0)) < 1e-12,
+              "beamcsv: sorting keeps each level with its own angle");
+        check(std::fabs(r.points[0].level_dB - (-9.0)) < 1e-12,
+              "beamcsv: the level travels with the angle when sorting");
+    }
+
+    // ④ 壊れた入力は**部分的に採らず**全部落とす
+    {
+        const char *bad[] = {
+            "0,0\n",                       // 点が 1 個
+            "0,0\n10\n",                   // 列が足りない
+            "0,0\n10,abc\n",               // 数値でない (先頭行ではない)
+            "0,0\n0,-3\n",                 // 角度の重複
+            "0,0\n200,-3\n",               // 角度が範囲外
+        };
+        for (const char *t : bad) {
+            QString err;
+            const beamcsv::Result r = beamcsv::parse(QString::fromUtf8(t), &err);
+            check(!r.ok(), qPrintable(QString("beamcsv: rejected -- %1")
+                               .arg(QString::fromUtf8(t).simplified())));
+            check(r.points.isEmpty(),
+                  "beamcsv: a rejected table yields no points at all");
+            check(!err.isEmpty(), "beamcsv: the rejection carries a reason");
+        }
+    }
+
+    // ⑤ 床でのクリップ (.sbp は −∞ を持てない)
+    {
+        QVector<BeamPatternPoint> pts{ {0.0, 0.0}, {45.0, -80.0} };
+        const QVector<BeamPatternPoint> c = beamcsv::clampToFloor(pts, -60.0);
+        check(std::fabs(c[1].level_dB - (-60.0)) < 1e-12,
+              "beamcsv: levels below the floor are clipped to it");
+        check(std::fabs(c[0].level_dB) < 1e-12,
+              "beamcsv: levels above the floor are untouched");
+    }
+
+    // ⑥ .sbp への配線 — 計測パターンは**閉形式より優先**される
+    {
+        ofd::Project p;
+        UnderwaterOpts &u = p.underwater();
+        u.sbpPattern = true;
+        u.sonarDir = 1;               // 閉形式なら「ガウス開口」
+        u.beamWidth_deg = 15.0;
+        const QString closed = ofd::BellhopIO::sbpText(p);
+        check(!closed.isEmpty(), "beamcsv: the closed form still writes a .sbp");
+
+        u.sbpMeasured = beamcsv::parse("-20,-9\n0,0\n20,-9\n").points;
+        u.sbpSource = "hydrophone.csv";
+        const QString meas = ofd::BellhopIO::sbpText(p);
+        check(meas != closed,
+              "beamcsv: a measured table replaces the closed-form .sbp");
+        const QStringList ln = meas.split('\n', Qt::SkipEmptyParts);
+        check(ln.value(0).section('\t', 0, 0).trimmed() == "3",
+              "beamcsv: the .sbp header counts the measured points, not the "
+              "closed-form samples");
+        check(ln.value(0).contains("hydrophone.csv"),
+              "beamcsv: the .sbp note records where the table came from");
+        check(ln.size() == 4, "beamcsv: header + one line per measured point");
+        // 表の中身がそのまま出ていること (間引いたり足したりしない)
+        check(ln.value(1).startsWith("-20"),
+              "beamcsv: the first data line is the first measured angle");
+        check(ln.value(3).startsWith("20"),
+              "beamcsv: the last data line is the last measured angle");
+
+        // 指向性が「無指向」でも計測パターンは効く (形は表が決める)
+        u.sonarDir = 0;
+        check(ofd::BellhopIO::patternEnabled(u),
+              "beamcsv: a measured table does not need a closed-form shape");
+        check(!ofd::BellhopIO::sbpText(p).isEmpty(),
+              "beamcsv: it still writes the .sbp with directivity set to omni");
+
+        // 機能を切れば従来どおり何も書かない (絶対規則 2)
+        u.sbpPattern = false;
+        check(ofd::BellhopIO::sbpText(p).isEmpty(),
+              "beamcsv: turning the feature off writes no .sbp at all");
+    }
+
+    // ⑦ .ofdx の往復 (表がプロジェクトだけで再現できること)
+    {
+        ofd::Project p;
+        UnderwaterOpts &u = p.underwater();
+        u.sbpPattern = true;
+        u.sbpMeasured = beamcsv::parse("-20,-9\n0,0\n20,-9\n").points;
+        u.sbpSource = "hydrophone.csv";
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_beam_XXXXXX.ofdx");
+        if (!ofdx.open()) return;
+        check(ofd::OfdxIO::save(ofdx.fileName(), p),
+              "beamcsv: the sidecar saves");
+        ofd::Project q;
+        check(ofd::OfdxIO::load(ofdx.fileName(), q),
+              "beamcsv: the sidecar loads");
+        const UnderwaterOpts &v = q.underwater();
+        check(v.sbpMeasured.size() == u.sbpMeasured.size(),
+              "beamcsv: every measured point survives the round trip");
+        check(v.sbpSource == u.sbpSource,
+              "beamcsv: the provenance (file name) survives the round trip");
+        bool same = v.sbpMeasured.size() == u.sbpMeasured.size();
+        for (int i = 0; same && i < v.sbpMeasured.size(); ++i)
+            same = std::fabs(v.sbpMeasured[i].angle_deg
+                             - u.sbpMeasured[i].angle_deg) < 1e-12
+                   && std::fabs(v.sbpMeasured[i].level_dB
+                                - u.sbpMeasured[i].level_dB) < 1e-12;
+        check(same, "beamcsv: the values come back bit-for-bit");
+        check(ofd::BellhopIO::sbpText(q) == ofd::BellhopIO::sbpText(p),
+              "beamcsv: the reloaded project writes the identical .sbp");
+    }
+
+    // ⑧ ファイルから読む経路 (存在しない・大きすぎるも理由を返すこと)
+    {
+        QTemporaryFile csv;
+        csv.setFileTemplate(QDir::tempPath() + "/ofdx_beam_XXXXXX.csv");
+        if (csv.open()) {
+            csv.write("# tank measurement\n-20,-9\n0,0\n20,-9\n");
+            csv.flush();
+            QString err;
+            const beamcsv::Result r = beamcsv::load(csv.fileName(), &err);
+            check(r.ok(), "beamcsv: a file on disk reads through load()");
+            check(r.points.size() == 3, "beamcsv: load() gives the same points");
+            check(err.isEmpty(), "beamcsv: a good file reports no error");
+        }
+        QString err2;
+        const beamcsv::Result miss =
+            beamcsv::load(QDir::tempPath() + "/ofdx_beam_does_not_exist.csv",
+                          &err2);
+        check(!miss.ok() && !err2.isEmpty(),
+              "beamcsv: a missing file fails with a reason");
+    }
+
+    // ⑨ 何も取り込んでいない既定のプロジェクトは出力が 1 バイトも変わらない
+    {
+        ofd::Project p;
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_beamdef_XXXXXX.ofdx");
+        if (!ofdx.open()) return;
+        check(ofd::OfdxIO::save(ofdx.fileName(), p),
+              "beamcsv: a default project saves");
+        QFile f(ofdx.fileName());
+        check(f.open(QIODevice::ReadOnly), "beamcsv: it can be read back");
+        const QByteArray got = f.readAll();
+        f.close();
+        check(!got.contains("measured"),
+              "beamcsv: an untouched project writes no measured-pattern key");
+    }
+}
+
 // ── TL 断面 → 3D シーンの鉛直面 (io/TlSlice) ───────────────────────────────
 // 座標と値の対応づけだけを持つ部分。**向きと符号を間違えると静かに嘘の絵に
 // なる** ので、そこを重点的に判定する (色が裏返る / 上下が逆になる)。
@@ -21651,6 +21853,7 @@ int main(int argc, char *argv[])
     testDispersionModels();
     testSourceDirectivity();
     testTlSlice3D();
+    testBeamPatternCsv();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

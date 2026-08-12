@@ -888,7 +888,9 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                     {"range_min_km", u.tlRangeMin_km} };
             }
             const bool sbpDefault = (u.sbpPattern == d.sbpPattern
-                                     && u.sbpFloor_dB == d.sbpFloor_dB);
+                                     && u.sbpFloor_dB == d.sbpFloor_dB
+                                     && u.sbpMeasured.isEmpty()
+                                     && u.sbpSource.isEmpty());
             if (u.sonarDir != d.sonarDir
                 || u.beamWidth_deg != d.beamWidth_deg
                 || !sbpDefault) {
@@ -899,6 +901,17 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                 if (!sbpDefault) {
                     bm["pattern"] = u.sbpPattern;
                     bm["floor_db"] = u.sbpFloor_dB;
+                    // 計測パターンは表ごと残す。取り込み元のファイルが
+                    // 手元から消えてもプロジェクトだけで再現できるように。
+                    if (!u.sbpMeasured.isEmpty()) {
+                        QJsonArray mp;
+                        for (const BeamPatternPoint &b : u.sbpMeasured)
+                            mp.append(QJsonObject{ {"angle_deg", b.angle_deg},
+                                                   {"level_db", b.level_dB} });
+                        bm["measured"] =
+                            QJsonObject{ {"source", u.sbpSource},
+                                         {"points", mp} };
+                    }
                 }
                 uwObj["beam"] = bm;
             }
@@ -1585,6 +1598,16 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             u.beamWidth_deg = bm.value("width_deg").toDouble(u.beamWidth_deg);
             u.sbpPattern = bm.value("pattern").toBool(u.sbpPattern);
             u.sbpFloor_dB = bm.value("floor_db").toDouble(u.sbpFloor_dB);
+            if (bm.contains("measured")) {
+                const QJsonObject mo = bm["measured"].toObject();
+                u.sbpSource = mo.value("source").toString(u.sbpSource);
+                u.sbpMeasured.clear();
+                for (const QJsonValue &v : mo["points"].toArray()) {
+                    const QJsonObject o = v.toObject();
+                    u.sbpMeasured.push_back({ o.value("angle_deg").toDouble(),
+                                              o.value("level_db").toDouble() });
+                }
+            }
         }
     }
     // 伝送線路 — キーが無い旧ファイルは既定値のまま

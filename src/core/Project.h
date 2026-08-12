@@ -538,6 +538,13 @@ struct SSPPoint { double depth_m; double c_mps; };
 // range_km は音源からの水平距離 [km]、depth_m は海面からの水深 [m]。
 struct BathyPoint { double range_km; double depth_m; };
 
+// 計測した指向パターンの 1 点 (角度 [deg] とビーム軸に対する相対レベル [dB])。
+// .sbp と同じ並び。読み込みと正規化は io/BeamPatternCsv。
+struct BeamPatternPoint {
+    double angle_deg = 0.0;
+    double level_dB  = 0.0;
+};
+
 struct UnderwaterOpts {
     double  waterTemp_C = 15.0;
     double  salinity_psu = 34.5;
@@ -613,6 +620,11 @@ struct UnderwaterOpts {
     // 形は sonarDir で決まる (1=ガウス開口 2=一様励振の直線開口)。
     bool    sbpPattern = false;
     double  sbpFloor_dB = -60.0;      // 表の下限 (.sbp は −∞ を持てない)
+    // 計測した指向パターン (空 = 上の閉形式を使う)。空でなければ**閉形式より
+    // 優先**して .sbp に書く。読み込みは io/BeamPatternCsv (ピークが 0 dB に
+    // なるよう平行移動済み — 定数オフセットは音源レベルを変えてしまうため)。
+    QVector<BeamPatternPoint> sbpMeasured;
+    QString sbpSource;                // 取り込み元のファイル名 (由来の記録)
 };
 
 // ── 伝送線路タブ (.ofdx "transmission_line") ────────────────────────────────
