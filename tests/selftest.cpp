@@ -82,6 +82,7 @@
 #include "core/TransmissionLine.h"
 #include "core/DensityField.h"
 #include "core/IlluminationScene.h"
+#include "core/ParetoFront.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -18490,6 +18491,191 @@ static void testRadarCrossSection()
 
 // ── IlluminationOpts → 系 の共有写像 (core/IlluminationScene) ───────────────
 // 照明タブと光タブが同じ設定から同じ系を組み立てることを保証する部分。
+
+// ── 2 目的の非劣解集合 (core/ParetoFront) ──────────────────────────────────
+// 支配関係は定義がすべてなので、定義から**厳密に従う性質**で判定する。
+static void testParetoFront()
+{
+    g_file = "pareto";
+    namespace pa = ofd::pareto;
+
+    auto P = [](double a, double b) { pa::Point p; p.a = a; p.b = b; p.valid = true; return p; };
+
+    // ── 支配関係の定義 ─────────────────────────────────────────────────
+    {
+        const pa::Point p = P(2.0, 2.0), q = P(1.0, 1.0);
+        check(pa::dominates(p, q, true, true),
+              "pareto: a point better in both objectives dominates");
+        check(!pa::dominates(q, p, true, true),
+              "pareto: and the dominated point does not dominate back");
+        check(!pa::dominates(p, p, true, true),
+              "pareto: no point dominates itself");
+        // 片方だけ良い = 支配しない (トレードオフ)
+        check(!pa::dominates(P(2.0, 1.0), P(1.0, 2.0), true, true)
+              && !pa::dominates(P(1.0, 2.0), P(2.0, 1.0), true, true),
+              "pareto: a trade-off pair dominates neither way");
+        // 片方が同値でもう片方が良ければ支配する
+        check(pa::dominates(P(2.0, 1.0), P(1.0, 1.0), true, true),
+              "pareto: an equal objective plus a better one still dominates");
+        // 完全に同じ点は互いに支配しない (どちらもフロントに残す)
+        check(!pa::dominates(P(1.0, 1.0), P(1.0, 1.0), true, true),
+              "pareto: identical points do not dominate each other");
+        // 無効な点は関わらない
+        pa::Point bad; bad.a = 9.0; bad.b = 9.0; bad.valid = false;
+        check(!pa::dominates(bad, P(1.0, 1.0), true, true)
+              && !pa::dominates(P(1.0, 1.0), bad, true, true),
+              "pareto: an invalid point neither dominates nor is dominated");
+        // 推移性 (a > b > c なら a > c)
+        const pa::Point a = P(3.0, 3.0), b2 = P(2.0, 2.0), c = P(1.0, 1.0);
+        check(pa::dominates(a, b2, true, true) && pa::dominates(b2, c, true, true)
+              && pa::dominates(a, c, true, true),
+              "pareto: dominance is transitive");
+        // 向きの反転は符号の反転と同じ (最小化 = −値の最大化)
+        check(pa::dominates(P(1.0, 1.0), P(2.0, 2.0), false, false),
+              "pareto: minimising flips the direction");
+    }
+
+    // ── フロントの性質 ─────────────────────────────────────────────────
+    {
+        // 1 点がすべてを支配する
+        std::vector<pa::Point> one = { P(0.0, 0.0), P(5.0, 5.0), P(1.0, 2.0),
+                                       P(2.0, 1.0) };
+        const std::vector<int> f1 = pa::front(one, true, true);
+        check(f1.size() == 1 && f1[0] == 1,
+              "pareto: a point better than every other is the whole front");
+
+        // トレードオフだけの集合はぜんぶ非劣解
+        std::vector<pa::Point> trade;
+        for (int k = 1; k <= 8; ++k)
+            trade.push_back(P(double(k), 1.0 / double(k)));   // b = 1/a
+        const std::vector<int> f2 = pa::front(trade, true, true);
+        check(f2.size() == trade.size(),
+              "pareto: a strict trade-off curve is entirely non-dominated");
+
+        // 一般の集合: フロントの点はどれにも支配されず、
+        // フロント外の点は必ずフロントの誰かに支配される (この 2 つが定義)
+        std::vector<pa::Point> mix = { P(1.0, 5.0), P(2.0, 4.0), P(3.0, 1.0),
+                                       P(2.0, 2.0), P(0.5, 0.5), P(3.0, 3.0),
+                                       P(1.5, 4.5) };
+        const std::vector<int> f3 = pa::front(mix, true, true);
+        std::vector<char> on(mix.size(), 0);
+        for (int i : f3) on[std::size_t(i)] = 1;
+        bool clean = true, covered = true;
+        for (std::size_t i = 0; i < mix.size(); ++i) {
+            for (std::size_t j = 0; j < mix.size(); ++j) {
+                if (i == j) continue;
+                if (on[i] && pa::dominates(mix[j], mix[i], true, true)) clean = false;
+            }
+            if (!on[i]) {
+                bool byFront = false;
+                for (int k : f3)
+                    if (pa::dominates(mix[std::size_t(k)], mix[i], true, true))
+                        byFront = true;
+                if (!byFront) covered = false;
+            }
+        }
+        check(clean, "pareto: no point on the front is dominated by anything");
+        check(covered,
+              "pareto: every point off the front is dominated by a front point");
+        check(!f3.empty() && f3.size() < mix.size(),
+              "pareto: the front is a strict non-empty subset here");
+
+        // 添字は入力順のまま (表の行と突き合わせるため)
+        bool ordered = true;
+        for (std::size_t k = 1; k < f3.size(); ++k)
+            if (f3[k] <= f3[k - 1]) ordered = false;
+        check(ordered, "pareto: front indices keep the input order");
+
+        // 無効な点はフロントに入らない
+        std::vector<pa::Point> withBad = mix;
+        pa::Point bad; bad.a = 99.0; bad.b = 99.0; bad.valid = false;
+        withBad.push_back(bad);
+        const std::vector<int> f4 = pa::front(withBad, true, true);
+        check(f4.size() == f3.size(),
+              "pareto: an invalid point never joins the front, however good");
+        std::vector<pa::Point> allBad(4, bad);
+        check(pa::front(allBad, true, true).empty(),
+              "pareto: a set with no valid point has an empty front");
+        check(pa::front({}, true, true).empty(),
+              "pareto: an empty set has an empty front");
+
+        // 同じ点が 2 回出たらどちらも残る (掃引で同点が出るため)
+        std::vector<pa::Point> dup = { P(1.0, 1.0), P(1.0, 1.0), P(0.0, 0.0) };
+        check(pa::front(dup, true, true).size() == 2,
+              "pareto: duplicate optima both stay on the front");
+    }
+
+    // ── 並べ替えたフロントはトレードオフになる (もう片方が単調) ──────────
+    {
+        std::vector<pa::Point> mix = { P(1.0, 5.0), P(3.0, 1.0), P(2.0, 3.0),
+                                       P(0.5, 0.5), P(4.0, 0.2) };
+        const std::vector<int> sorted = pa::frontSortedByA(mix, true, true);
+        bool monoA = true, monoB = true;
+        for (std::size_t k = 1; k < sorted.size(); ++k) {
+            if (mix[std::size_t(sorted[k])].a < mix[std::size_t(sorted[k - 1])].a)
+                monoA = false;
+            // A が増えるなら B は減る — これがトレードオフの定義そのもの
+            if (mix[std::size_t(sorted[k])].b > mix[std::size_t(sorted[k - 1])].b)
+                monoB = false;
+        }
+        check(monoA, "pareto: the sorted front increases in the first objective");
+        check(monoB, "pareto: and therefore decreases in the second one");
+        check(sorted.size() == pa::front(mix, true, true).size(),
+              "pareto: sorting does not change what is on the front");
+    }
+
+    // ── ハイパーボリューム ─────────────────────────────────────────────
+    {
+        // 1 点なら参照点との長方形の面積そのもの
+        std::vector<pa::Point> one = { P(3.0, 4.0) };
+        check(std::fabs(pa::hypervolume(one, true, true, 1.0, 1.0) - 2.0 * 3.0)
+              < 1e-12,
+              "pareto: one point gives the rectangle against the reference");
+        // 参照点より悪い点は寄与しない
+        std::vector<pa::Point> worse = { P(0.0, 0.0) };
+        check(pa::hypervolume(worse, true, true, 1.0, 1.0) == 0.0,
+              "pareto: a point worse than the reference contributes nothing");
+        // 支配される点を足しても面積は変わらない
+        std::vector<pa::Point> plus = { P(3.0, 4.0), P(2.0, 3.0) };
+        check(std::fabs(pa::hypervolume(plus, true, true, 1.0, 1.0)
+                        - pa::hypervolume(one, true, true, 1.0, 1.0)) < 1e-12,
+              "pareto: adding a dominated point leaves the hypervolume alone");
+        // 非劣解を足すと必ず増える
+        std::vector<pa::Point> two = { P(3.0, 4.0), P(5.0, 2.0) };
+        check(pa::hypervolume(two, true, true, 1.0, 1.0)
+              > pa::hypervolume(one, true, true, 1.0, 1.0),
+              "pareto: adding a non-dominated point increases it");
+        // 2 点の面積は手計算と一致する:
+        //   (5−1)×(2−1) + (3−1)×(4−2) = 4 + 4 = 8
+        check(std::fabs(pa::hypervolume(two, true, true, 1.0, 1.0) - 8.0) < 1e-12,
+              "pareto: the two-point hypervolume matches the hand calculation");
+        check(pa::hypervolume({}, true, true, 0.0, 0.0) == 0.0,
+              "pareto: an empty set has no hypervolume");
+        // 最小化でも同じ面積になる (符号を反転しただけ)
+        std::vector<pa::Point> mn = { P(-3.0, -4.0), P(-5.0, -2.0) };
+        check(std::fabs(pa::hypervolume(mn, false, false, -1.0, -1.0) - 8.0)
+              < 1e-12,
+              "pareto: minimising gives the same area with flipped signs");
+    }
+
+    // ── 向きは FoM の種別が持っている (呼び出し側で書かない) ───────────
+    {
+        check(!ofd::fomMaximizes(ofd::FomKind::MinReflectionDb)
+              && !ofd::fomMaximizes(ofd::FomKind::MinVswr)
+              && ofd::fomMaximizes(ofd::FomKind::MaxPeakGainDb)
+              && ofd::fomMaximizes(ofd::FomKind::MaxFrontToBackDb),
+              "pareto: the FoM kinds carry their own direction");
+        // 反射は小さいほど良い / 利得は大きいほど良い の組で、
+        // 「反射が小さく利得が大きい」点が支配する
+        const bool maxRef = ofd::fomMaximizes(ofd::FomKind::MinReflectionDb);
+        const bool maxGain = ofd::fomMaximizes(ofd::FomKind::MaxPeakGainDb);
+        check(pa::dominates(P(-20.0, 8.0), P(-10.0, 5.0), maxRef, maxGain),
+              "pareto: less reflection with more gain dominates");
+        check(!pa::dominates(P(-20.0, 3.0), P(-10.0, 5.0), maxRef, maxGain),
+              "pareto: less reflection but less gain is a trade-off, not dominance");
+    }
+}
+
 static void testIlluminationScene()
 {
     g_file = "illumscene";
@@ -19967,6 +20153,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testParetoFront();
     testIlluminationScene();
     testRaySampling();
     testDensityField();

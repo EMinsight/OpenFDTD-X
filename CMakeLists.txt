@@ -118,6 +118,9 @@ set(CORE_SOURCES
     # IlluminationOpts → レイトレースの系 (照明タブと光タブで共有)
     src/core/IlluminationScene.cpp
     src/core/IlluminationScene.h
+    # 2 目的の非劣解集合 (Pareto フロント) — Qt 非依存
+    src/core/ParetoFront.cpp
+    src/core/ParetoFront.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する

@@ -1,8 +1,10 @@
 // OptimizeTab.cpp
 #include "OptimizeTab.h"
 #include "../core/DensityField.h"
+#include "../core/ParetoFront.h"
 #include "../core/Project.h"
 #include "../widgets/FieldHeatmap.h"
+#include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -107,9 +109,35 @@ const bool s_i18n = [] {
     // 最適化ブロックが無いので英語は "Pareto front" とする。
     I18n::reg("opz_pareto", "Paretoフロント", "Pareto front");
     I18n::reg("opz_pareto_tip",
-              "多目的 FoM のとき非劣解集合 (Paretoフロント) を出力する予定 (未実装)。",
-              "Planned output of the non-dominated set (Pareto front) for a "
-              "multi-objective FoM (not implemented).");
+              "チェックすると各点で 2 つ目の評価量も計算し、どちらかを良くすると"
+              "もう片方が悪くなる境目 (非劣解集合) を結果表と下の図に出します。",
+              "When checked, a second figure of merit is evaluated at every "
+              "point and the non-dominated set — the trade-off boundary — is "
+              "marked in the result table and drawn below.");
+    I18n::reg("opz_fom_kind2", "第 2 の評価量", "Second figure of merit");
+    I18n::reg("opz_col_fom2", "第 2 の評価量", "FoM 2");
+    I18n::reg("opz_col_front", "非劣解", "Non-dominated");
+    I18n::reg("opz_front_yes", "はい", "yes");
+    I18n::reg("opz_front_no", "—", "-");
+    I18n::reg("opz_pareto_plot", "Pareto フロント", "Pareto front");
+    I18n::reg("opz_pareto_note",
+              "全 %1 点のうち非劣解は %2 点。図はフロントを「%3」の順に並べた"
+              "もので、%4 が単調に入れ替わる (これがトレードオフそのもの)。"
+              "ハイパーボリューム (最も悪い点を参照点にした改善面積) は %5。",
+              "%2 of the %1 points are non-dominated. The plot orders the front "
+              "by \"%3\"; \"%4\" then varies monotonically — that is the "
+              "trade-off itself. The hypervolume (improvement area against the "
+              "worst point as reference) is %5.");
+    I18n::reg("opz_pareto_none",
+              "非劣解を作れる点がありません (2 つの評価量が両方とも取れた点が"
+              "要ります)。",
+              "There is no point from which a front can be built — a point needs "
+              "both figures of merit to be evaluated.");
+    I18n::reg("opz_pareto_same",
+              "2 つの評価量に同じものが選ばれているので、非劣解は最良点 1 つに"
+              "なります。違う評価量を選んでください。",
+              "The two figures of merit are the same, so the front collapses to "
+              "the single best point. Pick a different second one.");
     I18n::reg("opz_local", "ローカル", "Local");
     I18n::reg("opz_cluster", "HPC クラスター", "HPC cluster");
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
@@ -316,15 +344,19 @@ const bool s_i18n = [] {
     I18n::reg("opz_state_ok", "正常", "ok");
     I18n::reg("opz_state_fail", "失敗", "failed");
     I18n::reg("opz_state_nofom", "評価不可", "no FoM");
-    I18n::reg("opz_uw_run", "実行先 (ローカル / HPC / tidy3d) と Pareto 出力の選択",
-              "the execution target (local / HPC / tidy3d) and the Pareto output "
-              "option");
+    I18n::reg("opz_uw_run", "実行先の選択 (ローカル / HPC / tidy3d — "
+              "投入経路が無いので常にローカルで回します)",
+              "the execution-target selection (local / HPC / tidy3d — there is "
+              "no submission path, so runs always happen locally)");
     I18n::reg("opz_uw_run_ok",
-              "掃引の実行そのもの — 変数表の最小 / 最大 / 分割と上の評価量を使い、"
-              "ローカルでカーネルを回します",
+              "掃引の実行そのもの (変数表の最小 / 最大 / 分割と上の評価量を使い、"
+              "ローカルでカーネルを回します) と、Pareto フロント出力 "
+              "(各点で 2 つ目の評価量も計算し、非劣解を表と図に出します)",
               "the sweep run itself — it uses min / max / divisions from the "
               "variable table and the figure of merit above, and runs the kernel "
-              "locally");
+              "locally — and the Pareto front output, which evaluates a second "
+              "figure of merit at every point and marks the non-dominated set in "
+              "the table and the plot");
     return true;
 }();
 
@@ -616,6 +648,12 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_fomKind->addItem(I18n::tr("opz_fom_gain"));     // 2 最大利得 (最大化)
     m_fomKind->addItem(I18n::tr("opz_fom_fb"));       // 3 前後比 (最大化)
     swForm->addRow(I18n::tr("opz_fom_kind"), m_fomKind);
+    m_fomKind2 = new QComboBox(sRun);
+    for (const char *k : { "opz_fom_ref", "opz_fom_vswr", "opz_fom_gain",
+                           "opz_fom_fb" })
+        m_fomKind2->addItem(I18n::tr(k));
+    m_fomKind2->setCurrentIndex(2);          // 既定は 1 つ目と別のものにする
+    swForm->addRow(I18n::tr("opz_fom_kind2"), m_fomKind2);
     m_fomFreq = new QLineEdit(sRun);
     m_fomFreq->setPlaceholderText(I18n::tr("opz_fom_freq_ph"));
     m_fomFreq->setMaximumWidth(140);
@@ -667,7 +705,19 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_pareto = new QCheckBox(I18n::tr("opz_pareto"), sRun);
     m_pareto->setToolTip(I18n::tr("opz_pareto_tip"));
     sRun->vbox()->addWidget(m_pareto);
-    // 実行先・Pareto 出力もローカル state のみ
+    // Pareto を外しているときは 2 つ目の評価量を選ぶ意味が無い
+    connect(m_pareto, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_fomKind2) m_fomKind2->setEnabled(on);
+    });
+    m_fomKind2->setEnabled(false);
+    m_paretoPlot = new MiniPlot(sRun);
+    m_paretoPlot->setMinimumHeight(150);
+    m_paretoPlot->setVisible(false);
+    sRun->vbox()->addWidget(m_paretoPlot);
+    m_paretoNote = hintLabel(QString(), sRun);
+    m_paretoNote->setVisible(false);
+    sRun->vbox()->addWidget(m_paretoNote);
+    // 実行先の選択だけがローカル state のまま
     sRun->vbox()->addWidget(tabhelp::unwiredNote(sRun, I18n::tr("opz_uw_run"),
                                      I18n::tr("opz_uw_run_ok")));
     v->addWidget(sRun);
@@ -753,10 +803,7 @@ void OptimizeTab::startSweep()
     cfg.run.mode = RunMode::Both;
     cfg.run.kernel = Runner::kernelForProject(*m_p);
 
-    m_foms.clear();
-    m_resultTable->setRowCount(0);
-    m_resultTable->setVisible(true);
-    m_bestLabel->setVisible(false);
+    prepareResultTable();
     m_progress->setVisible(true);
     m_progress->setRange(0, cfg.points);
     m_progress->setValue(0);
@@ -776,6 +823,11 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
     const double freq = m_fomFreq->text().trimmed().toDouble(&okFreq);
     const FomValue fv = evaluateFom(kind, r, okFreq ? freq : 0.0);
     m_foms.push_back(fv);
+    const bool pareto = m_pareto && m_pareto->isChecked();
+    if (pareto) {
+        const FomKind kind2 = static_cast<FomKind>(m_fomKind2->currentIndex());
+        m_foms2.push_back(evaluateFom(kind2, r, okFreq ? freq : 0.0));
+    }
     if (m_optimizing) {
         // 評価できなかった点は NaN で返す (0 で埋めない — 最良に採られる)
         m_genFoms.push_back(fv.valid
@@ -809,7 +861,16 @@ void OptimizeTab::onPointFinished(int index, const SweepResult &r)
     m_resultTable->setItem(row, 1, ro(fv.valid
                                           ? QString::number(fv.value, 'f', 3)
                                           : QStringLiteral("—")));
-    m_resultTable->setItem(row, 2, ro(I18n::tr(
+    int col = 2;
+    if (pareto) {
+        const FomValue &f2 = m_foms2.back();
+        m_resultTable->setItem(row, col++, ro(f2.valid
+                                   ? QString::number(f2.value, 'f', 3)
+                                   : QStringLiteral("—")));
+        // 非劣解かどうかは全点が揃うまで決まらない (ここでは空にしておく)
+        m_resultTable->setItem(row, col++, ro(QString()));
+    }
+    m_resultTable->setItem(row, col, ro(I18n::tr(
         !r.ok ? "opz_state_fail" : (fv.valid ? "opz_state_ok"
                                              : "opz_state_nofom"))));
     m_progress->setValue(index + 1);
@@ -852,7 +913,107 @@ void OptimizeTab::onSweepFinished(bool ok)
         m_bestLabel->setText(I18n::tr("opz_best_none"));
         m_bestLabel->setVisible(true);
     }
+    updateParetoFront();
     updateRunUi();
+}
+
+// ── Pareto フロント (core/ParetoFront) ─────────────────────────────────────
+// 2 つの評価量を両方とも取れた点だけで非劣解集合を作り、結果表へ印を付けて
+// フロントを図にする。向きは FoM の種別が持っているので `fomMaximizes()` を
+// そのまま渡す (呼び出し側で符号を書かない — OptimizeFom.h)。
+void OptimizeTab::updateParetoFront()
+{
+    if (!m_pareto || !m_pareto->isChecked()) return;
+    if (m_foms2.size() != m_foms.size()) return;
+
+    const FomKind k1 = static_cast<FomKind>(m_fomKind->currentIndex());
+    const FomKind k2 = static_cast<FomKind>(m_fomKind2->currentIndex());
+    const bool max1 = fomMaximizes(k1), max2 = fomMaximizes(k2);
+
+    std::vector<pareto::Point> pts;
+    pts.reserve(static_cast<size_t>(m_foms.size()));
+    for (int i = 0; i < m_foms.size(); ++i) {
+        pareto::Point p;
+        p.a = m_foms[i].value;
+        p.b = m_foms2[i].value;
+        p.valid = m_foms[i].valid && m_foms2[i].valid;
+        pts.push_back(p);
+    }
+
+    const std::vector<int> sorted = pareto::frontSortedByA(pts, max1, max2);
+    m_paretoNote->setVisible(true);
+    if (sorted.empty()) {
+        m_paretoPlot->setVisible(false);
+        m_paretoNote->setText(I18n::tr("opz_pareto_none"));
+        return;
+    }
+
+    // 表へ印を付ける (「非劣解」列は 3 列目)
+    std::vector<char> onFront(static_cast<size_t>(m_foms.size()), 0);
+    for (int i : sorted) onFront[static_cast<size_t>(i)] = 1;
+    for (int r = 0; r < m_resultTable->rowCount()
+                    && r < static_cast<int>(onFront.size()); ++r)
+        if (auto *it = m_resultTable->item(r, 3))
+            it->setText(I18n::tr(onFront[static_cast<size_t>(r)]
+                                     ? "opz_front_yes" : "opz_front_no"));
+
+    // 参照点 = 両目的で最も悪い点。ハイパーボリュームはそこからの改善面積
+    double worstA = pts[static_cast<size_t>(sorted[0])].a;
+    double worstB = pts[static_cast<size_t>(sorted[0])].b;
+    for (const pareto::Point &p : pts) {
+        if (!p.valid) continue;
+        worstA = max1 ? std::min(worstA, p.a) : std::max(worstA, p.a);
+        worstB = max2 ? std::min(worstB, p.b) : std::max(worstB, p.b);
+    }
+    const double hv = pareto::hypervolume(pts, max1, max2, worstA, worstB);
+
+    QVector<MiniSeries> series;
+    MiniSeries f;
+    f.markers = true;
+    f.label = I18n::tr("opz_pareto_plot");
+    for (int i : sorted)
+        f.pts.push_back(QPointF(pts[static_cast<size_t>(i)].a,
+                                pts[static_cast<size_t>(i)].b));
+    series.push_back(f);
+    m_paretoPlot->setLabels(m_fomKind->currentText(), m_fomKind2->currentText());
+    m_paretoPlot->setSeries(series);
+    m_paretoPlot->setVisible(true);
+
+    int validCount = 0;
+    for (const pareto::Point &p : pts) if (p.valid) ++validCount;
+    m_paretoNote->setText(
+        (m_fomKind->currentIndex() == m_fomKind2->currentIndex())
+            ? I18n::tr("opz_pareto_same")
+            : I18n::tr("opz_pareto_note")
+                  .arg(validCount)
+                  .arg(static_cast<int>(sorted.size()))
+                  .arg(m_fomKind->currentText())
+                  .arg(m_fomKind2->currentText())
+                  .arg(QString::number(hv, 'g', 4)));
+}
+
+// 結果表を実行前の状態に戻す。Pareto を出すときだけ「第 2 の評価量」と
+// 「非劣解」の列を足す (掃引と最適化ループで同じ手順を踏むための共有部分)。
+void OptimizeTab::prepareResultTable()
+{
+    m_foms.clear();
+    m_foms2.clear();
+    m_resultTable->setRowCount(0);
+    const bool pareto = m_pareto && m_pareto->isChecked();
+    m_resultTable->setColumnCount(pareto ? 5 : 3);
+    if (pareto)
+        m_resultTable->setHorizontalHeaderLabels(
+            { I18n::tr("opz_col_value"), I18n::tr("opz_col_fom"),
+              I18n::tr("opz_col_fom2"), I18n::tr("opz_col_front"),
+              I18n::tr("opz_col_state") });
+    else
+        m_resultTable->setHorizontalHeaderLabels(
+            { I18n::tr("opz_col_value"), I18n::tr("opz_col_fom"),
+              I18n::tr("opz_col_state") });
+    m_resultTable->setVisible(true);
+    m_bestLabel->setVisible(false);
+    m_paretoPlot->setVisible(false);
+    m_paretoNote->setVisible(false);
 }
 
 // 実行ボタンの文言と有効・無効 (掃引 / PSO / GA だけが実行できる)
@@ -1226,10 +1387,7 @@ void OptimizeTab::startOptimize()
     m_optimizing = true;
     m_optStopped = false;
 
-    m_foms.clear();
-    m_resultTable->setRowCount(0);
-    m_resultTable->setVisible(true);
-    m_bestLabel->setVisible(false);
+    prepareResultTable();
     m_runStatus->setText(I18n::tr("opz_opt_cost")
                              .arg(pop).arg(gens).arg(pop * gens));
     if (!runGeneration()) {

@@ -26,6 +26,8 @@ class QProgressBar;
 class QPushButton;
 class QTableWidget;
 
+namespace ofd { class MiniPlot; }
+
 namespace ofd {
 
 class FieldHeatmap;
@@ -56,6 +58,8 @@ private:
     // 掃引が「決めた点を順に回す」のに対し、こちらは 1 世代ぶんを回してから
     // 次の世代を決める。SweepRunner の samples (複数パラメータ同時) を
     // 1 世代 = 1 回の start() として使う。
+    void updateParetoFront();     // 2 目的の非劣解集合 (core/ParetoFront)
+    void prepareResultTable();    // 結果表を実行前へ (Pareto で列が変わる)
     void startOptimize();
     bool runGeneration();          // 現世代を投入する (false = 開始できない)
     void finishOptimize(bool ok);
@@ -106,6 +110,10 @@ private:
     // ベイズ / トポロジー) は最適化ループが無いので従来どおり未実装。
     QComboBox    *m_sweepVar = nullptr;   // 何を振るか (SweepKind)
     QComboBox    *m_fomKind = nullptr;    // 何で良し悪しを決めるか
+    QComboBox    *m_fomKind2 = nullptr;   // Pareto のときの 2 つ目の評価量
+    MiniPlot     *m_paretoPlot = nullptr; // 非劣解集合 (トレードオフ曲線)
+    QLabel       *m_paretoNote = nullptr;
+    QVector<FomValue> m_foms2;            // 2 つ目の評価量 (Pareto のときだけ)
     QLineEdit    *m_fomFreq = nullptr;    // 評価周波数 [Hz] (空 = 各点の最良)
     QPushButton  *m_runBtn = nullptr;
     QProgressBar *m_progress = nullptr;
