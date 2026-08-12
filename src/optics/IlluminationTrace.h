@@ -125,12 +125,42 @@ struct Scene {
     int         angleBins = 180;  // 遠方界の θ ビン数 (0..180°)
 };
 
+// ── 追跡の打ち切りと放射方向のサンプリング ─────────────────────────────────
+//
+// 放射方向の引き方は 4 通りある。**どれも推定量としては不偏**で、違うのは
+// 分散だけ (光線 1 本 1 本の重みの与え方が変わる):
+//
+//   Qmc        : Halton 列で cos 分布から引く。ランバート光源では cos 分布
+//                そのものが重要度サンプリングなので、**全ての光線が等しい
+//                重み Φ/N** を持つ。既定 (従来の挙動と完全に一致)。
+//   Jittered   : √N × √N の層に分けて層内を乱数でずらす。重みは Qmc と同じ。
+//   Uniform    : 立体角に一様に引き、重みで cos を補う (w = 2cosθ·Φ/N)。
+//                素朴な方式で、**分散が最も大きい**。比較の基準として置く。
+//   Importance : 評価面を見込む円錐 (θ < θ_c) の内と外に光線を配り分ける。
+//                内側へ配る割合 p を実際の光束比 F = sin²θ_c より大きく
+//                (最低でも半分) 取り、重みで割り戻す:
+//                    内 w = Φ·F/n_in,  外 w = Φ·(1−F)/(n_out)
+//                本数を**あらかじめ決めて配る** (層化) ので、初期重みの
+//                総和は厳密に Φ のままで、光束収支も閉じたままになる。
+enum class Sampling { Uniform = 0, Jittered = 1, Qmc = 2, Importance = 3 };
+
+struct TraceOptions {
+    Sampling sampling = Sampling::Qmc;
+    int      maxBounces = 64;        // これを超えたら打ち切って吸収に計上
+    double   minEnergy_dB = -90.0;   // 初期重みに対する打ち切り閾値 (電力比)
+    int      maxDiffuse = 0;         // 非鏡面の散乱回数の上限 (0 = 制限なし)
+};
+
 struct Result {
     bool   valid = false;
     long long rays = 0;
 
     // 光束収支 [lm] — out + absorbed = in (丸め誤差まで)
     double fluxIn_lm = 0.0;
+    // 実際に放射した重みの合計。Qmc / Jittered / Importance では厳密に
+    // fluxIn と一致し、Uniform だけモンテカルロ誤差ぶんずれる (重みが
+    // 2cosθ で揺らぐため)。**光束収支はこちらに対して厳密に閉じる**。
+    double fluxEmitted_lm = 0.0;
     double fluxOut_lm = 0.0;       // 系の外へ出た
     double fluxAbsorbed_lm = 0.0;  // 面で吸収 + 打ち切り + 地平線越え
     double fluxTarget_lm = 0.0;    // 評価面に当たった
@@ -155,11 +185,12 @@ struct Result {
 
     long long raysOnTarget = 0;
     long long raysTrapped = 0;          // 反射回数の上限で打ち切った本数
+    long long raysDiffuseCut = 0;       // 拡散次数の上限で打ち切った本数
 };
 
 // nRays 本を追跡する。nRays <= 0 や幾何が不正 (f <= 0, R <= 2f, D が系の
 // 内側など) のときは valid = false で返す (「それらしい値」を返さない)。
-Result trace(const Scene &s, long long nRays);
+Result trace(const Scene &s, long long nRays, const TraceOptions &opt = TraceOptions());
 
 // 追跡が成り立たない理由を返す (成り立つときは nullptr)。
 // 呼び出し側がそのまま利用者へ出せるよう、理由の識別子を返す:

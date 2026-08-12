@@ -3,6 +3,7 @@
 #include "TabHelpers.h"
 #include "../core/Project.h"
 #include "../io/PhotometricIO.h"
+#include "../core/IlluminationScene.h"
 #include "../optics/IlluminationTrace.h"
 #include "../optics/SourceSpectrum.h"
 #include "../widgets/FieldHeatmap.h"
@@ -866,55 +867,21 @@ void IlluminationTab::updateSpectrumPage()
     m_spectrumStack->setCurrentIndex(qBound(0, m_spectrum->currentIndex(), 3));
 }
 
-// IlluminationOpts → 非順次レイトレースの系。追跡が成り立たないときは
-// 「なぜ計算しないのか」を利用者へそのまま出せる I18n キーを返す (絶対規則 5)。
+// IlluminationOpts → 非順次レイトレースの系。写像そのものは光タブと共有
+// (core/IlluminationScene) で、ここは**理由の識別子をこのタブの文言へ
+// 割り当てるだけ**にする (絶対規則 5: 計算しない理由をそのまま出す)。
 static const char *buildTraceScene(const IlluminationOpts &o,
                                    ofd::illum::Scene *sc, long long *nRays)
 {
-    using namespace ofd::illum;
-
-    // 追跡モデルに入っていない選択 — 値を出さずに理由を返す
-    if (o.srcModel == 1) return "ilm_no_raydata";      // レイデータ (実測)
-    if (o.surface == 2)  return "ilm_no_bsdf";         // BSDF 実測
-    if (o.tirLens || o.lightGuide || o.phosphor) return "ilm_no_elem";
-
-    Scatter model = Scatter::Specular;
-    if (o.surface == 1)      model = Scatter::Lambertian;
-    else if (o.surface == 3) model = Scatter::ABG;
-
-    Scene &s = *sc;
-    s.source.kind = (o.srcModel == 2) ? Source::Chip : Source::Point;
-    s.source.size_mm = o.chipSize_mm;
-    s.source.flux_lm = o.flux_lm;
-
-    s.reflector.enabled = o.reflector;
-    s.reflector.focal_mm = o.reflFocal_mm;
-    s.reflector.radius_mm = o.reflRadius_mm;
-    s.reflector.reflectance = o.reflReflect;
-    s.reflector.model = model;
-    s.reflector.abg = { o.abgA, o.abgB, o.abgG };
-
-    s.diffuser.enabled = o.diffuser;
-    s.diffuser.z_mm = o.diffZ_mm;
-    s.diffuser.radius_mm = o.diffRadius_mm;
-    s.diffuser.transmittance = o.diffTrans;
-    // 拡散板の「鏡面」は素通し (散乱しない透明板) の意味になる
-    s.diffuser.model = model;
-    s.diffuser.abg = { o.abgA, o.abgB, o.abgG };
-
-    s.target.distance_mm = o.targetDist_mm;
-    s.target.half_mm = o.targetHalf_mm;
-
-    // 編集のたびに追跡するので本数は打ち切る (根拠欄に実際の本数を出す)
-    const double want = (o.rays > 0.0) ? o.rays : 0.0;
-    *nRays = static_cast<long long>(std::min(want, 200000.0));
-
-    const char *b = traceBlocker(s, *nRays);
+    const char *b = ofd::illum::sceneFromOpts(o, sc, nRays);
     if (b == nullptr) return nullptr;
-    if (std::strcmp(b, "rays") == 0)   return "ilm_no_rays";
-    if (std::strcmp(b, "flux") == 0)   return "ilm_no_flux";
-    if (std::strcmp(b, "focal") == 0)  return "ilm_no_focal";
-    if (std::strcmp(b, "radius") == 0) return "ilm_no_radius";
+    if (std::strcmp(b, "raydata") == 0) return "ilm_no_raydata";
+    if (std::strcmp(b, "bsdf") == 0)    return "ilm_no_bsdf";
+    if (std::strcmp(b, "elem") == 0)    return "ilm_no_elem";
+    if (std::strcmp(b, "rays") == 0)    return "ilm_no_rays";
+    if (std::strcmp(b, "flux") == 0)    return "ilm_no_flux";
+    if (std::strcmp(b, "focal") == 0)   return "ilm_no_focal";
+    if (std::strcmp(b, "radius") == 0)  return "ilm_no_radius";
     return "ilm_no_target";
 }
 

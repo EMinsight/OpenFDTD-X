@@ -254,8 +254,31 @@ const char *traceBlocker(const Scene &s, long long nRays)
     return nullptr;
 }
 
+// ── 放射方向のサンプリング ─────────────────────────────────────────────────
+// どの方式でも「方向 d と初期重み w」を返す。**ランバート放射の推定量として
+// 不偏**であることが条件で、違うのは分散だけ。
+struct Emission { V3 d; double w; };
+
+// sin²θ = q (q ∈ [0,1]) と方位角 φ から方向を作る
+inline V3 dirFrom(double q, double phi)
+{
+    const double sinT = std::sqrt(std::max(0.0, std::min(1.0, q)));
+    const double cosT = std::sqrt(std::max(0.0, 1.0 - q));
+    return V3{ sinT * std::cos(phi), sinT * std::sin(phi), cosT };
+}
+
+// 評価面 (または反射鏡の開口) を見込む円錐の sin²θ_c。
+// Importance の層化に使う。0 < F < 1 でなければ層化しない。
+double importanceCone(const Scene &s)
+{
+    const double D = s.target.distance_mm, W = s.target.half_mm;
+    if (!(D > 0.0) || !(W > 0.0)) return -1.0;
+    const double t = W / D;
+    return (t * t) / (1.0 + t * t);          // sin²(atan(W/D))
+}
+
 // ── 本体 ───────────────────────────────────────────────────────────────────
-Result trace(const Scene &s, long long nRays)
+Result trace(const Scene &s, long long nRays, const TraceOptions &opt)
 {
     Result r;
     if (traceBlocker(s, nRays) != nullptr) return r;
@@ -280,13 +303,74 @@ Result trace(const Scene &s, long long nRays)
 
     double absorbed = 0.0, out = 0.0, onTarget = 0.0;
 
+    // Importance の層化: 円錐の内へ n_in 本、外へ n_out 本を**あらかじめ**配る。
+    // 本数を決め打ちにするので初期重みの総和は厳密に Φ のままになる。
+    const double coneF = importanceCone(s);
+    const bool stratify = (opt.sampling == Sampling::Importance)
+                       && (coneF > 1.0e-12) && (coneF < 1.0 - 1.0e-12)
+                       && (nRays >= 2);
+    // 内側へ配る割合は実際の光束比より小さくしない (最低でも半分)
+    const double pIn = stratify ? std::max(coneF, 0.5) : 0.0;
+    long long nIn = stratify
+                  ? std::max<long long>(1, std::min<long long>(nRays - 1,
+                        static_cast<long long>(pIn * nRays + 0.5)))
+                  : 0;
+    const long long nOut = nRays - nIn;
+    // 層の刻み (Jittered)
+    const long long strat = static_cast<long long>(std::sqrt(
+        static_cast<double>(std::max<long long>(1, nRays))));
+
+    double emitted = 0.0;
+
     for (long long i = 0; i < nRays; ++i) {
-        // 放射: 準乱数で cos 分布 (+z 半球)。位置はチップ面上で一様。
-        const double u1 = halton(i, 2), u2 = halton(i, 3);
-        const double sinT = std::sqrt(u1);
-        const double cosT = std::sqrt(std::max(0.0, 1.0 - u1));
-        const double phi = 2.0 * kPi * u2;
-        V3 d{ sinT * std::cos(phi), sinT * std::sin(phi), cosT };
+        // 放射方向と初期重み (方式ごとに不偏な組み合わせを作る)
+        uint64_t erng = static_cast<uint64_t>(i) * 0x94D049BB133111EBull
+                      + 0xBF58476D1CE4E5B9ull;
+        double u1 = halton(i, 2), u2 = halton(i, 3);
+        Emission em{ V3{ 0.0, 0.0, 1.0 }, w0 };
+        switch (opt.sampling) {
+            case Sampling::Qmc:
+                em.d = dirFrom(u1, 2.0 * kPi * u2);
+                break;
+            case Sampling::Jittered: {
+                // √N × √N の層に分け、層内を乱数でずらす
+                const long long a = (strat > 0) ? (i % strat) : 0;
+                const long long b = (strat > 0) ? (i / strat) : 0;
+                if (strat > 0 && b < strat) {
+                    u1 = (static_cast<double>(a) + u01(erng)) / static_cast<double>(strat);
+                    u2 = (static_cast<double>(b) + u01(erng)) / static_cast<double>(strat);
+                } else {                       // 層に収まらない端数は素の乱数で
+                    u1 = u01(erng);
+                    u2 = u01(erng);
+                }
+                em.d = dirFrom(u1, 2.0 * kPi * u2);
+                break;
+            }
+            case Sampling::Uniform: {
+                // 立体角に一様 (cosθ が一様) → 重みで cos を補う
+                const double cosT = halton(i, 2);
+                em.d = dirFrom(1.0 - cosT * cosT, 2.0 * kPi * halton(i, 3));
+                em.w = w0 * 2.0 * cosT;
+                break;
+            }
+            case Sampling::Importance: {
+                if (!stratify) { em.d = dirFrom(u1, 2.0 * kPi * u2); break; }
+                if (i < nIn) {                 // 円錐の内: sin²θ ∈ [0, F)
+                    const double q = coneF * (halton(i, 2));
+                    em.d = dirFrom(q, 2.0 * kPi * halton(i, 3));
+                    em.w = s.source.flux_lm * coneF / static_cast<double>(nIn);
+                } else {                       // 円錐の外: sin²θ ∈ [F, 1)
+                    const long long j = i - nIn;
+                    const double q = coneF + (1.0 - coneF) * halton(j, 2);
+                    em.d = dirFrom(q, 2.0 * kPi * halton(j, 3));
+                    em.w = s.source.flux_lm * (1.0 - coneF)
+                         / static_cast<double>(nOut);
+                }
+                break;
+            }
+        }
+        V3 d = em.d;
+        emitted += em.w;
 
         V3 o{ 0.0, 0.0, 0.0 };
         if (s.source.kind == Source::Chip) {
@@ -297,11 +381,16 @@ Result trace(const Scene &s, long long nRays)
 
         uint64_t rng = static_cast<uint64_t>(i) * 0x2545F4914F6CDD1Dull
                      + 0x9E3779B97F4A7C15ull;
-        double w = w0;
+        double w = em.w;
+        // 打ち切り閾値はその光線の初期重みに対する比で決める
+        const double wCut = em.w * std::pow(10.0, opt.minEnergy_dB / 10.0);
+        const int maxBounce = (opt.maxBounces > 0) ? opt.maxBounces : kMaxBounce;
+        const int maxDiff = opt.maxDiffuse;   // 0 = 制限なし
+        int nDiffuse = 0;
 
         int bounce = 0;
         for (;; ++bounce) {
-            if (bounce >= kMaxBounce) {
+            if (bounce >= maxBounce) {
                 absorbed += w;
                 ++r.raysTrapped;
                 w = 0.0;
@@ -325,7 +414,11 @@ Result trace(const Scene &s, long long nRays)
                 const V3 n = paraboloidNormal(p, f);
                 absorbed += w * (1.0 - rho);
                 w *= rho;
-                if (w <= w0 * 1.0e-9) { absorbed += w; w = 0.0; break; }
+                if (w <= wCut) { absorbed += w; w = 0.0; break; }
+                if (s.reflector.model != Scatter::Specular && maxDiff > 0
+                    && ++nDiffuse > maxDiff) {
+                    absorbed += w; w = 0.0; ++r.raysDiffuseCut; break;
+                }
                 const V3 spec = normalize(d - n * (2.0 * dot(d, n)));
                 bool ok = true;
                 const V3 nd = scatterDirection(s.reflector.model, abgR,
@@ -338,7 +431,11 @@ Result trace(const Scene &s, long long nRays)
                 const V3 n = (d.z > 0.0) ? V3{ 0.0, 0.0, 1.0 } : V3{ 0.0, 0.0, -1.0 };
                 absorbed += w * (1.0 - tau);
                 w *= tau;
-                if (w <= w0 * 1.0e-9) { absorbed += w; w = 0.0; break; }
+                if (w <= wCut) { absorbed += w; w = 0.0; break; }
+                if (s.diffuser.model != Scatter::Specular && maxDiff > 0
+                    && ++nDiffuse > maxDiff) {
+                    absorbed += w; w = 0.0; ++r.raysDiffuseCut; break;
+                }
                 bool ok = true;
                 // 透過なので鏡面方向 = 進行方向のまま
                 const V3 nd = scatterDirection(s.diffuser.model, abgD,
@@ -381,6 +478,7 @@ Result trace(const Scene &s, long long nRays)
     // ── 集計 ───────────────────────────────────────────────────────────────
     r.rays = nRays;
     r.fluxIn_lm = s.source.flux_lm;
+    r.fluxEmitted_lm = emitted;
     r.fluxOut_lm = out;
     r.fluxAbsorbed_lm = absorbed;
     r.fluxTarget_lm = onTarget;

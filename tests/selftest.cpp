@@ -81,6 +81,7 @@
 #include "core/ReceiverNoise.h"
 #include "core/TransmissionLine.h"
 #include "core/DensityField.h"
+#include "core/IlluminationScene.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -18323,6 +18324,284 @@ static void testRadarCrossSection()
 // ── トポロジー最適化の密度場パラメータ化 (core/DensityField) ────────────────
 // フィルタ・射影・矩形分解は、いずれも **厳密に成り立つ恒等式**を持っている。
 // 記録した数値ではなくその恒等式で判定する。
+// ── 放射方向のサンプリング方式と追跡の打ち切り (optics/IlluminationTrace) ───
+// 4 つの方式は**どれも同じ量を推定する** (不偏)。違うのは分散だけ。
+// 「答えが変わらないこと」と「分散が下がること」の両方を判定する。
+
+// ── IlluminationOpts → 系 の共有写像 (core/IlluminationScene) ───────────────
+// 照明タブと光タブが同じ設定から同じ系を組み立てることを保証する部分。
+static void testIlluminationScene()
+{
+    g_file = "illumscene";
+    namespace il = ofd::illum;
+
+    ofd::IlluminationOpts o;             // 既定 (レイデータ + BSDF 実測 + 蛍光体)
+    il::Scene sc;
+    long long n = 0;
+
+    // 追跡モデルに入っていない選択は、識別子で理由が返る (無言で 0 にしない)
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "raydata") == 0,
+          "illumscene: a measured ray-data source is reported as raydata");
+    o.srcModel = 0;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "bsdf") == 0,
+          "illumscene: a measured BSDF is reported as bsdf");
+    o.surface = 1;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "elem") == 0,
+          "illumscene: phosphor scattering is reported as elem");
+    o.phosphor = false;
+    o.tirLens = true;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "elem") == 0,
+          "illumscene: a TIR lens is reported the same way");
+    o.tirLens = false;
+
+    // ここまで外すと追跡できる系になる
+    const char *why = il::sceneFromOpts(o, &sc, &n);
+    check(why == nullptr, "illumscene: the remaining setup traces");
+    check(sc.source.kind == il::Source::Point && sc.source.flux_lm == o.flux_lm,
+          "illumscene: the source carries the flux from the options");
+    check(sc.reflector.enabled == o.reflector
+          && sc.reflector.focal_mm == o.reflFocal_mm
+          && sc.reflector.radius_mm == o.reflRadius_mm
+          && sc.reflector.reflectance == o.reflReflect,
+          "illumscene: the reflector geometry comes straight from the options");
+    check(sc.diffuser.enabled == o.diffuser && sc.diffuser.z_mm == o.diffZ_mm
+          && sc.diffuser.transmittance == o.diffTrans,
+          "illumscene: so does the diffuser");
+    check(sc.target.distance_mm == o.targetDist_mm
+          && sc.target.half_mm == o.targetHalf_mm,
+          "illumscene: and the target plane");
+    check(sc.reflector.model == il::Scatter::Lambertian,
+          "illumscene: surface = 1 selects the Lambertian model");
+    o.surface = 3;
+    il::sceneFromOpts(o, &sc, &n);
+    check(sc.reflector.model == il::Scatter::ABG,
+          "illumscene: surface = 3 selects the ABG model");
+    o.surface = 0;
+    il::sceneFromOpts(o, &sc, &n);
+    check(sc.reflector.model == il::Scatter::Specular,
+          "illumscene: surface = 0 selects the specular model");
+    o.surface = 1;
+
+    // 光線数の上限: 既定は 200k で頭打ち、0 を渡すと上限なし
+    o.rays = 1.0e7;
+    il::sceneFromOpts(o, &sc, &n);
+    check(n == 200000, "illumscene: the ray count is capped for live editing");
+    il::sceneFromOpts(o, &sc, &n, 0);
+    check(n == 10000000, "illumscene: passing 0 removes the cap");
+    o.rays = 5000.0;
+    il::sceneFromOpts(o, &sc, &n);
+    check(n == 5000, "illumscene: a count below the cap is used as-is");
+
+    // 幾何が不正なときは traceBlocker と同じ識別子がそのまま出る
+    o.reflFocal_mm = 0.0;
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "focal") == 0,
+          "illumscene: an invalid focal length is reported as focal");
+    o.reflFocal_mm = 5.0;
+    o.reflRadius_mm = 1.0;               // R <= 2f
+    check(std::strcmp(il::sceneFromOpts(o, &sc, &n), "radius") == 0,
+          "illumscene: an aperture that cannot catch a ray is reported as radius");
+}
+
+static void testRaySampling()
+{
+    g_file = "raysample";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    const double PHI = 1000.0;
+
+    // 評価面を狭く取った系 — 放射の大半が評価面を外れるので、円錐へ光線を
+    // 寄せる重要度サンプリングが効く配置になる
+    il::Scene sc;
+    sc.source.flux_lm = PHI;
+    sc.target.distance_mm = 1000.0;
+    sc.target.half_mm = 100.0;      // 見込み半角 atan(0.1) ≈ 5.71°
+    sc.target.cells = 11;
+
+    const double I0 = PHI / PI;     // ランバート点光源の軸上光度 [cd]
+    const double E0 = I0 / (1.0 * 1.0);   // 中心照度 [lx] (D = 1 m)
+
+    auto run = [&](il::Sampling m, long long n) {
+        il::TraceOptions o;
+        o.sampling = m;
+        return il::trace(sc, n, o);
+    };
+
+    // ── 既定は従来どおり (QMC) ──────────────────────────────────────────
+    {
+        const il::Result a = il::trace(sc, 20000);
+        const il::Result b = run(il::Sampling::Qmc, 20000);
+        check(a.valid && b.valid, "raysample: both traces run");
+        check(a.illumCenter_lx == b.illumCenter_lx
+              && a.fluxOut_lm == b.fluxOut_lm && a.fluxTarget_lm == b.fluxTarget_lm,
+              "raysample: the default options are bit-identical to QMC");
+    }
+
+    // ── どの方式も同じ中心照度を推定する (不偏) ─────────────────────────
+    {
+        const long long N = 200000;
+        const il::Result q = run(il::Sampling::Qmc, N);
+        const il::Result j = run(il::Sampling::Jittered, N);
+        const il::Result u = run(il::Sampling::Uniform, N);
+        const il::Result p = run(il::Sampling::Importance, N);
+        check(q.valid && j.valid && u.valid && p.valid,
+              "raysample: every sampling mode traces");
+        // 解析解は E(0) = I0/D² = Φ/(π D²)。セル平均なので数 % の幅を見る
+        for (const il::Result *r : { &q, &j, &u, &p })
+            check(std::fabs(r->illumCenter_lx - E0) < 0.05 * E0,
+                  "raysample: every mode reproduces the analytic centre illuminance");
+        // 方式どうしの食い違いも同じ程度に収まる (系統誤差が無い)
+        check(std::fabs(p.illumCenter_lx - q.illumCenter_lx) < 0.05 * E0,
+              "raysample: importance sampling agrees with QMC (it is unbiased)");
+        check(std::fabs(u.illumCenter_lx - q.illumCenter_lx) < 0.10 * E0,
+              "raysample: uniform sampling agrees with QMC too");
+    }
+
+    // ── 重要度サンプリングは分散を下げる ────────────────────────────────
+    // 同じ光線数で「評価面に当たった本数」が増える = 推定に使える標本が増える。
+    {
+        const long long N = 100000;
+        const il::Result q = run(il::Sampling::Qmc, N);
+        const il::Result p = run(il::Sampling::Importance, N);
+        check(p.raysOnTarget > q.raysOnTarget,
+              "raysample: importance sampling puts more rays on the target");
+        // 評価面の見込みは sin^2(atan(0.1)) ≈ 0.0098 なので、半分を円錐へ
+        // 配ると当たる本数はおよそ 50 倍になる (下限だけ判定する)
+        check(p.raysOnTarget > 10 * q.raysOnTarget,
+              "raysample: the gain is large when the target subtends little solid angle");
+    }
+
+    // ── 層化しても光束は増えも減りもしない ──────────────────────────────
+    {
+        const il::Result p = run(il::Sampling::Importance, 50000);
+        // 本数を決め打ちで配るので、初期重みの総和は厳密に Φ のまま
+        check(std::fabs(p.fluxEmitted_lm - PHI) < 1e-9 * PHI,
+              "raysample: stratifying keeps the emitted flux exactly at phi");
+        check(std::fabs(p.fluxOut_lm + p.fluxAbsorbed_lm - p.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the flux budget still closes exactly");
+        // 評価面へ届く光束も方式に依らない (重みで割り戻しているから)
+        const il::Result q = run(il::Sampling::Qmc, 200000);
+        const il::Result p2 = run(il::Sampling::Importance, 200000);
+        check(std::fabs(p2.fluxTarget_lm - q.fluxTarget_lm) < 0.05 * q.fluxTarget_lm,
+              "raysample: the flux on the target is the same either way");
+    }
+
+    // ── Uniform は重みが揺らぐので放射光束が Φ からずれる ───────────────
+    {
+        const il::Result u1 = run(il::Sampling::Uniform, 2000);
+        const il::Result u2 = run(il::Sampling::Uniform, 200000);
+        check(std::fabs(u1.fluxEmitted_lm - PHI) > 0.0,
+              "raysample: uniform sampling only estimates the emitted flux");
+        // 本数を 100 倍にすると誤差は縮む (推定量として収束している)
+        check(std::fabs(u2.fluxEmitted_lm - PHI) < std::fabs(u1.fluxEmitted_lm - PHI),
+              "raysample: that estimate converges as the ray count grows");
+        check(std::fabs(u2.fluxEmitted_lm - PHI) < 0.02 * PHI,
+              "raysample: and it is within a couple of percent at 200k rays");
+        // それでも収支は放射した重みに対して厳密に閉じる
+        check(std::fabs(u2.fluxOut_lm + u2.fluxAbsorbed_lm - u2.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes against what was actually emitted");
+        // QMC / Jittered / Importance は厳密に Φ
+        for (il::Sampling m : { il::Sampling::Qmc, il::Sampling::Jittered,
+                                il::Sampling::Importance }) {
+            const il::Result r = run(m, 40000);
+            check(std::fabs(r.fluxEmitted_lm - PHI) < 1e-9 * PHI,
+                  "raysample: the other modes emit exactly phi");
+        }
+    }
+
+    // ── 再現性 (状態を持たない) ─────────────────────────────────────────
+    {
+        for (il::Sampling m : { il::Sampling::Uniform, il::Sampling::Jittered,
+                                il::Sampling::Qmc, il::Sampling::Importance }) {
+            const il::Result a = run(m, 20000);
+            const il::Result b = run(m, 20000);
+            check(a.illumCenter_lx == b.illumCenter_lx
+                  && a.fluxTarget_lm == b.fluxTarget_lm
+                  && a.raysOnTarget == b.raysOnTarget,
+                  "raysample: the same input gives bit-identical results");
+        }
+    }
+
+    // ── 打ち切り: 最大反射回数 ──────────────────────────────────────────
+    // 拡散反射のリフレクタは光線を何度も跳ね返すので、回数を絞ると
+    // 打ち切りが出て、その分が吸収へ回る (収支は閉じたまま)。
+    {
+        il::Scene box = sc;
+        box.reflector.enabled = true;
+        box.reflector.focal_mm = 5.0;
+        box.reflector.radius_mm = 40.0;
+        box.reflector.reflectance = 1.0;          // 吸収ゼロ = 打ち切りだけが損失
+        box.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions few;
+        few.maxBounces = 1;
+        const il::Result a = il::trace(box, 20000, few);
+        const il::Result b = il::trace(box, 20000);      // 既定 64 回
+        check(a.valid && b.valid, "raysample: the bounce cap traces");
+        check(a.raysTrapped > b.raysTrapped,
+              "raysample: a tighter bounce cap traps more rays");
+        check(a.fluxAbsorbed_lm > b.fluxAbsorbed_lm,
+              "raysample: what is cut off is counted as absorbed, not lost");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes even when rays are cut off");
+        // 反射率 1 なら、打ち切りが無い限り光束は 1 lm も減らない
+        check(b.raysTrapped == 0 && std::fabs(b.fluxAbsorbed_lm) < 1e-9 * PHI,
+              "raysample: a perfect mirror absorbs nothing at the default cap");
+    }
+
+    // ── 打ち切り: 最小エネルギー ────────────────────────────────────────
+    {
+        il::Scene lossy = sc;
+        lossy.reflector.enabled = true;
+        lossy.reflector.focal_mm = 5.0;
+        lossy.reflector.radius_mm = 40.0;
+        lossy.reflector.reflectance = 0.5;        // 1 回で −3 dB
+        lossy.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions hi;
+        hi.minEnergy_dB = -6.0;                   // 2 回反射で打ち切り
+        const il::Result a = il::trace(lossy, 20000, hi);
+        const il::Result b = il::trace(lossy, 20000);   // 既定 −90 dB
+        check(a.valid && b.valid, "raysample: the energy cut-off traces");
+        check(a.fluxOut_lm <= b.fluxOut_lm + 1e-12,
+              "raysample: cutting rays off early cannot increase the escaping flux");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes with an early energy cut-off");
+        // 0 dB は「最初の反射で必ず打ち切る」ので、鏡での反射光は 1 本も出ない
+        il::TraceOptions zero;
+        zero.minEnergy_dB = 0.0;
+        const il::Result z = il::trace(lossy, 20000, zero);
+        check(z.fluxOut_lm < b.fluxOut_lm,
+              "raysample: a 0 dB threshold stops every reflected ray");
+    }
+
+    // ── 打ち切り: 拡散次数 ──────────────────────────────────────────────
+    {
+        il::Scene diff = sc;
+        diff.reflector.enabled = true;
+        diff.reflector.focal_mm = 5.0;
+        diff.reflector.radius_mm = 40.0;
+        diff.reflector.reflectance = 1.0;
+        diff.reflector.model = il::Scatter::Lambertian;
+
+        il::TraceOptions one;
+        one.maxDiffuse = 1;
+        const il::Result a = il::trace(diff, 20000, one);
+        check(a.raysDiffuseCut > 0,
+              "raysample: a diffuse-order cap actually cuts rays");
+        check(std::fabs(a.fluxOut_lm + a.fluxAbsorbed_lm - a.fluxEmitted_lm) < 1e-9 * PHI,
+              "raysample: the budget closes with a diffuse-order cap");
+        // 鏡面反射は「拡散次数」に数えない
+        il::Scene spec = diff;
+        spec.reflector.model = il::Scatter::Specular;
+        const il::Result s2 = il::trace(spec, 20000, one);
+        check(s2.raysDiffuseCut == 0,
+              "raysample: specular bounces do not count towards the diffuse order");
+        check(il::trace(diff, 20000).raysDiffuseCut == 0,
+              "raysample: the default places no diffuse-order limit");
+    }
+}
+
 static void testDensityField()
 {
     g_file = "density";
@@ -19528,6 +19807,8 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testIlluminationScene();
+    testRaySampling();
     testDensityField();
     testPostPrereq();
     testNoMarkdownInUiStrings();

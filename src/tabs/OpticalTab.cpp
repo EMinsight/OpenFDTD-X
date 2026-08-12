@@ -1,5 +1,6 @@
 // OpticalTab.cpp
 #include "OpticalTab.h"
+#include "../core/IlluminationScene.h"
 #include "../core/Project.h"
 #include "../io/ActivationCurve.h"
 #include "../io/Touchstone.h"
@@ -9,6 +10,8 @@
 #include "../I18n.h"
 #include "../Theme.h"
 #include "TabHelpers.h"
+
+#include <cstring>
 
 #include <QBrush>
 #include <QCheckBox>
@@ -68,6 +71,74 @@ const bool s_i18nOptRay = [] {
               "Dispersion tracking");
     I18n::reg("optray_fresnel", "フレネル係数", "Fresnel coefficients");
     I18n::reg("optray_raydiag", "光線図出力", "Ray diagram output");
+    // 追跡の実行 (optics/IlluminationTrace)
+    I18n::reg("optray_run", "この設定で追跡を実行",
+              "Trace with these settings");
+    I18n::reg("optray_scene_hint",
+              "追跡する系 (光源・リフレクタ・拡散板・評価面) は「照明/測色」"
+              "タブの設定を使います。ここで決まるのは追跡のしかた "
+              "(レイ数・サンプリング・打ち切り・反射モデル) です。",
+              "The system being traced — source, reflector, diffuser and target "
+              "plane — comes from the illumination tab. What this section "
+              "decides is how it is traced: ray count, sampling, cut-offs and "
+              "reflection model.");
+    I18n::reg("optray_res_fmt",
+              "%1 本 / 光学効率 %2 % / 評価面へ %3 % / 中心照度 %4 lx",
+              "%1 rays / optical efficiency %2 % / %3 % onto the target / "
+              "centre illuminance %4 lx");
+    I18n::reg("optray_res_beam", " / ビーム角 %1°", " / beam angle %1 deg");
+    I18n::reg("optray_res_cut", " / 打ち切り %1 本", " / %1 ray(s) cut off");
+    I18n::reg("optray_cap",
+              "レイ数は %1 本で打ち切りました (画面が固まらない上限です)。",
+              "The ray count was capped at %1 (the limit that keeps the UI "
+              "responsive).");
+    I18n::reg("optray_need_model",
+              "反射モデルを 1 つ以上選んでください (鏡面か拡散)。",
+              "Select at least one reflection model (specular or diffuse).");
+    I18n::reg("optray_no_raydata",
+              "実測レイデータの光源は追跡モデルに入っていません。",
+              "A measured ray-data source is not part of the trace model.");
+    I18n::reg("optray_no_bsdf",
+              "実測 BSDF は測定データが無いので追跡できません。",
+              "A measured BSDF cannot be traced — there is no measurement data.");
+    I18n::reg("optray_no_elem",
+              "TIR レンズ・導光板・蛍光体散乱は追跡モデルに入っていません。",
+              "TIR lenses, light guides and phosphor scattering are not part of "
+              "the trace model.");
+    I18n::reg("optray_no_geom",
+              "照明/測色タブの系が追跡できる形になっていません "
+              "(光束・焦点距離・開口半径・評価面の距離を確認してください)。",
+              "The system in the illumination tab cannot be traced — check the "
+              "flux, focal length, aperture radius and target distance.");
+    I18n::reg("optray_uw_ray",
+              "偏波追跡・フレネル係数・分散追跡・光線図出力 (追跡モデルが"
+              "屈折率と波長を持たず、光線の経路も保存しないため — チェックを"
+              "無効にしてあります)",
+              "polarisation tracking, Fresnel coefficients, dispersion tracking "
+              "and the ray-diagram output (the trace model carries no refractive "
+              "index or wavelength and does not store ray paths — those boxes "
+              "are disabled)");
+    I18n::reg("optray_uw_ray_ok",
+              "レイ数・最大反射回数・最小エネルギー・サンプリング・反射モデル・"
+              "拡散次数 — 下の「この設定で追跡を実行」が実際にこの設定で"
+              "非順次モンテカルロ追跡を回します",
+              "the ray count, maximum bounces, minimum energy, sampling, "
+              "reflection model and diffuse order — the button below runs the "
+              "non-sequential Monte Carlo trace with exactly these settings");
+    I18n::reg("optray_tip_pol",
+              "追跡モデルは屈折率を持たないので (面は反射率 ρ・透過率 τ の"
+              "スカラー)、フレネル係数も偏波も計算できません。",
+              "The trace model has no refractive index — surfaces carry a scalar "
+              "reflectance and transmittance — so neither Fresnel coefficients "
+              "nor polarisation can be computed.");
+    I18n::reg("optray_tip_disp",
+              "追跡は波長を追いません (分光量は測色側が別に扱います)。",
+              "The trace does not follow wavelength (spectral quantities are "
+              "handled separately by the colorimetry side).");
+    I18n::reg("optray_tip_viz",
+              "追跡は光線の経路を保存しません (集計だけを持ち帰ります)。",
+              "The trace does not store ray paths — it only brings back the "
+              "aggregates.");
     I18n::reg("optray_viz_rays", "可視化レイ数", "Visualized rays");
     I18n::reg("optray_gpu", "GPU加速 (未実装)", "GPU accelerated (not implemented)");
     I18n::reg("optray_gpu_hint", "OptiX / Embree 経由 (レイトレーサ未実装)",
@@ -124,15 +195,6 @@ const bool s_i18nOptRay = [] {
               "(ここは表示のみ。編集するとプロジェクトに保存されます)。",
               "The surface data is the lens editor tab's own table (shown "
               "read-only here; edits there are saved with the project).");
-    I18n::reg("optm_uw_ray",
-              "この節のレイトレース設定 (拡散反射・重要度サンプリング・偏光を"
-              "扱う非順次レイトレーサが未実装のため)。順次光線追跡 "
-              "(スポットダイアグラム・光線収差図) はレンズエディタタブに"
-              "あります",
-              "the ray-trace settings in this section (the non-sequential ray "
-              "tracer that handles diffuse reflection, importance sampling and "
-              "polarisation is not implemented). Sequential ray tracing — spot "
-              "diagrams and ray-aberration curves — is in the lens editor tab");
     I18n::reg("optm_uw_surf",
               "この節の面データ (固定の設計例) と MTF のチェック "
               "(MTF は回折を含む計算が要ります)",
@@ -784,8 +846,38 @@ OpticalTab::OpticalTab(Project *project, QWidget *parent)
     gpuRow->addWidget(mutedLabel(I18n::tr("optray_gpu_hint"), sray));
     gpuRow->addStretch(1);
     sray->vbox()->addLayout(gpuRow);
-    // レイトレーサ本体が未実装のため、この節はローカル state のみ
-    sray->vbox()->addWidget(tabhelp::unwiredNote(sray, I18n::tr("optm_uw_ray")));
+
+    // ── 追跡の実行 (optics/IlluminationTrace) ─────────────────────────────
+    // 系そのもの (光源・リフレクタ・拡散板・評価面) は照明タブの
+    // IlluminationOpts を共有ヘルパー経由で読む。この節が決めるのは
+    // 「どう追跡するか」だけ — 同じ設定から違う系が組まれないようにする。
+    //
+    // 追跡モデルが屈折率も波長も持たず、光線の経路も保存しないので、
+    // 偏波・フレネル・分散・光線図は理由を添えて無効にする (絶対規則 5)。
+    for (QCheckBox *c : { m_rayPolarized, m_rayFresnel }) {
+        c->setChecked(false);
+        c->setEnabled(false);
+        c->setToolTip(I18n::tr("optray_tip_pol"));
+    }
+    m_rayDispersion->setChecked(false);
+    m_rayDispersion->setEnabled(false);
+    m_rayDispersion->setToolTip(I18n::tr("optray_tip_disp"));
+    for (QWidget *w : { static_cast<QWidget *>(m_rayVizEnable),
+                        static_cast<QWidget *>(m_rayVizCount) }) {
+        w->setEnabled(false);
+        w->setToolTip(I18n::tr("optray_tip_viz"));
+    }
+    m_rayVizEnable->setChecked(false);
+
+    sray->vbox()->addWidget(mutedLabel(I18n::tr("optray_scene_hint"), sray));
+    m_rayRunBtn = new QPushButton(I18n::tr("optray_run"), sray);
+    connect(m_rayRunBtn, &QPushButton::clicked, this, &OpticalTab::runRaycast);
+    sray->vbox()->addLayout(hrow({ m_rayRunBtn }));
+    m_rayResult = mutedLabel(QString(), sray);
+    m_rayResult->setWordWrap(true);
+    sray->vbox()->addWidget(m_rayResult);
+    sray->vbox()->addWidget(tabhelp::unwiredNote(sray, I18n::tr("optray_uw_ray"),
+                                                 I18n::tr("optray_uw_ray_ok")));
     v->addWidget(sray);
 
     // ── 光学系定義 / Optical system ────────────────────────────────────────
@@ -1516,6 +1608,78 @@ void OpticalTab::refreshOpticalSystem()
 // 解法 (波動 / 幾何 / ハイブリッド) → 波動ソルバー設定の有効・無効。
 // 幾何光学では外部カーネルを起動しないので、波動側の設定を触れなくして
 // 理由を出す (設定できるのに効かない状態を作らない)。
+// ── Raycast 節: この設定で非順次モンテカルロ追跡を回す ─────────────────────
+// 系は照明タブと共有 (core/IlluminationScene)。この節が決めるのは
+// 「どう追跡するか」— レイ数・サンプリング・打ち切り・反射モデル。
+void OpticalTab::runRaycast()
+{
+    using namespace ofd::illum;
+
+    // 反射モデル: 拡散にチェックがあれば Lambert、無ければ鏡面。
+    // どちらも外れていると追跡する反射が無いので、理由を出して回さない。
+    if (!m_raySpecular->isChecked() && !m_rayDiffuse->isChecked()) {
+        m_rayResult->setText(I18n::tr("optray_need_model"));
+        return;
+    }
+
+    Scene sc;
+    long long fromOpts = 0;
+    // 本数はこの節の「レイ数」で決めるので、写像側の上限は外して受け取る
+    const char *why = sceneFromOpts(m_p->illumination(), &sc, &fromOpts, 0);
+    if (why != nullptr && std::strcmp(why, "rays") != 0) {
+        if (std::strcmp(why, "raydata") == 0)   m_rayResult->setText(I18n::tr("optray_no_raydata"));
+        else if (std::strcmp(why, "bsdf") == 0) m_rayResult->setText(I18n::tr("optray_no_bsdf"));
+        else if (std::strcmp(why, "elem") == 0) m_rayResult->setText(I18n::tr("optray_no_elem"));
+        else                                    m_rayResult->setText(I18n::tr("optray_no_geom"));
+        return;
+    }
+
+    // 反射モデルの上書き (この節の選択が優先。ABG は照明タブ側の設定)
+    const Scatter model = m_rayDiffuse->isChecked() ? Scatter::Lambertian
+                                                    : Scatter::Specular;
+    if (sc.reflector.model != Scatter::ABG) sc.reflector.model = model;
+    if (sc.diffuser.model  != Scatter::ABG) sc.diffuser.model  = model;
+
+    // 画面が固まらない上限 (照明タブと同じ 200k)。切ったときはそう出す
+    const long long kCap = 200000;
+    long long nRays = m_rayCount->value();
+    const bool capped = (nRays > kCap);
+    if (capped) nRays = kCap;
+
+    TraceOptions opt;
+    switch (m_raySampling->currentIndex()) {
+        case 0:  opt.sampling = Sampling::Uniform;    break;
+        case 1:  opt.sampling = Sampling::Jittered;   break;
+        case 3:  opt.sampling = Sampling::Importance; break;
+        default: opt.sampling = Sampling::Qmc;        break;
+    }
+    opt.maxBounces = m_rayBounces->value();
+    opt.minEnergy_dB = m_rayMinEnergy->text().toDouble();
+    opt.maxDiffuse = m_rayDiffOrder->value();
+
+    if (traceBlocker(sc, nRays) != nullptr) {
+        m_rayResult->setText(I18n::tr("optray_no_geom"));
+        return;
+    }
+    const Result r = trace(sc, nRays, opt);
+    if (!r.valid) {
+        m_rayResult->setText(I18n::tr("optray_no_geom"));
+        return;
+    }
+
+    QString text = I18n::tr("optray_res_fmt")
+                       .arg(r.rays)
+                       .arg(100.0 * r.efficiency, 0, 'f', 1)
+                       .arg(100.0 * r.targetEfficiency, 0, 'f', 2)
+                       .arg(r.illumCenter_lx, 0, 'f', 2);
+    if (r.beamValid)
+        text += I18n::tr("optray_res_beam").arg(r.beamAngleFwhm_deg, 0, 'f', 1);
+    const long long cut = r.raysTrapped + r.raysDiffuseCut;
+    if (cut > 0) text += I18n::tr("optray_res_cut").arg(cut);
+    if (capped) text += QStringLiteral(" ") + I18n::tr("optray_cap").arg(kCap);
+    m_rayResult->setText(text);
+}
+
 void OpticalTab::updateGeoMethodView()
 {
     if (!m_geoMethod || !m_solver || !m_solverStack) return;

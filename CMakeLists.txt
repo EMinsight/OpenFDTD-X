@@ -115,6 +115,9 @@ set(CORE_SOURCES
     # トポロジー最適化の密度場パラメータ化 (フィルタ/射影/矩形分解) — Qt Core のみ
     src/core/DensityField.cpp
     src/core/DensityField.h
+    # IlluminationOpts → レイトレースの系 (照明タブと光タブで共有)
+    src/core/IlluminationScene.cpp
+    src/core/IlluminationScene.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する
