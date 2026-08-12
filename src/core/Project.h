@@ -647,6 +647,13 @@ struct TransmissionLineOpts {
     double  freq_GHz = 1.0;
     double  z0Ref_ohm = 50.0;
     int     ports = 2;
+    // ── アイダイアグラム (.ofdx "transmission_line.eye" — 追加キー) ───────
+    // 線路の S21(f) を掛けた受信波形を 1 UI ごとに折り返した図 (core/EyeDiagram)。
+    // 既定は従来どおり計算しない (出力もバイト一致のまま)。
+    bool    eyeShow = false;
+    double  eyeBitRate_Gbps = 1.0;
+    int     eyePrbsOrder = 7;         // 周期 2^n − 1 ビット
+    double  eyeRise_ps = 0.0;         // 送信波形の遷移時間 (0 = 矩形)
     // 表示の取捨 (既定はモックのチェック状態そのまま)
     bool    showBeta = true, showVp = false, showVg = false;
     bool    showAlpha = true, showEpsEff = true;

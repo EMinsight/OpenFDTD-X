@@ -25,6 +25,7 @@
 #include "core/PostPrereq.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
+#include "core/EyeDiagram.h"
 #include "io/BeamPatternCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
@@ -147,6 +148,7 @@
 #ifdef OFD_USE_HDF5
 #include <hdf5.h>
 #endif
+#include <set>
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -19033,6 +19035,261 @@ static void testSourceDirectivity()
     }
 }
 
+// ── アイダイアグラム (core/EyeDiagram) ─────────────────────────────────────
+// 「絵が出た」では何も確かめたことにならないので、**独立に導ける正解**と
+// 突き合わせる。特に指数チャネルは巡回定常応答が等比級数で閉形式に書けるので、
+// FFT → 逆 FFT → 巡回畳み込みの経路全体を数値で押さえられる。
+static void testEyeDiagram()
+{
+    g_file = "eye";
+    using namespace ofd::eye;
+
+    // ① PRBS が本当に最長周期か — タップを写し間違えると周期が縮む。
+    //    **表を信じず、状態を数えて確かめる**。
+    for (int n = 2; n <= 16; ++n) {
+        const std::vector<int> b = prbs(n);
+        const std::size_t want = (std::size_t(1) << n) - 1;
+        check(b.size() == want,
+              qPrintable(QString("eye: PRBS order %1 has period 2^n-1 = %2")
+                             .arg(n).arg(want)));
+        // n ビット窓が全パターン (0 以外) をちょうど 1 回ずつ通ること = 最長周期
+        std::set<unsigned> seen;
+        for (std::size_t i = 0; i < b.size(); ++i) {
+            unsigned w = 0;
+            for (int k = 0; k < n; ++k)
+                w = (w << 1) | unsigned(b[(i + k) % b.size()]);
+            seen.insert(w);
+        }
+        check(seen.size() == want,
+              qPrintable(QString("eye: PRBS order %1 visits every non-zero "
+                                 "state exactly once (maximal length)").arg(n)));
+        check(seen.find(0u) == seen.end(),
+              "eye: the all-zero state never occurs (it is the lock-up state)");
+        // 1 の個数は 2^(n-1) (最長周期系列の性質)
+        const int ones = int(std::count(b.begin(), b.end(), 1));
+        check(ones == (1 << (n - 1)),
+              qPrintable(QString("eye: PRBS order %1 has 2^(n-1) ones").arg(n)));
+    }
+
+    // ② インパルス応答の組み立て — 答えが厳密に分かる 2 つの H で確かめる
+    {
+        const double fs = 1.0e9;
+        const double dt = 1.0 / fs;
+        // 純遅延 5 サンプル → h は 5 番目の単位標本ちょうど
+        double tail = 0.0;
+        const std::vector<double> hd = impulseResponse(
+            [&](double f) {
+                const double ph = -2.0 * M_PI * f * 5.0 * dt;
+                return std::complex<double>(std::cos(ph), std::sin(ph));
+            }, fs, 256, &tail);
+        check(hd.size() == 256, "eye: the impulse grid is the requested length");
+        check(std::fabs(hd[5] - 1.0) < 1e-9,
+              "eye: a pure 5-sample delay puts unit weight at sample 5");
+        double other = 0.0;
+        for (std::size_t i = 0; i < hd.size(); ++i)
+            if (i != 5) other = std::max(other, std::fabs(hd[i]));
+        check(other < 1e-9,
+              "eye: a pure delay leaves every other sample at zero");
+
+        // 2 タップ移動平均 H = (1 + e^{-j2πf dt})/2 → h = [0.5, 0.5, 0, ...]
+        const std::vector<double> hm = impulseResponse(
+            [&](double f) {
+                const double ph = -2.0 * M_PI * f * dt;
+                return 0.5 * (1.0 + std::complex<double>(std::cos(ph),
+                                                         std::sin(ph)));
+            }, fs, 256);
+        check(std::fabs(hm[0] - 0.5) < 1e-9 && std::fabs(hm[1] - 0.5) < 1e-9,
+              "eye: a 2-tap moving average gives h = [0.5, 0.5]");
+    }
+
+    // ③ 理想チャネル — 開口・幅・ジッタが厳密に決まる
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 7;
+        c.samplesPerBit = 32;
+        c.amplitude_V = 1.0;
+        const Result r = build(c, Transfer());
+        check(r.ok(), "eye: the ideal channel builds an eye");
+        check(int(r.traces.size()) == 127,
+              "eye: one folded trace per PRBS bit");
+        check(std::fabs(r.height_V - 2.0 * c.amplitude_V) < 1e-12,
+              "eye: an ideal channel opens the full swing (2A) exactly");
+        check(std::fabs(r.jitter_s) < 1e-18,
+              "eye: an ideal channel has exactly zero data-dependent jitter");
+        const double ui = 1.0 / c.bitRate_bps;
+        check(std::fabs(r.width_s - ui) < 1e-15,
+              "eye: an ideal channel opens exactly one unit interval");
+    }
+
+    // ③' **遅延のあるチャネルでも開口が正しく出ること** — 実際に踏んだ不具合。
+    //    線路は伝搬遅延を持つので、遅延を無視して「ビット i の中央」で判定
+    //    すると別のビットを見てしまい、絵は大きく開いているのに開口が負に
+    //    なる。整数ビット分ずれる遅延を入れて、理想と同じ開口が出ることを見る。
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 7;
+        c.samplesPerBit = 32;
+        const double dt = 1.0 / (c.bitRate_bps * c.samplesPerBit);
+        for (int delayBits : { 1, 5, 19 }) {
+            const double tau = delayBits * c.samplesPerBit * dt;   // 整数 UI
+            const Result r = build(c, [tau](double f) {
+                const double ph = -2.0 * M_PI * f * tau;
+                return std::complex<double>(std::cos(ph), std::sin(ph));
+            });
+            check(std::fabs(r.height_V - 2.0 * c.amplitude_V) < 1e-6,
+                  qPrintable(QString("eye: a %1-UI delay still opens the full "
+                                     "swing (got %2 V)")
+                                 .arg(delayBits)
+                                 .arg(r.height_V, 0, 'f', 6)));
+            check(r.sampleIndex >= std::size_t(delayBits * c.samplesPerBit),
+                  "eye: the reported sampling point follows the channel delay");
+        }
+        // 半 UI ずれた遅延でも閉じない (端数の遅延も追えていること)
+        const double halfUi = 0.5 / c.bitRate_bps;
+        const Result rh = build(c, [halfUi](double f) {
+            const double ph = -2.0 * M_PI * f * halfUi;
+            return std::complex<double>(std::cos(ph), std::sin(ph));
+        });
+        check(rh.height_V > 1.9,
+              qPrintable(QString("eye: a half-UI delay keeps the eye open "
+                                 "(got %1 V)").arg(rh.height_V, 0, 'f', 3)));
+    }
+
+    // ④ 指数チャネル — **巡回定常応答の閉形式 (等比級数) と一致すること**。
+    //    h[m] = a^m の FIR に対し、周期 N の入力への定常応答は
+    //      y[n] = (1/(1−a^N))·Σ_{m=0}^{N−1} a^m·x[(n−m) mod N]
+    //    と厳密に書ける (無限和を 1 周期へ畳んだもの)。ここが合えば
+    //    H の標本化・エルミート化・逆 FFT・巡回畳み込みが全部正しい。
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 5;              // 31 ビット
+        c.samplesPerBit = 8;          // N = 248
+        c.amplitude_V = 1.0;
+        c.impulseSamples = 4096;      // a^M が丸めに埋もれる長さ
+        const double a = 0.7;
+        const double dt = 1.0 / (c.bitRate_bps * c.samplesPerBit);
+        // H(f) = Σ a^m e^{-j2πf m dt} = 1/(1 − a·e^{-j2πf dt})
+        const Transfer H = [&](double f) {
+            const double ph = -2.0 * M_PI * f * dt;
+            const std::complex<double> z(std::cos(ph), std::sin(ph));
+            return 1.0 / (1.0 - a * z);
+        };
+        const Result r = build(c, H);
+        check(r.ok(), "eye: the exponential channel builds an eye");
+
+        const std::vector<int> bits = prbs(c.prbsOrder);
+        const std::vector<double> x = transmit(c, bits);
+        const std::size_t N = x.size();
+        // 閉形式 (等比級数) — 実装とは別の式で独立に組む
+        std::vector<double> yRef(N, 0.0);
+        const double scale = 1.0 / (1.0 - std::pow(a, double(N)));
+        for (std::size_t n = 0; n < N; ++n) {
+            double acc = 0.0, w = 1.0;
+            for (std::size_t m = 0; m < N; ++m) {
+                acc += w * x[(n + N - m) % N];
+                w *= a;
+            }
+            yRef[n] = scale * acc;
+        }
+        // 実装の出力 (トレースは y を折り返したもの) と比較する
+        // 窓は判定時刻 (r.sampleIndex) が真ん中に来るよう 1 UI 手前から始まる
+        const std::size_t spb = std::size_t(c.samplesPerBit);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < bits.size(); ++i)
+            for (std::size_t k = 0; k < 2 * spb; ++k) {
+                const std::size_t n =
+                    (i * spb + r.sampleIndex + 2 * N - spb + k) % N;
+                worst = std::max(worst, std::fabs(r.traces[i][k] - yRef[n]));
+            }
+        check(worst < 1e-9,
+              qPrintable(QString("eye: the waveform matches the closed-form "
+                                 "cyclic steady state (worst %1 V)")
+                             .arg(worst, 0, 'e', 2)));
+
+        // 開口も閉形式から独立に出して突き合わせる
+        double lo1 = 1e30, hi0 = -1e30;
+        for (std::size_t i = 0; i < bits.size(); ++i) {
+            const std::size_t n = (i * spb + r.sampleIndex) % N;
+            if (bits[i]) lo1 = std::min(lo1, yRef[n]);
+            else         hi0 = std::max(hi0, yRef[n]);
+        }
+        check(std::fabs(r.height_V - (lo1 - hi0)) < 1e-9,
+              "eye: the reported opening equals the closed-form opening");
+    }
+
+    // ⑤ 低域を強く切るほど開口は単調に狭まる (物理の向き)
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 5;
+        c.samplesPerBit = 16;
+        c.samplesPerBit = 32;      // ナイキスト 16 GHz — 下の遮断を十分解像する
+        double prev = 1e30;
+        bool monotone = true;
+        QString dbg;
+        for (double fc : { 2.0e9, 1.0e9, 0.5e9, 0.25e9, 0.125e9 }) {
+            const Result r = build(c, [fc](double f) {
+                return 1.0 / std::complex<double>(1.0, f / fc);
+            });
+            if (!(r.height_V <= prev + 1e-12)) monotone = false;
+            prev = r.height_V;
+            dbg += QString(" %1:%2").arg(fc / 1e9, 0, 'f', 2)
+                       .arg(r.height_V, 0, 'f', 6);
+        }
+        check(monotone,
+              qPrintable(QString("eye: lowering the cut-off closes the eye "
+                                 "monotonically [%1]").arg(dbg)));
+
+        // 標本化が粗くてチャネルを解像できていないことは**表に出る**こと。
+        // (この場合は折り返しで開口が信用できなくなるので、黙って数字を
+        //  出してはいけない。)
+        Config coarse = c;
+        coarse.samplesPerBit = 8;              // ナイキスト 4 GHz
+        const Result bad = build(coarse, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 4.0e9);
+        });
+        check(bad.nyquistMag > 0.1,
+              "eye: a channel still open at Nyquist is flagged by nyquistMag");
+        const Result fine = build(c, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 0.25e9);
+        });
+        check(fine.nyquistMag < 0.02,
+              "eye: a well-resolved channel reports a small nyquistMag");
+        // 十分狭めれば閉じる (負の開口を 0 で止めていないこと)
+        const Result shut = build(c, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 0.05e9);
+        });
+        check(shut.height_V < 0.0,
+              "eye: a closed eye is reported as a negative opening, not zero");
+    }
+
+    // ⑥ 送信波形そのもの (レベルと遷移)
+    {
+        Config c;
+        c.prbsOrder = 4;
+        c.samplesPerBit = 10;
+        c.amplitude_V = 2.0;
+        const std::vector<int> b = prbs(4);
+        const std::vector<double> x = transmit(c, b);
+        check(x.size() == b.size() * 10, "eye: the transmit length is bits x spb");
+        double mx = 0.0;
+        for (double v : x) mx = std::max(mx, std::fabs(v));
+        check(std::fabs(mx - 2.0) < 1e-12,
+              "eye: the levels are +/-amplitude with no rise time");
+        // 遷移時間を入れると中間の値が現れる
+        c.riseTime_s = 0.5 / c.bitRate_bps;
+        const std::vector<double> xr = transmit(c, b);
+        int mid = 0;
+        for (double v : xr) if (std::fabs(std::fabs(v) - 2.0) > 1e-9) ++mid;
+        check(mid > 0, "eye: a non-zero rise time produces intermediate samples");
+        check(xr.size() == x.size(),
+              "eye: the rise time does not change the waveform length");
+    }
+}
+
 // ── 計測した指向パターンの取り込み (io/BeamPatternCsv) ─────────────────────
 // 取り込みは **静かに間違えると気づけない** 部分が 2 つある:
 //   ① 正規化 — 定数オフセットは全ビームを一様に増減させ TL の絶対値をずらす
@@ -21854,6 +22111,7 @@ int main(int argc, char *argv[])
     testSourceDirectivity();
     testTlSlice3D();
     testBeamPatternCsv();
+    testEyeDiagram();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

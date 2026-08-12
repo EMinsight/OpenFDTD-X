@@ -139,6 +139,7 @@ set(CORE_SOURCES
     # 伝送線路の準 TEM 解析 (閉形式の Z0 / eps_eff / γ / S パラメータ) —
     # Qt 非依存。TransmissionLineTab の計算実体で、selftest から厳密解
     # (同軸・平行 2 線・等角写像) と突き合わせる
+    src/core/EyeDiagram.cpp
     src/core/TransmissionLine.cpp
     src/core/TransmissionLine.h
 

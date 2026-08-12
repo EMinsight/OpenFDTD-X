@@ -940,7 +940,22 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                     {"delay", t.showDelay}, {"touchstone", t.showTouchstone},
                     {"z0_freq_dep", t.z0FreqDep}, {"z0_reim", t.z0ReIm} }} };
         };
-        const QJsonObject cur = toJson(p.tline());
+        QJsonObject cur = toJson(p.tline());
+        // アイダイアグラムの設定は**既定と違うときだけ**足す
+        // (既定のままなら旧 .ofdx とバイト一致 — 絶対規則 2)
+        {
+            const TransmissionLineOpts &t = p.tline();
+            const TransmissionLineOpts de;
+            if (t.eyeShow != de.eyeShow
+                || t.eyeBitRate_Gbps != de.eyeBitRate_Gbps
+                || t.eyePrbsOrder != de.eyePrbsOrder
+                || t.eyeRise_ps != de.eyeRise_ps) {
+                cur["eye"] = QJsonObject{ {"show", t.eyeShow},
+                                          {"bitrate_gbps", t.eyeBitRate_Gbps},
+                                          {"prbs_order", t.eyePrbsOrder},
+                                          {"rise_ps", t.eyeRise_ps} };
+            }
+        }
         if (cur != toJson(TransmissionLineOpts{}))
             root["transmission_line"] = cur;
     }
@@ -1613,6 +1628,15 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
     // 伝送線路 — キーが無い旧ファイルは既定値のまま
     if (root.contains("transmission_line")) {
         const QJsonObject tj = root["transmission_line"].toObject();
+        if (tj.contains("eye")) {
+            const QJsonObject ej = tj["eye"].toObject();
+            TransmissionLineOpts &t = p.tline();
+            t.eyeShow = ej.value("show").toBool(t.eyeShow);
+            t.eyeBitRate_Gbps =
+                ej.value("bitrate_gbps").toDouble(t.eyeBitRate_Gbps);
+            t.eyePrbsOrder = ej.value("prbs_order").toInt(t.eyePrbsOrder);
+            t.eyeRise_ps = ej.value("rise_ps").toDouble(t.eyeRise_ps);
+        }
         TransmissionLineOpts &t = p.tline();
         t.kind = qBound(0, tj.value("kind").toInt(t.kind), 4);
         t.w_mm = tj.value("w_mm").toDouble(t.w_mm);

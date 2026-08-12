@@ -2,8 +2,10 @@
 #include "TransmissionLineTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../core/EyeDiagram.h"
 #include "../core/TransmissionLine.h"
 #include "../io/Touchstone.h"
+#include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 
@@ -118,12 +120,40 @@ const bool s_i18n = [] {
               "Near/far-end crosstalk NEXT/FEXT");
     I18n::reg("tln_d_eye", "アイダイアグラム", "Eye diagram");
     I18n::reg("tln_uw_disc",
-              "不連続部の 4 項目 (等価回路モデルが未実装 — ベンド・ステップは"
-              "等価容量/インダクタンス、クロストークは結合線路、アイ"
-              "ダイアグラムは時間領域の畳み込みが要ります)",
-              "the four discontinuity items (no equivalent-circuit model yet: "
-              "bends and steps need equivalent C/L, crosstalk needs coupled "
-              "lines, and the eye diagram needs a time-domain convolution)");
+              "ベンド・ステップ・クロストークの 3 項目 (等価回路モデルが"
+              "未実装 — ベンド/ステップは等価容量/インダクタンス、"
+              "クロストークは結合線路が要ります)",
+              "the bend, step and crosstalk items (no equivalent-circuit model "
+              "yet: bends and steps need equivalent C/L, crosstalk needs "
+              "coupled lines)");
+    // アイダイアグラム (実装済み)
+    I18n::reg("tln_eye_show", "アイダイアグラムを描く", "Draw the eye diagram");
+    I18n::reg("tln_eye_rate", "ビットレート [Gbps]", "Bit rate [Gbps]");
+    I18n::reg("tln_eye_prbs", "PRBS 次数 (周期 2ⁿ−1)", "PRBS order (2^n-1)");
+    I18n::reg("tln_eye_rise", "遷移時間 [ps]", "Transition time [ps]");
+    I18n::reg("tln_eye_x", "時間 [ps]", "Time [ps]");
+    I18n::reg("tln_eye_y", "受信電圧 [V]", "Received voltage [V]");
+    I18n::reg("tln_eye_note",
+              "開口 %1 V (送信振幅 2.000 V に対して) / 開口幅 %2 ps "
+              "(1 UI = %3 ps) / データ依存ジッタ %4 ps。線路の S21(f) を掛けた"
+              "受信波形を PRBS 1 周期の巡回畳み込みで求め、1 UI ごとに"
+              "折り返しています。",
+              "Opening %1 V (against a 2.000 V transmitted swing) / opening "
+              "width %2 ps (1 UI = %3 ps) / data-dependent jitter %4 ps. The "
+              "received waveform is the cyclic convolution of one PRBS period "
+              "with the line's S21(f), folded every UI.");
+    I18n::reg("tln_eye_shut",
+              "アイは閉じています (開口 %1 V ≤ 0) — この線路長・ビットレート"
+              "では判定できません。",
+              "The eye is shut (opening %1 V <= 0) -- this length and bit rate "
+              "cannot be sliced.");
+    I18n::reg("tln_eye_alias",
+              " ⚠ 1 UI あたりの標本数がチャネルを解像できていません "
+              "(|S21| がナイキストで %1)。折り返しで開口が正しく出ないので、"
+              "ビットレートを下げるか線路を長くしてください。",
+              " [!] The sampling does not resolve the channel (|S21| at Nyquist "
+              "is %1). Aliasing makes the opening unreliable -- lower the bit "
+              "rate or lengthen the line.");
 
     // 結果表
     I18n::reg("tln_res", "計算結果", "Results");
@@ -184,8 +214,10 @@ const char *const kGammaKeys[] = { "tln_g_beta", "tln_g_vp", "tln_g_vg",
                                    "tln_g_alpha", "tln_g_eeff" };
 const char *const kSKeys[] = { "tln_s_mag", "tln_s_il", "tln_s_rl",
                                "tln_s_delay", "tln_s_touchstone" };
-const char *const kDiscKeys[] = { "tln_d_bend", "tln_d_step", "tln_d_xtalk",
-                                  "tln_d_eye" };
+const char kAccEm[] = "#0078D4";     // Theme.cpp の既定 accent (--acc-em)
+
+// アイダイアグラムは実装済みなので、ここ (未実装の一覧) には残さない
+const char *const kDiscKeys[] = { "tln_d_bend", "tln_d_step", "tln_d_xtalk" };
 
 QTableWidgetItem *cell(const QString &t)
 {
@@ -324,6 +356,41 @@ TransmissionLineTab::TransmissionLineTab(Project *project, QWidget *parent)
     sD->vbox()->addWidget(tabhelp::unwiredNote(sD, I18n::tr("tln_uw_disc")));
     v->addWidget(sD);
 
+    // ── アイダイアグラム (実装済み — 上の 3 項目とは別扱い) ───────────────
+    auto *sE = new SectionBox(I18n::tr("tln_d_eye"), body);
+    m_eyeShow = new QCheckBox(I18n::tr("tln_eye_show"), sE);
+    sE->vbox()->addWidget(m_eyeShow);
+    auto *eForm = new QFormLayout();
+    m_eyeRate = new QDoubleSpinBox(sE);
+    m_eyeRate->setRange(0.001, 400.0);
+    m_eyeRate->setDecimals(3);
+    m_eyeRate->setSuffix(" Gbps");
+    m_eyePrbs = new QSpinBox(sE);
+    m_eyePrbs->setRange(3, 11);
+    m_eyeRise = new QDoubleSpinBox(sE);
+    m_eyeRise->setRange(0.0, 1000.0);
+    m_eyeRise->setDecimals(1);
+    m_eyeRise->setSuffix(" ps");
+    eForm->addRow(I18n::tr("tln_eye_rate"), m_eyeRate);
+    eForm->addRow(I18n::tr("tln_eye_prbs"), m_eyePrbs);
+    eForm->addRow(I18n::tr("tln_eye_rise"), m_eyeRise);
+    sE->vbox()->addLayout(eForm);
+    m_eyePlot = new MiniPlot(sE);
+    m_eyePlot->setMinimumHeight(190);
+    m_eyePlot->setLabels(I18n::tr("tln_eye_x"), I18n::tr("tln_eye_y"));
+    sE->vbox()->addWidget(m_eyePlot);
+    m_eyeNote = new QLabel(sE);
+    m_eyeNote->setWordWrap(true);
+    sE->vbox()->addWidget(m_eyeNote);
+    v->addWidget(sE);
+    connect(m_eyeShow, &QCheckBox::toggled, this, &TransmissionLineTab::apply);
+    connect(m_eyeRate, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &TransmissionLineTab::apply);
+    connect(m_eyePrbs, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &TransmissionLineTab::apply);
+    connect(m_eyeRise, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &TransmissionLineTab::apply);
+
     // ── 結果 ───────────────────────────────────────────────────────────────
     auto *sR = new SectionBox(I18n::tr("tln_res"), body);
     m_table = new QTableWidget(0, 3, sR);
@@ -406,6 +473,10 @@ void TransmissionLineTab::apply()
     t.showTouchstone = m_spara[4]->isChecked();
     t.z0FreqDep = m_z0FreqDep->isChecked();
     t.z0ReIm = m_z0ReIm->isChecked();
+    t.eyeShow = m_eyeShow->isChecked();
+    t.eyeBitRate_Gbps = m_eyeRate->value();
+    t.eyePrbsOrder = m_eyePrbs->value();
+    t.eyeRise_ps = m_eyeRise->value();
     m_p->touch();
 }
 
@@ -431,6 +502,10 @@ void TransmissionLineTab::refresh()
     m_freq->setValue(t.freq_GHz);
     m_z0Ref->setValue(t.z0Ref_ohm);
     m_ports->setValue(t.ports);
+    m_eyeShow->setChecked(t.eyeShow);
+    m_eyeRate->setValue(t.eyeBitRate_Gbps);
+    m_eyePrbs->setValue(qBound(3, t.eyePrbsOrder, 11));
+    m_eyeRise->setValue(t.eyeRise_ps);
     m_gamma[0]->setChecked(t.showBeta);
     m_gamma[1]->setChecked(t.showVp);
     m_gamma[2]->setChecked(t.showVg);
@@ -568,7 +643,86 @@ void TransmissionLineTab::recompute()
         m_table->setItem(i, 1, cell(rows[i].value));
         m_table->setItem(i, 2, cell(rows[i].basis));
     }
+
+    updateEye();
 }
+
+// アイダイアグラム — 線路の S21(f) をそのまま伝達関数に使う。
+// **表示している Z₀ / γ と同じ `tline::` の式**から作るので、結果表の数値と
+// 図が食い違うことはない。
+void TransmissionLineTab::updateEye()
+{
+    if (!m_eyePlot || !m_eyeNote) return;
+    const TransmissionLineOpts &t = m_p->tline();
+    const bool on = t.eyeShow;
+    m_eyePlot->setVisible(on);
+    m_eyeNote->setVisible(on);
+    m_eyeRate->setEnabled(on);
+    m_eyePrbs->setEnabled(on);
+    m_eyeRise->setEnabled(on);
+    if (!on) { m_eyePlot->setSeries({}); m_eyeNote->clear(); return; }
+
+    tline::Line L;
+    L.kind = static_cast<tline::Kind>(qBound(0, t.kind, 4));
+    L.w_mm = t.w_mm; L.h_mm = t.h_mm; L.a_mm = t.a_mm; L.b_mm = t.b_mm;
+    L.d_mm = t.d_mm; L.dia_mm = t.dia_mm; L.slot_mm = t.slot_mm;
+    L.epsr = t.epsr; L.tanD = t.tanD; L.sigma_Sm = t.sigma_Sm;
+    L.length_mm = t.length_mm;
+    const double z0Ref = t.z0Ref_ohm;
+
+    eye::Config c;
+    c.bitRate_bps = t.eyeBitRate_Gbps * 1.0e9;
+    c.prbsOrder = qBound(3, t.eyePrbsOrder, 11);
+    c.samplesPerBit = 32;
+    c.amplitude_V = 1.0;
+    c.riseTime_s = t.eyeRise_ps * 1.0e-12;
+
+    // H(f) = S21(f)。直流は損失が消えるので S21 → 1 (連続な極限)。
+    const eye::Transfer H = [&](double f) -> std::complex<double> {
+        if (f <= 0.0) return std::complex<double>(1.0, 0.0);
+        const tline::Result rr = tline::analyze(L, f);
+        if (!rr.valid) return std::complex<double>(0.0, 0.0);
+        return tline::sParameters(rr, L.length_mm, z0Ref).s21;
+    };
+    const eye::Result e = eye::build(c, H);
+    if (!e.ok()) { m_eyePlot->setSeries({}); m_eyeNote->clear(); return; }
+
+    QVector<MiniSeries> series;
+    series.reserve(int(e.traces.size()));
+    double vmax = 0.0;
+    for (const std::vector<double> &tr : e.traces) {
+        MiniSeries s;
+        s.color = QColor(kAccEm);
+        s.color.setAlpha(60);          // 重ね描きなので薄く
+        for (std::size_t k = 0; k < tr.size(); ++k) {
+            s.pts.push_back(QPointF(double(k) * e.dt_s * 1.0e12, tr[k]));
+            vmax = std::max(vmax, std::fabs(tr[k]));
+        }
+        series.push_back(s);
+    }
+    m_eyePlot->setYRange(-1.05 * vmax, 1.05 * vmax);
+    m_eyePlot->setSeries(series);
+
+    const double ui_ps = 1.0e12 / c.bitRate_bps;
+    QString note;
+    if (e.height_V <= 0.0) {
+        note = I18n::tr("tln_eye_shut")
+                   .arg(QString::number(e.height_V, 'f', 3));
+    } else {
+        note = I18n::tr("tln_eye_note")
+                   .arg(QString::number(e.height_V, 'f', 3),
+                        QString::number(e.width_s * 1.0e12, 'f', 1),
+                        QString::number(ui_ps, 'f', 1),
+                        QString::number(e.jitter_s * 1.0e12, 'f', 1));
+    }
+    // 標本化がチャネルを解像できていないときは**必ず断る** (折り返しで
+    // 開口が正しく出ないため — 黙って数字だけ出さない)
+    if (e.nyquistMag > 0.1)
+        note += I18n::tr("tln_eye_alias")
+                    .arg(QString::number(e.nyquistMag, 'f', 3));
+    m_eyeNote->setText(note);
+}
+
 
 void TransmissionLineTab::exportTouchstone()
 {

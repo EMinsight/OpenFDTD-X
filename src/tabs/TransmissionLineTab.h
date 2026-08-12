@@ -28,6 +28,7 @@ namespace ofd {
 
 class Project;
 class SectionBox;
+class MiniPlot;
 
 class TransmissionLineTab : public QScrollArea {
     Q_OBJECT
@@ -36,6 +37,10 @@ public:
 
     void apply();     // widgets → model
     void refresh();   // model → widgets (m_updating ガード付き)
+
+private:
+    void updateEye();   // アイダイアグラムの図と数値 (S21(f) を掛けて折り返す)
+public:
 
 private slots:
     void onEdited();  // apply() + 結果表の再計算
@@ -65,6 +70,13 @@ private:
     QSpinBox  *m_ports;
     QVector<QCheckBox *> m_spara;       // S 振幅位相 / IL / RL / 群遅延 / .s2p
     QVector<QCheckBox *> m_disc;        // 不連続部 (未実装)
+    // アイダイアグラム (core/EyeDiagram)
+    QCheckBox      *m_eyeShow = nullptr;
+    QDoubleSpinBox *m_eyeRate = nullptr;
+    QSpinBox       *m_eyePrbs = nullptr;
+    QDoubleSpinBox *m_eyeRise = nullptr;
+    MiniPlot       *m_eyePlot = nullptr;
+    QLabel         *m_eyeNote = nullptr;
 
     QPushButton  *m_s2pBtn;
     QTableWidget *m_table;
