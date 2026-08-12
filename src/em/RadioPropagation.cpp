@@ -156,6 +156,82 @@ CoverageGrid coverageMap(double halfSpan_m, int n,
     return g;
 }
 
+// ── 複数 AP ───────────────────────────────────────────────────────────────
+std::vector<AccessPoint> apRing(int count, double radius_m, double h_m,
+                                double eirpDbm)
+{
+    std::vector<AccessPoint> aps;
+    if (count <= 0) return aps;
+    aps.reserve(std::size_t(count));
+    if (count == 1) {                       // 1 局は中心 (従来の図と揃える)
+        aps.push_back({ 0.0, 0.0, h_m, eirpDbm });
+        return aps;
+    }
+    for (int k = 0; k < count; ++k) {
+        const double a = 2.0 * kPi * k / count;
+        aps.push_back({ radius_m * std::cos(a), radius_m * std::sin(a),
+                        h_m, eirpDbm });
+    }
+    return aps;
+}
+
+MultiCoverage coverageMapMulti(const std::vector<AccessPoint> &aps,
+                               double halfSpan_m, int n,
+                               double hRx_m, double freq_hz, double rxGainDbi,
+                               double noiseDbm, double thresholdDbm,
+                               double reflection, double minDistance_m)
+{
+    MultiCoverage g;
+    if (aps.empty() || n <= 0 || !(halfSpan_m > 0.0) || !(freq_hz > 0.0))
+        return g;
+    if (!(minDistance_m > 0.0)) minDistance_m = 1.0;
+    g.n = n;
+    g.halfSpan_m = halfSpan_m;
+    const std::size_t cells = std::size_t(n) * std::size_t(n);
+    g.bestDbm.resize(cells);
+    g.server.assign(cells, -1);
+    g.sinrDb.resize(cells);
+
+    // 雑音は真値 [mW] で持つ (電力の足し算を dB のままやらない)
+    const double noise_mW = std::pow(10.0, noiseDbm / 10.0);
+
+    double lo = 0.0, hi = 0.0;
+    bool first = true;
+    long long covered = 0;
+    for (int iy = 0; iy < n; ++iy) {
+        const double y = g.coord(iy);
+        for (int ix = 0; ix < n; ++ix) {
+            const double x = g.coord(ix);
+            double bestDbm = 0.0, total_mW = 0.0;
+            int best = -1;
+            for (std::size_t k = 0; k < aps.size(); ++k) {
+                const double dx = x - aps[k].x_m, dy = y - aps[k].y_m;
+                double d = std::sqrt(dx * dx + dy * dy);
+                if (d < minDistance_m) d = minDistance_m;
+                const double loss =
+                    twoRayPathLossDb(d, aps[k].h_m, hRx_m, freq_hz, reflection);
+                const double p = receivedPowerDbm(aps[k].eirpDbm, loss, rxGainDbi);
+                total_mW += std::pow(10.0, p / 10.0);
+                if (best < 0 || p > bestDbm) { bestDbm = p; best = int(k); }
+            }
+            const std::size_t c = std::size_t(iy) * std::size_t(n) + std::size_t(ix);
+            g.bestDbm[c] = bestDbm;
+            g.server[c] = best;
+            // 干渉 = 最良サーバ以外の合計 (真値で引く)
+            const double best_mW = std::pow(10.0, bestDbm / 10.0);
+            const double intf_mW = std::max(0.0, total_mW - best_mW);
+            g.sinrDb[c] = 10.0 * std::log10(best_mW / (intf_mW + noise_mW));
+            if (bestDbm >= thresholdDbm) ++covered;
+            if (first) { lo = hi = bestDbm; first = false; }
+            else { if (bestDbm < lo) lo = bestDbm; if (bestDbm > hi) hi = bestDbm; }
+        }
+    }
+    g.minDbm = lo;
+    g.maxDbm = hi;
+    g.coveredFraction = double(covered) / double(cells);
+    return g;
+}
+
 } // namespace propagation
 } // namespace em
 } // namespace ofd

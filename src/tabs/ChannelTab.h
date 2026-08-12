@@ -23,6 +23,7 @@
 
 class QButtonGroup;
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -66,10 +67,15 @@ private:
 
     // 送受信 / TX-RX
     QLineEdit    *m_apCount = nullptr;
+    // 複数 AP のカバレッジ (配置半径・図に出す量・カバー判定の閾値)
+    QLineEdit    *m_apRadius = nullptr;
+    QComboBox    *m_covQuantity = nullptr;
+    QLineEdit    *m_covThreshold = nullptr;
     QCheckBox    *m_mimo = nullptr;
     QCheckBox    *m_beamforming = nullptr;
     void updateCoverage(double dist, double ht, double hr, double f,
-                        double eirp, double grx, double refl, double lam);
+                        double eirp, double grx, double refl,
+                        double lam, double noiseBw_hz, double noiseFigureDb);
 
     QButtonGroup *m_rxKind = nullptr;
     FieldHeatmap *m_coverage = nullptr;   // カバレッジ格子 (受信点=格子のとき)

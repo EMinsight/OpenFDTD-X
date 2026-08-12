@@ -11,6 +11,7 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -302,16 +303,47 @@ const bool s_i18n = [] {
     I18n::reg("chn_cov_bad",
               "リンク条件の入力が不正なためカバレッジ図を描けません",
               "The coverage map needs valid link-budget inputs");
-    I18n::reg("chn_uw_txrx", "基地局/AP の台数",
-              "the number of base stations / APs");
+    I18n::reg("chn_uw_txrx",
+              "AP の配置そのもの (間取りや地形に合わせて置くには配置の入力と"
+              "レイトレーサが要ります — ここでは等間隔の円周配置に固定)",
+              "the AP layout itself (placing APs against a floor plan or terrain "
+              "needs a layout input and a ray tracer — here they are fixed to an "
+              "evenly spaced ring)");
     I18n::reg("chn_uw_txrx_ok",
-              "MIMO 4×4 とビームフォーミングのチェック (下のチャネル特性表の"
-              "「アレイ利得」「空間多重の容量上限」) と、受信点の種別 "
-              "(「格子」でカバレッジ図)",
-              "the MIMO 4x4 and beamforming checkboxes (the \"array gain\" and "
-              "\"spatial-multiplexing capacity\" rows of the channel table "
-              "below) and the receive-point kind (\"grid\" draws the coverage "
-              "map)");
+              "基地局/AP の台数と配置半径 — カバレッジ図が複数局になり、"
+              "各点で最も強い局に繋いだときの受信電力・SINR・カバー率になります。"
+              "MIMO 4×4 とビームフォーミングのチェックは下のチャネル特性表の"
+              "「アレイ利得」「空間多重の容量上限」、受信点の種別は「格子」で"
+              "カバレッジ図",
+              "the AP count and ring radius — the coverage map becomes "
+              "multi-AP, showing the received power, SINR and covered fraction "
+              "when each point attaches to its strongest AP. The MIMO 4x4 and "
+              "beamforming checkboxes drive the \"array gain\" and "
+              "\"spatial-multiplexing capacity\" rows of the channel table, and "
+              "the receive-point kind (\"grid\") draws the coverage map");
+    // 複数 AP のカバレッジ
+    I18n::reg("chn_ap_radius", "配置半径", "Ring radius");
+    I18n::reg("chn_cov_quantity", "図に出す量", "Map quantity");
+    I18n::reg("chn_cov_rsrp", "受信電力 (最良サーバ)", "Received power (best server)");
+    I18n::reg("chn_cov_sinr", "SINR", "SINR");
+    I18n::reg("chn_cov_thr", "カバー判定の閾値", "Coverage threshold");
+    I18n::reg("chn_cov_title_sinr", "カバレッジ (SINR [dB])",
+              "Coverage (SINR [dB])");
+    I18n::reg("chn_cov_note_multi",
+              "半幅 %1 の水平面に受信点を並べ、%2 局を半径 %3 の円周上に等間隔で"
+              "置いて、各点で最も強い局に繋いだ図。%4 … %5 %6。"
+              "残りの局は同一チャネル干渉として SINR = C/(I+N) に入れている "
+              "(電力は真値で足す)。閾値 %7 dBm 以上が %8 %。"
+              "最も強い局は最も近い局とは限らない (2 波モデルの干渉ヌルで"
+              "近い局が弱くなる点がある)。アンテナ指向性と遮蔽物は含まない",
+              "Receive points over a horizontal plane of half-span %1, with %2 "
+              "APs evenly spaced on a ring of radius %3, each point attaching to "
+              "its strongest AP; %4 to %5 %6. The remaining APs enter the "
+              "SINR = C/(I+N) as co-channel interference (powers added in linear "
+              "units). %8 % of the points are at or above the %7 dBm threshold. "
+              "The strongest AP is not always the nearest one — two-ray "
+              "interference nulls can weaken a near AP. Antenna patterns and "
+              "obstacles are not included");
     return true;
 }();
 
@@ -560,6 +592,28 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     ar->addWidget(m_beamforming);
     ar->addStretch(1);
     sx->form()->addRow(I18n::tr("chn_ap"), ar);
+
+    // 複数局の配置半径・図に出す量・カバー判定の閾値 (カバレッジ図へ効く)
+    m_apRadius = numEdit("50", sx);
+    auto *rr = new QHBoxLayout();
+    rr->addWidget(m_apRadius);
+    rr->addWidget(new QLabel(QStringLiteral("m"), sx));
+    rr->addStretch(1);
+    sx->form()->addRow(I18n::tr("chn_ap_radius"), rr);
+    m_covQuantity = new QComboBox(sx);
+    m_covQuantity->addItem(I18n::tr("chn_cov_rsrp"));
+    m_covQuantity->addItem(I18n::tr("chn_cov_sinr"));
+    sx->form()->addRow(I18n::tr("chn_cov_quantity"), m_covQuantity);
+    m_covThreshold = numEdit("-90", sx);
+    auto *tr2 = new QHBoxLayout();
+    tr2->addWidget(m_covThreshold);
+    tr2->addWidget(new QLabel(QStringLiteral("dBm"), sx));
+    tr2->addStretch(1);
+    sx->form()->addRow(I18n::tr("chn_cov_thr"), tr2);
+    connect(m_covQuantity, &QComboBox::currentIndexChanged,
+            this, &ChannelTab::recompute);
+    for (QLineEdit *e : { m_apCount, m_apRadius, m_covThreshold })
+        connect(e, &QLineEdit::editingFinished, this, &ChannelTab::recompute);
 
     sx->form()->addRow(I18n::tr("chn_rx"),
                        segRow(sx, &m_rxKind, { I18n::tr("chn_rx_grid"),
@@ -841,12 +895,13 @@ void ChannelTab::recompute()
     // ── カバレッジ図 (受信点 = 格子 のときだけ) ────────────────────────────
     // 半幅はリンク条件の距離に合わせる (見たい距離が図に入るように)。
     // 近傍は 2 波モデルの前提を外れるので、下限を λ で切る。
-    updateCoverage(d, ht, hr, f, eirp, grx, refl, lam);
+    updateCoverage(d, ht, hr, f, eirp, grx, refl, lam, bwM * 1e6, nf);
 }
 
 void ChannelTab::updateCoverage(double dist, double ht, double hr, double f,
                                 double eirp, double grx, double refl,
-                                double lam)
+                                double lam, double noiseBw_hz,
+                                double noiseFigureDb)
 {
     namespace prop = ofd::em::propagation;
     if (!m_coverage) return;
@@ -857,21 +912,41 @@ void ChannelTab::updateCoverage(double dist, double ht, double hr, double f,
     }
     const int n = 121;                   // 表示用の解像度 (奇数 = 中心を含む)
     const double minD = (lam > 0.0) ? lam : 1.0;
-    const prop::CoverageGrid g =
-        prop::coverageMap(dist, n, ht, hr, f, eirp, grx, refl, minD);
+
+    // 台数 1 なら中心 1 局 (従来の図と厳密に一致する)。2 局以上は円周配置。
+    const int aps = std::max(1, m_apCount ? m_apCount->text().toInt() : 1);
+    const double radius = m_apRadius ? m_apRadius->text().toDouble() : 0.0;
+    const double thr = m_covThreshold ? m_covThreshold->text().toDouble() : -90.0;
+    const bool showSinr = (m_covQuantity && m_covQuantity->currentIndex() == 1);
+    const double noise = prop::thermalNoiseDbm(noiseBw_hz, noiseFigureDb);
+
+    const prop::MultiCoverage g =
+        prop::coverageMapMulti(prop::apRing(aps, radius, ht, eirp), dist, n, hr,
+                               f, grx, noise, thr, refl, minD);
     if (!g.valid()) {
         m_coverage->clearData();
         m_coverageNote->setText(I18n::tr("chn_cov_bad"));
         return;
     }
-    // dBm を 0..1 へ正規化 (最小 = 0, 最大 = 1)。範囲は注記に数値で出す
+
+    const std::vector<double> &src = showSinr ? g.sinrDb : g.bestDbm;
+    double lo = src.empty() ? 0.0 : src[0], hi = lo;
+    for (double v : src) { lo = std::min(lo, v); hi = std::max(hi, v); }
+    // 値域を 0..1 へ正規化 (最小 = 0, 最大 = 1)。実スケールは注記に数値で出す
     QVector<double> cells;
-    cells.reserve(int(g.dbm.size()));
-    const double span = (g.maxDbm > g.minDbm) ? (g.maxDbm - g.minDbm) : 1.0;
-    for (double v : g.dbm) cells.push_back((v - g.minDbm) / span);
+    cells.reserve(int(src.size()));
+    const double span = (hi > lo) ? (hi - lo) : 1.0;
+    for (double v : src) cells.push_back((v - lo) / span);
+    m_coverage->setTitle(I18n::tr(showSinr ? "chn_cov_title_sinr"
+                                           : "chn_cov_title"));
     m_coverage->setData(cells, g.n, g.n);
-    m_coverageNote->setText(I18n::tr("chn_cov_note")
+    m_coverageNote->setText(I18n::tr("chn_cov_note_multi")
         .arg(fmtDistance(g.halfSpan_m))
-        .arg(g.minDbm, 0, 'f', 1)
-        .arg(g.maxDbm, 0, 'f', 1));
+        .arg(aps)
+        .arg(fmtDistance(aps > 1 ? radius : 0.0))
+        .arg(lo, 0, 'f', 1)
+        .arg(hi, 0, 'f', 1)
+        .arg(showSinr ? QStringLiteral("dB") : QStringLiteral("dBm"))
+        .arg(thr, 0, 'f', 1)
+        .arg(100.0 * g.coveredFraction, 0, 'f', 1));
 }

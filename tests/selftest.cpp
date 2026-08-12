@@ -11397,6 +11397,166 @@ static void testRadioPropagation()
               && !pr::coverageMap(half, n, ht, hr, 0.0, eirp, grx).valid(),
               "coverage: bad inputs yield an invalid grid");
     }
+
+    // ── 複数 AP のカバレッジ (最良サーバと同一チャネル干渉) ────────────────
+    {
+        const double half = 200.0, ht = 10.0, hr = 1.5, f = 3.5e9;
+        const double eirp = 30.0, grx = 2.0, refl = 1.0, minD = 1.0;
+        const int n = 41;
+        const double noise = pr::thermalNoiseDbm(100e6, 7.0);
+        const double thr = -90.0;
+
+        // ── 1 局は従来の図と厳密に一致する (同じ経路損失で描いている証拠) ──
+        const pr::CoverageGrid one =
+            pr::coverageMap(half, n, ht, hr, f, eirp, grx, refl, minD);
+        const pr::MultiCoverage m1 =
+            pr::coverageMapMulti(pr::apRing(1, 50.0, ht, eirp), half, n, hr, f,
+                                 grx, noise, thr, refl, minD);
+        check(m1.valid() && m1.n == n, "multiap: a single AP gives a valid grid");
+        bool same = true;
+        for (std::size_t c = 0; c < one.dbm.size(); ++c)
+            if (one.dbm[c] != m1.bestDbm[c]) { same = false; break; }
+        check(same, "multiap: one AP at the centre matches the single-AP map exactly");
+        // 干渉源が無いので SINR = C − N (dB の引き算がそのまま成り立つ)
+        bool sinrOk = true;
+        for (std::size_t c = 0; c < m1.sinrDb.size(); ++c)
+            if (std::fabs(m1.sinrDb[c] - (m1.bestDbm[c] - noise)) > 1e-9)
+                { sinrOk = false; break; }
+        check(sinrOk, "multiap: with no interferer the SINR is just C - N");
+        check(m1.server[0] == 0, "multiap: the only AP is always the server");
+
+        // ── 同じ場所に N 局を重ねる ────────────────────────────────────────
+        // 最良サーバの電力は 1 局と厳密に同じ (最大であって和ではない)。
+        // 干渉は残り N−1 局ぶんなので、雑音が無視できる点では
+        //   SINR → 1/(N−1)  ⇔  −10log10(N−1) [dB]
+        // が厳密に成り立つ。
+        for (int N : { 2, 3, 5 }) {
+            std::vector<pr::AccessPoint> stack;
+            for (int k = 0; k < N; ++k) stack.push_back({ 0.0, 0.0, ht, eirp });
+            const pr::MultiCoverage ms =
+                pr::coverageMapMulti(stack, half, n, hr, f, grx, noise, thr,
+                                     refl, minD);
+            bool best = true, sinr = true;
+            for (std::size_t c = 0; c < ms.bestDbm.size(); ++c) {
+                if (ms.bestDbm[c] != one.dbm[c]) { best = false; break; }
+                // C/N がじゅうぶん大きい点だけで判定する (雑音が効くと崩れる)
+                if (ms.bestDbm[c] - noise > 40.0
+                    && std::fabs(ms.sinrDb[c] + 10.0 * std::log10(double(N - 1)))
+                       > 1e-3)
+                    { sinr = false; break; }
+            }
+            check(best, "multiap: co-located APs do not raise the best-server power");
+            check(sinr, "multiap: N co-located APs give SINR = -10log10(N-1)");
+        }
+
+        // ── 最良サーバは最も近い局 (同じ EIRP・同じ高さなら Voronoi) ───────
+        const std::vector<pr::AccessPoint> ring = pr::apRing(4, 120.0, ht, eirp);
+        check(ring.size() == 4, "multiap: the ring layout places every AP");
+        check(std::fabs(ring[0].x_m - 120.0) < 1e-12 && std::fabs(ring[0].y_m) < 1e-12,
+              "multiap: the first AP sits on the +x axis");
+        check(std::fabs(ring[2].x_m + 120.0) < 1e-9,
+              "multiap: the APs are evenly spaced around the ring");
+        check(pr::apRing(1, 120.0, ht, eirp)[0].x_m == 0.0
+              && pr::apRing(1, 120.0, ht, eirp)[0].y_m == 0.0,
+              "multiap: a single AP is placed at the centre, not on the ring");
+        check(pr::apRing(0, 120.0, ht, eirp).empty(),
+              "multiap: no AP means no layout");
+
+        const pr::MultiCoverage m4 =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, thr, refl, minD);
+
+        // 最良サーバは「最も強い局」であって「最も近い局」ではない。
+        // まず定義どおりであることを直接評価と突き合わせる (図が別の式で
+        // 描かれていないことの検査)。
+        bool argmax = true;
+        long long notNearest = 0;
+        for (int iy = 0; iy < n && argmax; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double x = m4.coord(ix), y = m4.coord(iy);
+                double want = -1e300, dmin = 1e300;
+                int wantK = -1, nearest = -1;
+                for (int k = 0; k < 4; ++k) {
+                    const double dx = x - ring[std::size_t(k)].x_m;
+                    const double dy = y - ring[std::size_t(k)].y_m;
+                    const double dd = dx * dx + dy * dy;
+                    double d = std::sqrt(dd);
+                    if (d < minD) d = minD;
+                    const double p = pr::receivedPowerDbm(
+                        eirp, pr::twoRayPathLossDb(d, ht, hr, f, refl), grx);
+                    if (p > want) { want = p; wantK = k; }
+                    if (dd < dmin) { dmin = dd; nearest = k; }
+                }
+                const std::size_t c = std::size_t(iy) * n + ix;
+                if (std::fabs(m4.bestDbm[c] - want) > 1e-12 || m4.server[c] != wantK)
+                    { argmax = false; break; }
+                if (wantK != nearest) ++notNearest;
+            }
+        check(argmax,
+              "multiap: the serving AP is the strongest one, cell by cell");
+        // **2 波モデルでは最寄りの局が最強とは限らない。** 干渉のヌルに落ちた
+        // 近い局より、遠い局の方が強い点が実際に出る。「最寄り = サーバ」と
+        // 書き換えたくなる場所なので、そうではないことを固定しておく。
+        check(notNearest > 0,
+              "multiap: with two-ray nulls the nearest AP is not always the server");
+
+        // ── 局を増やしても、どの点でも受信電力は下がらない (最大の単調性) ──
+        const pr::MultiCoverage m8 =
+            pr::coverageMapMulti(pr::apRing(8, 120.0, ht, eirp), half, n, hr, f,
+                                 grx, noise, thr, refl, minD);
+        bool grew = true;
+        for (std::size_t c = 0; c < m4.bestDbm.size(); ++c)
+            if (m8.bestDbm[c] < m4.bestDbm[c] - 1e-9) { grew = false; break; }
+        check(grew, "multiap: adding APs never lowers the best-server power");
+        check(m8.coveredFraction >= m4.coveredFraction,
+              "multiap: and it never lowers the covered fraction");
+
+        // ── 回転対称な配置は対称な図を作る ────────────────────────────────
+        // 4 局を ±x/±y 軸に置いてあるので、図は 180 度回転で不変
+        bool sym = true;
+        for (int iy = 0; iy < n && sym; ++iy)
+            for (int ix = 0; ix < n; ++ix) {
+                const double a = m4.bestDbm[std::size_t(iy) * n + ix];
+                const double b2 = m4.bestDbm[std::size_t(n - 1 - iy) * n + (n - 1 - ix)];
+                if (std::fabs(a - b2) > 1e-9) { sym = false; break; }
+            }
+        check(sym, "multiap: a rotationally symmetric layout gives a symmetric map");
+
+        // ── カバー率は閾値と送信電力の単調関数 ────────────────────────────
+        const pr::MultiCoverage lowThr =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, -300.0, refl, minD);
+        const pr::MultiCoverage hiThr =
+            pr::coverageMapMulti(ring, half, n, hr, f, grx, noise, 300.0, refl, minD);
+        check(lowThr.coveredFraction == 1.0,
+              "multiap: an unreachable threshold covers everything");
+        check(hiThr.coveredFraction == 0.0,
+              "multiap: an impossible threshold covers nothing");
+        const pr::MultiCoverage strong =
+            pr::coverageMapMulti(pr::apRing(4, 120.0, ht, eirp + 10.0), half, n,
+                                 hr, f, grx, noise, thr, refl, minD);
+        check(strong.coveredFraction >= m4.coveredFraction,
+              "multiap: more transmit power cannot reduce coverage");
+        // EIRP を 10 dB 上げたら受信電力もちょうど 10 dB 上がる
+        bool up = true;
+        for (std::size_t c = 0; c < m4.bestDbm.size(); ++c)
+            if (std::fabs(strong.bestDbm[c] - m4.bestDbm[c] - 10.0) > 1e-9)
+                { up = false; break; }
+        check(up, "multiap: +10 dB of EIRP is exactly +10 dB of received power");
+        // 同じだけ上げても SINR は変わらない (干渉も一緒に上がるため)
+        bool sinrSame = true;
+        for (std::size_t c = 0; c < m4.sinrDb.size(); ++c)
+            if (std::fabs(strong.sinrDb[c] - m4.sinrDb[c]) > 0.5)
+                { sinrSame = false; break; }
+        check(sinrSame,
+              "multiap: raising every AP together barely moves the SINR");
+
+        // ── 不正な入力 ────────────────────────────────────────────────────
+        check(!pr::coverageMapMulti({}, half, n, hr, f, grx, noise, thr).valid(),
+              "multiap: no AP yields an invalid grid");
+        check(!pr::coverageMapMulti(ring, half, 0, hr, f, grx, noise, thr).valid()
+              && !pr::coverageMapMulti(ring, 0.0, n, hr, f, grx, noise, thr).valid()
+              && !pr::coverageMapMulti(ring, half, n, hr, 0.0, grx, noise, thr).valid(),
+              "multiap: bad inputs yield an invalid grid");
+    }
 }
 
 // ── 分散モデルのフィット (src/optics/DispersionFit) ─────────────────────────
