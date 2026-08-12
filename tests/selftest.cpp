@@ -27,6 +27,7 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/BeamPatternCsv.h"
@@ -19038,6 +19039,151 @@ static void testSourceDirectivity()
     }
 }
 
+// ── MTF (optics/Mtf) ──────────────────────────────────────────────────────
+// 回折限界は「2 つの円の重なり面積」の閉形式なので、**面積を数値積分で
+// 独立に出して**突き合わせる。幾何 MTF は等間隔に並べた光線なら
+// Dirichlet 核が厳密解になるので、それと突き合わせる。
+static void testMtf()
+{
+    g_file = "mtf";
+    using namespace ofd::optics;
+    const double lam = 550.0;      // nm
+    const double fnum = 4.0;
+    const double nc = mtfCutoff_cyc_per_mm(lam, fnum);
+
+    // ① カットオフ νc = 1/(λ·F#)
+    {
+        check(std::fabs(nc - 1.0 / (550.0e-6 * 4.0)) < 1e-9,
+              qPrintable(QString("mtf: the cutoff is 1/(lambda*F#) = %1 "
+                                 "cyc/mm").arg(nc, 0, 'f', 2)));
+        check(std::fabs(mtfCutoff_cyc_per_mm(lam, 8.0) - 0.5 * nc) < 1e-9,
+              "mtf: doubling the f-number halves the cutoff");
+        check(mtfCutoff_cyc_per_mm(0.0, 4.0) == 0.0,
+              "mtf: an invalid wavelength gives 0 rather than infinity");
+    }
+
+    // ② 回折限界 MTF — **瞳の重なり面積を数値積分で独立に出して**照合する。
+    //    半径 1 の円を 2s = ν/νc ずらしたときの重なり面積 / π。
+    {
+        double worst = 0.0;
+        for (double frac : { 0.0, 0.1, 0.25, 0.5, 0.75, 0.9 }) {
+            const double nu = frac * nc;
+            // 中心を ∓s に置くと中心間距離は 2s。閉形式の引数 ν/νc は
+            // 「中心間距離 ÷ 直径」なので s = ν/νc になる。
+            const double s = frac;
+            // 重なり面積 = 2∫ (縦の重なり) dx を台形則で
+            const int N = 200000;
+            double area = 0.0;
+            const double x0 = -1.0, x1 = 1.0;
+            const double h = (x1 - x0) / N;
+            for (int i = 0; i <= N; ++i) {
+                const double x = x0 + i * h;
+                // 左右にずらした 2 円の共通部分の縦幅
+                const double a = 1.0 - (x + s) * (x + s);
+                const double b = 1.0 - (x - s) * (x - s);
+                if (a <= 0.0 || b <= 0.0) continue;
+                const double y = 2.0 * std::min(std::sqrt(a), std::sqrt(b));
+                area += ((i == 0 || i == N) ? 0.5 : 1.0) * y * h;
+            }
+            const double want = area / M_PI;
+            const double got = diffractionLimitedMtf(nu, lam, fnum);
+            worst = std::max(worst, std::fabs(got - want));
+        }
+        check(worst < 2e-5,
+              qPrintable(QString("mtf: the closed form equals the numerically "
+                                 "integrated pupil overlap (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+        check(std::fabs(diffractionLimitedMtf(0.0, lam, fnum) - 1.0) < 1e-15,
+              "mtf: the diffraction MTF is exactly 1 at zero frequency");
+        check(diffractionLimitedMtf(nc, lam, fnum) == 0.0,
+              "mtf: it is exactly 0 at the cutoff");
+        check(diffractionLimitedMtf(1.5 * nc, lam, fnum) == 0.0,
+              "mtf: and stays 0 beyond the cutoff");
+        // 単調減少
+        bool mono = true;
+        double prev = 1.0;
+        for (int i = 1; i <= 50; ++i) {
+            const double v = diffractionLimitedMtf(nc * i / 50.0, lam, fnum);
+            if (v > prev + 1e-12) mono = false;
+            prev = v;
+        }
+        check(mono, "mtf: the diffraction MTF decreases monotonically");
+    }
+
+    // ③ 幾何 MTF — 1 点に集まった光線は全周波数で 1 (幾何的には完全)
+    {
+        std::vector<double> pt(64, 0.123);
+        check(std::fabs(geometricMtf(pt, 0.0) - 1.0) < 1e-15,
+              "mtf: a perfect point has MTF = 1 at zero frequency");
+        check(std::fabs(geometricMtf(pt, 137.0) - 1.0) < 1e-12,
+              "mtf: and 1 at every frequency (no geometric blur at all)");
+        // 平行移動しても変わらない (絶対値を取っているので)
+        std::vector<double> shifted = pt;
+        for (double &v : shifted) v += 4.56;
+        check(std::fabs(geometricMtf(shifted, 137.0)
+                        - geometricMtf(pt, 137.0)) < 1e-12,
+              "mtf: shifting the whole spot does not change the MTF");
+    }
+
+    // ④ 幾何 MTF — **等間隔 N 点なら Dirichlet 核が厳密解**:
+    //      |sin(πνNd) / (N·sin(πνd))|      (d = 点の間隔)
+    //    ビンに刻まずに求めているので、ここが厳密に一致する。
+    {
+        const int N = 64;
+        const double d = 0.001;           // 1 μm 間隔
+        std::vector<double> xs;
+        for (int i = 0; i < N; ++i) xs.push_back(i * d);
+        double worst = 0.0;
+        for (double nu : { 5.0, 37.0, 111.0, 250.0 }) {
+            const double num = std::sin(M_PI * nu * N * d);
+            const double den = N * std::sin(M_PI * nu * d);
+            const double want = std::fabs(den) > 1e-15
+                                    ? std::fabs(num / den) : 1.0;
+            worst = std::max(worst, std::fabs(geometricMtf(xs, nu) - want));
+        }
+        check(worst < 1e-12,
+              qPrintable(QString("mtf: equally spaced rays match the Dirichlet "
+                                 "kernel exactly (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+        // 一様に幅 w へ広がった像は最初のゼロが ν = 1/w に来る (sinc)
+        const double w = N * d;
+        const double atZero = geometricMtf(xs, 1.0 / w);
+        check(atZero < 0.02,
+              qPrintable(QString("mtf: a uniform blur of width w has its first "
+                                 "null at 1/w (got %1)")
+                             .arg(atZero, 0, 'f', 4)));
+    }
+
+    // ⑤ 曲線と、MTF がしきい値を切る周波数
+    {
+        std::vector<double> xs;
+        for (int i = 0; i < 200; ++i) xs.push_back(0.02 * (i / 199.0 - 0.5));
+        const MtfCurve c = mtfCurve(xs, lam, fnum, 64);
+        check(c.valid(), "mtf: the curve builds");
+        check(c.nu.size() == 64 && c.diffraction.size() == 64
+                  && c.geometric.size() == 64,
+              "mtf: every series has the requested number of points");
+        check(std::fabs(c.nu.back() - nc) < 1e-9,
+              "mtf: the curve runs up to the cutoff");
+        check(std::fabs(c.diffraction.front() - 1.0) < 1e-15
+                  && std::fabs(c.geometric.front() - 1.0) < 1e-15,
+              "mtf: both curves start at 1");
+        // 収差 (幅 20 μm のぼけ) があるので幾何は回折限界より早く落ちる
+        const double f50g = frequencyAtMtf(c.nu, c.geometric, 0.5);
+        const double f50d = frequencyAtMtf(c.nu, c.diffraction, 0.5);
+        check(f50g > 0.0 && f50d > 0.0,
+              "mtf: both curves cross the 50 % level inside the band");
+        check(f50g < f50d,
+              qPrintable(QString("mtf: a blurred spot loses contrast sooner "
+                                 "than the diffraction limit (%1 < %2 cyc/mm)")
+                             .arg(f50g, 0, 'f', 1).arg(f50d, 0, 'f', 1)));
+        // 座標を渡さなければ幾何の列は空 (無いものを 0 で埋めない)
+        const MtfCurve d0 = mtfCurve({}, lam, fnum, 16);
+        check(d0.geometric.empty(),
+              "mtf: with no ray data the geometric series stays empty");
+    }
+}
+
 // ── メッシュ精度 → セル寸法 → Courant 限界 (core/FdtdVerification) ────────
 // メッシュ精度スライダが Δt に効く道筋。**既にある courantNumber() の逆**に
 // なっていることを往復で確かめ、既存の Project::courantDt() とも突き合わせる
@@ -22738,6 +22884,7 @@ int main(int argc, char *argv[])
     testPhaseNoise();
     testRayPaths();
     testCourantFromAccuracy();
+    testMtf();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

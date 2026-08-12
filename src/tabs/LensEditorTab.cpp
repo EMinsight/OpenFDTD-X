@@ -4,6 +4,7 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
 #include "../optics/SeidelAberration.h"
 #include "../widgets/MiniPlot.h"
@@ -192,13 +193,40 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "MTF・包絡エネルギー・像面湾曲図・歪曲格子・波面 (Zernike) は"
-              "未実装です。スポットダイアグラム・レイファン・色収差は実光線"
-              "追跡で計算します。",
-              "MTF, encircled energy, the field-curvature plot, the distortion "
+              "包絡エネルギー・像面湾曲図・歪曲格子・波面 (Zernike) は"
+              "未実装です。スポットダイアグラム・レイファン・色収差・MTF は"
+              "実光線追跡で計算します。",
+              "Encircled energy, the field-curvature plot, the distortion "
               "grid and the wavefront (Zernike) map are not implemented. The "
-              "spot diagram, the ray fan and the chromatic focal shift are "
-              "computed by real ray tracing.");
+              "spot diagram, the ray fan, the chromatic focal shift and the "
+              "MTF are computed by real ray tracing.");
+    I18n::reg("lde_mtf_x", "空間周波数 [cycles/mm]", "Spatial frequency [cyc/mm]");
+    I18n::reg("lde_mtf_y", "MTF", "MTF");
+    I18n::reg("lde_mtf_res",
+              "λ = %1 nm・F/%2 → カットオフ %3 cyc/mm。回折限界が 50 %% に"
+              "落ちるのは %4 cyc/mm、この系の幾何 MTF は %5 cyc/mm です "
+              "(光線 %6 本、RMS スポット半径 %7 mm)。",
+              "lambda = %1 nm, F/%2 -> cutoff %3 cyc/mm. The diffraction limit "
+              "falls to 50 %% at %4 cyc/mm; this system's geometric MTF does so "
+              "at %5 cyc/mm (%6 rays, RMS spot radius %7 mm).");
+    I18n::reg("lde_mtf_note",
+              " 幾何 MTF は光線の当たり方だけから出しているので回折を含みま"
+              "せん。高い空間周波数では実際より良く出るので、回折限界の曲線"
+              "と併せて読んでください (収差込みの回折 MTF は瞳での位相が要る"
+              "ため未実装)。光線本数が有限なので、幾何 MTF は細かく振動します "
+              "(平滑化していません — 本数を増やすと落ち着きます)。",
+              " The geometric MTF comes only from where the rays land, so it "
+              "does not include diffraction and looks better than reality at "
+              "high frequencies; read it together with the diffraction-limit "
+              "curve. (A diffraction MTF including aberrations needs the pupil "
+              "phase and is not implemented.) The ray count is finite, so the "
+              "geometric curve ripples; it is not smoothed (tracing more rays "
+              "settles it).");
+    I18n::reg("lde_mtf_bad",
+              "MTF は近軸の F 値と実光線追跡が要ります。面テーブルが解けないか、"
+              "追跡できた光線がありません。",
+              "The MTF needs a paraxial f-number and a successful ray trace. "
+              "The surface table cannot be solved, or no ray was traced.");
     I18n::reg("lde_an_idle",
               "「スポットダイアグラム」または「レイファン」を押すと、面テーブルの"
               "系を実光線追跡して結果を描きます。",
@@ -719,6 +747,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                             this, &LensEditorTab::runSpotDiagram);
         else if (i == 1) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runRayFan);
+        else if (i == 2) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runMtf);
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
         else {
@@ -1551,6 +1581,86 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── MTF (optics/Mtf) ───────────────────────────────────────────────────────
+// 回折限界 (円形瞳の自己相関の閉形式) と、実光線追跡の像面交点から出した
+// 幾何 MTF を**2 本並べて**描く。幾何は回折を含まないので高い周波数では
+// 実際より良く出る — そのことを必ず画面に書く。
+void LensEditorTab::runMtf()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    // 近軸の F 値 (回折限界のカットオフを決める)
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    const paraxial::SystemData d =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+
+    // 実光線追跡で像面交点を得る (スポットダイアグラムと同じ経路)
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    const raytrace::SpotResult sp = raytrace::spotDiagram(sys, epd, field, 12);
+
+    if (!d.valid || !(d.fnumber > 0.0) || !sp.valid || sp.x.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_mtf_bad"));
+        return;
+    }
+
+    // 断面は接線方向 (x) を採る。重心を引いておく (平行移動は MTF を
+    // 変えないが、数値の桁を落とさないため)
+    std::vector<double> xs;
+    xs.reserve(sp.x.size());
+    for (double v : sp.x) xs.push_back(v - sp.centroidX);
+
+    const optics::MtfCurve mc =
+        optics::mtfCurve(xs, primary, d.fnumber, 128);
+    if (!mc.valid()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_mtf_bad"));
+        return;
+    }
+
+    MiniSeries diff;
+    diff.color = QColor("#8899AA");
+    diff.label = "diffraction limit";
+    MiniSeries geo;
+    geo.color = QColor("#0078D4");
+    geo.label = "geometric";
+    for (std::size_t i = 0; i < mc.nu.size(); ++i) {
+        diff.pts.push_back(QPointF(mc.nu[i], mc.diffraction[i]));
+        if (i < mc.geometric.size())
+            geo.pts.push_back(QPointF(mc.nu[i], mc.geometric[i]));
+    }
+    m_fanPlot->setYRange(0.0, 1.05);
+    m_fanPlot->setSeries({ diff, geo });
+    m_fanPlot->setLabels(I18n::tr("lde_mtf_x"), I18n::tr("lde_mtf_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    const double nc = optics::mtfCutoff_cyc_per_mm(primary, d.fnumber);
+    const double f50d = optics::frequencyAtMtf(mc.nu, mc.diffraction, 0.5);
+    const double f50g = optics::frequencyAtMtf(mc.nu, mc.geometric, 0.5);
+    m_anInfo->setText(I18n::tr("lde_mtf_res")
+                          .arg(QString::number(primary, 'f', 1),
+                               QString::number(d.fnumber, 'f', 2),
+                               QString::number(nc, 'f', 1),
+                               QString::number(f50d, 'f', 1),
+                               QString::number(f50g, 'f', 1))
+                          .arg(int(sp.x.size()))
+                          .arg(QString::number(sp.rmsRadius, 'f', 4))
+                      + I18n::tr("lde_mtf_note"));
+}
+
 void LensEditorTab::runChromatic()
 {
     if (m_waves.isEmpty()) return;

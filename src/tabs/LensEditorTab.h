@@ -104,6 +104,7 @@ private slots:
     void runSpotDiagram();          // ⊙ スポットダイアグラム (実光線追跡)
     void runRayFan();               // 📐 レイファン (光線収差図)
     void runChromatic();            // 🌈 色収差 (波長ごとの焦点移動)
+    void runMtf();                  // 📊 MTF (回折限界 + 幾何)
     void addWavelength();           // + 波長サンプルの追加
 
 private:
