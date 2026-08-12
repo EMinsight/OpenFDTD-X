@@ -80,6 +80,7 @@
 #include "core/FlankingTransmission.h"
 #include "core/ReceiverNoise.h"
 #include "core/TransmissionLine.h"
+#include "core/DensityField.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
 #include "io/Tidy3dExporter.h"
@@ -18319,6 +18320,287 @@ static void testRadarCrossSection()
 //   post/plot2dFreq.c:64           coupling         → NFeed かつ NPoint
 //   post/post.c:33    周波数特性は NFreq1 > 0 のときだけ
 //   post/post.c:37    遠方界・近傍界は NFreq2 > 0 のときだけ
+// ── トポロジー最適化の密度場パラメータ化 (core/DensityField) ────────────────
+// フィルタ・射影・矩形分解は、いずれも **厳密に成り立つ恒等式**を持っている。
+// 記録した数値ではなくその恒等式で判定する。
+static void testDensityField()
+{
+    g_file = "density";
+    using namespace ofd::topo;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    Region r;                       // 既定 = 5 μm × 5 μm × 220 nm
+    // ── 格子 ───────────────────────────────────────────────────────────
+    {
+        const Grid g = gridFor(r, 20e-9);
+        check(g.nx == 250 && g.ny == 250, "density: 5 um at 20 nm gives 250 pixels");
+        check(approx(g.pitchX_m, 20e-9, 1e-18) && approx(g.pitchY_m, 20e-9, 1e-18),
+              "density: the pitch divides the region exactly");
+        // 割り切れないときは切り上げるので、ピッチは指定解像度**以下**になる
+        const Grid h = gridFor(r, 30e-9);
+        check(h.nx == 167, "density: a non-dividing resolution rounds the count up");
+        check(h.pitchX_m < 30e-9 + 1e-18,
+              "density: rounding up keeps the pitch at or below the resolution");
+        check(approx(h.pitchX_m * h.nx, r.width_m(), 1e-15),
+              "density: the pixels tile the region with no remainder");
+        check(!gridFor(r, 0.0).valid() && !gridFor(r, -1e-9).valid(),
+              "density: a non-positive resolution gives no grid");
+    }
+
+    const Grid g = gridFor(r, 100e-9);          // 50 × 50 = 2500 画素
+    const int N = g.count();
+    check(N == 2500, "density: the working grid is 50 x 50");
+
+    // ── フィルタ: 定数不変 / 最大値原理 / 半径が小さいと恒等 ────────────
+    {
+        std::vector<double> c(static_cast<size_t>(N), 0.37);
+        const std::vector<double> f = filter(c, g, 250e-9);
+        double worst = 0.0;
+        for (double v : f) worst = std::max(worst, std::fabs(v - 0.37));
+        // 行和を 1 に正規化しているので、境界の画素でも定数は落ちない
+        check(worst < 1e-15, "density: a constant field is unchanged by the filter");
+
+        std::vector<double> spike(static_cast<size_t>(N), 0.0);
+        spike[static_cast<size_t>(25) * g.nx + 25] = 1.0;
+        const std::vector<double> fs = filter(spike, g, 250e-9);
+        double lo = 1e30, hi = -1e30, sum = 0.0;
+        for (double v : fs) { lo = std::min(lo, v); hi = std::max(hi, v); sum += v; }
+        check(lo >= 0.0 && hi <= 1.0,
+              "density: the filtered field stays between the input min and max");
+        check(hi < 1.0,
+              "density: a single pixel cannot survive the filter at full weight");
+        // フィルタは広がりを持つので、1 画素は必ず近傍へ滲む
+        int nz = 0;
+        for (double v : fs) if (v > 0.0) ++nz;
+        check(nz > 1, "density: the filter spreads one pixel over its neighbours");
+        check(sum > 0.0, "density: the filter does not annihilate the field");
+
+        // 半径 < ピッチ → 自分しか重みを持たない = 恒等写像
+        std::vector<double> rnd(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N; ++k)
+            rnd[static_cast<size_t>(k)] = ((k * 2654435761u) % 1000) / 1000.0;
+        const std::vector<double> fi = filter(rnd, g, 0.5 * g.pitchX_m);
+        double dmax = 0.0;
+        for (int k = 0; k < N; ++k)
+            dmax = std::max(dmax, std::fabs(fi[static_cast<size_t>(k)]
+                                            - rnd[static_cast<size_t>(k)]));
+        check(dmax < 1e-15,
+              "density: a radius below one pitch leaves the field untouched");
+        check(filter(rnd, g, 0.0) == rnd,
+              "density: a zero radius is the identity");
+
+        // 最大値原理 (任意の入力で)
+        const std::vector<double> fr = filter(rnd, g, 300e-9);
+        double rlo = 1e30, rhi = -1e30, flo = 1e30, fhi = -1e30;
+        for (double v : rnd) { rlo = std::min(rlo, v); rhi = std::max(rhi, v); }
+        for (double v : fr)  { flo = std::min(flo, v); fhi = std::max(fhi, v); }
+        check(flo >= rlo - 1e-15 && fhi <= rhi + 1e-15,
+              "density: the filter obeys the maximum principle");
+        // 平均は完全には保たれない (境界で行和を張り直すため) が、
+        // 差は境界の帯ぶんに限られる
+        check(std::fabs(volumeFraction(fr) - volumeFraction(rnd)) < 0.05,
+              "density: the filter moves the volume fraction only near the edges");
+    }
+
+    // ── 射影: 端点が厳密 / η=0.5 の中点 / β→0 で恒等 / 単調 ─────────────
+    {
+        for (double beta : { 1.0, 8.0, 64.0 }) {
+            for (double eta : { 0.3, 0.5, 0.7 }) {
+                check(project(0.0, beta, eta) == 0.0,
+                      "density: rho = 0 projects to exactly 0");
+                check(project(1.0, beta, eta) == 1.0,
+                      "density: rho = 1 projects to exactly 1");
+            }
+        }
+        check(approx(project(0.5, 8.0, 0.5), 0.5, 1e-15),
+              "density: eta = 0.5 keeps the midpoint at 0.5");
+        // β → 0 は恒等写像
+        double worst = 0.0;
+        for (int k = 0; k <= 100; ++k) {
+            const double x = k / 100.0;
+            worst = std::max(worst, std::fabs(project(x, 1e-6, 0.5) - x));
+        }
+        check(worst < 1e-6, "density: beta -> 0 is the identity map");
+        // β → ∞ は閾値 η の階段関数
+        check(project(0.51, 1e4, 0.5) > 1.0 - 1e-9
+              && project(0.49, 1e4, 0.5) < 1e-9,
+              "density: a large beta becomes a step at eta");
+        // 単調増加 (これが崩れると体積制約が意味を失う)
+        bool mono = true;
+        double prev = -1.0;
+        for (int k = 0; k <= 200; ++k) {
+            const double v = project(k / 200.0, 12.0, 0.4);
+            if (v < prev - 1e-15) mono = false;
+            prev = v;
+        }
+        check(mono, "density: the projection is monotone in rho");
+        check(project(0.3, 0.0, 0.5) == 0.3,
+              "density: beta = 0 is stored as the identity, not as a step");
+    }
+
+    // ── 指標 ───────────────────────────────────────────────────────────
+    {
+        std::vector<double> bin(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N / 2; ++k) bin[static_cast<size_t>(k)] = 1.0;
+        check(approx(volumeFraction(bin), 0.5, 1e-15),
+              "density: half the pixels give a 0.5 volume fraction");
+        check(nonDiscreteness(bin) == 0.0,
+              "density: a binary field has zero non-discreteness");
+        std::vector<double> grey(static_cast<size_t>(N), 0.5);
+        check(approx(nonDiscreteness(grey), 1.0, 1e-15),
+              "density: an all-grey field has M_nd = 1");
+        check(approx(nonDiscreteness(std::vector<double>(4, 0.25)), 0.75, 1e-15),
+              "density: M_nd = 4 rho (1 - rho) elementwise");
+    }
+
+    // ── 誘電率補間 ─────────────────────────────────────────────────────
+    {
+        check(epsFromDensity(0.0, 1.0, 12.0) == 1.0,
+              "density: rho = 0 is exactly the background permittivity");
+        check(epsFromDensity(1.0, 1.0, 12.0) == 12.0,
+              "density: rho = 1 is exactly the structure permittivity");
+        check(approx(epsFromDensity(0.5, 1.0, 12.0), 6.5, 1e-15),
+              "density: p = 1 interpolates linearly");
+        // SIMP の p > 1 は中間値を背景側へ押す (灰色を損にする)
+        check(epsFromDensity(0.5, 1.0, 12.0, 3.0) < epsFromDensity(0.5, 1.0, 12.0),
+              "density: a SIMP exponent above 1 penalises grey");
+    }
+
+    // ── 矩形分解: 重なりなし / 画素数が厳密に一致 ───────────────────────
+    {
+        std::vector<double> full(static_cast<size_t>(N), 1.0);
+        const std::vector<Rect> one = rectangles(full, g, 0.5);
+        check(one.size() == 1, "density: a full field becomes a single rectangle");
+        check(one[0].i0 == 0 && one[0].j0 == 0 && one[0].i1 == g.nx
+              && one[0].j1 == g.ny, "density: that rectangle is the whole grid");
+
+        // 市松模様は 1 画素の矩形にしかならない (貪欲が伸ばせない最悪形)
+        std::vector<double> checker(static_cast<size_t>(N), 0.0);
+        int on = 0;
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 0; i < g.nx; ++i)
+                if ((i + j) % 2 == 0) { checker[static_cast<size_t>(j) * g.nx + i] = 1.0; ++on; }
+        const std::vector<Rect> cs = rectangles(checker, g, 0.5);
+        check(static_cast<int>(cs.size()) == on,
+              "density: a checkerboard cannot be merged (one rectangle per pixel)");
+
+        // 任意の模様で「重ならない」「合計面積が閾値以上の画素数と一致する」
+        std::vector<double> pat(static_cast<size_t>(N), 0.0);
+        int above = 0;
+        for (int k = 0; k < N; ++k) {
+            const double v = ((k * 2246822519u) % 1000) / 1000.0;
+            pat[static_cast<size_t>(k)] = v;
+            if (v >= 0.5) ++above;
+        }
+        const std::vector<Rect> rs = rectangles(pat, g, 0.5);
+        std::vector<int> cover(static_cast<size_t>(N), 0);
+        long long area = 0;
+        for (const Rect &q : rs) {
+            area += static_cast<long long>(q.i1 - q.i0) * (q.j1 - q.j0);
+            for (int j = q.j0; j < q.j1; ++j)
+                for (int i = q.i0; i < q.i1; ++i)
+                    ++cover[static_cast<size_t>(j) * g.nx + i];
+        }
+        check(area == above,
+              "density: the rectangles cover exactly the pixels above the threshold");
+        bool disjoint = true, exact = true;
+        for (int k = 0; k < N; ++k) {
+            if (cover[static_cast<size_t>(k)] > 1) disjoint = false;
+            const bool want = pat[static_cast<size_t>(k)] >= 0.5;
+            if (want != (cover[static_cast<size_t>(k)] == 1)) exact = false;
+        }
+        check(disjoint, "density: the rectangles do not overlap");
+        check(exact, "density: the covered set is exactly the thresholded set");
+        check(rectangles(std::vector<double>(static_cast<size_t>(N), 0.0), g, 0.5).empty(),
+              "density: an empty field yields no rectangle");
+    }
+
+    // ── 形状 → 密度場 → 形状 の往復 ─────────────────────────────────────
+    {
+        // 画素境界にちょうど乗る直方体を置く (格子に表せる形なので厳密に戻る)
+        ofd::Geometry box;
+        box.shape = 1;
+        box.materialId = 2;
+        box.g[0] = r.x0_m + 10 * g.pitchX_m;
+        box.g[1] = r.x0_m + 30 * g.pitchX_m;
+        box.g[2] = r.y0_m + 5  * g.pitchY_m;
+        box.g[3] = r.y0_m + 40 * g.pitchY_m;
+        box.g[4] = r.z0_m;
+        box.g[5] = r.z1_m;
+        int skipped = -1;
+        const std::vector<double> rho = rasterize(&box, 1, r, g, &skipped);
+        check(skipped == 0, "density: a box is a shape the rasteriser understands");
+        check(approx(volumeFraction(rho), (20.0 * 35.0) / N, 1e-15),
+              "density: the rasterised area matches the box area exactly");
+
+        const std::vector<Rect> rs = rectangles(rho, g, 0.5);
+        check(rs.size() == 1, "density: the box comes back as one rectangle");
+        const std::vector<ofd::Geometry> back = toGeometry(rs, r, g, 2);
+        check(back.size() == 1 && back[0].shape == 1 && back[0].materialId == 2,
+              "density: the rectangle becomes one box unit of the given material");
+        for (int k = 0; k < 6; ++k)
+            check(approx(back[0].g[k], box.g[k], 1e-18),
+                  "density: geometry -> density -> geometry reproduces the box");
+        // 再ラスタ化しても同じ密度場 (往復が閉じている)
+        check(rasterize(back.data(), 1, r, g, nullptr) == rho,
+              "density: re-rasterising the result gives the identical field");
+    }
+
+    // ── ラスタ化の細部 ─────────────────────────────────────────────────
+    {
+        ofd::Geometry air;                    // 材料 0 は背景なので密度にしない
+        air.shape = 1; air.materialId = 0;
+        air.g[0] = r.x0_m; air.g[1] = r.x1_m;
+        air.g[2] = r.y0_m; air.g[3] = r.y1_m;
+        air.g[4] = r.z0_m; air.g[5] = r.z1_m;
+        check(volumeFraction(rasterize(&air, 1, r, g, nullptr)) == 0.0,
+              "density: a material-0 unit is background, not structure");
+
+        // 後のユニットが優先 (本家の重なり規則)
+        ofd::Geometry fill = air;
+        fill.materialId = 2;
+        ofd::Geometry hole = air;
+        hole.materialId = 0;
+        hole.g[0] = r.x0_m; hole.g[1] = r.x0_m + 25 * g.pitchX_m;
+        const ofd::Geometry pair[2] = { fill, hole };
+        check(approx(volumeFraction(rasterize(pair, 2, r, g, nullptr)), 0.5, 1e-15),
+              "density: a later air unit carves the earlier structure");
+
+        // 円柱 Z は面積 πr² に収束する (画素中心判定なので概ね一致)
+        ofd::Geometry cyl;
+        cyl.shape = 13; cyl.materialId = 2;
+        cyl.g[0] = r.x0_m; cyl.g[1] = r.x1_m;      // 直径 = 領域の幅
+        cyl.g[2] = r.y0_m; cyl.g[3] = r.y1_m;
+        cyl.g[4] = r.z0_m; cyl.g[5] = r.z1_m;
+        // 画素中心の判定なので、格子を細かくすると面積比が pi/4 に収束する
+        const Grid fine = gridFor(r, 12.5e-9);     // 400 x 400
+        const double f1 = volumeFraction(rasterize(&cyl, 1, r, g, nullptr));
+        const double f2 = volumeFraction(rasterize(&cyl, 1, r, fine, nullptr));
+        check(std::fabs(f2 - M_PI / 4.0) < std::fabs(f1 - M_PI / 4.0),
+              "density: refining the grid moves the disk area towards pi/4");
+        check(approx(f2, M_PI / 4.0, 1e-3),
+              "density: an inscribed z-cylinder fills pi/4 of the square region");
+
+        // 内外判定を持たない形状は数えて飛ばす (黙って無視しない)
+        ofd::Geometry prism;
+        prism.shape = 33; prism.materialId = 2;
+        int skipped = -1;
+        const std::vector<double> none = rasterize(&prism, 1, r, g, &skipped);
+        check(skipped == 1, "density: a prism is reported as skipped");
+        check(volumeFraction(none) == 0.0,
+              "density: a skipped shape contributes nothing to the field");
+    }
+
+    // ── 最小形状寸法 ───────────────────────────────────────────────────
+    {
+        check(approx(minFeature_m(80e-9), 160e-9, 1e-18),
+              "density: the minimum feature size is the filter diameter");
+    }
+}
+
 static void testPostPrereq()
 {
     g_file = "post-prereq";
@@ -19246,6 +19528,7 @@ int main(int argc, char *argv[])
     testPatternMetrics();
     testMieSphere();
     testRadarCrossSection();
+    testDensityField();
     testPostPrereq();
     testNoMarkdownInUiStrings();
     testNavSourceAcLabel();

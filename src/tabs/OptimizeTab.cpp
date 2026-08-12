@@ -1,6 +1,8 @@
 // OptimizeTab.cpp
 #include "OptimizeTab.h"
+#include "../core/DensityField.h"
 #include "../core/Project.h"
+#include "../widgets/FieldHeatmap.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -18,9 +20,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStringList>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <limits>
 
 using namespace ofd;
@@ -111,10 +115,12 @@ const bool s_i18n = [] {
     I18n::reg("opz_tidy3d", "☁ tidy3d クラウド", "☁ tidy3d cloud");
     I18n::reg("opz_uw_method",
               "「随伴」(カーネルが感度を返さないため) と「ベイズ」(代理モデルが"
-              "未実装) と「トポロジー」(密度場 → 材料分布が未実装) の選択",
+              "未実装) と「トポロジー」(密度場のパラメータ化はできますが、"
+              "反復を回す感度が取れません) の選択",
               "the adjoint method (the kernel returns no sensitivities), "
               "Bayesian optimisation (no surrogate model) and topology "
-              "optimisation (no density-to-material mapping)");
+              "optimisation (the density parametrisation works, but there are no "
+              "sensitivities to iterate with)");
     I18n::reg("opz_uw_method_ok",
               "「掃引」「PSO」「GA」— 下の「実行」から実際にカーネルを回します "
               "(PSO / GA は 1 世代ぶんをまとめて実行し、評価量で採点して次の"
@@ -178,8 +184,83 @@ const bool s_i18n = [] {
     I18n::reg("opz_run_optimize2", "▶ 最適化を実行", "▶ Run optimisation");
     I18n::reg("opz_uw_con", "制約条件の設定",
               "the constraint settings");
-    I18n::reg("opz_uw_topo", "トポロジー最適化の解像度とフィルタ半径",
-              "the topology-optimisation resolution and filter radius");
+    I18n::reg("opz_uw_topo",
+              "トポロジー最適化の反復そのもの (カーネルが感度 ∂FoM/∂ρ を返さない"
+              "ので随伴法が組めず、画素数ぶんの設計変数を PSO / GA で回すのは"
+              "現実的ではありません)",
+              "the topology-optimisation iteration itself (the kernel returns no "
+              "sensitivity dFoM/drho, so no adjoint method is possible, and "
+              "running one design variable per pixel through PSO / GA is not "
+              "practical)");
+    I18n::reg("opz_uw_topo_ok",
+              "設計領域・解像度・フィルタ半径・射影 β・閾値 η — 密度場の"
+              "パラメータ化 (core/DensityField) に入り、下の「密度場を形状へ変換」で"
+              "実際の直方体ユニットになります",
+              "the design region, resolution, filter radius, projection beta and "
+              "threshold eta — they drive the density parametrisation "
+              "(core/DensityField), and the button below turns the field into "
+              "actual box units");
+    // 密度場パラメータ化 (トポロジー最適化)
+    I18n::reg("opz_topo_org", "設計領域の原点 x0 / y0 / z0",
+              "Design-region origin x0 / y0 / z0");
+    I18n::reg("opz_topo_size", "設計領域の 幅 / 奥行 / 厚み",
+              "Design-region width / depth / thickness");
+    I18n::reg("opz_topo_beta", "射影の急峻さ β", "Projection sharpness beta");
+    I18n::reg("opz_topo_eta", "閾値 η", "Threshold eta");
+    I18n::reg("opz_topo_mat", "構造材料の番号", "Structure material index");
+    I18n::reg("opz_topo_grid", "画素数 / 設計変数",
+              "Pixel count / design variables");
+    I18n::reg("opz_topo_grid_fmt", "%1 × %2 画素 = %3 変数 (ピッチ %4 × %5 nm)",
+              "%1 x %2 pixels = %3 variables (pitch %4 x %5 nm)");
+    I18n::reg("opz_topo_feat", "最小形状寸法 (フィルタ直径)",
+              "Minimum feature size (filter diameter)");
+    I18n::reg("opz_topo_fill", "初期密度場 (現在の形状から)",
+              "Initial density field (from the current geometry)");
+    I18n::reg("opz_topo_fill_fmt",
+              "充填率 %1 % / 非離散度 M_nd = %2 / 閾値以上の矩形 %3 個",
+              "fill %1 % / non-discreteness M_nd = %2 / %3 rectangles above the "
+              "threshold");
+    I18n::reg("opz_topo_skip",
+              "内外判定を持たない形状 %1 個 (三角柱・角錐台・円錐台) は密度場に"
+              "入れていません。",
+              "%1 unit(s) whose shape has no inside test (prisms and frusta) are "
+              "not included in the density field.");
+    I18n::reg("opz_topo_small",
+              "フィルタ半径が画素ピッチより小さいので、フィルタは何もしません "
+              "(最小形状寸法は画素 1 個ぶんのままです)。",
+              "The filter radius is smaller than the pixel pitch, so the filter "
+              "does nothing (the minimum feature size stays one pixel).");
+    I18n::reg("opz_topo_big",
+              "設計変数が %1 個あります。感度を使わない手法では現実的な数では"
+              "ありません (プレビューと形状変換は動きます)。",
+              "There are %1 design variables — not a practical number for a "
+              "method without sensitivities (the preview and the conversion "
+              "still work).");
+    I18n::reg("opz_topo_toomany",
+              "画素が %1 個あります。上限 %2 個を超えるので密度場は作りません "
+              "(解像度を粗くするか設計領域を小さくしてください)。",
+              "There are %1 pixels, above the %2 limit, so the density field is "
+              "not built (use a coarser resolution or a smaller design region).");
+    I18n::reg("opz_topo_bad",
+              "設計領域か解像度が不正です (幅・奥行・厚み・解像度はすべて正の値)。",
+              "The design region or the resolution is invalid (width, depth, "
+              "thickness and resolution must all be positive).");
+    I18n::reg("opz_topo_preview", "フィルタ + 射影後の密度場",
+              "Density field after filter + projection");
+    I18n::reg("opz_topo_apply", "密度場を形状へ変換",
+              "Convert the density field into geometry");
+    I18n::reg("opz_topo_apply_hint",
+              "設計領域に完全に入っているユニットを、射影後の密度場を閾値 η で"
+              "切って作った直方体で置き換えます (元に戻すには取り消しを使って"
+              "ください)。",
+              "Replaces the units that lie entirely inside the design region with "
+              "boxes obtained by thresholding the projected density field at eta "
+              "(use undo to revert).");
+    I18n::reg("opz_topo_applied", "%1 ユニットを %2 個の直方体で置き換えました。",
+              "Replaced %1 unit(s) with %2 box(es).");
+    I18n::reg("opz_topo_applied_none",
+              "閾値以上の画素が無いので、置き換えるものがありません。",
+              "No pixel is above the threshold, so there is nothing to place.");
     I18n::reg("opz_sweep_hint",
               "「掃引」手法はここから実際にカーネルを回します。1 点ずつ .ofd を"
               "書いて実行し、各点の結果から下の評価量を計算して最良点を出します。"
@@ -414,13 +495,43 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     }
     m_hyperSec->vbox()->addWidget(m_pageAdjoint);
     // Topology (光ドメインのみ)
+    //
+    // 密度場のパラメータ化 (core/DensityField) をここへ配線する。設計領域と
+    // 解像度が画素格子を、フィルタ半径が最小形状寸法を、β / η が二値化の
+    // 強さを決める。初期密度場は現在の形状を設計領域へラスタ化して作るので、
+    // 「この設定でどこまで細かい形が表せるか」が図と数字で読める。
+    // 最適化の反復そのものは感度が取れないため未実装 (opz_uw_topo)。
     m_pageTopology = new QWidget(m_hyperSec);
     {
         auto *f = new QFormLayout(m_pageTopology);
         f->setContentsMargins(0, 0, 0, 0);
-        auto *region = new QLabel("5 × 5 μm × 220nm", m_pageTopology);
-        region->setStyleSheet(Theme::monoQss());
-        f->addRow(I18n::tr("opz_design_region"), region);
+
+        auto *orgRow = new QHBoxLayout();
+        m_topoX0 = numEdit("0", 62, m_pageTopology);
+        m_topoY0 = numEdit("0", 62, m_pageTopology);
+        m_topoZ0 = numEdit("0", 62, m_pageTopology);
+        orgRow->addWidget(m_topoX0);
+        orgRow->addWidget(new QLabel("μm", m_pageTopology));
+        orgRow->addWidget(m_topoY0);
+        orgRow->addWidget(new QLabel("μm", m_pageTopology));
+        orgRow->addWidget(m_topoZ0);
+        orgRow->addWidget(new QLabel("nm", m_pageTopology));
+        orgRow->addStretch(1);
+        f->addRow(I18n::tr("opz_topo_org"), orgRow);
+
+        auto *sizeRow = new QHBoxLayout();
+        m_topoW = numEdit("5", 62, m_pageTopology);
+        m_topoD = numEdit("5", 62, m_pageTopology);
+        m_topoT = numEdit("220", 62, m_pageTopology);
+        sizeRow->addWidget(m_topoW);
+        sizeRow->addWidget(new QLabel("μm", m_pageTopology));
+        sizeRow->addWidget(m_topoD);
+        sizeRow->addWidget(new QLabel("μm", m_pageTopology));
+        sizeRow->addWidget(m_topoT);
+        sizeRow->addWidget(new QLabel("nm", m_pageTopology));
+        sizeRow->addStretch(1);
+        f->addRow(I18n::tr("opz_topo_size"), sizeRow);
+
         auto *resRow = new QHBoxLayout();
         m_res = numEdit("20", 70, m_pageTopology);
         resRow->addWidget(m_res);
@@ -433,9 +544,54 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         filtRow->addWidget(new QLabel("nm", m_pageTopology));
         filtRow->addStretch(1);
         f->addRow(I18n::tr("opz_filter_radius"), filtRow);
+
+        auto *projRow = new QHBoxLayout();
+        m_topoBeta = numEdit("8", 62, m_pageTopology);
+        projRow->addWidget(m_topoBeta);
+        projRow->addSpacing(12);
+        projRow->addWidget(new QLabel(I18n::tr("opz_topo_eta"), m_pageTopology));
+        m_topoEta = numEdit("0.5", 62, m_pageTopology);
+        projRow->addWidget(m_topoEta);
+        projRow->addStretch(1);
+        f->addRow(I18n::tr("opz_topo_beta"), projRow);
+
+        m_topoMat = numEdit("2", 62, m_pageTopology);
+        f->addRow(I18n::tr("opz_topo_mat"), m_topoMat);
+
+        m_topoGrid = new QLabel(m_pageTopology);
+        m_topoGrid->setStyleSheet(Theme::monoQss());
+        f->addRow(I18n::tr("opz_topo_grid"), m_topoGrid);
+        m_topoFeat = new QLabel(m_pageTopology);
+        m_topoFeat->setStyleSheet(Theme::monoQss());
+        f->addRow(I18n::tr("opz_topo_feat"), m_topoFeat);
+        m_topoFill = new QLabel(m_pageTopology);
+        m_topoFill->setStyleSheet(Theme::monoQss());
+        f->addRow(I18n::tr("opz_topo_fill"), m_topoFill);
+
+        m_topoWarn = hintLabel(QString(), m_pageTopology);
+        f->addRow(m_topoWarn);
+
+        m_topoMap = new FieldHeatmap(m_pageTopology);
+        m_topoMap->setMinimumHeight(190);
+        m_topoMap->setTitle(I18n::tr("opz_topo_preview"));
+        m_topoMap->setLegend(QStringLiteral("ρ̄"), QString(), QStringLiteral("1.0"));
+        f->addRow(m_topoMap);
+
+        m_topoApply = new QPushButton(I18n::tr("opz_topo_apply"), m_pageTopology);
+        f->addRow(m_topoApply);
+        f->addRow(hintLabel(I18n::tr("opz_topo_apply_hint"), m_pageTopology));
+
+        const QVector<QLineEdit *> edits = { m_topoX0, m_topoY0, m_topoZ0,
+                                             m_topoW,  m_topoD,  m_topoT,
+                                             m_res,    m_filter,
+                                             m_topoBeta, m_topoEta, m_topoMat };
+        for (QLineEdit *e : edits)
+            connect(e, &QLineEdit::editingFinished, this, &OptimizeTab::updateTopology);
+        connect(m_topoApply, &QPushButton::clicked, this, &OptimizeTab::applyTopology);
     }
     m_hyperSec->vbox()->addWidget(m_pageTopology);
-    m_hyperSec->vbox()->addWidget(tabhelp::unwiredNote(m_hyperSec, I18n::tr("opz_uw_topo")));
+    m_hyperSec->vbox()->addWidget(tabhelp::unwiredNote(m_hyperSec, I18n::tr("opz_uw_topo"),
+                                                       I18n::tr("opz_uw_topo_ok")));
     v->addWidget(m_hyperSec);
 
     // ── 実行 / Run ──────────────────────────────────────────────────────────
@@ -723,6 +879,153 @@ void OptimizeTab::updateRunUi()
     if (m_params) m_params->setEnabled(!running);
 }
 
+// ── トポロジー: 密度場のパラメータ化 (core/DensityField) ───────────────────
+namespace {
+
+// 画面の 3 つの入力欄から設計領域を組み立てる (原点 μm/μm/nm + 大きさ)
+topo::Region regionFrom(const QLineEdit *x0, const QLineEdit *y0,
+                        const QLineEdit *z0, const QLineEdit *w,
+                        const QLineEdit *d, const QLineEdit *t)
+{
+    topo::Region r;
+    r.x0_m = x0->text().toDouble() * 1e-6;
+    r.y0_m = y0->text().toDouble() * 1e-6;
+    r.z0_m = z0->text().toDouble() * 1e-9;
+    r.x1_m = r.x0_m + w->text().toDouble() * 1e-6;
+    r.y1_m = r.y0_m + d->text().toDouble() * 1e-6;
+    r.z1_m = r.z0_m + t->text().toDouble() * 1e-9;
+    return r;
+}
+
+// ユニットの外接直方体が設計領域に完全に入っているか (置き換える対象)
+bool unitInsideRegion(const Geometry &u, const topo::Region &r)
+{
+    if (Geometry::paramCount(u.shape) < 6) return false;
+    const double xlo = std::min(u.g[0], u.g[1]), xhi = std::max(u.g[0], u.g[1]);
+    const double ylo = std::min(u.g[2], u.g[3]), yhi = std::max(u.g[2], u.g[3]);
+    const double zlo = std::min(u.g[4], u.g[5]), zhi = std::max(u.g[4], u.g[5]);
+    return xlo >= r.x0_m && xhi <= r.x1_m && ylo >= r.y0_m && yhi <= r.y1_m
+        && zlo >= r.z0_m && zhi <= r.z1_m;
+}
+
+} // namespace
+
+void OptimizeTab::updateTopology()
+{
+    if (!m_topoGrid) return;
+
+    const topo::Region r = regionFrom(m_topoX0, m_topoY0, m_topoZ0,
+                                      m_topoW, m_topoD, m_topoT);
+    const double res_m = m_res->text().toDouble() * 1e-9;
+    const topo::Grid g = topo::gridFor(r, res_m);
+    if (!g.valid()) {
+        m_topoGrid->setText(QStringLiteral("—"));
+        m_topoFeat->setText(QStringLiteral("—"));
+        m_topoFill->setText(QStringLiteral("—"));
+        m_topoWarn->setText(I18n::tr("opz_topo_bad"));
+        m_topoWarn->setVisible(true);
+        m_topoMap->clearData();
+        m_topoApply->setEnabled(false);
+        return;
+    }
+
+    // 画素数の上限。ここを超える格子は GUI スレッドで同期に回すには重い
+    // (ラスタ化とフィルタが画素数に比例する)。警告だけ出して回すと固まるので
+    // 計算そのものを止める。
+    const int kMaxPixels = 250000;   // 500 × 500
+
+    const double radius_m = m_filter->text().toDouble() * 1e-9;
+    const double beta = m_topoBeta->text().toDouble();
+    const double eta  = m_topoEta->text().toDouble();
+
+    m_topoGrid->setText(I18n::tr("opz_topo_grid_fmt")
+                            .arg(g.nx).arg(g.ny).arg(g.count())
+                            .arg(g.pitchX_m * 1e9, 0, 'f', 2)
+                            .arg(g.pitchY_m * 1e9, 0, 'f', 2));
+    m_topoFeat->setText(QStringLiteral("%1 nm")
+                            .arg(topo::minFeature_m(radius_m) * 1e9, 0, 'f', 1));
+
+    if (g.count() > kMaxPixels) {
+        m_topoFill->setText(QStringLiteral("—"));
+        m_topoWarn->setText(I18n::tr("opz_topo_toomany")
+                                .arg(g.count()).arg(kMaxPixels));
+        m_topoWarn->setVisible(true);
+        m_topoMap->clearData();
+        m_topoApply->setEnabled(false);
+        return;
+    }
+
+    int skipped = 0;
+    const QVector<Geometry> &units = m_p->geometries();
+    const std::vector<double> rho0 =
+        topo::rasterize(units.constData(), units.size(), r, g, &skipped);
+    const std::vector<double> rho =
+        topo::project(topo::filter(rho0, g, radius_m), beta, eta);
+    const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
+
+    m_topoFill->setText(I18n::tr("opz_topo_fill_fmt")
+                            .arg(topo::volumeFraction(rho) * 100.0, 0, 'f', 1)
+                            .arg(topo::nonDiscreteness(rho), 0, 'f', 3)
+                            .arg(static_cast<int>(rects.size())));
+
+    QStringList warn;
+    if (skipped > 0) warn << I18n::tr("opz_topo_skip").arg(skipped);
+    if (radius_m < std::min(g.pitchX_m, g.pitchY_m))
+        warn << I18n::tr("opz_topo_small");
+    if (g.count() > 20000) warn << I18n::tr("opz_topo_big").arg(g.count());
+    m_topoWarn->setText(warn.join(QStringLiteral(" ")));
+    m_topoWarn->setVisible(!warn.isEmpty());
+
+    QVector<double> cells;
+    cells.reserve(g.count());
+    for (double v : rho) cells.push_back(v);
+    m_topoMap->setData(cells, g.nx, g.ny);
+    m_topoApply->setEnabled(!rects.empty());
+}
+
+// 射影後の密度場を閾値 η で切り、設計領域に入っているユニットを
+// その直方体分解で置き換える。
+void OptimizeTab::applyTopology()
+{
+    const topo::Region r = regionFrom(m_topoX0, m_topoY0, m_topoZ0,
+                                      m_topoW, m_topoD, m_topoT);
+    const topo::Grid g = topo::gridFor(r, m_res->text().toDouble() * 1e-9);
+    if (!g.valid() || g.count() > 250000) return;   // updateTopology と同じ上限
+
+    const double radius_m = m_filter->text().toDouble() * 1e-9;
+    const double eta = m_topoEta->text().toDouble();
+    QVector<Geometry> &units = m_p->geometries();
+    const std::vector<double> rho =
+        topo::project(topo::filter(topo::rasterize(units.constData(), units.size(),
+                                                   r, g, nullptr),
+                                   g, radius_m),
+                      m_topoBeta->text().toDouble(), eta);
+    const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
+    if (rects.empty()) {
+        m_topoWarn->setText(I18n::tr("opz_topo_applied_none"));
+        m_topoWarn->setVisible(true);
+        return;
+    }
+
+    const int matId = m_topoMat->text().toInt();
+    QVector<Geometry> kept;
+    int removed = 0;
+    for (const Geometry &u : units) {
+        if (unitInsideRegion(u, r)) { ++removed; continue; }
+        kept.push_back(u);
+    }
+    for (const Geometry &u : topo::toGeometry(rects, r, g, matId))
+        kept.push_back(u);
+    units = kept;
+    m_p->touch();
+
+    // 先に読み直してから結果を出す (updateTopology は注記欄を上書きするため)
+    updateTopology();
+    m_topoWarn->setText(I18n::tr("opz_topo_applied")
+                            .arg(removed).arg(static_cast<int>(rects.size())));
+    m_topoWarn->setVisible(true);
+}
+
 void OptimizeTab::rebuildDomain()
 {
     const Domain d = m_p->activeDomain();
@@ -837,6 +1140,9 @@ void OptimizeTab::updateMode()
     m_pagePop->setVisible(m_mode == "pso" || m_mode == "ga");
     m_pageAdjoint->setVisible(m_mode == "adjoint");
     m_pageTopology->setVisible(m_mode == "topology" && d == Domain::Optical);
+    // 表に出るタイミングで現在の形状から密度場を作り直す (形状は他タブでも
+    // 変わるので、開いたときに読み直さないと古い図が残る)
+    if (m_mode == "topology" && d == Domain::Optical) updateTopology();
     m_adjointWarnRow->setVisible(d != Domain::Optical);
     m_adjointWarn->setText(I18n::tr("opz_adjoint_warn")
         .arg(domainKey(d).toUpper()));

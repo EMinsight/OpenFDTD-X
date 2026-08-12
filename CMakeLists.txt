@@ -112,6 +112,9 @@ set(CORE_SOURCES
     # 分かっているテスト関数と突き合わせる
     src/core/Optimizer.cpp
     src/core/Optimizer.h
+    # トポロジー最適化の密度場パラメータ化 (フィルタ/射影/矩形分解) — Qt Core のみ
+    src/core/DensityField.cpp
+    src/core/DensityField.h
 
     # 側路伝搬 (flanking) の経路合成 — Qt 非依存。SoundproofTab の合成 R'w と
     # 改善案の効果の計算実体で、selftest から合成則の恒等式と照合する

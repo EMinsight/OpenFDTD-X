@@ -6,6 +6,9 @@
 //   - 手法別ハイパーパラメータ / 実行先 (ローカル・HPC・tidy3d)
 // トポロジー最適化と tidy3d 実行先は光ドメインのみ。状態はローカル保持
 // (Project に対応フィールドが無いため apply() での永続化は行わない)。
+// トポロジー節だけは core/DensityField へ配線してあり、設計領域・解像度・
+// フィルタ半径・射影から密度場を作って図と数値を出し、「密度場を形状へ変換」
+// で Project の形状ユニットを書き換える (結果は通常の geometry として残る)。
 #pragma once
 #include <QScrollArea>
 
@@ -25,6 +28,7 @@ class QTableWidget;
 
 namespace ofd {
 
+class FieldHeatmap;
 class Project;
 class SectionBox;
 
@@ -41,6 +45,9 @@ private slots:
     void onPointFinished(int index, const SweepResult &r);
     void onSweepFinished(bool ok);
     void updateRunUi();       // 手法・実行状態 → ボタンと注記
+    // トポロジー: 設計領域・解像度・フィルタ・射影 → 画素格子と密度場の再計算
+    void updateTopology();
+    void applyTopology();     // 射影後の密度場 → 直方体ユニット
 
 private:
     void setMode(const QString &mode);
@@ -81,6 +88,14 @@ private:
     QWidget    *m_adjointWarnRow;        // 光以外での注意バッジ
     QLabel     *m_adjointWarn;
     QLineEdit  *m_pop, *m_iters, *m_lr, *m_res, *m_filter;
+    // トポロジー: 設計領域 (原点 μm/μm/nm・大きさ μm/μm/nm)・射影・材料番号
+    QLineEdit  *m_topoX0 = nullptr, *m_topoY0 = nullptr, *m_topoZ0 = nullptr;
+    QLineEdit  *m_topoW = nullptr,  *m_topoD = nullptr,  *m_topoT = nullptr;
+    QLineEdit  *m_topoBeta = nullptr, *m_topoEta = nullptr, *m_topoMat = nullptr;
+    QLabel     *m_topoGrid = nullptr, *m_topoFeat = nullptr, *m_topoFill = nullptr;
+    QLabel     *m_topoWarn = nullptr;
+    FieldHeatmap *m_topoMap = nullptr;
+    QPushButton  *m_topoApply = nullptr;
 
     // 実行 / Run
     QComboBox *m_target;                 // ローカル / HPC / tidy3d
