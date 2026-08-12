@@ -1,5 +1,6 @@
 // SolverRegionTab.cpp
 #include "SolverRegionTab.h"
+#include "../core/FdtdVerification.h"
 #include "../core/Project.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -136,8 +137,33 @@ const bool s_i18n = [] {
         "limit, the iteration count = simulation time / Δt and the "
         "convergence criterion = the shutoff level are written into the same "
         "fields the General tab edits.");
-    I18n::reg("sreg_uw_dt", "メッシュ精度スライダの Δt への反映",
-              "the effect of the mesh-accuracy slider on the time step");
+    I18n::reg("sreg_dt_note",
+              "この精度で刻むと Δx = %1 (%2 の 1/%3)。立方セルなら Courant "
+              "限界は Δt ≤ %4 で、CFL 係数 %5 では Δt = %6 になります。%7",
+              "At this accuracy the cell is dx = %1 (1/%3 of %2). For cubic "
+              "cells the Courant limit is dt <= %4, and with a CFL factor of "
+              "%5 the step is dt = %6. %7");
+    I18n::reg("sreg_dt_mesh",
+              "いまのメッシュの最小間隔は %1 (3 軸の最小) で、実際の Δt は "
+              "%2 です — こちらは軸ごとの間隔すべてから決まるので、"
+              "立方セルの式とは一致しません。スライダはメッシュを作り直さない"
+              "ので、目安として並べています。",
+              "The current mesh has a minimum spacing of %1 (smallest of the "
+              "three axes) and its actual time step is %2 -- that one comes "
+              "from all three axis spacings, so it does not match the "
+              "cubic-cell formula. The slider does not rebuild the mesh; the "
+              "two are shown side by side for comparison.");
+    I18n::reg("sreg_dt_nomesh",
+              "メッシュがまだ無いので、実際の Δt とは比べられません。",
+              "There is no mesh yet, so this cannot be compared with the "
+              "actual time step.");
+    I18n::reg("sreg_uw_dt",
+              "メッシュ精度スライダからメッシュを作り直すこと "
+              "(局所細分化のキーが .ofd に無いため — 含意する Δx と Δt は"
+              "下に出します)",
+              "rebuilding the mesh from the accuracy slider (the .ofd format "
+              "has no local-refinement key; the implied cell size and time "
+              "step are shown below)");
     I18n::reg("sreg_uw_dt_ok",
               "Δt (CFL 係数)・シミュレーション時間・自動シャットオフ "
               "— 上のチェックが ON のとき .ofd の timestep / solver へ書かれます",
@@ -149,6 +175,23 @@ const bool s_i18n = [] {
 
 // メッシュ精度 1〜8 の目標解像度 (λ/N) — Lumerical 風プリセットの定義値
 const int kLambdaDiv[8] = { 6, 10, 14, 18, 22, 30, 40, 50 };
+
+// 長さ・時間を読みやすい単位で (桁を数えずに済むように)
+QString fmtLen(double m)
+{
+    if (m >= 1.0)     return QString::number(m, 'g', 4) + " m";
+    if (m >= 1e-3)    return QString::number(m * 1e3, 'g', 4) + " mm";
+    if (m >= 1e-6)    return QString::number(m * 1e6, 'g', 4) + " um";
+    return QString::number(m * 1e9, 'g', 4) + " nm";
+}
+QString fmtTime(double s)
+{
+    if (s >= 1e-3)    return QString::number(s * 1e3, 'g', 4) + " ms";
+    if (s >= 1e-6)    return QString::number(s * 1e6, 'g', 4) + " us";
+    if (s >= 1e-9)    return QString::number(s * 1e9, 'g', 4) + " ns";
+    if (s >= 1e-12)   return QString::number(s * 1e12, 'g', 4) + " ps";
+    return QString::number(s * 1e15, 'g', 4) + " fs";
+}
 } // namespace
 
 SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
@@ -216,6 +259,10 @@ SolverRegionTab::SolverRegionTab(Project *project, QWidget *parent)
     m_cellsNote = new QLabel(sm);
     m_cellsNote->setStyleSheet("font-size:11px; color:palette(mid);");
     accRow->addWidget(m_cellsNote);
+    m_dtNote = new QLabel(sm);
+    m_dtNote->setWordWrap(true);
+    m_dtNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    sm->vbox()->addWidget(m_dtNote);
     sm->form()->addRow(I18n::tr("sreg_mesh_acc"), accRow);
 
     m_meshHint = new QLabel(sm);
@@ -490,6 +537,52 @@ void SolverRegionTab::updateMeshDerived()
     updateDomainDeps();
 }
 
+// ── メッシュ精度 → Δx → Courant 限界 Δt ───────────────────────────────────
+// スライダは「1 波長を何分割するか」を選ぶ操作なので、Δx が決まれば
+// Courant 限界 Δt も決まる (core/FdtdVerification)。**メッシュ自体は作り直さ
+// ない**ので、いまのメッシュから出る Δt を並べて出し、どちらの数字なのかが
+// 分かるようにする。
+void SolverRegionTab::updateDtNote(int domain, int acc)
+{
+    const Domain d = static_cast<Domain>(domain);
+    if (!m_dtNote) return;
+    // 電磁 FDTD (EM/光) 以外は Δt をこのタブで扱っていないので出さない
+    const bool em = (d == Domain::EM || d == Domain::Optical);
+    m_dtNote->setVisible(em);
+    if (!em) { m_dtNote->clear(); return; }
+
+    const double c0 = 2.99792458e8;
+    // 代表周波数は上の注記と同じ基準 (EM 2.5 GHz / 光 1550 nm)
+    const double f = (d == Domain::Optical) ? c0 / 1550.0e-9 : 2.5e9;
+    const QString refTxt = (d == Domain::Optical) ? QStringLiteral("1550 nm")
+                                                  : QStringLiteral("120 mm");
+    const int div = kLambdaDiv[qBound(1, acc, 8) - 1];
+
+    const double dx = verify::targetCellSize(c0, f, div);
+    const double dtLim = verify::courantLimitDt(c0, dx, 3);
+    bool okCfl = false;
+    double cfl = m_cfl->text().toDouble(&okCfl);
+    if (!okCfl || cfl <= 0.0) cfl = 0.99;
+
+    // いまのメッシュから出る Δt (Project::courantDt はカーネルと同じ式)
+    const double dtMesh = m_p->courantDt();
+    double dmin = 1e308;
+    for (int a = 0; a < 3; ++a)
+        dmin = qMin(dmin, m_p->mesh(a).minSpacing());
+    const QString cmp =
+        (dtMesh > 0.0 && dmin < 1e307)
+            ? I18n::tr("sreg_dt_mesh")
+                  .arg(fmtLen(dmin), fmtTime(cfl * dtMesh))
+            : I18n::tr("sreg_dt_nomesh");
+
+    m_dtNote->setText(I18n::tr("sreg_dt_note")
+                          .arg(fmtLen(dx), refTxt)
+                          .arg(div)
+                          .arg(fmtTime(dtLim),
+                               QString::number(cfl, 'g', 3),
+                               fmtTime(cfl * dtLim), cmp));
+}
+
 void SolverRegionTab::updateDomainDeps()
 {
     const Domain d = m_p->activeDomain();
@@ -513,6 +606,7 @@ void SolverRegionTab::updateDomainDeps()
     }
     m_cellsNote->setText(I18n::tr("sreg_lambda_note")
         .arg(kLambdaDiv[a - 1]).arg(ref));
+    updateDtNote(static_cast<int>(d), a);
     m_simTimeUnit->setText(unit);
 
     // 電磁 FDTD (EM/光) 固有の項目は音響系ドメインでは隠す (混乱防止)。

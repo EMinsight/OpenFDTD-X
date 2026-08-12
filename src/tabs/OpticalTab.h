@@ -147,6 +147,7 @@ private:
     QCheckBox *m_raySpecular, *m_rayDiffuse;
     QCheckBox *m_rayPolarized, *m_rayDispersion, *m_rayFresnel;
     QCheckBox *m_rayVizEnable;
+    MiniPlot  *m_rayPlot = nullptr;    // 光線図 (r–z 断面)
     // 追跡の実行 (optics/IlluminationTrace)。系は照明タブと共有の
     // IlluminationOpts から組む (core/IlluminationScene)
     QPushButton *m_rayRunBtn = nullptr;

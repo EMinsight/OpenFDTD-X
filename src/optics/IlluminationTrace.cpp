@@ -379,6 +379,13 @@ Result trace(const Scene &s, long long nRays, const TraceOptions &opt)
             o.y = (2.0 * halton(i, 7) - 1.0) * h;
         }
 
+        // 経路の記録 (先頭 recordPaths 本だけ)。**記録は物理に触らない** —
+        // 追跡の分岐にも乱数の消費にも一切関わらせない。
+        const bool rec = (opt.recordPaths > 0)
+                         && (i < static_cast<long long>(opt.recordPaths));
+        RayPath path;
+        if (rec) path.points.push_back(PathPoint{ o.x, o.y, o.z });
+
         uint64_t rng = static_cast<uint64_t>(i) * 0x2545F4914F6CDD1Dull
                      + 0x9E3779B97F4A7C15ull;
         double w = em.w;
@@ -426,6 +433,7 @@ Result trace(const Scene &s, long long nRays, const TraceOptions &opt)
                 if (!ok) { absorbed += w; w = 0.0; break; }
                 o = p;
                 d = nd;
+                if (rec) path.points.push_back(PathPoint{ p.x, p.y, p.z });
             } else {
                 const V3 p = o + d * tDif;
                 const V3 n = (d.z > 0.0) ? V3{ 0.0, 0.0, 1.0 } : V3{ 0.0, 0.0, -1.0 };
@@ -443,10 +451,19 @@ Result trace(const Scene &s, long long nRays, const TraceOptions &opt)
                 if (!ok) { absorbed += w; w = 0.0; break; }
                 o = p;
                 d = nd;
+                if (rec) path.points.push_back(PathPoint{ p.x, p.y, p.z });
             }
         }
 
-        if (w <= 0.0) continue;
+        if (w <= 0.0) {
+            // 吸収 / 打ち切りで終わった光線 — 最後の交点で経路は終わり
+            if (rec) {
+                path.absorbed = true;
+                path.weightEnd_lm = 0.0;
+                r.paths.push_back(std::move(path));
+            }
+            continue;
+        }
 
         out += w;
 
@@ -471,7 +488,26 @@ Result trace(const Scene &s, long long nRays, const TraceOptions &opt)
                 cellFlux[static_cast<size_t>(cy) * cells + cx] += w;
                 onTarget += w;
                 ++r.raysOnTarget;
+                if (rec) {
+                    path.points.push_back(PathPoint{ x, y,
+                                                     s.target.distance_mm });
+                    path.reachedTarget = true;
+                }
             }
+        }
+        if (rec) {
+            if (!path.reachedTarget) {
+                // 評価面に当たらず外へ出た光線。**最後の線分は「その向きへ
+                // 出て行った」ことを示すだけ**で、どこかに当たった点ではない。
+                // 長さは評価面までの距離に揃える (図の縮尺を壊さないため)。
+                const double len = std::max(1.0, s.target.distance_mm);
+                path.points.push_back(PathPoint{ o.x + d.x * len,
+                                                 o.y + d.y * len,
+                                                 o.z + d.z * len });
+                path.escaped = true;
+            }
+            path.weightEnd_lm = w;
+            r.paths.push_back(std::move(path));
         }
     }
 

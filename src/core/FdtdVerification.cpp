@@ -183,6 +183,19 @@ double courantNumber(double dt_s, double speed_mps, const double dxMin_m[3])
     return speed_mps * dt_s * std::sqrt(s);
 }
 
+double targetCellSize(double speed_mps, double freq_Hz, int lambdaDiv)
+{
+    if (!(speed_mps > 0.0) || !(freq_Hz > 0.0) || lambdaDiv <= 0) return 0.0;
+    return speed_mps / (freq_Hz * static_cast<double>(lambdaDiv));
+}
+
+double courantLimitDt(double speed_mps, double dx_m, int dims)
+{
+    if (!(speed_mps > 0.0) || !(dx_m > 0.0) || dims < 1 || dims > 3) return 0.0;
+    // S = c·Δt·√(Σ 1/Δa²) = 1 を Δt について解く (立方セルなので Σ = dims/Δx²)
+    return dx_m / (speed_mps * std::sqrt(static_cast<double>(dims)));
+}
+
 Verdict courantVerdict(double courant)
 {
     if (!std::isfinite(courant) || courant <= 0.0) return Verdict::Unknown;

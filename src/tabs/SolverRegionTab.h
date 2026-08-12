@@ -39,7 +39,11 @@ private:
     void apply();
     void applyTime();           // Δt/反復回数/収束条件 → GeneralOpts (チェック時のみ)
     void updateMeshDerived();   // メッシュ精度 → 精度ヒント/目標解像度表示
-    void updateDomainDeps();    // ドメイン → 基準波長・周波数表示/時間単位/項目の出し分け
+    void updateDomainDeps();
+    // 精度 → Δx → Courant 限界 Δt (domain は Domain を int にしたもの —
+    // このヘッダは Project.h を include しないため)
+    void updateDtNote(int domain, int acc);
+    // ドメイン → 基準波長・周波数表示/時間単位/項目の出し分け
     void updateEstimates();     // Project → セル数/メモリ/Δt/ステップ数/面別 BC 表
 
     Project   *m_p;
@@ -61,6 +65,7 @@ private:
     QSlider   *m_meshAcc;
     QLabel    *m_meshAccVal, *m_meshHint;
     QLabel    *m_cells, *m_cellsNote, *m_memory;
+    QLabel    *m_dtNote = nullptr;   // 精度が含意する Δt と実メッシュの Δt
     QComboBox *m_meshType, *m_meshRefine;
     QCheckBox *m_subpixel, *m_autoOverride;
 

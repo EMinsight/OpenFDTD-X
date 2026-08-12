@@ -87,6 +87,7 @@ private:
     void updateSolverView();   // ソルバー切替 → 説明文と条件付きパネルの表示
     void updateDerived();      // 基準音速 c₀ / SOFAR 深度 / SSP プロファイル図
     void updateBeamPattern();  // 指向パターン b(θ) の図と数値 (.sbp と同じ式)
+    void loadBeamCsv();        // 計測した指向パターン (CSV) の取り込み
 
     Project        *m_p;
     bool            m_updating = false;
@@ -139,6 +140,8 @@ private:
     QCheckBox      *m_sbpPattern = nullptr;  // 指向パターンを .sbp で渡す
     MiniPlot       *m_sbpPlot = nullptr;     // b(θ) [dB]
     QLabel         *m_sbpNote = nullptr;     // ヌル・サイドローブ等の数値
+    QPushButton    *m_sbpClear = nullptr;    // 計測パターンを外す
+    double          m_sbpShiftDb = 0.0;      // 取り込み時の平行移動量 [dB]
 
     QCheckBox      *m_tlSpread, *m_tlAbsorb, *m_tlScatter, *m_tlSurface;
     QDoubleSpinBox *m_tlRangeMin, *m_tlRangeMax;   // max は rangeMax_km と同期

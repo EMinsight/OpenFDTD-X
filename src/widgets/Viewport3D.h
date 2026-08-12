@@ -82,6 +82,13 @@ public:
     void setGridVisible(bool on)     { m_showGrid = on; update(); }
     void setBoundaryVisible(bool on) { m_showBoundary = on; update(); }
 
+    // ── 深度方向の表示倍率 (水中音響のみ) ──────────────────────────────────
+    // 海は 50 km x 3 km のように極端に平たく、等方の縮尺では帯にしか見えない。
+    // 1.0 = 等方 (既定)。1 以外のときは倍率を画面に明記する
+    // (断りなく縦に伸ばした図は縮尺の嘘になるため)。
+    void setVerticalExaggeration(double k);
+    double verticalExaggeration() const { return m_vScale; }
+
     // ── 結果断面 (ソルバが出した実データ) の 3D 表示 ────────────────────────
     // 3D 空間内の 1 平面として重ねて描く (ViewStyle::Field のとき)。
     //   cells : 振幅 (rows*cols, row-major)。0..1 に正規化済みでなくてよい
@@ -136,6 +143,8 @@ private:
     bool oceanBounds(double lo[3], double hi[3]) const;
     // 海面・海底地形・音源位置を描く (水中音響ドメインのみ)
     void drawOcean(QPainter &p);
+    // 深度方向の表示倍率を掛けた z (水中音響ドメイン以外は素通し)
+    double zView(double z) const;
     // m_cx/m_cy/m_cz/m_scale を現在のメッシュ・ウィジェット寸法から更新する
     void updateSceneTransform() const;
     // 3 軸すべてに広がりがあるか (ドロップ配置の前提条件)
@@ -184,6 +193,7 @@ private:
     QString  m_sliceLabel;
     QImage   m_sliceImg;             // 断面の色画像 (setResultSlice で作る)
     int      m_sliceDecim = 1;       // 画像化で束ねたセル数 (1 = 等倍)
+    double   m_vScale = 1.0;         // 深度方向の表示倍率 (水中音響のみ)
 
     // ── ドラッグ&ドロップ配置の状態 ──
     bool     m_dragHover = false;      // コンポーネントをドラッグ中か

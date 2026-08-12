@@ -25,6 +25,11 @@
 #include "core/PostPrereq.h"
 #include "core/ProjectTemplates.h"
 #include "io/ActivationCurve.h"
+#include "core/EyeDiagram.h"
+#include "optics/CircuitImpulse.h"
+#include "optics/PhaseNoise.h"
+#include "optics/PhotonicCircuit.h"
+#include "io/BeamPatternCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
 #include "io/TlSlice.h"
@@ -146,6 +151,7 @@
 #ifdef OFD_USE_HDF5
 #include <hdf5.h>
 #endif
+#include <set>
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -19032,6 +19038,1081 @@ static void testSourceDirectivity()
     }
 }
 
+// ── メッシュ精度 → セル寸法 → Courant 限界 (core/FdtdVerification) ────────
+// メッシュ精度スライダが Δt に効く道筋。**既にある courantNumber() の逆**に
+// なっていることを往復で確かめ、既存の Project::courantDt() とも突き合わせる
+// (同じ物理を 2 通りに書いて食い違わせない)。
+static void testCourantFromAccuracy()
+{
+    g_file = "meshdt";
+    using namespace ofd::verify;
+    const double c0 = 2.99792458e8;
+
+    // ① Δx = c/(f·N) — 定義そのもの
+    {
+        const double dx = targetCellSize(c0, 2.5e9, 20);
+        const double lambda = c0 / 2.5e9;
+        check(std::fabs(dx - lambda / 20.0) < 1e-18,
+              "meshdt: the target cell size is lambda/N exactly");
+        check(std::fabs(targetCellSize(c0, 2.5e9, 40) - 0.5 * dx) < 1e-18,
+              "meshdt: doubling the divisor halves the cell");
+        check(targetCellSize(c0, 0.0, 20) == 0.0 && targetCellSize(c0, 2.5e9, 0) == 0.0,
+              "meshdt: invalid arguments give 0 rather than a made-up number");
+        // 音速で渡せば音の波長で刻む (真空の光速を暗黙に使っていないこと)
+        const double dxAc = targetCellSize(343.0, 1000.0, 10);
+        check(std::fabs(dxAc - 0.0343) < 1e-12,
+              "meshdt: passing the speed of sound gives the acoustic cell size");
+    }
+
+    // ② Courant 限界は courantNumber() の逆 (往復で S = 1 になること)
+    {
+        const double dx = 0.006;
+        for (int dims = 1; dims <= 3; ++dims) {
+            const double dt = courantLimitDt(c0, dx, dims);
+            double d[3] = { dx, dx, dx };
+            // 使わない次元は無限大の間隔 (= その方向に分割しない) とみなす
+            for (int a = dims; a < 3; ++a) d[a] = 1e308;
+            const double S = courantNumber(dt, c0, d);
+            check(std::fabs(S - 1.0) < 1e-12,
+                  qPrintable(QString("meshdt: the limit gives Courant S = 1 "
+                                     "in %1D (got %2)").arg(dims)
+                                 .arg(S, 0, 'f', 12)));
+        }
+        // 3D の閉形式 Δx/(c√3)
+        check(std::fabs(courantLimitDt(c0, dx, 3) - dx / (c0 * std::sqrt(3.0)))
+                  < 1e-24,
+              "meshdt: the 3D limit is dx/(c*sqrt(3))");
+        // Δx を半分にすると Δt も半分 (線形)
+        check(std::fabs(courantLimitDt(c0, 0.5 * dx, 3)
+                        - 0.5 * courantLimitDt(c0, dx, 3)) < 1e-24,
+              "meshdt: halving the cell halves the time step");
+        check(courantLimitDt(c0, 0.0, 3) == 0.0
+                  && courantLimitDt(c0, dx, 4) == 0.0,
+              "meshdt: invalid arguments give 0");
+    }
+
+    // ③ 既存の Project::courantDt() と一致すること (同じ物理の 2 実装が
+    //    食い違わないこと)。一様な立方格子を組んで突き合わせる。
+    {
+        ofd::Project p;
+        const double dx = 0.004;
+        const int n = 10;
+        for (int a = 0; a < 3; ++a) {
+            ofd::MeshAxis &ax = p.mesh(a);
+            ax.nodes = { 0.0, n * dx };
+            ax.divs = { n };            // 等間隔 n 分割 → 最小間隔 = dx
+        }
+        const double want = courantLimitDt(c0, dx, 3);
+        const double got = p.courantDt();
+        check(std::fabs(got - want) <= 1e-15 * want,
+              qPrintable(QString("meshdt: it agrees with Project::courantDt() "
+                                 "(%1 vs %2 s)")
+                             .arg(want, 0, 'e', 6).arg(got, 0, 'e', 6)));
+    }
+
+    // ④ 精度を 1 段上げると Δt が縮み、同じシミュレーション時間なら
+    //    反復回数が増える (スライダを動かす意味がここにある)
+    {
+        const int div[3] = { 10, 20, 40 };
+        double prevDt = 1e30;
+        bool shrinking = true;
+        for (int k = 0; k < 3; ++k) {
+            const double dx = targetCellSize(c0, 2.5e9, div[k]);
+            const double dt = courantLimitDt(c0, dx, 3);
+            if (!(dt < prevDt)) shrinking = false;
+            prevDt = dt;
+        }
+        check(shrinking,
+              "meshdt: a finer accuracy always shortens the time step");
+        const double dtCoarse =
+            courantLimitDt(c0, targetCellSize(c0, 2.5e9, 10), 3);
+        const double dtFine =
+            courantLimitDt(c0, targetCellSize(c0, 2.5e9, 20), 3);
+        const double T = 10.0e-9;
+        check(std::fabs((T / dtFine) / (T / dtCoarse) - 2.0) < 1e-9,
+              "meshdt: doubling the resolution doubles the number of steps "
+              "for the same simulated time");
+    }
+}
+
+// ── 光線図の経路記録 (optics/IlluminationTrace) ────────────────────────────
+// **記録は計測であって物理ではない**。いちばん大事なのは「記録を入れても
+// 結果が 1 ビットも変わらない」こと (乱数の消費や分岐に混ざると静かに
+// 別の答えになる)。そのうえで、経路が幾何として正しいかを見る。
+static void testRayPaths()
+{
+    g_file = "raypath";
+    using namespace ofd::illum;
+
+    Scene sc;
+    sc.source.flux_lm = 1000.0;
+    sc.reflector.enabled = true;
+    sc.reflector.model = Scatter::Specular;
+    sc.diffuser.enabled = false;
+    sc.target.distance_mm = 1000.0;
+    sc.target.half_mm = 500.0;
+
+    TraceOptions off;
+    off.sampling = Sampling::Qmc;
+    TraceOptions on = off;
+    on.recordPaths = 24;
+
+    const Result a = trace(sc, 2000, off);
+    const Result b = trace(sc, 2000, on);
+    check(a.valid && b.valid, "raypath: both traces run");
+
+    // ① 記録の有無で結果が 1 ビットも変わらないこと (これが本命)
+    check(a.fluxOut_lm == b.fluxOut_lm,
+          "raypath: recording paths does not change the emitted-out flux "
+          "(bit-for-bit)");
+    check(a.fluxAbsorbed_lm == b.fluxAbsorbed_lm,
+          "raypath: it does not change the absorbed flux");
+    check(a.fluxTarget_lm == b.fluxTarget_lm,
+          "raypath: it does not change the flux on the target");
+    check(a.raysOnTarget == b.raysOnTarget && a.raysTrapped == b.raysTrapped,
+          "raypath: it does not change the ray tallies");
+    check(a.axialIntensity_cd == b.axialIntensity_cd,
+          "raypath: it does not change the axial intensity");
+    bool sameCurve = a.intensity_cd.size() == b.intensity_cd.size();
+    for (std::size_t i = 0; sameCurve && i < a.intensity_cd.size(); ++i)
+        sameCurve = (a.intensity_cd[i] == b.intensity_cd[i]);
+    check(sameCurve, "raypath: the whole intensity distribution is identical");
+    check(a.paths.empty(), "raypath: recording is off by default");
+
+    // ② 記録した本数と、経路そのものの形
+    check(int(b.paths.size()) == on.recordPaths,
+          qPrintable(QString("raypath: exactly %1 paths are recorded (got %2)")
+                         .arg(on.recordPaths).arg(b.paths.size())));
+    bool allTwoPlus = true, endsClassified = true, lenOk = true;
+    for (const RayPath &p : b.paths) {
+        if (p.points.size() < 2) allTwoPlus = false;
+        // 終わり方は 3 つのどれか 1 つ (取りこぼしも二重計上も無いこと)
+        const int flags = int(p.reachedTarget) + int(p.escaped)
+                          + int(p.absorbed);
+        if (flags != 1) endsClassified = false;
+        if (int(p.points.size()) > 2 + 64) lenOk = false;   // maxBounces + 2
+    }
+    check(allTwoPlus, "raypath: every path has at least a start and an end");
+    check(endsClassified,
+          "raypath: every path ends in exactly one way (target / escaped / "
+          "absorbed)");
+    check(lenOk, "raypath: no path has more points than bounces allow");
+
+    // ③ 放射点は光源の位置 (点光源なら原点)
+    bool fromOrigin = true;
+    for (const RayPath &p : b.paths)
+        if (std::fabs(p.points[0].x_mm) > 1e-12
+            || std::fabs(p.points[0].y_mm) > 1e-12
+            || std::fabs(p.points[0].z_mm) > 1e-12) fromOrigin = false;
+    check(fromOrigin, "raypath: a point source emits every ray from the origin");
+
+    // ④ 評価面に届いた光線は、最後の点が z = D の面の上にあり、
+    //    面の内側 (|x|, |y| <= W) にあること
+    int nTarget = 0;
+    bool onPlane = true, inside = true;
+    for (const RayPath &p : b.paths) {
+        if (!p.reachedTarget) continue;
+        ++nTarget;
+        const PathPoint &e = p.points.back();
+        if (std::fabs(e.z_mm - sc.target.distance_mm) > 1e-9) onPlane = false;
+        if (std::fabs(e.x_mm) > sc.target.half_mm + 1e-9
+            || std::fabs(e.y_mm) > sc.target.half_mm + 1e-9) inside = false;
+    }
+    check(nTarget > 0, "raypath: some of the recorded rays reach the target");
+    check(onPlane, "raypath: a target-reaching path ends exactly on z = D");
+    check(inside, "raypath: and inside the evaluation area");
+
+    // ⑤ **反射の法則** — 鏡面反射器に当たった点で入射角 = 反射角。
+    //    法線は記録された交点から放物面の式で独立に組み直す
+    //    (n ∝ (−x/(2f), −y/(2f), 1) を正規化。z = (x²+y²)/(4f))
+    {
+        const double f = sc.reflector.focal_mm;
+        int checked = 0;
+        double worst = 0.0;
+        for (const RayPath &p : b.paths) {
+            for (std::size_t k = 1; k + 1 < p.points.size(); ++k) {
+                const PathPoint &P0 = p.points[k - 1];
+                const PathPoint &P1 = p.points[k];
+                const PathPoint &P2 = p.points[k + 1];
+                // 交点が放物面 x² + y² − 4f·z − 4f² = 0 の上にあること
+                // (光源は焦点 = 原点にあり、頂点は z = −f)
+                const double rr = P1.x_mm * P1.x_mm + P1.y_mm * P1.y_mm;
+                const double impl = rr - 4.0 * f * P1.z_mm - 4.0 * f * f;
+                if (std::fabs(impl) > 1e-6 * std::max(1.0, rr)) continue;
+                // 法線は勾配 ∇(x²+y²−4fz−4f²) = (2x, 2y, −4f) から
+                double nx = P1.x_mm, ny = P1.y_mm, nz = -2.0 * f;
+                const double nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+                nx /= nl; ny /= nl; nz /= nl;
+                auto unit = [](double x, double y, double z, double *o) {
+                    const double L = std::sqrt(x * x + y * y + z * z);
+                    o[0] = x / L; o[1] = y / L; o[2] = z / L;
+                };
+                double in[3], out[3];
+                unit(P1.x_mm - P0.x_mm, P1.y_mm - P0.y_mm, P1.z_mm - P0.z_mm, in);
+                unit(P2.x_mm - P1.x_mm, P2.y_mm - P1.y_mm, P2.z_mm - P1.z_mm, out);
+                const double ci = in[0] * nx + in[1] * ny + in[2] * nz;
+                const double co = out[0] * nx + out[1] * ny + out[2] * nz;
+                // 鏡面反射なら法線成分だけ符号が反転する
+                worst = std::max(worst, std::fabs(ci + co));
+                ++checked;
+            }
+        }
+        check(checked > 0,
+              "raypath: at least one recorded reflection off the reflector");
+        check(worst < 1e-6,
+              qPrintable(QString("raypath: the angle of incidence equals the "
+                                 "angle of reflection at every recorded hit "
+                                 "(worst %1)").arg(worst, 0, 'e', 2)));
+    }
+
+    // ⑥ 記録本数を光線数より多く頼んでも、あるだけしか返さない
+    {
+        TraceOptions many = off;
+        many.recordPaths = 500;
+        const Result r = trace(sc, 10, many);
+        check(int(r.paths.size()) == 10,
+              "raypath: asking for more paths than rays records only what "
+              "was traced");
+    }
+}
+
+// ── 位相雑音 → 強度雑音 (optics/PhaseNoise) ───────────────────────────────
+// 土台は **Wiener 過程の厳密解 σ² = 2π·Δν·τ**。ここが合っていれば残りは
+// 正規分布の特性関数から閉形式で出る。極限 (τ→0, Δν→0, τ≫τ_c) と、
+// 小信号近似が厳密式に一致することまで見る。
+static void testPhaseNoise()
+{
+    g_file = "phnoise";
+    using namespace ofd::optics;
+
+    // ① 位相分散は線幅にも遅延にも比例する (Wiener 過程)
+    {
+        const double dnu = 1.0e6, tau = 1.0e-9;
+        const double s2 = phaseVariance(dnu, tau);
+        check(std::fabs(s2 - 2.0 * M_PI * dnu * tau) < 1e-18,
+              "phnoise: the phase variance is 2*pi*dnu*tau exactly");
+        check(std::fabs(phaseVariance(2.0 * dnu, tau) - 2.0 * s2) < 1e-18,
+              "phnoise: doubling the linewidth doubles the variance");
+        check(std::fabs(phaseVariance(dnu, 2.0 * tau) - 2.0 * s2) < 1e-18,
+              "phnoise: doubling the delay doubles the variance");
+        check(phaseVariance(dnu, 0.0) == 0.0,
+              "phnoise: a zero delay leaves no phase difference");
+        check(phaseVariance(0.0, tau) == 0.0,
+              "phnoise: a zero-linewidth laser has no phase noise");
+    }
+
+    // ② 可視度 V = e^{−π·Δν·τ} と、コヒーレンス時間 τ_c = 1/(π·Δν) の関係。
+    //    τ = τ_c ちょうどで V = e^{−1} になる (定義と実装が同じであること)
+    {
+        const double dnu = 5.0e6;
+        const double tc = 1.0 / (M_PI * dnu);
+        check(std::fabs(visibility(dnu, 0.0) - 1.0) < 1e-15,
+              "phnoise: with no delay the fringes are fully visible");
+        check(std::fabs(visibility(dnu, tc) - std::exp(-1.0)) < 1e-12,
+              "phnoise: at one coherence time the visibility is 1/e");
+        check(visibility(dnu, 100.0 * tc) < 1e-40,
+              "phnoise: far beyond the coherence time the fringes vanish");
+        PhaseNoiseInput in;
+        in.linewidth_Hz = dnu;
+        in.delay_s = tc;
+        const PhaseNoiseResult r = analyse(in);
+        check(std::fabs(r.coherenceTime_s - tc) < 1e-18,
+              "phnoise: the reported coherence time is 1/(pi*dnu)");
+        check(std::fabs(r.visibility - std::exp(-1.0)) < 1e-12,
+              "phnoise: analyse() reports the same visibility as visibility()");
+    }
+
+    // ③ 直交バイアスの強度ゆらぎ — 厳密式 √((1−e^{−2σ²})/2) と一致し、
+    //    小さい σ では σ そのものに漸近すること (位相のゆらぎがそのまま
+    //    相対強度のゆらぎになる極限)
+    {
+        for (double dnu : { 1.0e3, 1.0e5, 1.0e6, 1.0e7 }) {
+            PhaseNoiseInput in;
+            in.linewidth_Hz = dnu;
+            in.delay_s = 1.0e-9;
+            in.bias_rad = M_PI / 2.0;
+            in.power_W = 2.0e-3;
+            const PhaseNoiseResult r = analyse(in);
+            const double s2 = 2.0 * M_PI * dnu * in.delay_s;
+            const double want = std::sqrt(0.5 * (1.0 - std::exp(-2.0 * s2)));
+            check(std::fabs(r.relativeIntensityNoise - want) < 1e-12,
+                  qPrintable(QString("phnoise: at quadrature the intensity "
+                                     "noise is sqrt((1-exp(-2s2))/2) "
+                                     "(dnu = %1 Hz)").arg(dnu, 0, 'g', 3)));
+            // 直交バイアスでは平均は P0/2 ちょうど (干渉項が落ちる)
+            check(std::fabs(r.meanPower_W - 0.5 * in.power_W) < 1e-18,
+                  "phnoise: at quadrature the mean power is P0/2");
+        }
+        // 小信号極限: σ が小さいほど σ_P/⟨P⟩ → σ に近づく (単調に)
+        double prevErr = 1.0;
+        bool converging = true;
+        for (double dnu : { 1.0e6, 1.0e5, 1.0e4, 1.0e3 }) {
+            PhaseNoiseInput in;
+            in.linewidth_Hz = dnu;
+            in.delay_s = 1.0e-9;
+            const PhaseNoiseResult r = analyse(in);
+            const double err =
+                std::fabs(r.relativeIntensityNoise - r.phaseRms_rad)
+                / r.phaseRms_rad;
+            if (!(err < prevErr)) converging = false;
+            prevErr = err;
+        }
+        check(converging,
+              "phnoise: the exact result approaches the small-angle limit "
+              "sigma_P/P = sigma as the phase noise shrinks");
+        check(prevErr < 1e-5,
+              "phnoise: for a narrow line the two agree to 5 digits");
+    }
+
+    // ④ バイアス点の効き — 干渉の山/谷 (φ₀ = 0, π) では位相→強度の
+    //    変換利得が消えるので、直交バイアスより静かになる
+    {
+        PhaseNoiseInput q;
+        q.linewidth_Hz = 1.0e6; q.delay_s = 1.0e-9; q.bias_rad = M_PI / 2.0;
+        PhaseNoiseInput top = q; top.bias_rad = 0.0;
+        const PhaseNoiseResult rq = analyse(q);
+        const PhaseNoiseResult rt = analyse(top);
+        check(rt.relativeIntensityNoise < rq.relativeIntensityNoise,
+              "phnoise: at the fringe top the phase-to-intensity gain "
+              "vanishes, so it is quieter than at quadrature");
+        check(rq.valid && rt.valid, "phnoise: both bias points are valid");
+    }
+
+    // ⑤ 極限 — 雑音の無いレーザ / 遅延の無い干渉計は揺らがない
+    {
+        PhaseNoiseInput in;
+        in.linewidth_Hz = 0.0;
+        in.delay_s = 1.0e-9;
+        const PhaseNoiseResult r = analyse(in);
+        check(r.valid, "phnoise: a zero-linewidth laser is a valid input");
+        check(std::fabs(r.relativeIntensityNoise) < 1e-15,
+              "phnoise: a zero-linewidth laser produces no intensity noise");
+        check(std::isinf(r.coherenceTime_s),
+              "phnoise: its coherence time is infinite");
+        PhaseNoiseInput z = in;
+        z.linewidth_Hz = 1.0e6;
+        z.delay_s = 0.0;
+        check(std::fabs(analyse(z).relativeIntensityNoise) < 1e-15,
+              "phnoise: with no delay there is no phase-to-intensity "
+              "conversion");
+        // 入力が壊れていれば valid = false (数字をでっち上げない)
+        PhaseNoiseInput bad;
+        bad.power_W = 0.0;
+        check(!analyse(bad).valid,
+              "phnoise: a zero input power is rejected rather than divided by");
+    }
+}
+
+// ── PIC 回路の時間領域応答 (optics/CircuitImpulse) ─────────────────────────
+// 「時間領域」モードの実体。**リングの全域通過は展開すると厳密な等比級数**
+// になるので、IFFT で得たタップ列をその閉形式と直接突き合わせられる。
+// 絵が出たかではなく、タップの位置・振幅・比で判定する。
+static void testCircuitImpulse()
+{
+    g_file = "picimp";
+    using namespace ofd::pic;
+    const double C0 = 299792458.0;
+
+    // ① 直線導波路 — 群遅延 τ = ng·L/c にただ 1 本のタップ
+    {
+        ofd::optics::Waveguide wg;
+        wg.neff = 2.44; wg.ng = 4.2; wg.lambda0_nm = 1550.0;
+        wg.loss_dBcm = 0.0;
+        const double L_um = 1000.0;
+        const double tau = wg.ng * (L_um * 1e-6) / C0;   // 14.0 ps
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        // τ がちょうど 8 標本になる帯域を選ぶ (dt = τ/8)
+        cfg.bandwidth_Hz = 8.0 / tau;
+        cfg.points = 256;
+        const ImpulseResult r =
+            impulse([&](double lam) { return wg.transfer(lam, L_um); }, cfg);
+        check(r.ok(), "picimp: a straight waveguide gives an impulse response");
+        check(std::fabs(r.mainDelay_s - tau) < 0.51 * r.dt_s,
+              qPrintable(QString("picimp: the arrival is the group delay "
+                                 "ng*L/c (%1 ps, got %2 ps)")
+                             .arg(tau * 1e12, 0, 'f', 3)
+                             .arg(r.mainDelay_s * 1e12, 0, 'f', 3)));
+        const std::vector<std::pair<double, double>> pk = peaks(r, 0.05);
+        check(pk.size() == 1,
+              qPrintable(QString("picimp: a plain delay has exactly one tap "
+                                 "(got %1)").arg(pk.size())));
+        // 無損失なら振幅は 1 (エネルギー保存)
+        check(std::fabs(r.energy - 1.0) < 1e-9,
+              "picimp: a lossless waveguide preserves energy (sum |h|^2 = 1)");
+    }
+
+    // ② MZI — アームが 2 本なのでタップも 2 本、位置は各アームの群遅延
+    {
+        ofd::optics::MachZehnder mzi;
+        mzi.wg.neff = 2.44; mzi.wg.ng = 4.2; mzi.wg.loss_dBcm = 0.0;
+        mzi.length1_um = 500.0;
+        mzi.length2_um = 1500.0;
+        const double t1 = mzi.wg.ng * (mzi.length1_um * 1e-6) / C0;
+        const double t2 = mzi.wg.ng * (mzi.length2_um * 1e-6) / C0;
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.bandwidth_Hz = 16.0 / (t2 - t1);   // 差がちょうど 16 標本
+        cfg.points = 512;
+        const ImpulseResult r =
+            impulse([&](double lam) { return mzi.bar(lam); }, cfg);
+        check(r.ok(), "picimp: an MZI gives an impulse response");
+        const std::vector<std::pair<double, double>> pk = peaks(r, 0.05);
+        check(pk.size() == 2,
+              qPrintable(QString("picimp: an MZI has exactly two taps "
+                                 "(got %1)").arg(pk.size())));
+        if (pk.size() == 2) {
+            check(std::fabs((pk[1].first - pk[0].first) - (t2 - t1))
+                      < 0.51 * r.dt_s,
+                  "picimp: the two taps are separated by the arm delay "
+                  "difference");
+            check(std::fabs(pk[0].second - pk[1].second) < 1e-6,
+                  "picimp: a 50:50 MZI splits equally between the two taps");
+        }
+    }
+
+    // ③ 全域通過リング — **厳密な等比級数**と突き合わせる。
+    //    H = (t1 − a·e^{−jφ})/(1 − t1·a·e^{−jφ}) を展開すると
+    //      h0 = t1,  hn = (t1² − 1)·t1^(n−1)·a^n   (n ≥ 1)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.neff = 2.44; ring.wg.ng = 4.2; ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 0.0;          // 無損失 → a = 1
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;                // 全域通過
+        const double Lring_um = 2.0 * M_PI * ring.radius_um;
+        const double tR = ring.wg.ng * (Lring_um * 1e-6) / C0;   // 1 周の時間
+        const double fsr = 1.0 / tR;
+        const double t1 = std::sqrt(1.0 - ring.kappa1 * ring.kappa1);
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.fsrHint_Hz = fsr;
+        cfg.fsrMultiple = 32;             // B = 32·FSR → 1 周 = 32 標本
+        cfg.points = 1024;                // 32 周ぶん見える
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: an all-pass ring gives an impulse response");
+
+        // ここで比べるのは**にじみ・間隔・減衰**といった分散に強い量に留める。
+        // タップの絶対値まで閉形式と厳密に合わせるには、導波路の分散
+        // (neff が λ に一次で効く = 群遅延が帯域内で変わる) が邪魔をする。
+        // **厳密な突き合わせは下の ③' で、分散のない解析的な伝達関数を
+        // こちらから与えて行う** (module の数学と素子の物理を分けて見る)。
+        const std::size_t step = 32;
+        double worst = 0.0;
+        for (int n = 1; n <= 4; ++n) {
+            const double want = std::fabs((t1 * t1 - 1.0) * std::pow(t1, n - 1));
+            worst = std::max(worst,
+                             std::fabs(std::abs(r.h[n * step]) - want) / want);
+        }
+        check(worst < 0.05,
+              qPrintable(QString("picimp: the ring taps follow the geometric "
+                                 "series to within dispersion (worst %1 %)")
+                             .arg(worst * 100.0, 0, 'f', 2)));
+
+        // タップとタップの間は空でなければならない (にじんでいない)
+        double between = 0.0;
+        for (std::size_t i = 1; i < step; ++i)
+            between = std::max(between, std::abs(r.h[i]));
+        check(between < 1e-9,
+              "picimp: nothing appears between taps when the band is an "
+              "integer multiple of the FSR");
+        // 隣り合うタップの比は t1 (1 周あたりの減衰) — 無損失なら結合だけで決まる
+        check(std::fabs(std::abs(r.h[2 * step]) / std::abs(r.h[step]) - t1)
+                  < 5e-3,
+              "picimp: successive taps decay by the self-coupling factor");
+        // 無損失の全域通過は |H| = 1 なのでエネルギーは 1
+        check(std::fabs(r.energy - 1.0) < 1e-6,
+              "picimp: a lossless all-pass ring preserves energy");
+        check(r.tailFraction > 0.0,
+              "picimp: the ring really does have a tail beyond the window "
+              "(it is reported, not hidden)");
+        // 読み取った 1 周時間が解析値と一致すること
+        check(std::fabs(r.tapSpacing_s - tR) < 0.51 * r.dt_s,
+              qPrintable(QString("picimp: the reported round-trip time is "
+                                 "ng*L/c (%1 ps, got %2 ps)")
+                             .arg(tR * 1e12, 0, 'f', 3)
+                             .arg(r.tapSpacing_s * 1e12, 0, 'f', 3)));
+    }
+
+    // ③' **分散のない解析的な全域通過**で module の数学を厳密に検める。
+    //     H(f) = (t − u)/(1 − t·u),  u = a·e^{−j2πf·τ}
+    //     展開すると h₀ = t、hₙ = (t²−1)·t^(n−1)·aⁿ (n ≥ 1)。
+    //     τ を標本の整数倍、帯域を 1/τ の整数倍に選べばタップは厳密に出る。
+    //     **見えている時間長より後ろは巡回して先頭へ足される**が、その和も
+    //     等比級数なので閉形式で書ける (位相を含めて 1/(1−z) の形になる)。
+    {
+        const double tau = 1.0e-12;          // 1 ps の 1 周
+        const double t1 = 0.95, a = 0.98;   // 巡回の足し込みが効く強さ
+        const double lam0 = 1550.0;
+        const double f0 = C0 / (lam0 * 1e-9);
+        const SpectrumFn Hfn = [&](double lam_nm) {
+            const double f = C0 / (lam_nm * 1e-9);
+            const double ph = -2.0 * M_PI * f * tau;
+            const cplx u = a * cplx(std::cos(ph), std::sin(ph));
+            return (t1 - u) / (1.0 - t1 * u);
+        };
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = lam0;
+        cfg.bandwidth_Hz = 16.0 / tau;       // 1 周 = 16 標本
+        cfg.points = 256;                    // 16 周ぶん見える
+        const ImpulseResult r = impulse(Hfn, cfg);
+        check(r.ok(), "picimp: the analytic all-pass builds an impulse response");
+
+        const std::size_t step = 16;
+        const double Nrt = 256.0 / double(step);         // 16 周
+        // 巡回して足される分は共通比 z (振幅 (t1·a)^Nrt、位相 −2πf0·τ·Nrt)
+        const double thN = -2.0 * M_PI * f0 * tau * Nrt;
+        const cplx z = std::pow(t1 * a, Nrt) * cplx(std::cos(thN), std::sin(thN));
+        double worst = 0.0;
+        for (int n = 1; n <= 5; ++n) {
+            const double cn = (t1 * t1 - 1.0) * std::pow(t1, n - 1)
+                              * std::pow(a, n);
+            const double want = std::fabs(cn) / std::abs(1.0 - z);
+            worst = std::max(worst,
+                             std::fabs(std::abs(r.h[n * step]) - want));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("picimp: the taps match the closed-form "
+                                 "geometric series including the cyclic wrap "
+                                 "(worst %1)").arg(worst, 0, 'e', 2)));
+        check(std::abs(z) > 0.02,
+              "picimp: this case really does wrap (the correction matters)");
+        // 長く見れば巡回分は消え、素の等比級数へ収束する
+        ImpulseConfig lon = cfg;
+        lon.points = 8192;                   // 512 周ぶん
+        const ImpulseResult rl = impulse(Hfn, lon);
+        double w2 = 0.0;
+        for (int n = 1; n <= 5; ++n) {
+            const double cn = (t1 * t1 - 1.0) * std::pow(t1, n - 1)
+                              * std::pow(a, n);
+            w2 = std::max(w2, std::fabs(std::abs(rl.h[n * step])
+                                        - std::fabs(cn)));
+        }
+        check(w2 < 1e-9,
+              qPrintable(QString("picimp: seen over 256 round trips the taps "
+                                 "are the plain geometric series (worst %1)")
+                             .arg(w2, 0, 'e', 2)));
+    }
+
+    // ④ 損失のあるリング — 1 周あたり a 倍で減る (a は損失から厳密に出る)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.neff = 2.44; ring.wg.ng = 4.2; ring.wg.lambda0_nm = 1550.0;
+        ring.wg.loss_dBcm = 20.0;
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        ring.kappa2 = 0.0;
+        const double Lring_m = 2.0 * M_PI * ring.radius_um * 1e-6;
+        const double alpha = std::log(10.0) / 10.0 * ring.wg.loss_dBcm * 100.0;
+        const double a = std::exp(-0.5 * alpha * Lring_m);   // 1 周の振幅
+        const double t1 = std::sqrt(1.0 - ring.kappa1 * ring.kappa1);
+        const double tR = ring.wg.ng * Lring_m / 299792458.0;
+
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.fsrHint_Hz = 1.0 / tR;
+        cfg.fsrMultiple = 32;
+        cfg.points = 1024;
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: a lossy ring gives an impulse response");
+        const std::size_t step = 32;
+        check(std::fabs(std::abs(r.h[2 * step]) / std::abs(r.h[step])
+                        - t1 * a) < 5e-3,
+              "picimp: with loss the taps decay by t1*a per round trip");
+        check(r.energy < 1.0,
+              "picimp: a lossy ring does not preserve energy");
+        check(std::fabs(r.decayRatio - t1 * a) < 1e-3,
+              "picimp: the reported decay ratio is the per-round-trip factor");
+    }
+
+    // ⑤ 帯域が FSR の整数倍でないと**タップはにじむ** — 手法の限界なので、
+    //    「にじまない」と偽らないことを確認する (selftest で明示しておく)
+    {
+        ofd::optics::RingResonator ring;
+        ring.wg.loss_dBcm = 0.0;
+        ring.radius_um = 20.0;
+        ring.kappa1 = 0.3;
+        const double tR = ring.wg.ng * (2.0 * M_PI * ring.radius_um * 1e-6)
+                          / 299792458.0;
+        ImpulseConfig cfg;
+        cfg.lambda0_nm = 1550.0;
+        cfg.bandwidth_Hz = 31.4 / tR;      // 整数倍ではない
+        cfg.points = 1024;
+        const ImpulseResult r =
+            impulse([&](double lam) { return ring.through(lam); }, cfg);
+        check(r.ok(), "picimp: a non-commensurate band still returns a result");
+        double between = 0.0;
+        const std::size_t near = std::size_t(tR / r.dt_s);
+        for (std::size_t i = 2; i + 2 < near; ++i)
+            between = std::max(between, std::abs(r.h[i]));
+        check(between > 1e-6,
+              "picimp: a band that is not an integer multiple of the FSR "
+              "smears the taps (the limitation is real, not hidden)");
+    }
+}
+
+// ── アイダイアグラム (core/EyeDiagram) ─────────────────────────────────────
+// 「絵が出た」では何も確かめたことにならないので、**独立に導ける正解**と
+// 突き合わせる。特に指数チャネルは巡回定常応答が等比級数で閉形式に書けるので、
+// FFT → 逆 FFT → 巡回畳み込みの経路全体を数値で押さえられる。
+static void testEyeDiagram()
+{
+    g_file = "eye";
+    using namespace ofd::eye;
+
+    // ① PRBS が本当に最長周期か — タップを写し間違えると周期が縮む。
+    //    **表を信じず、状態を数えて確かめる**。
+    for (int n = 2; n <= 16; ++n) {
+        const std::vector<int> b = prbs(n);
+        const std::size_t want = (std::size_t(1) << n) - 1;
+        check(b.size() == want,
+              qPrintable(QString("eye: PRBS order %1 has period 2^n-1 = %2")
+                             .arg(n).arg(want)));
+        // n ビット窓が全パターン (0 以外) をちょうど 1 回ずつ通ること = 最長周期
+        std::set<unsigned> seen;
+        for (std::size_t i = 0; i < b.size(); ++i) {
+            unsigned w = 0;
+            for (int k = 0; k < n; ++k)
+                w = (w << 1) | unsigned(b[(i + k) % b.size()]);
+            seen.insert(w);
+        }
+        check(seen.size() == want,
+              qPrintable(QString("eye: PRBS order %1 visits every non-zero "
+                                 "state exactly once (maximal length)").arg(n)));
+        check(seen.find(0u) == seen.end(),
+              "eye: the all-zero state never occurs (it is the lock-up state)");
+        // 1 の個数は 2^(n-1) (最長周期系列の性質)
+        const int ones = int(std::count(b.begin(), b.end(), 1));
+        check(ones == (1 << (n - 1)),
+              qPrintable(QString("eye: PRBS order %1 has 2^(n-1) ones").arg(n)));
+    }
+
+    // ② インパルス応答の組み立て — 答えが厳密に分かる 2 つの H で確かめる
+    {
+        const double fs = 1.0e9;
+        const double dt = 1.0 / fs;
+        // 純遅延 5 サンプル → h は 5 番目の単位標本ちょうど
+        double tail = 0.0;
+        const std::vector<double> hd = impulseResponse(
+            [&](double f) {
+                const double ph = -2.0 * M_PI * f * 5.0 * dt;
+                return std::complex<double>(std::cos(ph), std::sin(ph));
+            }, fs, 256, &tail);
+        check(hd.size() == 256, "eye: the impulse grid is the requested length");
+        check(std::fabs(hd[5] - 1.0) < 1e-9,
+              "eye: a pure 5-sample delay puts unit weight at sample 5");
+        double other = 0.0;
+        for (std::size_t i = 0; i < hd.size(); ++i)
+            if (i != 5) other = std::max(other, std::fabs(hd[i]));
+        check(other < 1e-9,
+              "eye: a pure delay leaves every other sample at zero");
+
+        // 2 タップ移動平均 H = (1 + e^{-j2πf dt})/2 → h = [0.5, 0.5, 0, ...]
+        const std::vector<double> hm = impulseResponse(
+            [&](double f) {
+                const double ph = -2.0 * M_PI * f * dt;
+                return 0.5 * (1.0 + std::complex<double>(std::cos(ph),
+                                                         std::sin(ph)));
+            }, fs, 256);
+        check(std::fabs(hm[0] - 0.5) < 1e-9 && std::fabs(hm[1] - 0.5) < 1e-9,
+              "eye: a 2-tap moving average gives h = [0.5, 0.5]");
+    }
+
+    // ③ 理想チャネル — 開口・幅・ジッタが厳密に決まる
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 7;
+        c.samplesPerBit = 32;
+        c.amplitude_V = 1.0;
+        const Result r = build(c, Transfer());
+        check(r.ok(), "eye: the ideal channel builds an eye");
+        check(int(r.traces.size()) == 127,
+              "eye: one folded trace per PRBS bit");
+        check(std::fabs(r.height_V - 2.0 * c.amplitude_V) < 1e-12,
+              "eye: an ideal channel opens the full swing (2A) exactly");
+        check(std::fabs(r.jitter_s) < 1e-18,
+              "eye: an ideal channel has exactly zero data-dependent jitter");
+        const double ui = 1.0 / c.bitRate_bps;
+        check(std::fabs(r.width_s - ui) < 1e-15,
+              "eye: an ideal channel opens exactly one unit interval");
+    }
+
+    // ③' **遅延のあるチャネルでも開口が正しく出ること** — 実際に踏んだ不具合。
+    //    線路は伝搬遅延を持つので、遅延を無視して「ビット i の中央」で判定
+    //    すると別のビットを見てしまい、絵は大きく開いているのに開口が負に
+    //    なる。整数ビット分ずれる遅延を入れて、理想と同じ開口が出ることを見る。
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 7;
+        c.samplesPerBit = 32;
+        const double dt = 1.0 / (c.bitRate_bps * c.samplesPerBit);
+        for (int delayBits : { 1, 5, 19 }) {
+            const double tau = delayBits * c.samplesPerBit * dt;   // 整数 UI
+            const Result r = build(c, [tau](double f) {
+                const double ph = -2.0 * M_PI * f * tau;
+                return std::complex<double>(std::cos(ph), std::sin(ph));
+            });
+            check(std::fabs(r.height_V - 2.0 * c.amplitude_V) < 1e-6,
+                  qPrintable(QString("eye: a %1-UI delay still opens the full "
+                                     "swing (got %2 V)")
+                                 .arg(delayBits)
+                                 .arg(r.height_V, 0, 'f', 6)));
+            check(r.sampleIndex >= std::size_t(delayBits * c.samplesPerBit),
+                  "eye: the reported sampling point follows the channel delay");
+        }
+        // 半 UI ずれた遅延でも閉じない (端数の遅延も追えていること)
+        const double halfUi = 0.5 / c.bitRate_bps;
+        const Result rh = build(c, [halfUi](double f) {
+            const double ph = -2.0 * M_PI * f * halfUi;
+            return std::complex<double>(std::cos(ph), std::sin(ph));
+        });
+        check(rh.height_V > 1.9,
+              qPrintable(QString("eye: a half-UI delay keeps the eye open "
+                                 "(got %1 V)").arg(rh.height_V, 0, 'f', 3)));
+    }
+
+    // ④ 指数チャネル — **巡回定常応答の閉形式 (等比級数) と一致すること**。
+    //    h[m] = a^m の FIR に対し、周期 N の入力への定常応答は
+    //      y[n] = (1/(1−a^N))·Σ_{m=0}^{N−1} a^m·x[(n−m) mod N]
+    //    と厳密に書ける (無限和を 1 周期へ畳んだもの)。ここが合えば
+    //    H の標本化・エルミート化・逆 FFT・巡回畳み込みが全部正しい。
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 5;              // 31 ビット
+        c.samplesPerBit = 8;          // N = 248
+        c.amplitude_V = 1.0;
+        c.impulseSamples = 4096;      // a^M が丸めに埋もれる長さ
+        const double a = 0.7;
+        const double dt = 1.0 / (c.bitRate_bps * c.samplesPerBit);
+        // H(f) = Σ a^m e^{-j2πf m dt} = 1/(1 − a·e^{-j2πf dt})
+        const Transfer H = [&](double f) {
+            const double ph = -2.0 * M_PI * f * dt;
+            const std::complex<double> z(std::cos(ph), std::sin(ph));
+            return 1.0 / (1.0 - a * z);
+        };
+        const Result r = build(c, H);
+        check(r.ok(), "eye: the exponential channel builds an eye");
+
+        const std::vector<int> bits = prbs(c.prbsOrder);
+        const std::vector<double> x = transmit(c, bits);
+        const std::size_t N = x.size();
+        // 閉形式 (等比級数) — 実装とは別の式で独立に組む
+        std::vector<double> yRef(N, 0.0);
+        const double scale = 1.0 / (1.0 - std::pow(a, double(N)));
+        for (std::size_t n = 0; n < N; ++n) {
+            double acc = 0.0, w = 1.0;
+            for (std::size_t m = 0; m < N; ++m) {
+                acc += w * x[(n + N - m) % N];
+                w *= a;
+            }
+            yRef[n] = scale * acc;
+        }
+        // 実装の出力 (トレースは y を折り返したもの) と比較する
+        // 窓は判定時刻 (r.sampleIndex) が真ん中に来るよう 1 UI 手前から始まる
+        const std::size_t spb = std::size_t(c.samplesPerBit);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < bits.size(); ++i)
+            for (std::size_t k = 0; k < 2 * spb; ++k) {
+                const std::size_t n =
+                    (i * spb + r.sampleIndex + 2 * N - spb + k) % N;
+                worst = std::max(worst, std::fabs(r.traces[i][k] - yRef[n]));
+            }
+        check(worst < 1e-9,
+              qPrintable(QString("eye: the waveform matches the closed-form "
+                                 "cyclic steady state (worst %1 V)")
+                             .arg(worst, 0, 'e', 2)));
+
+        // 開口も閉形式から独立に出して突き合わせる
+        double lo1 = 1e30, hi0 = -1e30;
+        for (std::size_t i = 0; i < bits.size(); ++i) {
+            const std::size_t n = (i * spb + r.sampleIndex) % N;
+            if (bits[i]) lo1 = std::min(lo1, yRef[n]);
+            else         hi0 = std::max(hi0, yRef[n]);
+        }
+        check(std::fabs(r.height_V - (lo1 - hi0)) < 1e-9,
+              "eye: the reported opening equals the closed-form opening");
+    }
+
+    // ⑤ 低域を強く切るほど開口は単調に狭まる (物理の向き)
+    {
+        Config c;
+        c.bitRate_bps = 1.0e9;
+        c.prbsOrder = 5;
+        c.samplesPerBit = 16;
+        c.samplesPerBit = 32;      // ナイキスト 16 GHz — 下の遮断を十分解像する
+        double prev = 1e30;
+        bool monotone = true;
+        QString dbg;
+        for (double fc : { 2.0e9, 1.0e9, 0.5e9, 0.25e9, 0.125e9 }) {
+            const Result r = build(c, [fc](double f) {
+                return 1.0 / std::complex<double>(1.0, f / fc);
+            });
+            if (!(r.height_V <= prev + 1e-12)) monotone = false;
+            prev = r.height_V;
+            dbg += QString(" %1:%2").arg(fc / 1e9, 0, 'f', 2)
+                       .arg(r.height_V, 0, 'f', 6);
+        }
+        check(monotone,
+              qPrintable(QString("eye: lowering the cut-off closes the eye "
+                                 "monotonically [%1]").arg(dbg)));
+
+        // 標本化が粗くてチャネルを解像できていないことは**表に出る**こと。
+        // (この場合は折り返しで開口が信用できなくなるので、黙って数字を
+        //  出してはいけない。)
+        Config coarse = c;
+        coarse.samplesPerBit = 8;              // ナイキスト 4 GHz
+        const Result bad = build(coarse, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 4.0e9);
+        });
+        check(bad.nyquistMag > 0.1,
+              "eye: a channel still open at Nyquist is flagged by nyquistMag");
+        const Result fine = build(c, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 0.25e9);
+        });
+        check(fine.nyquistMag < 0.02,
+              "eye: a well-resolved channel reports a small nyquistMag");
+        // 十分狭めれば閉じる (負の開口を 0 で止めていないこと)
+        const Result shut = build(c, [](double f) {
+            return 1.0 / std::complex<double>(1.0, f / 0.05e9);
+        });
+        check(shut.height_V < 0.0,
+              "eye: a closed eye is reported as a negative opening, not zero");
+    }
+
+    // ⑥ 送信波形そのもの (レベルと遷移)
+    {
+        Config c;
+        c.prbsOrder = 4;
+        c.samplesPerBit = 10;
+        c.amplitude_V = 2.0;
+        const std::vector<int> b = prbs(4);
+        const std::vector<double> x = transmit(c, b);
+        check(x.size() == b.size() * 10, "eye: the transmit length is bits x spb");
+        double mx = 0.0;
+        for (double v : x) mx = std::max(mx, std::fabs(v));
+        check(std::fabs(mx - 2.0) < 1e-12,
+              "eye: the levels are +/-amplitude with no rise time");
+        // 遷移時間を入れると中間の値が現れる
+        c.riseTime_s = 0.5 / c.bitRate_bps;
+        const std::vector<double> xr = transmit(c, b);
+        int mid = 0;
+        for (double v : xr) if (std::fabs(std::fabs(v) - 2.0) > 1e-9) ++mid;
+        check(mid > 0, "eye: a non-zero rise time produces intermediate samples");
+        check(xr.size() == x.size(),
+              "eye: the rise time does not change the waveform length");
+    }
+}
+
+// ── 計測した指向パターンの取り込み (io/BeamPatternCsv) ─────────────────────
+// 取り込みは **静かに間違えると気づけない** 部分が 2 つある:
+//   ① 正規化 — 定数オフセットは全ビームを一様に増減させ TL の絶対値をずらす
+//   ② 並べ替え — 降順の表をそのまま .sbp へ書くと BELLHOP は補間で溶かす
+// どちらも「読めた/落ちない」では検出できないので、値で判定する。
+static void testBeamPatternCsv()
+{
+    g_file = "beamcsv";
+    using namespace ofd;
+
+    // ① 素直な表 (カンマ区切り、註釈と見出し行つき)
+    {
+        QString err;
+        const beamcsv::Result r = beamcsv::parse(
+            "# measured 2026-08-12\n"
+            "angle,level\n"
+            "-30, -18.0\n"
+            "  0, -6.0\n"
+            " 30, -18.0\n", &err);
+        check(r.ok(), "beamcsv: a comma table with a header and a comment reads");
+        check(r.points.size() == 3, "beamcsv: 3 data lines give 3 points");
+        check(r.skipped == 2, "beamcsv: the comment and the header are skipped");
+        // ピークは −6 dB だったので、その分だけ引かれて 0 dB になる
+        check(std::fabs(r.shift_dB - (-6.0)) < 1e-12,
+              "beamcsv: the reported shift is the original peak level");
+        check(std::fabs(r.points[1].level_dB) < 1e-12,
+              "beamcsv: the peak becomes exactly 0 dB");
+        check(std::fabs(r.points[0].level_dB - (-12.0)) < 1e-12,
+              "beamcsv: the shift is a translation (shape is preserved)");
+        // 形が保たれる = 点どうしの差が変わらないこと
+        check(std::fabs((r.points[0].level_dB - r.points[1].level_dB)
+                        - (-18.0 - (-6.0))) < 1e-12,
+              "beamcsv: differences between points are unchanged by normalising");
+    }
+
+    // ② 区切りと改行の揺れ (タブ / 空白 / セミコロン、CRLF)
+    {
+        const beamcsv::Result a = beamcsv::parse("-10\t-3\r\n0\t0\r\n10\t-3\r\n");
+        const beamcsv::Result b = beamcsv::parse("-10 -3\n0 0\n10 -3\n");
+        const beamcsv::Result c = beamcsv::parse("-10;-3\n0;0\n10;0\n");
+        check(a.ok() && b.ok() && c.ok(),
+              "beamcsv: tab, space and semicolon separators all read");
+        check(a.points.size() == b.points.size(),
+              "beamcsv: CRLF and LF give the same number of points");
+        check(std::fabs(a.points[0].level_dB - b.points[0].level_dB) < 1e-12,
+              "beamcsv: the separator does not change the values");
+    }
+
+    // ③ 降順の表は昇順へ並べ替える (BELLHOP は単調な表を前提にする)
+    {
+        const beamcsv::Result r = beamcsv::parse("20,-9\n0,0\n-20,-9\n");
+        check(r.ok(), "beamcsv: a descending table reads");
+        check(r.points[0].angle_deg < r.points[1].angle_deg
+                  && r.points[1].angle_deg < r.points[2].angle_deg,
+              "beamcsv: points come back sorted by angle");
+        check(std::fabs(r.points[0].angle_deg - (-20.0)) < 1e-12,
+              "beamcsv: sorting keeps each level with its own angle");
+        check(std::fabs(r.points[0].level_dB - (-9.0)) < 1e-12,
+              "beamcsv: the level travels with the angle when sorting");
+    }
+
+    // ④ 壊れた入力は**部分的に採らず**全部落とす
+    {
+        const char *bad[] = {
+            "0,0\n",                       // 点が 1 個
+            "0,0\n10\n",                   // 列が足りない
+            "0,0\n10,abc\n",               // 数値でない (先頭行ではない)
+            "0,0\n0,-3\n",                 // 角度の重複
+            "0,0\n200,-3\n",               // 角度が範囲外
+        };
+        for (const char *t : bad) {
+            QString err;
+            const beamcsv::Result r = beamcsv::parse(QString::fromUtf8(t), &err);
+            check(!r.ok(), qPrintable(QString("beamcsv: rejected -- %1")
+                               .arg(QString::fromUtf8(t).simplified())));
+            check(r.points.isEmpty(),
+                  "beamcsv: a rejected table yields no points at all");
+            check(!err.isEmpty(), "beamcsv: the rejection carries a reason");
+        }
+    }
+
+    // ⑤ 床でのクリップ (.sbp は −∞ を持てない)
+    {
+        QVector<BeamPatternPoint> pts{ {0.0, 0.0}, {45.0, -80.0} };
+        const QVector<BeamPatternPoint> c = beamcsv::clampToFloor(pts, -60.0);
+        check(std::fabs(c[1].level_dB - (-60.0)) < 1e-12,
+              "beamcsv: levels below the floor are clipped to it");
+        check(std::fabs(c[0].level_dB) < 1e-12,
+              "beamcsv: levels above the floor are untouched");
+    }
+
+    // ⑥ .sbp への配線 — 計測パターンは**閉形式より優先**される
+    {
+        ofd::Project p;
+        UnderwaterOpts &u = p.underwater();
+        u.sbpPattern = true;
+        u.sonarDir = 1;               // 閉形式なら「ガウス開口」
+        u.beamWidth_deg = 15.0;
+        const QString closed = ofd::BellhopIO::sbpText(p);
+        check(!closed.isEmpty(), "beamcsv: the closed form still writes a .sbp");
+
+        u.sbpMeasured = beamcsv::parse("-20,-9\n0,0\n20,-9\n").points;
+        u.sbpSource = "hydrophone.csv";
+        const QString meas = ofd::BellhopIO::sbpText(p);
+        check(meas != closed,
+              "beamcsv: a measured table replaces the closed-form .sbp");
+        const QStringList ln = meas.split('\n', Qt::SkipEmptyParts);
+        check(ln.value(0).section('\t', 0, 0).trimmed() == "3",
+              "beamcsv: the .sbp header counts the measured points, not the "
+              "closed-form samples");
+        check(ln.value(0).contains("hydrophone.csv"),
+              "beamcsv: the .sbp note records where the table came from");
+        check(ln.size() == 4, "beamcsv: header + one line per measured point");
+        // 表の中身がそのまま出ていること (間引いたり足したりしない)
+        check(ln.value(1).startsWith("-20"),
+              "beamcsv: the first data line is the first measured angle");
+        check(ln.value(3).startsWith("20"),
+              "beamcsv: the last data line is the last measured angle");
+
+        // 指向性が「無指向」でも計測パターンは効く (形は表が決める)
+        u.sonarDir = 0;
+        check(ofd::BellhopIO::patternEnabled(u),
+              "beamcsv: a measured table does not need a closed-form shape");
+        check(!ofd::BellhopIO::sbpText(p).isEmpty(),
+              "beamcsv: it still writes the .sbp with directivity set to omni");
+
+        // 機能を切れば従来どおり何も書かない (絶対規則 2)
+        u.sbpPattern = false;
+        check(ofd::BellhopIO::sbpText(p).isEmpty(),
+              "beamcsv: turning the feature off writes no .sbp at all");
+    }
+
+    // ⑦ .ofdx の往復 (表がプロジェクトだけで再現できること)
+    {
+        ofd::Project p;
+        UnderwaterOpts &u = p.underwater();
+        u.sbpPattern = true;
+        u.sbpMeasured = beamcsv::parse("-20,-9\n0,0\n20,-9\n").points;
+        u.sbpSource = "hydrophone.csv";
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_beam_XXXXXX.ofdx");
+        if (!ofdx.open()) return;
+        check(ofd::OfdxIO::save(ofdx.fileName(), p),
+              "beamcsv: the sidecar saves");
+        ofd::Project q;
+        check(ofd::OfdxIO::load(ofdx.fileName(), q),
+              "beamcsv: the sidecar loads");
+        const UnderwaterOpts &v = q.underwater();
+        check(v.sbpMeasured.size() == u.sbpMeasured.size(),
+              "beamcsv: every measured point survives the round trip");
+        check(v.sbpSource == u.sbpSource,
+              "beamcsv: the provenance (file name) survives the round trip");
+        bool same = v.sbpMeasured.size() == u.sbpMeasured.size();
+        for (int i = 0; same && i < v.sbpMeasured.size(); ++i)
+            same = std::fabs(v.sbpMeasured[i].angle_deg
+                             - u.sbpMeasured[i].angle_deg) < 1e-12
+                   && std::fabs(v.sbpMeasured[i].level_dB
+                                - u.sbpMeasured[i].level_dB) < 1e-12;
+        check(same, "beamcsv: the values come back bit-for-bit");
+        check(ofd::BellhopIO::sbpText(q) == ofd::BellhopIO::sbpText(p),
+              "beamcsv: the reloaded project writes the identical .sbp");
+    }
+
+    // ⑧ ファイルから読む経路 (存在しない・大きすぎるも理由を返すこと)
+    {
+        QTemporaryFile csv;
+        csv.setFileTemplate(QDir::tempPath() + "/ofdx_beam_XXXXXX.csv");
+        if (csv.open()) {
+            csv.write("# tank measurement\n-20,-9\n0,0\n20,-9\n");
+            csv.flush();
+            QString err;
+            const beamcsv::Result r = beamcsv::load(csv.fileName(), &err);
+            check(r.ok(), "beamcsv: a file on disk reads through load()");
+            check(r.points.size() == 3, "beamcsv: load() gives the same points");
+            check(err.isEmpty(), "beamcsv: a good file reports no error");
+        }
+        QString err2;
+        const beamcsv::Result miss =
+            beamcsv::load(QDir::tempPath() + "/ofdx_beam_does_not_exist.csv",
+                          &err2);
+        check(!miss.ok() && !err2.isEmpty(),
+              "beamcsv: a missing file fails with a reason");
+    }
+
+    // ⑨ 何も取り込んでいない既定のプロジェクトは出力が 1 バイトも変わらない
+    {
+        ofd::Project p;
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_beamdef_XXXXXX.ofdx");
+        if (!ofdx.open()) return;
+        check(ofd::OfdxIO::save(ofdx.fileName(), p),
+              "beamcsv: a default project saves");
+        QFile f(ofdx.fileName());
+        check(f.open(QIODevice::ReadOnly), "beamcsv: it can be read back");
+        const QByteArray got = f.readAll();
+        f.close();
+        check(!got.contains("measured"),
+              "beamcsv: an untouched project writes no measured-pattern key");
+    }
+}
+
 // ── TL 断面 → 3D シーンの鉛直面 (io/TlSlice) ───────────────────────────────
 // 座標と値の対応づけだけを持つ部分。**向きと符号を間違えると静かに嘘の絵に
 // なる** ので、そこを重点的に判定する (色が裏返る / 上下が逆になる)。
@@ -21651,6 +22732,12 @@ int main(int argc, char *argv[])
     testDispersionModels();
     testSourceDirectivity();
     testTlSlice3D();
+    testBeamPatternCsv();
+    testEyeDiagram();
+    testCircuitImpulse();
+    testPhaseNoise();
+    testRayPaths();
+    testCourantFromAccuracy();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

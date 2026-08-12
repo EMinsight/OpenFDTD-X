@@ -2,6 +2,7 @@
 #include "UnderwaterTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/BeamPatternCsv.h"
 #include "../io/BellhopIO.h"
 #include "../io/ShdReader.h"
 #include "../io/ArrReader.h"
@@ -17,6 +18,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -198,6 +200,32 @@ const bool s_i18nUnderwater = [] {
               "does the weighting instead.");
     I18n::reg("uwx_sbp_use", "指向パターンを .sbp で渡す",
               "Pass the beam pattern as a .sbp file");
+    // 計測パターンの取り込み
+    I18n::reg("uwx_sbp_load", "計測パターンを読み込む (CSV)…",
+              "Load a measured pattern (CSV)...");
+    I18n::reg("uwx_sbp_clear", "計測パターンを外す", "Drop the measured pattern");
+    I18n::reg("uwx_sbp_load_tip",
+              "1 行 1 点の「角度 [deg], 相対レベル [dB]」。区切りはカンマ・"
+              "タブ・空白のいずれでもよく、# ! ; で始まる行は註釈として"
+              "読み飛ばします。取り込むとピークが 0 dB になるよう平行移動し"
+              "(平行移動量は表示します)、以降は閉形式ではなくこの表を .sbp へ"
+              "書きます。",
+              "One point per line: angle [deg], relative level [dB]. Commas, "
+              "tabs or spaces all work as separators, and lines starting with "
+              "# ! ; are skipped as comments. On import the peak is shifted to "
+              "0 dB (the shift is reported), and from then on this table -- not "
+              "the closed form -- is written to the .sbp file.");
+    I18n::reg("uwx_sbp_meas",
+              "計測パターン %1 — %2 点、%3° 〜 %4°。ピークを 0 dB へ %5 dB "
+              "平行移動しました。この表をそのまま .sbp へ書きます "
+              "(閉形式の指向性・ビーム幅は使いません)。",
+              "Measured pattern %1 -- %2 points, %3 deg to %4 deg. The peak was "
+              "shifted by %5 dB to 0 dB. This table is written to the .sbp file "
+              "as-is (the closed-form directivity and beam width are not used).");
+    I18n::reg("uwx_sbp_meas_err", "読み込めませんでした: %1",
+              "Could not read the file: %1");
+    I18n::reg("uwx_sbp_meas_ok", "%1 から %2 点を取り込みました",
+              "Imported %2 points from %1");
     I18n::reg("uwx_sbp_plot_x", "軸からの角 [deg]", "Angle from axis [deg]");
     I18n::reg("uwx_sbp_plot_y", "相対レベル [dB]", "Relative level [dB]");
     I18n::reg("uwx_sbp_gauss",
@@ -689,6 +717,27 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_sbpNote = mutedLabel(QString(), ss);
     m_sbpNote->setWordWrap(true);
     ss->form()->addRow(m_sbpNote);
+
+    // 計測した指向パターンの取り込み (閉形式より優先する)
+    auto *sbpRow = new QWidget(ss);
+    auto *sbpH = new QHBoxLayout(sbpRow);
+    sbpH->setContentsMargins(0, 0, 0, 0);
+    auto *sbpLoad = new QPushButton(I18n::tr("uwx_sbp_load"), sbpRow);
+    sbpLoad->setToolTip(I18n::tr("uwx_sbp_load_tip"));
+    m_sbpClear = new QPushButton(I18n::tr("uwx_sbp_clear"), sbpRow);
+    sbpH->addWidget(sbpLoad);
+    sbpH->addWidget(m_sbpClear);
+    sbpH->addStretch(1);
+    ss->form()->addRow(sbpRow);
+    connect(sbpLoad, &QPushButton::clicked, this, &UnderwaterTab::loadBeamCsv);
+    connect(m_sbpClear, &QPushButton::clicked, this, [this] {
+        UnderwaterOpts &u = m_p->underwater();
+        if (u.sbpMeasured.isEmpty()) return;
+        u.sbpMeasured.clear();
+        u.sbpSource.clear();
+        m_p->touch();
+        updateBeamPattern();
+    });
     ss->form()->addRow(I18n::tr("uw_sl"), m_sonarSL);
     ss->form()->addRow(I18n::tr("uw_range"), m_rangeMax);
     v->addWidget(ss);
@@ -905,6 +954,29 @@ void UnderwaterTab::updateDerived()
     }
 }
 
+// 計測した指向パターン (CSV) の取り込み。読めなければ**何も変えない**
+// (部分的に読めた分を使わない — 欠けた表は別のパターンになるため)。
+void UnderwaterTab::loadBeamCsv()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("uwx_sbp_load"), QString(),
+        QStringLiteral("CSV / text (*.csv *.txt *.dat);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QString err;
+    const beamcsv::Result r = beamcsv::load(path, &err);
+    if (!r.ok()) {
+        m_sbpNote->setText(I18n::tr("uwx_sbp_meas_err").arg(err));
+        return;
+    }
+    UnderwaterOpts &u = m_p->underwater();
+    u.sbpMeasured = r.points;
+    u.sbpSource = QFileInfo(path).fileName();
+    m_sbpShiftDb = r.shift_dB;
+    m_p->touch();
+    updateBeamPattern();
+}
+
 // 指向パターン b(θ) の図と数値。**.sbp に書くのと同じ関数**を呼ぶので、
 // 画面とファイルが食い違うことはない。
 void UnderwaterTab::updateBeamPattern()
@@ -918,6 +990,32 @@ void UnderwaterTab::updateBeamPattern()
         m_sbpNote->setText(I18n::tr("uwx_sbp_off"));
         return;
     }
+    // 計測パターンがあるときは、その表をそのまま描く。**閉形式の曲線は
+    // 描かない** — 渡すのは表の方なので、画面に別の形を出すと嘘になる。
+    if (!u.sbpMeasured.isEmpty()) {
+        MiniSeries s;
+        s.color = QColor(kAccUw);
+        double lo = u.sbpMeasured.front().angle_deg;
+        double hi = lo;
+        for (const BeamPatternPoint &b : u.sbpMeasured) {
+            s.pts.push_back(QPointF(b.angle_deg,
+                                    qMax(b.level_dB, u.sbpFloor_dB)));
+            lo = qMin(lo, b.angle_deg);
+            hi = qMax(hi, b.angle_deg);
+        }
+        m_sbpPlot->setYRange(qMax(u.sbpFloor_dB, -40.0), 2.0);
+        m_sbpPlot->setSeries({ s });
+        m_sbpNote->setText(
+            I18n::tr("uwx_sbp_meas")
+                .arg(u.sbpSource.isEmpty() ? QStringLiteral("-") : u.sbpSource)
+                .arg(u.sbpMeasured.size())
+                .arg(QString::number(lo, 'f', 1),
+                     QString::number(hi, 'f', 1),
+                     QString::number(m_sbpShiftDb, 'f', 2))
+            + I18n::tr("uwx_sbp_dbnote"));
+        return;
+    }
+
     const dir::Shape shape = BellhopIO::patternShape(u);
     const int n = dir::recommendedPoints(u.beamWidth_deg, 180.0);
     // 図は主ローブが見える範囲だけ (表は ±90° 全体を書く)

@@ -79,6 +79,15 @@ const bool s_i18n = [] {
                    "Mode switching not implemented (use mouse drag in the "
                    "viewport)");
     ofd::I18n::reg("vp_grid",    "グリッド",       "Grid");
+    // 水中音響の深さ方向の表示倍率 (海は極端に平たいので等方では読めない)
+    ofd::I18n::reg("vp_vexag",   "深さ ×",         "Depth x");
+    ofd::I18n::reg("vp_vexag_tip",
+        "深さ方向だけを引き伸ばして表示します (水中音響のみ)。1 のときが等方"
+        "で、1 以外にすると縮尺が等方でない旨を画面に表示します。計算には"
+        "一切影響しません。",
+        "Stretches the depth axis only (underwater domain). At 1 the scale is "
+        "isotropic; any other value is stated on the view. It does not affect "
+        "the computation in any way.");
     // PML は EM/光の用語なので全ドメイン共通の中立語にする
     ofd::I18n::reg("vp_boundary","吸収境界",       "Boundary");
     ofd::I18n::reg("vp_vertex",  "頂点スナップ",   "Vertex snap");
@@ -197,6 +206,17 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     h->addWidget(grid);
     h->addWidget(bnd);
     h->addWidget(vtx);
+
+    // 深さ方向の表示倍率 (水中音響のみ表示)。表示だけの操作子で、
+    // モデルにもカーネル入力にも触らない。
+    m_vexagLabel = new QLabel(I18n::tr("vp_vexag"), m_vpToolbar);
+    m_vexag = new QComboBox(m_vpToolbar);
+    for (int k : { 1, 2, 5, 10, 20, 50 })
+        m_vexag->addItem(QString::number(k), k);
+    m_vexag->setToolTip(I18n::tr("vp_vexag_tip"));
+    m_vexagLabel->setToolTip(I18n::tr("vp_vexag_tip"));
+    h->addWidget(m_vexagLabel);
+    h->addWidget(m_vexag);
 
     // 結果断面の 3D 重ね表示。スタイルコンボの「+ Field」と同じ状態を指す
     // (状態は m_styleBox 側が唯一の持ち主で、これはその別入口)。
@@ -368,6 +388,9 @@ CenterPane::CenterPane(Project *project, QWidget *parent)
     connect(reset, &QToolButton::clicked, m_viewport, &Viewport3D::fitView);
     connect(grid, &QCheckBox::toggled, m_viewport, &Viewport3D::setGridVisible);
     connect(bnd,  &QCheckBox::toggled, m_viewport, &Viewport3D::setBoundaryVisible);
+    connect(m_vexag, &QComboBox::currentIndexChanged, this, [this](int) {
+        m_viewport->setVerticalExaggeration(m_vexag->currentData().toDouble());
+    });
     connect(snap, &QToolButton::clicked, this, &CenterPane::saveSnapshot);
     connect(m_styleBox, &QComboBox::currentIndexChanged, this, [this](int i) {
         m_viewport->setViewStyle(ViewStyle(i));
@@ -458,6 +481,15 @@ void CenterPane::dragMoveEvent(QDragMoveEvent *e)   { handleComponentDragOver(e)
 // コンボの項目自体を隠す。
 void CenterPane::updateDomainVisibility(Domain d)
 {
+    // 深さの表示倍率は水中音響でしか意味を持たない (他ドメインの領域は
+    // 等方に近く、倍率を掛けると形が壊れるだけ)
+    const bool vexagOk = (d == Domain::Underwater);
+    if (m_vexag && m_vexagLabel) {
+        m_vexag->setVisible(vexagOk);
+        m_vexagLabel->setVisible(vexagOk);
+        if (!vexagOk) m_vexag->setCurrentIndex(0);   // 等方へ戻す
+    }
+
     const bool raysOk = (d == Domain::Optical || d == Domain::Underwater);
     const int rayRow = int(ViewStyle::Rays);
 

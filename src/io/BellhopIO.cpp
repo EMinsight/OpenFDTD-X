@@ -1,5 +1,6 @@
 // BellhopIO.cpp
 #include "BellhopIO.h"
+#include "BeamPatternCsv.h"
 #include "../core/Project.h"
 
 #include <QFileInfo>
@@ -101,7 +102,10 @@ double BellhopIO::sourceDepth(const UnderwaterOpts &u)
 
 bool BellhopIO::patternEnabled(const UnderwaterOpts &u)
 {
-    return u.sbpPattern && u.sonarDir != 0 && u.beamWidth_deg > 0.0;
+    // 計測パターンを取り込んでいるときは形が表で決まるので、
+    // 指向性の種別やビーム幅 (閉形式の引数) は問わない。
+    return u.sbpPattern && (!u.sbpMeasured.isEmpty()
+                            || (u.sonarDir != 0 && u.beamWidth_deg > 0.0));
 }
 
 dir::Shape BellhopIO::patternShape(const UnderwaterOpts &u)
@@ -141,6 +145,21 @@ QString BellhopIO::sbpText(const Project &p)
     beamAngles(u, &a1, &a2);
     const double lo = std::min(-90.0, std::min(a1, a2));
     const double hi = std::max( 90.0, std::max(a1, a2));
+
+    // 計測パターンがあれば閉形式より優先する。**計測値は間引かず、
+    // 角度もこちらで足さない** — 表の形をそのまま渡すのが取り込みの意味。
+    if (!u.sbpMeasured.isEmpty()) {
+        const QVector<BeamPatternPoint> pts =
+            beamcsv::clampToFloor(u.sbpMeasured, u.sbpFloor_dB);
+        QString text;
+        QTextStream out(&text);
+        out << pts.size() << "\t! NSBPPts — measured pattern";
+        if (!u.sbpSource.isEmpty()) out << " (" << u.sbpSource << ")";
+        out << ", peak normalised to 0 dB\n";
+        for (const BeamPatternPoint &b : pts)
+            out << num(b.angle_deg) << " " << num(b.level_dB) << "\n";
+        return text;
+    }
 
     const dir::Shape shape = patternShape(u);
     const int n = dir::recommendedPoints(u.beamWidth_deg, hi - lo);

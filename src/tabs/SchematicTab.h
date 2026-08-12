@@ -23,6 +23,7 @@ class QTableWidget;
 class QTableWidgetItem;
 
 namespace ofd {
+namespace optics { struct Waveguide; }
 
 class MiniPlot;
 
@@ -35,6 +36,9 @@ public:
 
 private slots:
     void runCircuitSim();
+    // 時間領域モード (複素包絡線のインパルス応答)
+    void showTimeDomain(const optics::Waveguide &wg, double length_um, int dev);
+    void updatePhaseNoise();   // 位相雑音 → 強度雑音 (optics/PhaseNoise)
     void updateNoiseBudget();   // 雑音項のチェック + 温度 → 雑音収支        // 素子 S 行列 → 波長掃引 → 指標
     void refreshNetlist();                        // model → widgets
     void refreshNetPath();                        // 経路表示を更新
@@ -68,6 +72,9 @@ private:
     // (CI の Linux GUI スモークが --domain optical で segfault した実例)。
     QCheckBox    *m_shot = nullptr, *m_thermal = nullptr, *m_rin = nullptr;
     QCheckBox    *m_phase = nullptr, *m_toShift = nullptr;
+    QLineEdit    *m_lineWidth = nullptr;    // レーザ線幅 [MHz]
+    QLabel       *m_phaseResult = nullptr;
+    double        m_pnDelay_s = 0.0;        // 素子の遅延 (素子応答と共有)
     QLabel       *m_netPath = nullptr;   // ネットリストから辿った経路
     QLineEdit    *m_temp = nullptr;
     // 受光器の雑音収支 (core/ReceiverNoise)
