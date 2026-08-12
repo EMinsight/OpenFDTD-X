@@ -100,6 +100,9 @@ private:
     QLabel     *m_topoWarn = nullptr;
     FieldHeatmap *m_topoMap = nullptr;
     QPushButton  *m_topoApply = nullptr;
+    QComboBox    *m_topoSym = nullptr;      // 対称性の種類 (制約条件が効く先)
+    QLineEdit    *m_topoRule = nullptr;     // 最小製造ルール [nm]
+    QLabel       *m_topoRuleLabel = nullptr;
 
     // 実行 / Run
     QComboBox *m_target;                 // ローカル / HPC / tidy3d

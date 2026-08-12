@@ -19224,6 +19224,129 @@ static void testDensityField()
         check(approx(minFeature_m(80e-9), 160e-9, 1e-18),
               "density: the minimum feature size is the filter diameter");
     }
+
+    // ── 対称性の拘束 (鏡像との平均への射影) ─────────────────────────────
+    {
+        std::vector<double> rnd(static_cast<size_t>(N), 0.0);
+        for (int k = 0; k < N; ++k)
+            rnd[static_cast<size_t>(k)] = ((k * 40503u + 7u) % 997) / 997.0;
+
+        for (Symmetry sym : { Symmetry::MirrorX, Symmetry::MirrorY,
+                              Symmetry::Quadrant, Symmetry::Rot90 }) {
+            const std::vector<double> a = symmetrize(rnd, g, sym);
+            check(isSymmetric(a, g, sym, 1e-12),
+                  "density: symmetrising really produces a symmetric field");
+            // 平均への射影なので 2 回かけても 1 回と同じ (冪等)
+            const std::vector<double> b = symmetrize(a, g, sym);
+            double worst = 0.0;
+            for (int k = 0; k < N; ++k)
+                worst = std::max(worst, std::fabs(a[static_cast<size_t>(k)]
+                                                  - b[static_cast<size_t>(k)]));
+            check(worst < 1e-15, "density: the symmetry projection is idempotent");
+            // 平均なので充填率は厳密に変わらない
+            check(approx(volumeFraction(a), volumeFraction(rnd), 1e-12),
+                  "density: symmetrising preserves the volume fraction exactly");
+            // 既に対称な場は動かない (4 枚平均は足す順で最下位ビットが
+            // 変わりうるので、ビット一致ではなく丸め誤差で判定する)
+            const std::vector<double> c2 = symmetrize(a, g, sym);
+            double moved = 0.0;
+            for (int k = 0; k < N; ++k)
+                moved = std::max(moved, std::fabs(c2[static_cast<size_t>(k)]
+                                                  - a[static_cast<size_t>(k)]));
+            check(moved < 1e-15,
+                  "density: an already symmetric field is left untouched");
+        }
+        check(symmetrize(rnd, g, Symmetry::None) == rnd,
+              "density: no symmetry is the identity");
+        // 対称化していない乱数場は (ほぼ確実に) 対称ではない — 判定が
+        // 何でも true を返していないことの確認
+        check(!isSymmetric(rnd, g, Symmetry::MirrorX, 1e-12),
+              "density: a random field is not reported as symmetric");
+
+        // Rot90 は正方格子でしか定義できない。長方形では何もせずに返す
+        Region wide = r;
+        wide.x1_m = r.x0_m + 2.0 * r.width_m();
+        const Grid gw = gridFor(wide, 100e-9);
+        check(gw.nx != gw.ny, "density: the test grid is deliberately not square");
+        std::vector<double> rw(static_cast<size_t>(gw.count()), 0.0);
+        for (int k = 0; k < gw.count(); ++k)
+            rw[static_cast<size_t>(k)] = ((k * 2654435761u) % 251) / 251.0;
+        check(!symmetryApplicable(gw, Symmetry::Rot90),
+              "density: 90-degree symmetry needs a square grid");
+        check(symmetrize(rw, gw, Symmetry::Rot90) == rw,
+              "density: on a non-square grid it changes nothing (no silent swap)");
+        check(symmetryApplicable(gw, Symmetry::MirrorX),
+              "density: mirror symmetry works on any grid");
+    }
+
+    // ── 最小連結長の実測 (製造ルールの判定) ─────────────────────────────
+    {
+        // 幅 6 画素の帯を中央に置く。行方向の材料の連なりは 6、
+        // 背景は帯の上下に分かれるがどちらも端で切れているので数えない。
+        std::vector<double> band(static_cast<size_t>(N), 0.0);
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 20; i < 26; ++i)
+                band[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths rl = minRunLength(band, g, 0.5);
+        check(rl.minOn == 6,
+              "density: a 6-pixel stripe measures a 6-pixel minimum run");
+        check(rl.minOff == 0,
+              "density: runs clipped by the border are not counted");
+
+        // 帯を 2 本にすると、その間の隙間が背景の最短連なりになる
+        std::vector<double> two = band;
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 29; i < 40; ++i)
+                two[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths r2 = minRunLength(two, g, 0.5);
+        check(r2.minOn == 6, "density: the narrower stripe still sets the minimum");
+        check(r2.minOff == 3, "density: the gap between the stripes is measured too");
+
+        // 市松模様は最短 1 画素 (最悪形)
+        std::vector<double> checker(static_cast<size_t>(N), 0.0);
+        for (int j = 0; j < g.ny; ++j)
+            for (int i = 0; i < g.nx; ++i)
+                if ((i + j) % 2 == 0) checker[static_cast<size_t>(j) * g.nx + i] = 1.0;
+        const RunLengths rc = minRunLength(checker, g, 0.5);
+        check(rc.minOn == 1 && rc.minOff == 1,
+              "density: a checkerboard measures one pixel in both phases");
+
+        // 一様な場には「端で切れていない連なり」が無い
+        const RunLengths ru = minRunLength(std::vector<double>(static_cast<size_t>(N), 1.0),
+                                           g, 0.5);
+        check(ru.minOn == 0 && ru.minOff == 0,
+              "density: a uniform field has no interior run to measure");
+
+        // **公称の最小形状寸法 2R は保証ではない。**
+        // フィルタは対称なので、閾値のまわりで釣り合った市松模様は半径を
+        // いくら大きくしてもコントラストが縮むだけで閾値をまたがず、
+        // 閾値化するとそのまま市松に戻る。**測らないと分からない**という
+        // ことの実測 (これが minRunLength を別に持つ理由)。
+        double prevSpan = 1.0;
+        for (double f : { 1.5, 2.5, 3.5, 6.0 }) {
+            const std::vector<double> flt = filter(checker, g, f * g.pitchX_m);
+            double lo = 1e300, hi = -1e300;
+            for (double v : flt) { lo = std::min(lo, v); hi = std::max(hi, v); }
+            // 半径を上げるとコントラストは必ず縮む (フィルタは効いている)
+            check(hi - lo < prevSpan,
+                  "density: a larger filter radius shrinks the contrast");
+            prevSpan = hi - lo;
+            // それでも 0.5 をまたがないので、閾値化すると市松のまま
+            check(lo < 0.5 && hi > 0.5,
+                  "density: but the pattern still straddles the threshold");
+            const RunLengths rb = minRunLength(project(flt, 12.0, 0.5), g, 0.5);
+            check(rb.minOn == 1 && rb.minOff == 1,
+                  "density: so the thresholded checkerboard survives any radius");
+            // 充填率は 0.5 のまま (フィルタも射影も平均を動かさない配置)
+            check(approx(volumeFraction(project(flt, 12.0, 0.5)), 0.5, 1e-12),
+                  "density: and the volume fraction stays at one half");
+        }
+        // 公称値 2R はこの場合まったく達成されていない — だから両方出す
+        check(minFeature_m(6.0 * g.pitchX_m) > 6.0 * g.pitchX_m
+              && minRunLength(project(filter(checker, g, 6.0 * g.pitchX_m),
+                                      12.0, 0.5), g, 0.5).minOn == 1,
+              "density: the nominal 2R is not a guarantee, so both are reported");
+    }
 }
 
 static void testPostPrereq()

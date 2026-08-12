@@ -210,8 +210,49 @@ const bool s_i18n = [] {
               "There is no optimisation loop for this method (%1). Sweep, PSO "
               "and GA can run.");
     I18n::reg("opz_run_optimize2", "▶ 最適化を実行", "▶ Run optimisation");
-    I18n::reg("opz_uw_con", "制約条件の設定",
-              "the constraint settings");
+    I18n::reg("opz_uw_con",
+              "「物体寸法上限」と「吸音材厚さ上限」(形状寸法を動かす経路が"
+              "無いので拘束をかける先がありません)",
+              "the upper bounds on object size and absorber thickness (there is "
+              "no path that varies a geometry dimension, so there is nothing to "
+              "constrain)");
+    I18n::reg("opz_uw_con_ok",
+              "「対称性」と「最小製造ルール」— トポロジー最適化の密度場に"
+              "効きます (対称性は鏡像との平均への射影、製造ルールは閾値化した"
+              "形の最小連結長の判定)",
+              "symmetry and the minimum feature rule — they act on the "
+              "topology-optimisation density field (symmetry projects onto the "
+              "mirror average, and the rule checks the shortest run in the "
+              "thresholded shape)");
+    // 制約条件 (密度場へ効くもの)
+    I18n::reg("opz_topo_sym", "対称性の種類", "Symmetry kind");
+    I18n::reg("opz_sym_mx", "左右対称 (x)", "Mirror in x");
+    I18n::reg("opz_sym_my", "上下対称 (y)", "Mirror in y");
+    I18n::reg("opz_sym_quad", "4 分割対称 (x と y)", "Quadrant (x and y)");
+    I18n::reg("opz_sym_rot", "90° 回転対称", "90-degree rotation");
+    I18n::reg("opz_topo_rule", "最小製造ルール", "Minimum feature rule");
+    I18n::reg("opz_topo_rule_fmt",
+              "公称 %1 nm (フィルタ直径) / 実測 材料 %2 nm・隙間 %3 nm",
+              "nominal %1 nm (filter diameter) / measured %2 nm of material and "
+              "%3 nm of gap");
+    I18n::reg("opz_topo_rule_ng",
+              "実測が %1 nm で規則の %2 nm を下回っています。フィルタ半径を"
+              "上げるか解像度を粗くしてください。",
+              "The measured %1 nm is below the %2 nm rule — raise the filter "
+              "radius or coarsen the resolution.");
+    I18n::reg("opz_topo_rule_ok",
+              "実測が規則の %1 nm を満たしています。",
+              "The measured size meets the %1 nm rule.");
+    I18n::reg("opz_topo_rule_none",
+              "領域の内側で閉じた連なりが無いので実測できません。",
+              "There is no run closed inside the region, so nothing can be "
+              "measured.");
+    I18n::reg("opz_topo_sym_na",
+              "90° 回転対称は正方の画素格子でしか定義できません "
+              "(幅と奥行の画素数が違うので、この設定は効きません)。",
+              "90-degree rotational symmetry needs a square pixel grid — the "
+              "width and depth pixel counts differ, so this setting does "
+              "nothing.");
     I18n::reg("opz_uw_topo",
               "トポロジー最適化の反復そのもの (カーネルが感度 ∂FoM/∂ρ を返さない"
               "ので随伴法が組めず、画素数ぶんの設計変数を PSO / GA で回すのは"
@@ -488,13 +529,17 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
     m_cThickAc = new QCheckBox(I18n::tr("opz_c_thick"), sObj);
     m_cThickAc->setChecked(true);
     m_cSym = new QCheckBox(I18n::tr("opz_c_sym"), sObj);
+    // 対称性と最小製造ルールは密度場へ効くので、切り替えたら図を作り直す
+    for (QCheckBox *c : { m_cRuleOpt, m_cSym })
+        connect(c, &QCheckBox::toggled, this, &OptimizeTab::updateTopology);
     conRow->addWidget(m_cRuleOpt);
     conRow->addWidget(m_cSizeEm);
     conRow->addWidget(m_cThickAc);
     conRow->addWidget(m_cSym);
     conRow->addStretch(1);
     sObj->form()->addRow(I18n::tr("opz_constraint"), conRow);
-    sObj->form()->addRow(tabhelp::unwiredNote(sObj, I18n::tr("opz_uw_con")));
+    sObj->form()->addRow(tabhelp::unwiredNote(sObj, I18n::tr("opz_uw_con"),
+                                              I18n::tr("opz_uw_con_ok")));
     v->addWidget(sObj);
 
     // ── ハイパーパラメータ / Hyper-parameters (mode != sweep のみ) ───────────
@@ -590,6 +635,23 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         m_topoMat = numEdit("2", 62, m_pageTopology);
         f->addRow(I18n::tr("opz_topo_mat"), m_topoMat);
 
+        // 制約条件 (目的関数の節のチェック) が効く先。種類だけここで選ぶ
+        m_topoSym = new QComboBox(m_pageTopology);
+        for (const char *k : { "opz_sym_mx", "opz_sym_my", "opz_sym_quad",
+                               "opz_sym_rot" })
+            m_topoSym->addItem(I18n::tr(k));
+        m_topoSym->setCurrentIndex(2);       // 既定は 4 分割対称
+        f->addRow(I18n::tr("opz_topo_sym"), m_topoSym);
+        m_topoRule = numEdit("80", 62, m_pageTopology);
+        auto *ruleRow = new QHBoxLayout();
+        ruleRow->addWidget(m_topoRule);
+        ruleRow->addWidget(new QLabel(QStringLiteral("nm"), m_pageTopology));
+        ruleRow->addStretch(1);
+        f->addRow(I18n::tr("opz_topo_rule"), ruleRow);
+        m_topoRuleLabel = new QLabel(m_pageTopology);
+        m_topoRuleLabel->setWordWrap(true);
+        f->addRow(QString(), m_topoRuleLabel);
+
         m_topoGrid = new QLabel(m_pageTopology);
         m_topoGrid->setStyleSheet(Theme::monoQss());
         f->addRow(I18n::tr("opz_topo_grid"), m_topoGrid);
@@ -616,7 +678,10 @@ OptimizeTab::OptimizeTab(Project *project, QWidget *parent)
         const QVector<QLineEdit *> edits = { m_topoX0, m_topoY0, m_topoZ0,
                                              m_topoW,  m_topoD,  m_topoT,
                                              m_res,    m_filter,
-                                             m_topoBeta, m_topoEta, m_topoMat };
+                                             m_topoBeta, m_topoEta, m_topoMat,
+                                             m_topoRule };
+        connect(m_topoSym, &QComboBox::currentIndexChanged,
+                this, &OptimizeTab::updateTopology);
         for (QLineEdit *e : edits)
             connect(e, &QLineEdit::editingFinished, this, &OptimizeTab::updateTopology);
         connect(m_topoApply, &QPushButton::clicked, this, &OptimizeTab::applyTopology);
@@ -1118,8 +1183,14 @@ void OptimizeTab::updateTopology()
 
     int skipped = 0;
     const QVector<Geometry> &units = m_p->geometries();
-    const std::vector<double> rho0 =
+    std::vector<double> rho0 =
         topo::rasterize(units.constData(), units.size(), r, g, &skipped);
+    // 制約条件「対称性」— 鏡像との平均へ射影する (充填率は変わらない)
+    const bool wantSym = m_cSym && m_cSym->isChecked();
+    const topo::Symmetry sym = wantSym
+        ? static_cast<topo::Symmetry>(m_topoSym->currentIndex() + 1)
+        : topo::Symmetry::None;
+    if (wantSym) rho0 = topo::symmetrize(rho0, g, sym);
     const std::vector<double> rho =
         topo::project(topo::filter(rho0, g, radius_m), beta, eta);
     const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
@@ -1129,8 +1200,45 @@ void OptimizeTab::updateTopology()
                             .arg(topo::nonDiscreteness(rho), 0, 'f', 3)
                             .arg(static_cast<int>(rects.size())));
 
+    // 制約条件「最小製造ルール」— 公称 2R と実測の最小連結長を両方出す。
+    // 2R は保証ではないので (フィルタは閾値をまたがない模様を消せない)、
+    // 実測が規則を満たすかどうかで判定する (core/DensityField の注意参照)。
+    if (m_cRuleOpt && m_cRuleOpt->isChecked()) {
+        const double rule_nm = m_topoRule->text().toDouble();
+        const topo::RunLengths rl = topo::minRunLength(rho, g, eta);
+        const double on_nm = rl.minOn * g.pitchX_m * 1e9;
+        const double off_nm = rl.minOff * g.pitchY_m * 1e9;
+        QString text = I18n::tr("opz_topo_rule_fmt")
+                           .arg(topo::minFeature_m(radius_m) * 1e9, 0, 'f', 1)
+                           .arg(rl.minOn > 0 ? QString::number(on_nm, 'f', 1)
+                                             : QStringLiteral("—"))
+                           .arg(rl.minOff > 0 ? QString::number(off_nm, 'f', 1)
+                                              : QStringLiteral("—"));
+        if (rl.minOn == 0 && rl.minOff == 0) {
+            text += QStringLiteral(" ") + I18n::tr("opz_topo_rule_none");
+        } else {
+            double worst = 1e300;
+            if (rl.minOn > 0)  worst = std::min(worst, on_nm);
+            if (rl.minOff > 0) worst = std::min(worst, off_nm);
+            text += QStringLiteral(" ")
+                  + (worst < rule_nm
+                         ? I18n::tr("opz_topo_rule_ng")
+                               .arg(worst, 0, 'f', 1).arg(rule_nm, 0, 'f', 1)
+                         : I18n::tr("opz_topo_rule_ok").arg(rule_nm, 0, 'f', 1));
+        }
+        m_topoRuleLabel->setText(text);
+        m_topoRuleLabel->setVisible(true);
+    } else {
+        m_topoRuleLabel->setVisible(false);
+    }
+    m_topoSym->setEnabled(wantSym);
+    m_topoRule->setEnabled(m_cRuleOpt && m_cRuleOpt->isChecked());
+
     QStringList warn;
     if (skipped > 0) warn << I18n::tr("opz_topo_skip").arg(skipped);
+    // 90 度回転対称は正方格子でしか定義できない (黙って別のものにしない)
+    if (wantSym && !topo::symmetryApplicable(g, sym))
+        warn << I18n::tr("opz_topo_sym_na");
     if (radius_m < std::min(g.pitchX_m, g.pitchY_m))
         warn << I18n::tr("opz_topo_small");
     if (g.count() > 20000) warn << I18n::tr("opz_topo_big").arg(g.count());
@@ -1156,10 +1264,14 @@ void OptimizeTab::applyTopology()
     const double radius_m = m_filter->text().toDouble() * 1e-9;
     const double eta = m_topoEta->text().toDouble();
     QVector<Geometry> &units = m_p->geometries();
+    std::vector<double> seed =
+        topo::rasterize(units.constData(), units.size(), r, g, nullptr);
+    // 図に出したものと同じ拘束を通す (画面と書き出しを食い違わせない)
+    if (m_cSym && m_cSym->isChecked())
+        seed = topo::symmetrize(seed, g,
+                    static_cast<topo::Symmetry>(m_topoSym->currentIndex() + 1));
     const std::vector<double> rho =
-        topo::project(topo::filter(topo::rasterize(units.constData(), units.size(),
-                                                   r, g, nullptr),
-                                   g, radius_m),
+        topo::project(topo::filter(seed, g, radius_m),
                       m_topoBeta->text().toDouble(), eta);
     const std::vector<topo::Rect> rects = topo::rectangles(rho, g, eta);
     if (rects.empty()) {
