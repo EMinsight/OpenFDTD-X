@@ -2,6 +2,8 @@
 #include "PhotonicsSolversTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../core/SeriesCompare.h"
+#include "../io/RcwaEfficiency.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../io/OfdIO.h"
@@ -283,11 +285,46 @@ const bool s_i18n = [] {
     I18n::reg("psol_uw_rerun_ok",
               "再実行のチェックと「全ソルバ実行」— チェックしたソルバを順に"
               "起動し、結果表に終了状態と生成ファイルを出します。"
-              "「ソルバ間で数値を突き合わせる比較」はまだ実装していません",
+              "RCWA / FMM が回折効率を出したときは、その 2 本を共通の周波数軸で"
+              "突き合わせ、エネルギー保存 R+T=1 も検算します",
               "the re-run check boxes and the \"run all solvers\" button - the "
               "checked solvers are launched in order and the table shows each "
-              "exit state and the files it produced. Comparing the numbers "
-              "across solvers is not implemented yet");
+              "exit state and the files it produced. When RCWA and FMM produce "
+              "diffraction efficiencies, the two are compared on a common "
+              "frequency axis and the R + T = 1 energy balance is checked");
+    // 数値の突き合わせ (io/RcwaEfficiency + core/SeriesCompare)
+    I18n::reg("psol_cmp_energy",
+              "エネルギー保存の検算: %1 の |R+T−1| の最大は %2 (%3 THz)。",
+              "Energy balance: the largest |R+T-1| for %1 is %2 (at %3 THz).");
+    I18n::reg("psol_cmp_energy_ng",
+              "無損失なら R+T=1 のはずなので、これは大きすぎます "
+              "(次数の打ち切りか層の設定を見直してください)。",
+              "For a lossless stack R + T should be 1, so this is too large - "
+              "check the harmonic truncation or the layer setup.");
+    I18n::reg("psol_cmp_pair",
+              "RCWA と FMM の反射率 R_TE: 重なり %1 点 / 最大差 %2 / RMS %3 / "
+              "系統差 %4 / 相関 %5。",
+              "RCWA versus FMM reflectance R_TE: %1 overlapping points / worst "
+              "difference %2 / rms %3 / bias %4 / correlation %5.");
+    I18n::reg("psol_cmp_same",
+              "FMM は RCWA と同一手法なので、この 2 本は一致するのが正しい"
+              "動作です。",
+              "FMM is the same method as RCWA, so the two are expected to "
+              "agree.");
+    I18n::reg("psol_cmp_nopair",
+              "回折効率を出したのは 1 本だけなので、ソルバ間の突き合わせは"
+              "できません。",
+              "Only one solver produced diffraction efficiencies, so there is "
+              "nothing to compare across solvers.");
+    I18n::reg("psol_cmp_nofdtd",
+              "FDTD / BPM の出力はここには入れていません。"
+              "<kernel>.log の反射 Ref[dB] は給電点から見た整合 (ポート反射) で、"
+              "RCWA の R は平面波の電力反射率です — 定義が違うので"
+              "突き合わせません。",
+              "The FDTD and BPM outputs are deliberately left out. The Ref[dB] "
+              "in <kernel>.log is the port reflection seen from the feed, while "
+              "the RCWA R is the plane-wave power reflectance - different "
+              "definitions, so they are not compared.");
     I18n::reg("psol_uw_rerun", "再実行のチェック群",
               "the re-run check boxes");
     I18n::reg("psol_uw_fdtd", "FDTD ページの入力 (シミュレーション時間・シャットオフ・サブピクセル・共形メッシュ等)",
@@ -1020,6 +1057,7 @@ void PhotonicsSolversTab::startNextCrossRun()
                                    .arg(m_crossTable->rowCount()).arg(ok));
         m_crossRun->setEnabled(true);
         m_crossCurrent = -1;
+        compareCrossResults();             // 数値の突き合わせはここで 1 回だけ
         return;
     }
     m_crossCurrent = m_crossQueue.takeFirst();
@@ -1106,6 +1144,70 @@ void PhotonicsSolversTab::onCrossFinished(int exitCode)
                 made.join(QStringLiteral(", ")),
                 QDir::toNativeSeparators(sub));
     startNextCrossRun();
+}
+
+// ── 数値の突き合わせ (io/RcwaEfficiency + core/SeriesCompare) ──────────────
+// 共通の観測量にできるのは**回折効率 (電力の反射率・透過率)** で、これを出すのは
+// RCWA と FMM。FMM は RCWA と同一手法なので、この 2 本は一致するのが正しい。
+//
+// **FDTD / BPM は入れない。** <kernel>.log の Ref[dB] は給電点から見た整合
+// (ポート反射) で、RCWA の R は平面波の電力反射率 — 定義も規格化も違うので
+// 突き合わせてはいけない。理由を画面に出す。
+void PhotonicsSolversTab::compareCrossResults()
+{
+    if (m_crossDir.isEmpty()) return;
+
+    struct Got { QString name; rcwa::Efficiency eff; };
+    QVector<Got> got;
+    for (const char *n : { "rcwa", "fmm" }) {
+        const QString path = m_crossDir + QLatin1Char('/')
+                           + QString::fromLatin1(n)
+                           + QStringLiteral("/rcwa_efficiency.csv");
+        const rcwa::Efficiency e = rcwa::read(path);
+        if (e.valid())
+            got.push_back({ QString::fromLatin1(n).toUpper(), e });
+    }
+    if (got.isEmpty()) return;             // 何も出ていないなら黙る
+
+    QStringList msg;
+    // エネルギー保存の検算 (無損失なら R+T=1)。判定はカーネル側 CI と同じ 3e-3
+    for (const Got &g : got) {
+        const double err = g.eff.worstEnergyError();
+        QString line = I18n::tr("psol_cmp_energy")
+                           .arg(g.name)
+                           .arg(err, 0, 'g', 3)
+                           .arg(g.eff.worstEnergyFreqHz() / 1e12, 0, 'f', 3);
+        if (err > 3.0e-3) line += QStringLiteral(" ") + I18n::tr("psol_cmp_energy_ng");
+        msg << line;
+    }
+
+    // 2 本そろっていれば R_TE を共通の周波数軸で突き合わせる
+    if (got.size() >= 2) {
+        cmp::Series a, b;
+        for (const rcwa::EfficiencyPoint &p : got[0].eff.points) {
+            a.x.push_back(p.freqHz);
+            a.y.push_back(p.rTE);
+        }
+        for (const rcwa::EfficiencyPoint &p : got[1].eff.points) {
+            b.x.push_back(p.freqHz);
+            b.y.push_back(p.rTE);
+        }
+        const cmp::Agreement ag = cmp::compare(a, b);
+        if (ag.valid) {
+            msg << I18n::tr("psol_cmp_pair")
+                       .arg(ag.n)
+                       .arg(ag.maxAbs, 0, 'g', 3)
+                       .arg(ag.rms, 0, 'g', 3)
+                       .arg(ag.bias, 0, 'g', 3)
+                       .arg(ag.correlation, 0, 'f', 4);
+            msg << I18n::tr("psol_cmp_same");
+        }
+    } else {
+        msg << I18n::tr("psol_cmp_nopair");
+    }
+    msg << I18n::tr("psol_cmp_nofdtd");
+    m_crossStatus->setText(m_crossStatus->text() + QStringLiteral(" ")
+                           + msg.join(QStringLiteral(" ")));
 }
 
 void PhotonicsSolversTab::addCrossRow(const QString &solver,

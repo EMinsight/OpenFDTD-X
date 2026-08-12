@@ -355,6 +355,9 @@ set(CORE_SOURCES
     # selftest からも直接検証するため CORE_SOURCES に置く
     src/io/PhotometricIO.cpp
     src/io/PhotometricIO.h
+    # orcwa の rcwa_efficiency.csv (書式はカーネルの writer が正)
+    src/io/RcwaEfficiency.cpp
+    src/io/RcwaEfficiency.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

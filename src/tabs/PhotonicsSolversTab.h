@@ -101,6 +101,8 @@ private:
     int           m_crossCurrent = -1;
     QString       m_crossDir;
     void startNextCrossRun();
+    // 全ソルバ実行のあと、回折効率を出したものどうしを突き合わせる
+    void compareCrossResults();
     void addCrossRow(const QString &solver, const QString &state,
                      const QString &out, const QString &note);
 };

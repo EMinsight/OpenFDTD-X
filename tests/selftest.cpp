@@ -84,6 +84,7 @@
 #include "core/IlluminationScene.h"
 #include "core/ParetoFront.h"
 #include "core/SeriesCompare.h"
+#include "io/RcwaEfficiency.h"
 #include "optics/GaussianBeam.h"
 #include "core/Optimizer.h"
 #include "io/PhotometricIO.h"
@@ -18503,6 +18504,91 @@ static void testRadarCrossSection()
 // ── 系列どうしの突き合わせ (core/SeriesCompare) ────────────────────────────
 // クロスバリデーションの本体は「共通の軸・共通の単位へ揃える」部分。
 // 指標は定義から厳密に決まるので、そこで判定する。
+
+// ── rcwa_efficiency.csv の読み込み (io/RcwaEfficiency) ─────────────────────
+// 書式はカーネル (OpenRCWA/sol/rcwa_bridge.cpp) の writer が正:
+//   frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM
+static void testRcwaEfficiency()
+{
+    g_file = "rcwaeff";
+    namespace re = ofd::rcwa;
+
+    auto approx = [](double a, double b, double tol) {
+        return std::fabs(a - b) <= tol;
+    };
+
+    const QString csv = QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,2.99792458e-06,0.10,0.90,0.20,0.80\n"
+        "2.0e+14,1.49896229e-06,0.25,0.74,0.30,0.70\n"
+        "3.0e+14,9.99308193e-07,0.40,0.60,0.45,0.55\n");
+    const re::Efficiency e = re::parse(csv);
+    check(e.valid() && e.points.size() == 3,
+          "rcwaeff: the three data rows are read and the header is skipped");
+    check(approx(e.points[0].freqHz, 1.0e14, 1.0)
+          && approx(e.points[0].rTE, 0.10, 1e-15)
+          && approx(e.points[0].tTE, 0.90, 1e-15)
+          && approx(e.points[0].rTM, 0.20, 1e-15)
+          && approx(e.points[0].tTM, 0.80, 1e-15),
+          "rcwaeff: the columns land in the order the kernel writes them");
+    // λ = c/f がそのまま入っている (単位の取り違えの検出)
+    check(approx(e.points[0].lambda_m * e.points[0].freqHz, 2.99792458e8, 1.0),
+          "rcwaeff: lambda times frequency is the speed of light");
+
+    // エネルギー保存: 行 1 は 1.0 ちょうど、行 2 は TE が 0.99 (−0.01)、
+    // 行 3 は TM が 1.00 だが TE が 1.00 — 最悪は行 2 の 0.01
+    check(approx(e.worstEnergyError(), 0.01, 1e-12),
+          "rcwaeff: the worst energy error is the largest |R+T-1| over both polarisations");
+    check(approx(e.worstEnergyFreqHz(), 2.0e14, 1.0),
+          "rcwaeff: and it reports the frequency where that happened");
+    // 完全に保存している表なら誤差 0
+    const re::Efficiency ok = re::parse(QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,3.0e-06,0.3,0.7,0.4,0.6\n"));
+    check(ok.worstEnergyError() == 0.0,
+          "rcwaeff: a perfectly conserving table reports exactly zero error");
+
+    // 列が足りない行・数字でない行は**捨てる** (0 で埋めない)
+    const re::Efficiency bad = re::parse(QStringLiteral(
+        "frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"
+        "1.0e+14,3.0e-06,0.3,0.7\n"                    // 列不足
+        "# comment line\n"
+        "abc,def,ghi,jkl,mno,pqr\n"                    // 数字でない
+        "2.0e+14,1.5e-06,0.3,0.7,0.4,0.6\n"));
+    check(bad.points.size() == 1 && approx(bad.points[0].freqHz, 2.0e14, 1.0),
+          "rcwaeff: short and non-numeric rows are dropped, not padded with zeros");
+    check(!re::parse(QString()).valid(),
+          "rcwaeff: an empty file yields nothing");
+    check(re::parse(QStringLiteral("frequency[Hz],lambda[m],R_TE,T_TE,R_TM,T_TM\n"))
+              .points.isEmpty(),
+          "rcwaeff: a header with no data yields no points");
+    check(!re::read(QStringLiteral("/nonexistent/rcwa_efficiency.csv")).valid(),
+          "rcwaeff: a missing file yields nothing (no invented values)");
+
+    // 空白区切り・セミコロン区切りでも読める (書式ゆれへの耐性)
+    check(re::parse(QStringLiteral("1e14 3e-6 0.3 0.7 0.4 0.6\n")).points.size() == 1,
+          "rcwaeff: whitespace separated rows are accepted too");
+
+    // ── 突き合わせに載せる (core/SeriesCompare との組み合わせ) ─────────
+    {
+        namespace sc = ofd::cmp;
+        sc::Series a, b;
+        for (const re::EfficiencyPoint &p : e.points) {
+            a.x.push_back(p.freqHz);
+            a.y.push_back(p.rTE);
+            b.x.push_back(p.freqHz);
+            b.y.push_back(p.rTE + 1.0e-4);        // 同一手法なら僅差のはず
+        }
+        const sc::Agreement g = sc::compare(a, b);
+        check(g.valid && g.n == 3,
+              "rcwaeff: two efficiency tables compare on the shared frequencies");
+        check(std::fabs(g.bias - 1.0e-4) < 1e-15,
+              "rcwaeff: a uniform 1e-4 difference shows up exactly as the bias");
+        check(g.correlation > 0.999,
+              "rcwaeff: and the shapes still match");
+    }
+}
+
 static void testSeriesCompare()
 {
     g_file = "seriescmp";
@@ -20661,6 +20747,7 @@ int main(int argc, char *argv[])
     testMieSphere();
     testRadarCrossSection();
     testSeriesCompare();
+    testRcwaEfficiency();
     testGaussianBeam();
     testParetoFront();
     testIlluminationScene();
