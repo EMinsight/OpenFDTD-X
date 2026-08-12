@@ -4,6 +4,7 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/DistortionGrid.h"
 #include "../optics/EncircledEnergy.h"
 #include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
@@ -194,13 +195,34 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "像面湾曲図・歪曲格子・波面 (Zernike) は未実装です。"
-              "スポットダイアグラム・レイファン・色収差・MTF・包絡エネルギーは"
-              "実光線追跡で計算します。",
-              "The field-curvature plot, the distortion grid and the wavefront "
-              "(Zernike) map are not implemented. The spot diagram, the ray "
-              "fan, the chromatic focal shift, the MTF and the encircled "
-              "energy are computed by real ray tracing.");
+              "像面湾曲図・波面 (Zernike) は未実装です。スポットダイアグラム・"
+              "レイファン・色収差・MTF・包絡エネルギー・歪曲格子は実光線追跡で"
+              "計算します。",
+              "The field-curvature plot and the wavefront (Zernike) map are not "
+              "implemented. The spot diagram, the ray fan, the chromatic focal "
+              "shift, the MTF, the encircled energy and the distortion grid are "
+              "computed by real ray tracing.");
+    I18n::reg("lde_dg_x", "像面 x [mm]", "Image plane x [mm]");
+    I18n::reg("lde_dg_y", "像面 y [mm]", "Image plane y [mm]");
+    I18n::reg("lde_dg_res",
+              "隅 (視野半角 %1°) での歪曲は %2 %%、格子内の最大は %3 %% です。"
+              "薄い線が理想の格子 (y = f'·tanθ、f' = %4 mm)、濃い線が主光線の"
+              "実追跡です。",
+              "At the corner (half-field %1 deg) the distortion is %2 %%; the "
+              "largest in the grid is %3 %%. The faint lines are the ideal grid "
+              "(y = f'*tan(theta), f' = %4 mm) and the solid lines are the real "
+              "chief-ray trace.");
+    I18n::reg("lde_dg_note",
+              " 歪曲は主光線の像高だけで決まるので、ぼけ (収差) の大きさとは"
+              "別ものです。正が糸巻き型、負が樽型。",
+              " Distortion depends only on where the chief ray lands, so it is "
+              "independent of how blurred the spot is. Positive is pincushion, "
+              "negative is barrel.");
+    I18n::reg("lde_dg_bad",
+              "歪曲格子は近軸の焦点距離と主光線の実追跡が要ります。視野が 0 か、"
+              "主光線を追跡できませんでした。",
+              "The distortion grid needs a paraxial focal length and a chief-ray "
+              "trace. The field is zero, or the chief ray could not be traced.");
     I18n::reg("lde_ee_x", "重心からの半径 [mm]", "Radius from the centroid [mm]");
     I18n::reg("lde_ee_y", "包絡エネルギー", "Encircled energy");
     I18n::reg("lde_ee_res",
@@ -771,6 +793,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                                  this, &LensEditorTab::runMtf);
         else if (i == 3) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runEncircled);
+        else if (i == 5) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runDistortion);
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
         else {
@@ -1603,6 +1627,87 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── 歪曲格子 (optics/DistortionGrid) ───────────────────────────────────────
+// 主光線 (瞳中心 px = py = 0) を視野角ごとに追跡し、近軸の理想像高
+// y = f'·tanθ と比べる。**歪曲は主光線の当たる位置だけで決まる**ので、
+// スポットのぼけとは別の量。
+void LensEditorTab::runDistortion()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    const paraxial::SystemData pd =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+
+    if (!pd.valid || !(pd.efl > 0.0) || !(field > 0.0)) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_dg_bad"));
+        return;
+    }
+
+    // 視野半角 → 主光線の像高。追跡に失敗したら理想値を返さず 0 を返す
+    // (失敗を「歪曲 −100 %」として描かないよう、下で本数を数えて弾く)
+    int failed = 0;
+    const optics::FieldMapping map = [&](double th) -> double {
+        const raytrace::RayResult r = raytrace::traceRay(sys, epd, th, 0.0, 0.0);
+        if (!r.ok()) { ++failed; return 0.0; }
+        return std::hypot(r.x, r.y);
+    };
+    const optics::DistortionGridResult g =
+        optics::distortionGrid(map, pd.efl, field, 9);
+    if (!g.valid() || failed > 0) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_dg_bad"));
+        return;
+    }
+
+    // 行と列を折れ線にして描く (理想は薄く、実際は濃く)
+    QVector<MiniSeries> series;
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool ideal = (pass == 0);
+        for (int k = 0; k < g.n; ++k) {
+            MiniSeries row, col;
+            row.color = ideal ? QColor(136, 153, 170, 110) : QColor("#0078D4");
+            col.color = row.color;
+            for (int i = 0; i < g.n; ++i) {
+                const optics::DistortionNode &a = g.nodes[k * g.n + i];
+                const optics::DistortionNode &b = g.nodes[i * g.n + k];
+                row.pts.push_back(QPointF(ideal ? a.xIdeal_mm : a.xReal_mm,
+                                          ideal ? a.yIdeal_mm : a.yReal_mm));
+                col.pts.push_back(QPointF(ideal ? b.xIdeal_mm : b.xReal_mm,
+                                          ideal ? b.yIdeal_mm : b.yReal_mm));
+            }
+            series.push_back(row);
+            series.push_back(col);
+        }
+    }
+    m_fanPlot->setSeries(series);
+    m_fanPlot->setLabels(I18n::tr("lde_dg_x"), I18n::tr("lde_dg_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    m_anInfo->setText(I18n::tr("lde_dg_res")
+                          .arg(QString::number(field, 'f', 1),
+                               QString::number(g.cornerPercent, 'f', 3),
+                               QString::number(g.maxPercent, 'f', 3),
+                               QString::number(pd.efl, 'f', 3))
+                      + I18n::tr("lde_dg_note"));
+}
+
 // ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
 // MTF と同じ実光線追跡の交点を使う。中心は重心 (どこから測ったかを画面に
 // 書く — 主光線基準とは値が変わるため)。

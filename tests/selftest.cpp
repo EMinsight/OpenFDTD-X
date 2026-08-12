@@ -27,6 +27,7 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/DistortionGrid.h"
 #include "optics/EncircledEnergy.h"
 #include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
@@ -19040,6 +19041,103 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 歪曲格子 (optics/DistortionGrid) ──────────────────────────────────────
+// 写像を**こちらから解析的に与えられる**ので、格子の組み方と歪曲率の定義を
+// 厳密に検められる (実光線追跡を挟むと追跡側の誤差と混ざって切り分けられない)。
+static void testDistortionGrid()
+{
+    g_file = "distort";
+    using namespace ofd::optics;
+    const double f = 50.0;          // 焦点距離 [mm]
+    const double hf = 20.0;         // 視野半角 [deg] (隅)
+
+    // ① 理想写像 y = f·tanθ なら歪曲は**どこでも厳密に 0**
+    {
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) { return f * std::tan(th * M_PI / 180.0); },
+            f, hf, 7);
+        check(g.valid(), "distort: the grid builds");
+        check(g.n == 7 && int(g.nodes.size()) == 49,
+              "distort: it has n x n nodes");
+        double worst = 0.0;
+        for (const DistortionNode &nd : g.nodes)
+            worst = std::max(worst, std::fabs(nd.percent));
+        check(worst < 1e-12,
+              qPrintable(QString("distort: the ideal mapping f*tan(theta) has "
+                                 "zero distortion everywhere (worst %1 %)")
+                             .arg(worst, 0, 'e', 2)));
+        // 理想なら実点と理想点が重なる
+        double dmax = 0.0;
+        for (const DistortionNode &nd : g.nodes)
+            dmax = std::max(dmax, std::hypot(nd.xReal_mm - nd.xIdeal_mm,
+                                             nd.yReal_mm - nd.yIdeal_mm));
+        check(dmax < 1e-12,
+              "distort: the real and ideal grids coincide exactly");
+        // 隅がちょうど最大視野になっていること
+        check(std::fabs(g.nodes.front().field_deg - hf) < 1e-12,
+              "distort: the corner node sits at the full field angle");
+    }
+
+    // ② 3 次の歪曲 y = f·tanθ·(1 + k·tan²θ) なら D = k·tan²θ が厳密解
+    {
+        const double k = 0.02;
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) {
+                const double t = std::tan(th * M_PI / 180.0);
+                return f * t * (1.0 + k * t * t);
+            }, f, hf, 5);
+        double worst = 0.0;
+        for (const DistortionNode &nd : g.nodes) {
+            const double t = std::tan(nd.field_deg * M_PI / 180.0);
+            const double want = 100.0 * k * t * t;
+            worst = std::max(worst, std::fabs(nd.percent - want));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("distort: a cubic mapping gives D = k*tan^2 "
+                                 "exactly (worst %1 point)")
+                             .arg(worst, 0, 'e', 2)));
+        // 樽型 (k < 0) は符号が反転する
+        const DistortionGridResult gb = distortionGrid(
+            [&](double th) {
+                const double t = std::tan(th * M_PI / 180.0);
+                return f * t * (1.0 - k * t * t);
+            }, f, hf, 5);
+        check(g.cornerPercent > 0.0 && gb.cornerPercent < 0.0,
+              "distort: pincushion is positive and barrel is negative");
+        check(std::fabs(g.cornerPercent + gb.cornerPercent) < 1e-9,
+              "distort: the two are equal and opposite at the corner");
+        // 隅がいちばん大きい (視野が大きいほど歪む)
+        check(std::fabs(g.maxPercent - g.cornerPercent) < 1e-12,
+              "distort: the largest distortion is at the corner");
+    }
+
+    // ③ 軸上は 0/0 になるが 0 と定義する (無限大にして絵を壊さない)
+    {
+        check(distortionPercent(0.0, 0.0) == 0.0,
+              "distort: on axis the distortion is defined as 0, not infinity");
+        check(std::fabs(distortionPercent(1.05, 1.0) - 5.0) < 1e-12,
+              "distort: 5 % more than ideal reads as +5 %");
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) { return f * std::tan(th * M_PI / 180.0); },
+            f, hf, 3);          // 中央の節点が軸上 (3 は奇数)
+        const DistortionNode &c = g.nodes[4];
+        check(std::fabs(c.field_deg) < 1e-15 && c.percent == 0.0,
+              "distort: the central node is on axis and reads 0");
+        check(std::fabs(c.xReal_mm) < 1e-15 && std::fabs(c.yReal_mm) < 1e-15,
+              "distort: and lands on the axis");
+    }
+
+    // ④ 壊れた入力は空を返す (でっち上げない)
+    {
+        check(!distortionGrid(nullptr, f, hf, 5).valid(),
+              "distort: no mapping gives an empty grid");
+        check(!distortionGrid([&](double){ return 0.0; }, 0.0, hf, 5).valid(),
+              "distort: a zero focal length gives an empty grid");
+        check(!distortionGrid([&](double){ return 0.0; }, f, hf, 1).valid(),
+              "distort: a 1 x 1 grid is rejected");
+    }
+}
+
 // ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
 // 「数えるだけ」に見えるが、境界の扱い (r ちょうどを含むか) と、割合から
 // 半径を引くときの丸めで静かに 1 本ずれる。**答えが手で書ける配置**で確かめる。
@@ -22986,6 +23084,7 @@ int main(int argc, char *argv[])
     testCourantFromAccuracy();
     testMtf();
     testEncircledEnergy();
+    testDistortionGrid();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

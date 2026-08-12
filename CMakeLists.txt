@@ -316,6 +316,7 @@ set(CORE_SOURCES
     # SchematicTab の計算実体で、selftest からリング共振器の閉形式・
     # FSR = λ²/(ng L) と直接突き合わせる
     src/optics/CircuitImpulse.cpp
+    src/optics/DistortionGrid.cpp
     src/optics/EncircledEnergy.cpp
     src/optics/Mtf.cpp
     src/optics/PhaseNoise.cpp
