@@ -607,6 +607,12 @@ struct UnderwaterOpts {
     // 既定は無指向 = 従来の射出角範囲そのまま。
     int     sonarDir = 0;             // 0=無指向 1=指向性 2=アレイ
     double  beamWidth_deg = 15.0;
+    // 指向パターンを BELLHOP の .sbp として渡す (既定は従来どおり渡さない)。
+    // 有効にすると射出角の扇は**絞らず**、代わりに角度ごとの相対振幅で
+    // 重み付けする (扇で切ると主ローブの外が全く出なくなるため)。
+    // 形は sonarDir で決まる (1=ガウス開口 2=一様励振の直線開口)。
+    bool    sbpPattern = false;
+    double  sbpFloor_dB = -60.0;      // 表の下限 (.sbp は −∞ を持てない)
 };
 
 // ── 伝送線路タブ (.ofdx "transmission_line") ────────────────────────────────

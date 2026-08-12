@@ -15,6 +15,7 @@ class QTableWidget;
 
 namespace ofd {
 
+class MiniPlot;
 struct ShdField;
 
 // 伝搬損失 (TL) 断面のヒートマップ。bellhopcxx の <ケース名>.shd を
@@ -85,6 +86,7 @@ private:
     void applySsp();
     void updateSolverView();   // ソルバー切替 → 説明文と条件付きパネルの表示
     void updateDerived();      // 基準音速 c₀ / SOFAR 深度 / SSP プロファイル図
+    void updateBeamPattern();  // 指向パターン b(θ) の図と数値 (.sbp と同じ式)
 
     Project        *m_p;
     bool            m_updating = false;
@@ -134,6 +136,9 @@ private:
 
     QComboBox      *m_sonarDir;           // 全方位 / 指向性 / アレイ
     QDoubleSpinBox *m_beamWidth;
+    QCheckBox      *m_sbpPattern = nullptr;  // 指向パターンを .sbp で渡す
+    MiniPlot       *m_sbpPlot = nullptr;     // b(θ) [dB]
+    QLabel         *m_sbpNote = nullptr;     // ヌル・サイドローブ等の数値
 
     QCheckBox      *m_tlSpread, *m_tlAbsorb, *m_tlScatter, *m_tlSurface;
     QDoubleSpinBox *m_tlRangeMin, *m_tlRangeMax;   // max は rangeMax_km と同期
