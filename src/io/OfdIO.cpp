@@ -887,11 +887,20 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
                     {"absorption", u.tlAbsorb},
                     {"range_min_km", u.tlRangeMin_km} };
             }
+            const bool sbpDefault = (u.sbpPattern == d.sbpPattern
+                                     && u.sbpFloor_dB == d.sbpFloor_dB);
             if (u.sonarDir != d.sonarDir
-                || u.beamWidth_deg != d.beamWidth_deg) {
-                uwObj["beam"] = QJsonObject{
-                    {"directivity", u.sonarDir},
-                    {"width_deg", u.beamWidth_deg} };
+                || u.beamWidth_deg != d.beamWidth_deg
+                || !sbpDefault) {
+                QJsonObject bm{ {"directivity", u.sonarDir},
+                                {"width_deg", u.beamWidth_deg} };
+                // 指向パターン (.sbp) は既定のままなら書かない
+                // — 旧ファイルとバイト一致を保つため (絶対規則 2)
+                if (!sbpDefault) {
+                    bm["pattern"] = u.sbpPattern;
+                    bm["floor_db"] = u.sbpFloor_dB;
+                }
+                uwObj["beam"] = bm;
             }
         }
         root["underwater"] = uwObj;
@@ -1574,6 +1583,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             const QJsonObject bm = uw["beam"].toObject();
             u.sonarDir = qBound(0, bm.value("directivity").toInt(u.sonarDir), 2);
             u.beamWidth_deg = bm.value("width_deg").toDouble(u.beamWidth_deg);
+            u.sbpPattern = bm.value("pattern").toBool(u.sbpPattern);
+            u.sbpFloor_dB = bm.value("floor_db").toDouble(u.sbpFloor_dB);
         }
     }
     // 伝送線路 — キーが無い旧ファイルは既定値のまま

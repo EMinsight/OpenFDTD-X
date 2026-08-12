@@ -18745,6 +18745,291 @@ static void testDispersionModels()
     }
 }
 
+// ── 送波器の指向パターンと BELLHOP の .sbp (core/SourceDirectivity) ────────
+// 判定はすべて**定義そのもの**に対して行う。ガウス開口とサイン開口の遠方界は
+// 厳密な閉形式なので、記録した数値ではなく恒等式と突き合わせられる。
+static void testSourceDirectivity()
+{
+    g_file = "sbp";
+    namespace sd = ofd::dir;
+    const double kPi = 3.14159265358979323846;
+
+    // ── 二分法で解いている根が定義式を満たすこと ──────────────────────────
+    {
+        const double x3 = sd::sincHalfPowerRoot();
+        check(std::fabs(std::sin(x3) / x3 - 1.0 / std::sqrt(2.0)) < 1e-12,
+              "sbp: the half-power root satisfies sin(x)/x = 1/sqrt(2) exactly");
+        check(x3 > 0.0 && x3 < kPi,
+              "sbp: it is the smallest positive root (below the first null)");
+        const double xs = sd::sincFirstSidelobeRoot();
+        check(std::fabs(std::sin(xs) - xs * std::cos(xs)) < 1e-11,
+              "sbp: the sidelobe root satisfies tan(x) = x");
+        check(xs > kPi && xs < 1.5 * kPi,
+              "sbp: and it lies between the first null and 3pi/2");
+        // 第 1 サイドローブの高さは根から決まる (一様開口の教科書値 -13.26 dB)
+        const double sl = sd::firstSidelobeDb(sd::Shape::LineAperture);
+        check(std::fabs(sl - 20.0 * std::log10(std::fabs(std::sin(xs) / xs)))
+                  < 1e-12,
+              "sbp: the first sidelobe level follows from that root");
+        check(sl < -13.2 && sl > -13.3,
+              "sbp: which is the -13.26 dB of a uniformly excited aperture");
+        check(sd::firstSidelobeDb(sd::Shape::Gaussian) == 0.0
+                  && sd::firstSidelobeDb(sd::Shape::Uniform) == 0.0,
+              "sbp: the shapes without sidelobes report none");
+    }
+
+    // ── 正規化: b(0) = 1、b(±w/2) = 1/√2 (どの形・どの幅でも) ──────────────
+    {
+        const double half = 1.0 / std::sqrt(2.0);
+        bool peakOk = true, halfOk = true;
+        for (double w : { 1.0, 5.0, 15.0, 60.0, 120.0 }) {
+            for (sd::Shape s : { sd::Shape::Gaussian, sd::Shape::LineAperture }) {
+                if (std::fabs(sd::amplitude(s, w, 0.0) - 1.0) > 1e-15)
+                    peakOk = false;
+                if (std::fabs(sd::amplitude(s, w, 0.5 * w) - half) > 1e-12)
+                    halfOk = false;
+                if (std::fabs(sd::amplitude(s, w, -0.5 * w) - half) > 1e-12)
+                    halfOk = false;
+            }
+        }
+        check(peakOk, "sbp: the pattern is exactly 1 on the axis");
+        check(halfOk,
+              "sbp: and exactly 1/sqrt(2) at the half-power angle, both signs");
+        // 半値は振幅で 1/√2 = 強度で 1/2。**どちらも -3.01 dB** になる
+        // (20log10 と 10log10 の違いがここでは消える) — .sbp が振幅の dB
+        // なので、この一致のおかげで「-3 dB 幅」の指定が素直に通る。
+        check(std::fabs(sd::amplitudeDb(sd::Shape::Gaussian, 20.0, 10.0)
+                        + 3.0103) < 1e-3,
+              "sbp: the half-power angle is -3.01 dB in the file's amplitude dB");
+    }
+
+    // ── 偶関数で、主ローブ内は単調減少 ────────────────────────────────────
+    {
+        bool even = true, mono = true;
+        double prev = 2.0;
+        for (int i = 0; i <= 60; ++i) {
+            const double a = i * 0.5;      // 0..30 deg (w=20 の主ローブ内)
+            const double b = sd::amplitude(sd::Shape::LineAperture, 20.0, a);
+            if (std::fabs(b - sd::amplitude(sd::Shape::LineAperture, 20.0, -a))
+                > 1e-15)
+                even = false;
+            if (a <= 22.0) {               // 第 1 ヌルの手前まで
+                if (b > prev + 1e-15) mono = false;
+                prev = b;
+            }
+        }
+        check(even, "sbp: the pattern is even in the angle");
+        check(mono, "sbp: and decreases monotonically inside the main lobe");
+    }
+
+    // ── ガウス開口: log b が sinθ² に**厳密に**比例する ───────────────────
+    {
+        // ln b = -(ln2/2)·(sinθ/sh)² なので、ln b / sin²θ は角度に依らない
+        const double w = 24.0;
+        const double sh = std::sin(0.5 * w * kPi / 180.0);
+        const double want = -0.5 * std::log(2.0) / (sh * sh);
+        bool quad = true;
+        for (double a : { 3.0, 7.0, 11.0, 19.0, 31.0, 47.0 }) {
+            const double s = std::sin(a * kPi / 180.0);
+            const double got = std::log(sd::amplitude(sd::Shape::Gaussian, w, a))
+                               / (s * s);
+            if (std::fabs(got - want) > 1e-12) quad = false;
+        }
+        check(quad, "sbp: the gaussian aperture is exactly gaussian in sin(theta)");
+        check(sd::firstNullSin(sd::Shape::Gaussian, w) == 0.0,
+              "sbp: it never reaches zero, so it reports no null");
+    }
+
+    // ── 直線開口: 第 1 ヌルの位置が x = pi から決まる ─────────────────────
+    {
+        const double w = 20.0;
+        const double sn = sd::firstNullSin(sd::Shape::LineAperture, w);
+        const double sh = std::sin(0.5 * w * kPi / 180.0);
+        check(std::fabs(sn - kPi / sd::sincHalfPowerRoot() * sh) < 1e-14,
+              "sbp: the first null sits at sin(theta) = (pi/x3) sin(w/2)");
+        // そこで振幅が 0 になっていること (定義の突き合わせ)
+        const double aNull = std::asin(sn) * 180.0 / kPi;
+        check(sd::amplitude(sd::Shape::LineAperture, w, aNull) < 1e-12,
+              "sbp: and the amplitude there is zero");
+        // 第 1 サイドローブの高さが表と一致すること
+        const double xs = sd::sincFirstSidelobeRoot();
+        const double aSl = std::asin(xs / sd::sincHalfPowerRoot() * sh)
+                           * 180.0 / kPi;
+        check(std::fabs(20.0 * std::log10(
+                            sd::amplitude(sd::Shape::LineAperture, w, aSl))
+                        - sd::firstSidelobeDb(sd::Shape::LineAperture)) < 1e-9,
+              "sbp: the sidelobe peak has the level the closed form predicts");
+        // 幅を広げるとヌルが可視域 (|sin| <= 1) から出る
+        check(sd::firstNullSin(sd::Shape::LineAperture, 120.0) == 0.0,
+              "sbp: a very wide beam has no null inside the visible region");
+    }
+
+    // ── 等価幅の閉形式 (数値積分と突き合わせる) ───────────────────────────
+    // ∫b² d(sinθ) を可視域 |sinθ| ≤ 1 で台形則。**閉形式は無限区間の値**なので
+    // 可視域を切った分だけ数値の方が小さい。ガウスは裾が速く落ちるので差は
+    // 出ないが、直線開口の裾は 1/y² なので無視できない — その差を「誤差」と
+    // 見て許容値を緩めるのは誤りで、切り落とした量そのものが下で予測できる。
+    {
+        auto integrate = [&](sd::Shape s, double w) {
+            const int n = 200001;
+            double sum = 0.0;
+            for (int i = 0; i <= n; ++i) {
+                const double sv = -1.0 + 2.0 * i / n;
+                const double a = std::asin(sv) * 180.0 / kPi;
+                const double b = sd::amplitude(s, w, a);
+                sum += ((i == 0 || i == n) ? 0.5 : 1.0) * b * b;
+            }
+            return sum * (2.0 / n);
+        };
+        // ガウス: 5° 幅なら可視域の外は完全に無視できる → 閉形式と一致する
+        check(std::fabs(integrate(sd::Shape::Gaussian, 5.0)
+                        - sd::equivalentWidthSin(sd::Shape::Gaussian, 5.0))
+                      / sd::equivalentWidthSin(sd::Shape::Gaussian, 5.0) < 2e-4,
+              "sbp: the gaussian equivalent width matches sh sqrt(pi/ln2)");
+
+        // 直線開口: 相対的な切り落とし量は 2∫_Y^inf sin²y/y² dy / (pi/x3)
+        //          ≒ (1/Y)/(pi/x3) = sh/(pi·x3)·x3² ⇒ **幅にほぼ比例する**。
+        // 幅を半分にすると欠損も半分になり、幅 → 0 の極限が閉形式になる。
+        double prev = 0.0;
+        bool halves = true, below = true;
+        for (double w : { 20.0, 10.0, 5.0, 2.5 }) {
+            const double closed = sd::equivalentWidthSin(sd::Shape::LineAperture, w);
+            const double deficit = (closed - integrate(sd::Shape::LineAperture, w))
+                                   / closed;
+            if (!(deficit > 0.0)) below = false;
+            if (prev > 0.0 && std::fabs(deficit / prev - 0.5) > 0.05) halves = false;
+            prev = deficit;
+        }
+        check(below,
+              "sbp: the visible region always holds less than the infinite integral");
+        check(halves,
+              "sbp: and the shortfall halves with the width, so the closed form "
+              "sh pi/x3 is its zero-width limit");
+        // 切り落とし量の絶対値も裾の式 sh/x3² で説明できる (5% 以内)
+        {
+            const double w = 5.0;
+            const double sh = std::sin(0.5 * w * kPi / 180.0);
+            const double x3 = sd::sincHalfPowerRoot();
+            const double closed = sd::equivalentWidthSin(sd::Shape::LineAperture, w);
+            const double deficit = closed - integrate(sd::Shape::LineAperture, w);
+            check(std::fabs(deficit / (sh * sh / (x3 * x3)) - 1.0) < 0.05,
+                  "sbp: the shortfall equals the analytic 1/y^2 tail sh^2/x3^2");
+        }
+        check(sd::equivalentWidthSin(sd::Shape::Uniform, 30.0) == 2.0,
+              "sbp: an omnidirectional source fills the whole visible region");
+        // 狭いビームほど等価幅は小さい (指向性が上がる)
+        check(sd::equivalentWidthSin(sd::Shape::Gaussian, 5.0)
+                  < sd::equivalentWidthSin(sd::Shape::Gaussian, 20.0),
+              "sbp: a narrower beam has a smaller equivalent width");
+    }
+
+    // ── 退化した入力は無指向として扱う (数字を捏造しない) ─────────────────
+    {
+        check(sd::amplitude(sd::Shape::Uniform, 20.0, 73.0) == 1.0,
+              "sbp: the uniform shape is flat at every angle");
+        check(sd::amplitude(sd::Shape::Gaussian, 0.0, 45.0) == 1.0
+                  && sd::amplitude(sd::Shape::LineAperture, 200.0, 45.0) == 1.0,
+              "sbp: a width outside (0, 180) degrees falls back to uniform");
+        check(!sd::sample(sd::Shape::Gaussian, 20.0, -90.0, 90.0, 1).valid(),
+              "sbp: fewer than two points is not a usable table");
+        check(!sd::sample(sd::Shape::Gaussian, 20.0, 90.0, -90.0, 101).valid(),
+              "sbp: a reversed angle range is refused");
+    }
+
+    // ── 表の刻み: 主ローブを分解できること (BELLHOP は振幅で線形補間する) ──
+    {
+        for (double w : { 1.0, 5.0, 20.0 }) {
+            const int n = sd::recommendedPoints(w, 180.0);
+            const double step = 180.0 / (n - 1);
+            check(step <= w / 8.0 + 1e-12 || n >= 3601,
+                  "sbp: the table step is at most one eighth of the -3 dB width");
+            check((n % 2) == 1,
+                  "sbp: the point count is odd so a symmetric span includes 0 deg");
+        }
+        const sd::Pattern p = sd::sample(sd::Shape::LineAperture, 20.0,
+                                         -90.0, 90.0, 181, -60.0);
+        check(p.valid() && p.angle_deg.size() == 181,
+              "sbp: sample() returns exactly the requested number of points");
+        bool inc = true, floored = true;
+        for (std::size_t i = 0; i < p.db.size(); ++i) {
+            if (i && !(p.angle_deg[i] > p.angle_deg[i - 1])) inc = false;
+            if (p.db[i] < -60.0 - 1e-12) floored = false;
+        }
+        check(inc, "sbp: the angles are strictly increasing (BELLHOP requires it)");
+        check(floored, "sbp: no level falls below the floor (a file cannot hold -inf)");
+        check(std::fabs(p.angle_deg[90]) < 1e-12
+                  && std::fabs(p.db[90]) < 1e-12,
+              "sbp: the centre sample is the axis and sits at 0 dB");
+    }
+
+    // ── .env / .sbp への配線 (io/BellhopIO) ───────────────────────────────
+    {
+        ofd::Project p;
+        ofd::UnderwaterOpts &u = p.underwater();
+        const QString before = ofd::BellhopIO::envText(p);
+
+        // 既定 (無指向・パターン無効) では .sbp を書かない
+        check(ofd::BellhopIO::sbpText(p).isEmpty(),
+              "sbp: nothing is written while the pattern is off");
+        check(!before.contains(QStringLiteral("'CG*'")),
+              "sbp: and the RunType keeps its two characters");
+
+        // 指向性だけ入れてもパターンを有効にしなければ従来どおり扇を絞る
+        u.sonarDir = 1;
+        u.beamWidth_deg = 20.0;
+        double a1 = 0.0, a2 = 0.0;
+        ofd::BellhopIO::beamAngles(u, &a1, &a2);
+        check(a1 == -10.0 && a2 == 10.0,
+              "sbp: without the pattern the fan is still clipped to +/- w/2");
+        check(ofd::BellhopIO::sbpText(p).isEmpty(),
+              "sbp: and still no file is produced");
+
+        // 有効にすると扇は絞られず、.sbp と RunType の '*' が現れる
+        u.sbpPattern = true;
+        ofd::BellhopIO::beamAngles(u, &a1, &a2);
+        check(a1 == u.angleMin_deg && a2 == u.angleMax_deg,
+              "sbp: with the pattern on the launch fan is left alone");
+        const QString sbp = ofd::BellhopIO::sbpText(p);
+        check(!sbp.isEmpty(), "sbp: the pattern file is produced");
+        const QStringList lines = sbp.split('\n', Qt::SkipEmptyParts);
+        const int npts = lines.value(0).section('\t', 0, 0).trimmed().toInt();
+        check(npts >= 181 && lines.size() == npts + 1,
+              "sbp: the first line is the point count and the rest are the table");
+        check(ofd::BellhopIO::envText(p).contains(QStringLiteral("'CG*'")),
+              "sbp: the .env RunType gains the '*' that makes BELLHOP read it");
+
+        // 表の中身が SourceDirectivity と一致すること (画面・ファイル・
+        // 検証が同じ式を見ていることの確認)
+        const QStringList mid = lines.value(1 + npts / 2)
+                                    .split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        check(mid.size() == 2 && std::fabs(mid[0].toDouble()) < 1e-9
+                  && std::fabs(mid[1].toDouble()) < 1e-9,
+              "sbp: the middle row is the axis at 0 dB");
+        const QStringList first = lines.value(1)
+                                     .split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        check(first.size() == 2 && first[0].toDouble() <= -90.0,
+              "sbp: the table spans at least the physical launch range");
+
+        // アレイを選ぶと形が変わる (同じ幅でもサイドローブを持つ)
+        u.sonarDir = 2;
+        check(ofd::BellhopIO::patternShape(u) == sd::Shape::LineAperture,
+              "sbp: the array selection maps to the line aperture");
+        u.sonarDir = 1;
+        check(ofd::BellhopIO::patternShape(u) == sd::Shape::Gaussian,
+              "sbp: and the directional selection maps to the gaussian aperture");
+        u.sonarDir = 0;
+        check(!ofd::BellhopIO::patternEnabled(u),
+              "sbp: an omnidirectional source writes no pattern even when ticked");
+
+        // **無効に戻すと .env は 1 バイトも変わらない** (絶対規則 2)
+        u.sonarDir = 0;
+        u.sbpPattern = false;
+        u.beamWidth_deg = 15.0;
+        check(ofd::BellhopIO::envText(p) == before,
+              "sbp: turning the feature off restores the byte-identical .env");
+    }
+}
+
 static void testSeriesCsv()
 {
     g_file = "seriescsv";
@@ -21210,6 +21495,7 @@ int main(int argc, char *argv[])
     testMieSphere();
     testRadarCrossSection();
     testDispersionModels();
+    testSourceDirectivity();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

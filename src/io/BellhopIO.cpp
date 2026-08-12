@@ -80,10 +80,26 @@ double BellhopIO::surfaceSigma(const UnderwaterOpts &u)
     return u.waveHeight_m / 4.0;
 }
 
+bool BellhopIO::patternEnabled(const UnderwaterOpts &u)
+{
+    return u.sbpPattern && u.sonarDir != 0 && u.beamWidth_deg > 0.0;
+}
+
+dir::Shape BellhopIO::patternShape(const UnderwaterOpts &u)
+{
+    // 指向性 = ガウス開口、アレイ = 一様励振の直線開口
+    if (u.sonarDir == 1) return dir::Shape::Gaussian;
+    if (u.sonarDir == 2) return dir::Shape::LineAperture;
+    return dir::Shape::Uniform;
+}
+
 void BellhopIO::beamAngles(const UnderwaterOpts &u, double *a1, double *a2)
 {
     double lo = u.angleMin_deg, hi = u.angleMax_deg;
-    if (u.sonarDir != 0 && u.beamWidth_deg > 0.0) {
+    // .sbp を渡すときは扇を絞らない。主ローブの外 (サイドローブ・裾) も
+    // 射出したうえでパターンの重みを掛けるのが本来の指向性で、扇で切ると
+    // その外側が完全に消えてしまう。
+    if (!patternEnabled(u) && u.sonarDir != 0 && u.beamWidth_deg > 0.0) {
         // 指向性 / アレイ: 水平 (0°) を中心に ±ビーム幅/2 で扇を絞る。
         // 既存の射出角範囲との積 (どちらか狭い方) を採る。
         const double half = 0.5 * u.beamWidth_deg;
@@ -93,6 +109,39 @@ void BellhopIO::beamAngles(const UnderwaterOpts &u, double *a1, double *a2)
     }
     if (a1) *a1 = lo;
     if (a2) *a2 = hi;
+}
+
+QString BellhopIO::sbpText(const Project &p)
+{
+    const UnderwaterOpts &u = p.underwater();
+    if (!patternEnabled(u)) return QString();
+
+    // 表は射出角の扇を必ず内側に含める幅にする。BELLHOP は表の外を
+    // 参照しない造りだが、端で外挿されるより端点を持っている方が確実。
+    double a1 = 0.0, a2 = 0.0;
+    beamAngles(u, &a1, &a2);
+    const double lo = std::min(-90.0, std::min(a1, a2));
+    const double hi = std::max( 90.0, std::max(a1, a2));
+
+    const dir::Shape shape = patternShape(u);
+    const int n = dir::recommendedPoints(u.beamWidth_deg, hi - lo);
+    const dir::Pattern pat =
+        dir::sample(shape, u.beamWidth_deg, lo, hi, n, u.sbpFloor_dB);
+    if (!pat.valid()) return QString();
+
+    QString text;
+    QTextStream out(&text);
+    // 1 行目 = 点数。'!' 以降は註釈 (LDIFile が行末まで読み飛ばす)。
+    out << pat.angle_deg.size() << "\t! NSBPPts — "
+        << (shape == dir::Shape::Gaussian ? "gaussian aperture"
+                                          : "uniform line aperture")
+        << ", -3 dB width " << num(u.beamWidth_deg) << " deg\n";
+    // 以降 NSBPPts 行 = 角度 [deg] と相対レベル [dB]。
+    // **dB は 10^(dB/20) で振幅に戻される** (bellhopcuda module/sbp.hpp の
+    // Preprocess)。表の間は振幅で線形補間される (src/trace.hpp)。
+    for (std::size_t i = 0; i < pat.angle_deg.size(); ++i)
+        out << num(pat.angle_deg[i]) << " " << num(pat.db[i]) << "\n";
+    return text;
 }
 
 QString BellhopIO::sspOption(const UnderwaterOpts &u)
@@ -198,8 +247,15 @@ QString BellhopIO::envText(const Project &p)
 
     // RunType (1 文字目 = 計算モード, 2 文字目 = ビーム種別) と
     // ビーム本数・射出角。いずれも UnderwaterTab の設定から。
-    const char rt[3] = { runTypeChar(u.runMode), beamTypeChar(u.beamType), 0 };
-    out << "'" << QString::fromLatin1(rt, 2) << "'\t\t\t! RunType, beam type\n";
+    // 3 文字目 '*' で <ケース名>.sbp (音源ビームパターン) を読ませる
+    // (bellhopcuda src/module/sbp.hpp: SBPFlag = RunType[2])。
+    // 4 文字目以降は空白のまま渡り、読み手が既定値で埋める
+    // (src/util/ldio.hpp の Read(char*,7) が空白詰めする)。
+    const bool sbp = patternEnabled(u);
+    const char rt[4] = { runTypeChar(u.runMode), beamTypeChar(u.beamType),
+                         sbp ? '*' : '\0', 0 };
+    out << "'" << QString::fromLatin1(rt, sbp ? 3 : 2)
+        << "'\t\t\t! RunType, beam type\n";
     out << num(u.numRays) << "\t\t\t! NBEAMS (0 = auto)\n";
     double a1 = 0.0, a2 = 0.0;
     beamAngles(u, &a1, &a2);

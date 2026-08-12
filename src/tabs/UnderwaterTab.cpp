@@ -7,6 +7,8 @@
 #include "../io/ArrReader.h"
 #include "../acoustics/core/AudioBuffer.h"
 #include "../acoustics/io/WavWriter.h"
+#include "../core/SourceDirectivity.h"
+#include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -182,12 +184,49 @@ const bool s_i18nUnderwater = [] {
               "Now: sigma = %1 m");
     I18n::reg("uwx_beam_note",
               "▸ 指向性を選ぶと射出角の扇を ±ビーム幅/2 と交差させます "
-              "(現在: %1° 〜 %2°)。ビーム内の重み付けは一様で、実測の指向"
-              "パターンを与えるには BELLHOP の .sbp が要ります (未実装)。",
+              "(現在: %1° 〜 %2°)。ビーム内の重み付けは一様です。",
               "▸ Choosing a directional source intersects the launch-angle fan "
               "with +/- half the beam width (now: %1 to %2 deg). The weighting "
-              "inside the beam is uniform; a measured pattern needs BELLHOP's "
-              ".sbp file (not implemented).");
+              "inside the beam is uniform.");
+    I18n::reg("uwx_beam_note_sbp",
+              "▸ 指向パターンを .sbp で渡すので射出角の扇は絞りません "
+              "(現在: %1° 〜 %2°)。扇で切ると主ローブの外が完全に消えて"
+              "しまうため、代わりに角度ごとの相対レベルで重み付けします。",
+              "▸ The pattern is passed as a .sbp file, so the launch-angle fan "
+              "is not narrowed (now: %1 to %2 deg). Clipping the fan would "
+              "remove everything outside the main lobe; the per-angle level "
+              "does the weighting instead.");
+    I18n::reg("uwx_sbp_use", "指向パターンを .sbp で渡す",
+              "Pass the beam pattern as a .sbp file");
+    I18n::reg("uwx_sbp_plot_x", "軸からの角 [deg]", "Angle from axis [deg]");
+    I18n::reg("uwx_sbp_plot_y", "相対レベル [dB]", "Relative level [dB]");
+    I18n::reg("uwx_sbp_gauss",
+              "ガウス開口 (apodize した送波器)。サイドローブを持ちません。"
+              "半値全幅 %1°、表 %2 点 (刻み %3°)。等価幅 %4 (sinθ)",
+              "Gaussian aperture (an apodised projector); no sidelobes. "
+              "-3 dB width %1 deg, table %2 points (step %3 deg). "
+              "Equivalent width %4 in sin(theta)");
+    I18n::reg("uwx_sbp_line",
+              "一様励振の直線開口。第 1 サイドローブ %1 dB、第 1 ヌルは "
+              "%2。半値全幅 %3°、表 %4 点 (刻み %5°)。等価幅 %6 (sinθ)",
+              "Uniform line aperture. First sidelobe %1 dB, first null at %2. "
+              "-3 dB width %3 deg, table %4 points (step %5 deg). "
+              "Equivalent width %6 in sin(theta)");
+    I18n::reg("uwx_sbp_null_at", "%1° (sinθ = %2)", "%1 deg (sin theta = %2)");
+    I18n::reg("uwx_sbp_null_none", "可視域の外", "outside the visible region");
+    I18n::reg("uwx_sbp_off",
+              "指向パターンは渡しません (無指向、または .sbp を使わない設定)。"
+              "「指向性」または「アレイ」を選んでから有効にしてください。",
+              "No beam pattern is passed (omnidirectional, or the .sbp option "
+              "is off). Select “directional” or “array” first, then enable it.");
+    I18n::reg("uwx_sbp_dbnote",
+              " ※ .sbp の dB は 10^(dB/20) で振幅に戻されます "
+              "(表の見出しは Power ですが振幅の dB です)。表の間は振幅で"
+              "線形補間されるので、刻みは半値全幅の 1/8 以下にしています。",
+              " Note: the dB in a .sbp file is converted with 10^(dB/20), i.e. "
+              "it is an amplitude dB despite the “Power” heading in the "
+              "printout. Values are interpolated linearly in amplitude, so the "
+              "step is kept at or below one eighth of the -3 dB width.");
     I18n::reg("uwx_tl_note",
               "▸ 幾何拡散は BELLHOP の解に内在するので切り替えられません。"
               "体積吸収は Thorp の式で、選ぶと SSPOPT に 'T' が付きます。"
@@ -640,6 +679,16 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     m_beamNote = mutedLabel(QString(), ss);
     m_beamNote->setWordWrap(true);
     ss->form()->addRow(m_beamNote);
+    // 指向パターンを .sbp として渡す (既定は off = 従来どおり .env のみ)
+    m_sbpPattern = makeCheck(I18n::tr("uwx_sbp_use"), false, ss);
+    ss->form()->addRow(QString(), m_sbpPattern);
+    m_sbpPlot = new MiniPlot(ss);
+    m_sbpPlot->setMinimumHeight(150);
+    m_sbpPlot->setLabels(I18n::tr("uwx_sbp_plot_x"), I18n::tr("uwx_sbp_plot_y"));
+    ss->form()->addRow(m_sbpPlot);
+    m_sbpNote = mutedLabel(QString(), ss);
+    m_sbpNote->setWordWrap(true);
+    ss->form()->addRow(m_sbpNote);
     ss->form()->addRow(I18n::tr("uw_sl"), m_sonarSL);
     ss->form()->addRow(I18n::tr("uw_range"), m_rangeMax);
     v->addWidget(ss);
@@ -714,6 +763,7 @@ UnderwaterTab::UnderwaterTab(Project *project, QWidget *parent)
     for (auto *sp : { m_waveHeight, m_beamWidth, m_tlRangeMin })
         connect(sp, &QDoubleSpinBox::valueChanged, this, applyCb);
     connect(m_sonarDir, &QComboBox::currentIndexChanged, this, applyCb);
+    connect(m_sbpPattern, &QCheckBox::toggled, this, applyCb);
 
     // TL セクションの距離上限は既存の「最大距離」と同じ値 (二重編集を避ける)
     connect(m_tlRangeMax, &QDoubleSpinBox::valueChanged, this, [this](double val) {
@@ -780,6 +830,7 @@ void UnderwaterTab::apply()
     u.tlRangeMin_km = m_tlRangeMin->value();
     u.sonarDir = qBound(0, m_sonarDir->currentIndex(), 2);
     u.beamWidth_deg = m_beamWidth->value();
+    u.sbpPattern = m_sbpPattern->isChecked();
     if (m_tlRangeMax->value() != u.rangeMax_km) {
         QSignalBlocker block(m_tlRangeMax);
         m_tlRangeMax->setValue(u.rangeMax_km);
@@ -820,9 +871,12 @@ void UnderwaterTab::updateDerived()
     if (m_beamNote) {
         double a1 = 0.0, a2 = 0.0;
         BellhopIO::beamAngles(u, &a1, &a2);
-        m_beamNote->setText(I18n::tr("uwx_beam_note")
-            .arg(QString::number(a1, 'f', 1), QString::number(a2, 'f', 1)));
+        m_beamNote->setText(
+            I18n::tr(BellhopIO::patternEnabled(u) ? "uwx_beam_note_sbp"
+                                                  : "uwx_beam_note")
+                .arg(QString::number(a1, 'f', 1), QString::number(a2, 'f', 1)));
     }
+    updateBeamPattern();
     // 散乱・海面反射損失は σ の状態を映すだけ (操作子ではない)
     if (m_tlScatter && m_tlSurface) {
         const bool rough = BellhopIO::surfaceSigma(u) > 0.0;
@@ -849,6 +903,61 @@ void UnderwaterTab::updateDerived()
     } else {
         m_sofarHint->hide();
     }
+}
+
+// 指向パターン b(θ) の図と数値。**.sbp に書くのと同じ関数**を呼ぶので、
+// 画面とファイルが食い違うことはない。
+void UnderwaterTab::updateBeamPattern()
+{
+    if (!m_sbpPlot || !m_sbpNote) return;
+    const UnderwaterOpts &u = m_p->underwater();
+    const bool on = BellhopIO::patternEnabled(u);
+    m_sbpPlot->setVisible(on);
+    if (!on) {
+        m_sbpPlot->setSeries({});
+        m_sbpNote->setText(I18n::tr("uwx_sbp_off"));
+        return;
+    }
+    const dir::Shape shape = BellhopIO::patternShape(u);
+    const int n = dir::recommendedPoints(u.beamWidth_deg, 180.0);
+    // 図は主ローブが見える範囲だけ (表は ±90° 全体を書く)
+    const double span = qBound(5.0, 3.0 * u.beamWidth_deg, 180.0);
+    const dir::Pattern pat = dir::sample(shape, u.beamWidth_deg,
+                                         -0.5 * span, 0.5 * span,
+                                         241, u.sbpFloor_dB);
+    MiniSeries s;
+    s.color = QColor(kAccUw);
+    for (std::size_t i = 0; i < pat.angle_deg.size(); ++i)
+        s.pts.push_back(QPointF(pat.angle_deg[i], pat.db[i]));
+    m_sbpPlot->setYRange(qMax(u.sbpFloor_dB, -40.0), 2.0);
+    m_sbpPlot->setSeries({ s });
+
+    const double step = 180.0 / (n - 1);
+    const double eqw = dir::equivalentWidthSin(shape, u.beamWidth_deg);
+    QString note;
+    if (shape == dir::Shape::Gaussian) {
+        note = I18n::tr("uwx_sbp_gauss")
+                   .arg(QString::number(u.beamWidth_deg, 'f', 1))
+                   .arg(n)
+                   .arg(QString::number(step, 'f', 3),
+                        QString::number(eqw, 'f', 4));
+    } else {
+        const double sn = dir::firstNullSin(shape, u.beamWidth_deg);
+        const QString nullTxt =
+            (sn > 0.0)
+                ? I18n::tr("uwx_sbp_null_at")
+                      .arg(QString::number(std::asin(sn) * 180.0 / M_PI, 'f', 2),
+                           QString::number(sn, 'f', 4))
+                : I18n::tr("uwx_sbp_null_none");
+        note = I18n::tr("uwx_sbp_line")
+                   .arg(QString::number(dir::firstSidelobeDb(shape), 'f', 2),
+                        nullTxt,
+                        QString::number(u.beamWidth_deg, 'f', 1))
+                   .arg(n)
+                   .arg(QString::number(step, 'f', 3),
+                        QString::number(eqw, 'f', 4));
+    }
+    m_sbpNote->setText(note + I18n::tr("uwx_sbp_dbnote"));
 }
 
 // 実行完了時 (MainWindow から) — <ケース名>.shd を読んで TL 断面を出す
@@ -1007,6 +1116,7 @@ void UnderwaterTab::refresh()
     m_tlRangeMin->setValue(u.tlRangeMin_km);
     m_sonarDir->setCurrentIndex(qBound(0, u.sonarDir, 2));
     m_beamWidth->setValue(u.beamWidth_deg);
+    m_sbpPattern->setChecked(u.sbpPattern);
     {
         static const char *kModes[4] = { "eigenray", "coherent", "incoherent",
                                          "arrivals" };

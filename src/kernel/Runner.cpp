@@ -290,6 +290,26 @@ void Runner::start(Project *project, const RunConfig &cfg)
                              .arg(QFileInfo(btyPath).fileName())
                              .arg(bty.split('\n').value(1)));
         }
+        // 音源ビームパターン (SBPFIL)。.bty と同じ理由で、無効なときは
+        // 前回実行の残骸を消す (.env 側が '*' でなくても紛らわしい)。
+        const QString sbpPath =
+            QDir(m_cfg.workingDir).filePath(baseName + ".sbp");
+        const QString sbp = BellhopIO::sbpText(*project);
+        if (sbp.isEmpty()) {
+            QFile::remove(sbpPath);
+        } else {
+            QFile f(sbpPath);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                emit logLine("error: cannot write .sbp: " + f.errorString());
+                emit finished(false);
+                return;
+            }
+            f.write(sbp.toUtf8());
+            f.close();
+            emit logLine(QStringLiteral("source beam pattern: %1 (%2 points)")
+                             .arg(QFileInfo(sbpPath).fileName())
+                             .arg(sbp.split('\n').value(0).section('\t', 0, 0)));
+        }
         m_totalSteps = 1;
         m_postPending = false;
         launch(true);
