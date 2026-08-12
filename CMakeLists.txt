@@ -319,6 +319,9 @@ set(CORE_SOURCES
     # Qt 非依存。MaterialExplorerTab のフィット・診断表の計算実体
     src/optics/DispersionFit.cpp
     src/optics/DispersionFit.h
+    # 分散モデルの閉形式 (Lorentz / Sellmeier)。Drude は PlasmaDispersion にある
+    src/optics/DispersionModels.cpp
+    src/optics/DispersionModels.h
 
     # CIE 表色系の測色計算 (等色関数は Wyman et al. 2013 の解析近似) —
     # Qt 非依存。IlluminationTab の測色表の計算実体
