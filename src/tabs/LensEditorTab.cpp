@@ -16,6 +16,7 @@
 #include "../I18n.h"
 
 #include <QBrush>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QCompleter>
@@ -193,6 +194,21 @@ const bool s_i18n = [] {
     I18n::reg("lde_optimize",    "▶ 最適化実行",  "▶ Run optimization");
     I18n::reg("lde_opt_target",  "目標 f' [mm]",  "Target f' [mm]");
     I18n::reg("lde_opt_apply",   "面テーブルへ適用", "Apply to the table");
+    I18n::reg("lde_opt_spot",    "スポット RMS も小さくする",
+              "Also reduce the RMS spot radius");
+    I18n::reg("lde_opt_weight",  "重み", "Weight");
+    I18n::reg("lde_opt_units",
+              " 目標は f' [mm] とスポット RMS [mm] の 2 つで、単位も桁も"
+              "違うため重み %1 を掛けて足しています (残差 = [f' の誤差, "
+              "%1 × スポット RMS])。重みを変えるとどちらを優先するかが変わり"
+              "ます。",
+              " There are two targets, f' [mm] and the RMS spot radius [mm]; "
+              "they differ in scale, so the second is weighted by %1 (residual "
+              "= [f' error, %1 x RMS spot]). Changing the weight changes which "
+              "one is favoured.");
+    I18n::reg("lde_opt_spot_res",
+              " スポット RMS は %1 mm → %2 mm。",
+              " The RMS spot radius went from %1 mm to %2 mm.");
     I18n::reg("lde_opt_res",
               "曲率半径 %1 面を変数にして f' を %2 mm に合わせました: "
               "%3 mm → %4 mm (残差 %5 mm、%6 回の反復で %7 回評価)。%8",
@@ -209,6 +225,20 @@ const bool s_i18n = [] {
               " [!] The target was not reached (residual %1 mm). There may be "
               "too few variables, or the target is not achievable with this "
               "configuration. The values were not written back.");
+    // スポット RMS も目標にしたときの「f' がぴったりにならない」は失敗ではなく
+    // 重み付きの折り合いそのもの — 変数不足のせいにしない (同じ目標が
+    // スポット無しなら厳密に届くことがある)。
+    I18n::reg("lde_opt_tradeoff",
+              " f' は %1 mm ずれて残りました。これは失敗ではなく、"
+              "重み付きの折り合いの結果です (f' を優先するなら重みを小さく、"
+              "スポットを優先するなら大きくします)。",
+              " f' is left off by %1 mm. That is not a failure but the result "
+              "of the weighted trade-off (lower the weight to favour f', "
+              "raise it to favour the spot).");
+    I18n::reg("lde_opt_worse",
+              " ⚠ 残差は初期値より改善していません。値は書き戻していません。",
+              " [!] The residual did not improve on the starting point. "
+              "The values were not written back.");
     I18n::reg("lde_opt_none",
               "曲率半径が有限の面がありません。最適化する変数がありません。",
               "There is no surface with a finite radius, so there is nothing "
@@ -827,6 +857,12 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     optRow->addWidget(m_optTarget);
     optRow->addWidget(optBtn);
     optRow->addWidget(m_optApply);
+    m_optSpot = new QCheckBox(I18n::tr("lde_opt_spot"), sMerit);
+    m_optWeight = new QLineEdit(QStringLiteral("10.0"), sMerit);
+    m_optWeight->setMaximumWidth(70);
+    optRow->addWidget(m_optSpot);
+    optRow->addWidget(new QLabel(I18n::tr("lde_opt_weight"), sMerit));
+    optRow->addWidget(m_optWeight);
     optRow->addWidget(mutedLabel("Damped Least-Squares", sMerit));
     optRow->addStretch(1);
     sMerit->vbox()->addLayout(optRow);
@@ -1752,9 +1788,39 @@ void LensEditorTab::runOptimize()
         return true;
     };
 
+    // スポット RMS も目標にするか (単位も桁も違うので重みを画面に出す)
+    const bool useSpot = m_optSpot && m_optSpot->isChecked();
+    bool okW = false;
+    double weight = m_optWeight->text().trimmed().toDouble(&okW);
+    if (!okW || !(weight > 0.0)) weight = 1.0;
+
+    // 変数 → スポット RMS (実光線追跡)。eflOf と同じ「必ず元へ戻す」作法。
+    const auto spotOf = [&](const std::vector<double> &v, double *rms) {
+        LensEditorTab *self = const_cast<LensEditorTab *>(this);
+        for (int k = 0; k < varRows.size(); ++k)
+            self->m_rows[varRows[k]].R = QString::number(v[k], 'g', 12);
+        double imageDistance = -1.0;
+        const std::vector<paraxial::Surface> surfs =
+            self->collectSurfaces(&imageDistance, nullptr, lam * 1e-3);
+        raytrace::System sys;
+        sys.surfaces = raytrace::fromParaxial(surfs);
+        sys.imageDistance = (imageDistance >= 0.0)
+                                ? imageDistance
+                                : (surfs.empty() ? 0.0
+                                                 : surfs.back().thickness);
+        const raytrace::SpotResult sp =
+            raytrace::spotDiagram(sys, epd, field, 6);
+        self->m_rows = saved;              // 必ず戻す
+        if (!sp.valid) return false;
+        *rms = sp.rmsRadius;
+        return true;
+    };
+
     double efl0 = 0.0;
     const bool haveStart = eflOf(std::vector<double>(x0.begin(), x0.end()),
                                  &efl0);
+    double spot0 = 0.0;
+    if (useSpot) spotOf(std::vector<double>(x0.begin(), x0.end()), &spot0);
 
     optics::DlsOptions o;
     o.maxIterations = 60;
@@ -1764,6 +1830,11 @@ void LensEditorTab::runOptimize()
         double efl = 0.0;
         if (!eflOf(v, &efl)) return false;
         r.assign(1, efl - target);
+        if (useSpot) {
+            double rms = 0.0;
+            if (!spotOf(v, &rms)) return false;
+            r.push_back(weight * rms);     // 0 に近づける (重みは画面に出す)
+        }
         return true;
     };
     const optics::DlsResult res =
@@ -1781,16 +1852,39 @@ void LensEditorTab::runOptimize()
                             QString::number(res.rms, 'g', 3))
                        .arg(res.iterations).arg(res.evaluations)
                        .arg(QString());
-    // 目標に届いたときだけ「適用」を押せるようにする
-    const bool reached = (res.rms < 1.0e-3);
+    if (useSpot) {
+        double spot1 = 0.0;
+        spotOf(res.x, &spot1);
+        note += I18n::tr("lde_opt_spot_res")
+                    .arg(QString::number(spot0, 'f', 4),
+                         QString::number(spot1, 'f', 4));
+        note += I18n::tr("lde_opt_units")
+                    .arg(QString::number(weight, 'g', 3));
+    }
+
+    // 「適用」を押せる条件は目標の立て方で変わる。
+    //   f' だけ    … f' が目標に届いたときだけ (従来どおり)
+    //   f' + スポット … **f' はぴったりにならないのが正しい** (重み付きの
+    //                   折り合いなので)。残差が初期値より改善していれば
+    //                   押せるようにし、残った f' のずれを画面に書く。
+    //                   ここを f' の一致で判定すると、スポットを目標に
+    //                   足した瞬間に永久に適用できなくなる。
+    const double eflErr = std::fabs(efl1 - target);
+    const bool reached = useSpot ? (res.rms < res.rms0)
+                                 : (eflErr < 1.0e-3);
+    if (useSpot && reached)
+        note += I18n::tr("lde_opt_tradeoff")
+                    .arg(QString::number(eflErr, 'g', 3));
     if (reached) {
         m_optSolution.clear();
         for (int k = 0; k < varRows.size(); ++k)
             m_optSolution.push_back({ varRows[k], res.x[k] });
         m_optApply->setEnabled(true);
         note += I18n::tr("lde_opt_apply_hint");
+    } else if (useSpot) {
+        note += I18n::tr("lde_opt_worse");
     } else {
-        note += I18n::tr("lde_opt_miss").arg(QString::number(res.rms, 'g', 3));
+        note += I18n::tr("lde_opt_miss").arg(QString::number(eflErr, 'g', 3));
     }
     m_optInfo->setText(note);
 }

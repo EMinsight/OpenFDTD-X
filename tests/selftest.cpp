@@ -19184,7 +19184,47 @@ static void testDampedLeastSquares()
               "dls: and sits on the bound closest to the optimum");
     }
 
-    // ⑥ 残差が作れないときは成功と言わない
+    // ⑥ 重み付きの 2 目標 — 重みを変えるとどちらを優先するかが変わること。
+    //    レンズエディタの「f' + スポット RMS」がこの形をしている。閉形式で
+    //    検算できる最小の問題に落として、重みの効き方そのものを判定する:
+    //      残差 r = [x − a, w·x]  →  最小二乗解は x* = a/(1+w²)  (厳密)
+    //    第 1 目標の誤差 |x*−a| = a·w²/(1+w²) は w について単調増加、
+    //    第 2 目標 |w·x*| ではなく「第 2 目標の量」x* は単調減少する。
+    //    (画面に出している「重みを大きくすると 2 つ目を優先する」の中身)
+    {
+        const double a = 3.0;
+        double prevX = 0.0, prevErr = 0.0;
+        bool first = true;
+        const double ws[4] = { 0.1, 1.0, 10.0, 100.0 };
+        int mono = 0, exact = 0;
+        for (double w : ws) {
+            const ResidualFn fn = [&](const std::vector<double> &v,
+                                      std::vector<double> &r) {
+                r.assign(1, v[0] - a);
+                r.push_back(w * v[0]);
+                return true;
+            };
+            DlsOptions o;
+            o.maxIterations = 200;
+            const DlsResult r = solve(fn, { 0.0 }, o);
+            if (!r.ok) continue;
+            const double want = a / (1.0 + w * w);   // 閉形式
+            if (std::fabs(r.x[0] - want) < 1e-6 * std::max(1.0, want)) ++exact;
+            const double err = std::fabs(r.x[0] - a); // 第 1 目標の残り誤差
+            if (!first && r.x[0] < prevX && err > prevErr) ++mono;
+            first = false;
+            prevX = r.x[0];
+            prevErr = err;
+        }
+        check(exact == 4,
+              "dls: a weighted two-target problem hits the closed-form "
+              "solution x = a/(1+w^2) at every weight");
+        check(mono == 3,
+              "dls: raising the weight monotonically favours the second "
+              "target at the first target's expense");
+    }
+
+    // ⑦ 残差が作れないときは成功と言わない
     {
         const ResidualFn bad = [](const std::vector<double> &,
                                   std::vector<double> &) { return false; };

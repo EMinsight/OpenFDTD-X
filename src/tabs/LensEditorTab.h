@@ -25,6 +25,7 @@
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -136,6 +137,8 @@ private:
     bool          m_updating = false;
     QVector<LensSurface> m_rows;
     QLineEdit  *m_optTarget = nullptr;   // 目標 f'
+    QCheckBox  *m_optSpot = nullptr;     // スポット RMS も目標にする
+    QLineEdit  *m_optWeight = nullptr;   // その重み
     QPushButton *m_optApply = nullptr;   // 提案値の適用
     QLabel     *m_optInfo = nullptr;
     QVector<QPair<int, double>> m_optSolution;   // (行, 提案する R)
