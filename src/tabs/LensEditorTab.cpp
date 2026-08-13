@@ -4,6 +4,7 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/DampedLeastSquares.h"
 #include "../optics/DistortionGrid.h"
 #include "../optics/FieldCurvature.h"
 #include "../optics/EncircledEnergy.h"
@@ -190,6 +191,30 @@ const bool s_i18n = [] {
               "面テーブルが近軸的に解けない (アフォーカル / 面が無い)",
               "The surface table is not paraxially solvable (afocal / no surfaces)");
     I18n::reg("lde_optimize",    "▶ 最適化実行",  "▶ Run optimization");
+    I18n::reg("lde_opt_target",  "目標 f' [mm]",  "Target f' [mm]");
+    I18n::reg("lde_opt_apply",   "面テーブルへ適用", "Apply to the table");
+    I18n::reg("lde_opt_res",
+              "曲率半径 %1 面を変数にして f' を %2 mm に合わせました: "
+              "%3 mm → %4 mm (残差 %5 mm、%6 回の反復で %7 回評価)。%8",
+              "Optimised %1 curved surfaces to bring f' to %2 mm: %3 mm -> "
+              "%4 mm (residual %5 mm, %6 iterations and %7 evaluations). %8");
+    I18n::reg("lde_opt_apply_hint",
+              "結果はまだ面テーブルに書き戻していません — 「面テーブルへ適用」で"
+              "反映します。",
+              "The result has not been written back to the surface table yet; "
+              "press \"Apply to the table\" to do that.");
+    I18n::reg("lde_opt_miss",
+              " ⚠ 目標に届きませんでした (残差 %1 mm)。変数が足りないか、"
+              "目標がこの構成では実現できません。値は書き戻していません。",
+              " [!] The target was not reached (residual %1 mm). There may be "
+              "too few variables, or the target is not achievable with this "
+              "configuration. The values were not written back.");
+    I18n::reg("lde_opt_none",
+              "曲率半径が有限の面がありません。最適化する変数がありません。",
+              "There is no surface with a finite radius, so there is nothing "
+              "to optimise.");
+    I18n::reg("lde_opt_applied", "面テーブルへ適用しました。",
+              "Applied to the surface table.");
     I18n::reg("lde_analyses_section", "解析プロット / Analyses", "Analyses");
     I18n::reg("lde_an_mtf",      "MTF (変調伝達関数)",
               "MTF (modulation transfer function)");
@@ -787,13 +812,27 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     m_merit->setMinimumHeight(210);
     sMerit->vbox()->addWidget(m_merit);
     auto *optRow = new QHBoxLayout();
-    // 最適化は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
+    // 最適化は減衰最小二乗 (optics/DampedLeastSquares) で実行する。
+    // **結果は自動で書き戻さない** — 「適用」を別操作にして、利用者の設計値を
+    // 黙って書き換えないようにする。
     auto *optBtn = new QPushButton(I18n::tr("lde_optimize"), sMerit);
-    tabhelp::markNotImplemented(optBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    connect(optBtn, &QPushButton::clicked, this, &LensEditorTab::runOptimize);
+    m_optTarget = new QLineEdit(QStringLiteral("100.0"), sMerit);
+    m_optTarget->setMaximumWidth(90);
+    m_optApply = new QPushButton(I18n::tr("lde_opt_apply"), sMerit);
+    m_optApply->setEnabled(false);       // 結果が出るまで押せない
+    connect(m_optApply, &QPushButton::clicked,
+            this, &LensEditorTab::applyOptimize);
+    optRow->addWidget(new QLabel(I18n::tr("lde_opt_target"), sMerit));
+    optRow->addWidget(m_optTarget);
     optRow->addWidget(optBtn);
-    optRow->addWidget(mutedLabel("Damped Least-Squares / Hammer", sMerit));
+    optRow->addWidget(m_optApply);
+    optRow->addWidget(mutedLabel("Damped Least-Squares", sMerit));
     optRow->addStretch(1);
     sMerit->vbox()->addLayout(optRow);
+    m_optInfo = mutedLabel(QString(), sMerit);
+    m_optInfo->setWordWrap(true);
+    sMerit->vbox()->addWidget(m_optInfo);
     v->addWidget(sMerit);
 
     // 解析プロット / Analyses
@@ -1660,6 +1699,117 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── 最適化 (optics/DampedLeastSquares) ─────────────────────────────────────
+// 曲率半径が有限の面をすべて変数にして、目標の有効焦点距離 f' に合わせる。
+// **結果は自動で書き戻さない** — 提案値を出すだけにして、「適用」で初めて
+// 面テーブルへ入れる (利用者の設計値を黙って書き換えない)。
+void LensEditorTab::runOptimize()
+{
+    m_optSolution.clear();
+    m_optApply->setEnabled(false);
+
+    bool okT = false;
+    const double target = m_optTarget->text().trimmed().toDouble(&okT);
+    if (!okT || !(target > 0.0)) { m_optInfo->setText(I18n::tr("lde_opt_none"));
+                                   return; }
+
+    // 変数にする行 (曲率が有限の面) を拾う
+    QVector<int> varRows;
+    QVector<double> x0;
+    for (int i = 0; i < m_rows.size(); ++i) {
+        const QString r = m_rows[i].R.trimmed();
+        bool okR = false;
+        const double v = r.toDouble(&okR);
+        if (!m_rows[i].enabled || !okR || !(std::fabs(v) > 0.0)) continue;
+        varRows.push_back(i);
+        x0.push_back(v);
+    }
+    if (varRows.isEmpty()) { m_optInfo->setText(I18n::tr("lde_opt_none"));
+                             return; }
+
+    const double epd = epdValue();
+    const double field = fieldValue();
+    // 主波長は d 線に最も近いもの — このタブの他の解析と同じ選び方にする
+    // (最初の波長を使うと F 線が選ばれ、Merit 表の EFFL と食い違う)
+    double lam = m_waves.isEmpty() ? 587.6 : m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(lam - 587.6)) lam = w;
+
+    // 変数 → 系 → 残差 (目標 f' との差)。**元の m_rows は触らない**
+    const QVector<LensSurfaceRow> saved = m_rows;
+    const auto eflOf = [&](const std::vector<double> &v, double *efl) {
+        LensEditorTab *self = const_cast<LensEditorTab *>(this);
+        for (int k = 0; k < varRows.size(); ++k)
+            self->m_rows[varRows[k]].R = QString::number(v[k], 'g', 12);
+        double imageDistance = -1.0;
+        const std::vector<paraxial::Surface> surfs =
+            self->collectSurfaces(&imageDistance, nullptr, lam * 1e-3);
+        const paraxial::SystemData d =
+            paraxial::analyze(surfs, imageDistance, epd, field);
+        self->m_rows = saved;              // 必ず戻す
+        if (!d.valid || !(std::fabs(d.efl) > 0.0)) return false;
+        *efl = d.efl;
+        return true;
+    };
+
+    double efl0 = 0.0;
+    const bool haveStart = eflOf(std::vector<double>(x0.begin(), x0.end()),
+                                 &efl0);
+
+    optics::DlsOptions o;
+    o.maxIterations = 60;
+    o.step.assign(x0.size(), 1.0e-3);      // 曲率半径 [mm] の差分刻み
+    const optics::ResidualFn fn = [&](const std::vector<double> &v,
+                                      std::vector<double> &r) {
+        double efl = 0.0;
+        if (!eflOf(v, &efl)) return false;
+        r.assign(1, efl - target);
+        return true;
+    };
+    const optics::DlsResult res =
+        optics::solve(fn, std::vector<double>(x0.begin(), x0.end()), o);
+    if (!res.ok) { m_optInfo->setText(I18n::tr("lde_opt_none")); return; }
+
+    double efl1 = 0.0;
+    eflOf(res.x, &efl1);
+
+    QString note = I18n::tr("lde_opt_res")
+                       .arg(varRows.size())
+                       .arg(QString::number(target, 'f', 3),
+                            QString::number(haveStart ? efl0 : 0.0, 'f', 3),
+                            QString::number(efl1, 'f', 3),
+                            QString::number(res.rms, 'g', 3))
+                       .arg(res.iterations).arg(res.evaluations)
+                       .arg(QString());
+    // 目標に届いたときだけ「適用」を押せるようにする
+    const bool reached = (res.rms < 1.0e-3);
+    if (reached) {
+        m_optSolution.clear();
+        for (int k = 0; k < varRows.size(); ++k)
+            m_optSolution.push_back({ varRows[k], res.x[k] });
+        m_optApply->setEnabled(true);
+        note += I18n::tr("lde_opt_apply_hint");
+    } else {
+        note += I18n::tr("lde_opt_miss").arg(QString::number(res.rms, 'g', 3));
+    }
+    m_optInfo->setText(note);
+}
+
+// 提案値を面テーブルへ書き戻す (押されて初めて実行する)
+void LensEditorTab::applyOptimize()
+{
+    if (m_optSolution.isEmpty()) return;
+    for (const auto &pr : m_optSolution) {
+        if (pr.first < 0 || pr.first >= m_rows.size()) continue;
+        m_rows[pr.first].R = QString::number(pr.second, 'f', 4);
+    }
+    m_optSolution.clear();
+    m_optApply->setEnabled(false);
+    rebuildTable();
+    pushRowsToProject();
+    m_optInfo->setText(I18n::tr("lde_opt_applied"));
+}
+
 // ── 像面湾曲 (optics/FieldCurvature) ───────────────────────────────────────
 // 視野ごとに、瞳の上下 2 本 (タンジェンシャル) と左右 2 本 (サジタル) が
 // 交わる位置を求める。**像空間では光線が直線**なので、像面を 2 枚置いた

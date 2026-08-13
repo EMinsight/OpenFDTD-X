@@ -28,6 +28,7 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTableWidget;
 
 namespace ofd {
@@ -108,6 +109,8 @@ private slots:
     void runEncircled();            // ⬡ 包絡エネルギー (幾何)
     void runDistortion();           // ▦ 歪曲格子 (主光線 vs 近軸)
     void runFieldCurvature();       // ⌖ 像面湾曲 (実光線の交点)
+    void runOptimize();             // ▶ 最適化 (減衰最小二乗、書き戻しはしない)
+    void applyOptimize();           // 提案値を面テーブルへ適用
     void addWavelength();           // + 波長サンプルの追加
 
 private:
@@ -132,6 +135,10 @@ private:
     Project      *m_p;
     bool          m_updating = false;
     QVector<LensSurface> m_rows;
+    QLineEdit  *m_optTarget = nullptr;   // 目標 f'
+    QPushButton *m_optApply = nullptr;   // 提案値の適用
+    QLabel     *m_optInfo = nullptr;
+    QVector<QPair<int, double>> m_optSolution;   // (行, 提案する R)
     QVector<MeritOperand> m_fom;
 
     QTableWidget *m_table;
