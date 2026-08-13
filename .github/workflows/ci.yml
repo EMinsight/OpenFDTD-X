@@ -68,6 +68,13 @@ jobs:
           timeout 60 ./build/openfdtd_x tests/data/dipole.ofd \
             --domain acoustic --screenshot /tmp/gui-acoustic.png
           test -s /tmp/gui-optical.png && test -s /tmp/gui-acoustic.png
+          # 読み込めない .ofd を渡しても止まらないこと。自動実行でモーダルを
+          # 出すと押す人が居ないので永久に待ち、CI は診断も無しにタイムアウト
+          # する (実際にこれで止まった)。timeout に殺されず終了することが判定
+          printf 'not an ofd file\n' > /tmp/broken.ofd
+          timeout 60 ./build/openfdtd_x /tmp/broken.ofd \
+            --screenshot /tmp/gui-broken.png
+          test -s /tmp/gui-broken.png
           # OpenUWA (水中音響 分離アプリ) も同じ手順で起動確認する
           timeout 60 ./build/openuwa tests/data/dipole.ofd \
             --screenshot /tmp/gui-openuwa.png

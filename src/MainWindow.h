@@ -61,6 +61,13 @@ public:
 public slots:
     void newProject();
     void openProject(const QString &path = {});
+
+    // ── 自動実行 (--screenshot 等) モード ──────────────────────────────────
+    // 自動実行では**モーダルダイアログを出してはいけない**。押す人が居ないので
+    // 永久に待ち続け、CI は診断も無しにタイムアウトする (GUI スモークが実際に
+    // これで止まった)。有効なときは同じ内容を標準エラーとステータスバーへ出す。
+    static void setAutomation(bool on);
+    static bool automation();
     void saveProject();
     void saveProjectAs();
     void runSimulation();

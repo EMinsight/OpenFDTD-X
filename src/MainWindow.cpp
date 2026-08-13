@@ -105,6 +105,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
+#include <QDebug>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
@@ -1096,6 +1097,14 @@ void MainWindow::newProject()
     updateWindowTitle();
 }
 
+namespace {
+// --screenshot などの自動実行中か (モーダルを出さない判断に使う)
+bool g_automation = false;
+} // namespace
+
+void MainWindow::setAutomation(bool on) { g_automation = on; }
+bool MainWindow::automation() { return g_automation; }
+
 void MainWindow::openProject(const QString &path)
 {
     QString p = path;
@@ -1106,7 +1115,15 @@ void MainWindow::openProject(const QString &path)
     }
     QString err;
     if (!m_project->load(p, &err)) {
-        QMessageBox::warning(this, I18n::tr("tb_open"), err);
+        // 自動実行ではモーダルを出さない (押す人が居ないので止まる)。
+        // 同じ内容を標準エラーとステータスバーへ出して先へ進む
+        if (automation()) {
+            qWarning().noquote()
+                << QStringLiteral("%1: %2").arg(I18n::tr("tb_open"), err);
+            statusBar()->showMessage(err);
+        } else {
+            QMessageBox::warning(this, I18n::tr("tb_open"), err);
+        }
         return;
     }
     m_evViewer->setWorkdir(QFileInfo(p).path());

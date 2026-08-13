@@ -97,6 +97,9 @@ int main(int argc, char *argv[])
 
     ofd::MainWindow w;
     if (themeOverridden) w.setThemeOverride(uiStyle, uiTheme, uiDens);
+    // 自動実行 (--screenshot) ではモーダルを出さない設定にしてから開く。
+    // openProject より前に立てること (読み込み失敗の警告がここで出る)
+    if (cli.isSet(shotOpt)) ofd::MainWindow::setAutomation(true);
     w.show();
 
     const QStringList args = cli.positionalArguments();
