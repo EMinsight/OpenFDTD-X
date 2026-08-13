@@ -48,12 +48,12 @@ const bool s_i18n = [] {
     I18n::reg("tfc_hint",
               "特性行列法 (Abeles 行列) で R/T/A・反射位相・群遅延を厳密計算する。"
               "層構成・波長・入射角の編集は即座に反映される。"
-              "膜厚の最適化はシンプレックス法で行える "
-              "(層数・材料を変えるニードル法ほかは未実装)。",
+              "膜厚の最適化は単純降下法 (局所) と遺伝的アルゴリズム (大域) の "
+              "2 つから選べる (層数・材料を変えるニードル法ほかは未実装)。",
               "Reflectance, transmittance, absorptance, reflection phase and "
               "group delay are computed exactly with the characteristic-matrix "
               "(Abeles) method. Edits to the stack, wavelength and angle apply "
-              "immediately. Thicknesses can be optimised with the simplex "
+              "immediately. Thicknesses can be optimised either by simplex "
               "method; the needle method and other algorithms that change the "
               "layer count or materials are not implemented.");
     I18n::reg("tfc_preset", "プリセット", "Preset");
@@ -221,14 +221,18 @@ const bool s_i18n = [] {
               "(F = √(Σw((Q−目標)/許容)²/Σw)、Furman & Tikhonravov 1992)。"
               "F ≤ 1 が「平均して許容内」。「最適化実行」は膜厚だけを動かす"
               "シンプレックス法 (Nelder-Mead 1965) で、改善したときだけ層構成に"
-              "書き戻す。層数・材料を変える needle / tunneling / GA は未実装。",
+              "書き戻す。手法は単純降下法 (Nelder-Mead 1965) と遺伝的アルゴリズム "
+              "(実数値 GA。初期値を集団に入れエリート保存するので、今より悪い結果は "
+              "返らない) の 2 つ。層数・材料を変える needle / tunneling は未実装。",
               "▸ The merit value is computed from the target table and the present "
               "stack (F = √(Σw((Q−goal)/tol)²/Σw), Furman & Tikhonravov 1992); "
               "F ≤ 1 means \"within tolerance on average\". \"Run optimisation\" "
-              "uses the simplex method (Nelder-Mead 1965) on the layer "
-              "thicknesses only and writes the result back only when it "
-              "improves. The needle / tunneling / GA methods, which change the "
-              "layer count or the materials, are not implemented.");
+              "offers the simplex method (Nelder-Mead 1965) and a real-coded "
+              "genetic algorithm (which keeps the present design in the "
+              "population and preserves the elite, so it never returns something "
+              "worse), both moving the layer thicknesses only and writing the "
+              "result back only when it improves. The needle / tunneling methods, "
+              "which change the layer count or the materials, are not implemented.");
     I18n::reg("tfc_q_r", "R", "R");
     I18n::reg("tfc_q_t", "T", "T");
     I18n::reg("tfc_pol_avg", "無偏光", "unpolarized");
@@ -311,9 +315,9 @@ const bool s_i18n = [] {
     // 膜厚最適化
     I18n::reg("tfc_run_opt_tip",
               "ターゲット表の Merit を最小化するように膜厚だけを動かします "
-              "(シンプレックス法)。改善したときだけ層構成へ書き戻します。",
+              "(手法は上で選べます)。改善したときだけ層構成へ書き戻します。",
               "Minimises the merit value of the target table by moving the layer "
-              "thicknesses only (simplex method). The stack is updated only when "
+              "thicknesses only (pick the method above). The stack is updated only when "
               "the merit improves.");
     I18n::reg("tfc_opt_title", "膜厚最適化", "Thickness optimisation");
     I18n::reg("tfc_opt_novar",
@@ -336,6 +340,33 @@ const bool s_i18n = [] {
               "Merit %1 → %2 (%3 iterations, %4)");
     I18n::reg("tfc_opt_conv", "収束", "converged");
     I18n::reg("tfc_opt_maxiter", "反復上限", "iteration limit reached");
+    I18n::reg("tfc_method_hint",
+              "単純降下法 (Nelder-Mead) は初期値の近くの谷を降ります — "
+              "速く、乱数を使わないので何度実行しても同じ結果です。"
+              "遺伝的アルゴリズムは初期膜厚の ±50% の範囲を広く探します — "
+              "初期集団の 1 個体目が今の膜厚で、最良個体を必ず残すので "
+              "「今より悪い結果は返りません」。乱数は種から決まるので "
+              "同じ設計・同じ種なら同じ結果です。大域探索のあとに単純降下法を "
+              "かけると細かく詰められます。",
+              "Simplex descent (Nelder-Mead) walks down the valley nearest the "
+              "starting point: it is fast and uses no random numbers, so it "
+              "gives the same answer every time. The genetic algorithm "
+              "searches broadly within 50% of the current thicknesses: the "
+              "first individual is the present design and the best individual "
+              "always survives, so it never returns something worse than what "
+              "you have. Its random numbers come from a seed, so the same "
+              "design and seed reproduce the same result. Running simplex "
+              "descent after the global search refines it further.");
+    // GA は収束判定を持たないので「収束」とは言わない
+    I18n::reg("tfc_opt_done_ga", "Merit %1 → %2 (%3 世代, 種 %4)",
+              "Merit %1 -> %2 (%3 generations, seed %4)");
+    I18n::reg("tfc_opt_noimprove_ga",
+              "Merit %1 のままでした。今より良い膜厚が範囲内に見つからな"
+              "かったので、設計は変えていません (探索範囲や種を変えると"
+              "別の谷に届くことがあります)。",
+              "The merit stayed at %1. No better thickness was found inside "
+              "the search range, so the design was left unchanged (a "
+              "different range or seed may reach a different valley).");
 
     // 成膜レシピ / 感度一覧
     I18n::reg("tfc_recipe_title", "成膜レシピを保存", "Save the deposition recipe");
@@ -971,12 +1002,17 @@ QWidget *ThinFilmTab::buildDesignPage()
     mRow->setSpacing(4);
     m_method = segRow(mRow, { I18n::tr("tfc_m_simplex"), I18n::tr("tfc_m_needle"),
                               I18n::tr("tfc_m_tunnel"),  I18n::tr("tfc_m_ga") },
-                      0, s);                     // 既定 "simplex" (唯一の実装)
-    // 実装しているのは膜厚のシンプレックス法だけ。層数や材料を変える
-    // needle / tunneling / GA は未実装なので選べないようにする。
-    for (QAbstractButton *b : m_method->buttons())
-        if (m_method->id(b) != 0) tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
+                      0, s);                     // 既定 "simplex" (決定的)
+    // 動かせるのは膜厚だけ。シンプレックス (局所) と GA (大域) の 2 つを
+    // 実装してある。needle / tunneling は**層数を変える**手法で、層の挿入は
+    // 材料選択と一体の設計判断になるため未実装のまま。
+    for (QAbstractButton *b : m_method->buttons()) {
+        const int id = m_method->id(b);
+        if (id == 1 || id == 2)
+            tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
+    }
     s->form()->addRow(I18n::tr("tfc_method"), mRow);
+    s->vbox()->addWidget(noteLabel(I18n::tr("tfc_method_hint"), s));
 
     auto *vRow = new QHBoxLayout();
     m_varThickness = makeCheck(I18n::tr("tfc_v_thick"), true,  s);
@@ -1645,6 +1681,8 @@ void ThinFilmTab::runOptimization()
     }
 
     optics::OptimizeOptions o;      // 既定 (600 反復・膜厚 1〜5000 nm)
+    const bool useGa = (m_method && m_method->checkedId() == 3);
+    if (useGa) o.method = optics::OptimizeMethod::Genetic;
     QApplication::setOverrideCursor(Qt::WaitCursor);
     const optics::OptimizeResult res =
         optics::optimizeThickness(makeStackFn(), tb, aoiDeg(), d0, o);
@@ -1656,9 +1694,10 @@ void ThinFilmTab::runOptimization()
     }
     // 改善しなかった場合も結果を書き戻さない (公称設計を壊さない)
     if (!(res.meritEnd < res.meritStart)) {
-        QMessageBox::information(this, title,
-                                 I18n::tr("tfc_opt_noimprove")
-                                     .arg(QString::number(res.meritStart, 'g', 4)));
+        QMessageBox::information(
+            this, title,
+            I18n::tr(useGa ? "tfc_opt_noimprove_ga" : "tfc_opt_noimprove")
+                .arg(QString::number(res.meritStart, 'g', 4)));
         return;
     }
 
@@ -1670,13 +1709,21 @@ void ThinFilmTab::runOptimization()
 
     rebuildLayerTable();
     recompute();
-    QMessageBox::information(this, title,
-                             I18n::tr("tfc_opt_done")
-                                 .arg(QString::number(res.meritStart, 'g', 4))
-                                 .arg(QString::number(res.meritEnd, 'g', 4))
-                                 .arg(res.iterations)
-                                 .arg(I18n::tr(res.converged ? "tfc_opt_conv"
-                                                             : "tfc_opt_maxiter")));
+    // GA は「反復・収束」ではなく「世代・種」で報告する。同じ欄に別の前提の
+    // 数字を出さないため、文言ごと分ける。
+    QMessageBox::information(
+        this, title,
+        useGa ? I18n::tr("tfc_opt_done_ga")
+                    .arg(QString::number(res.meritStart, 'g', 4))
+                    .arg(QString::number(res.meritEnd, 'g', 4))
+                    .arg(res.iterations)
+                    .arg(QString::number(qulonglong(o.seed)))
+              : I18n::tr("tfc_opt_done")
+                    .arg(QString::number(res.meritStart, 'g', 4))
+                    .arg(QString::number(res.meritEnd, 'g', 4))
+                    .arg(res.iterations)
+                    .arg(I18n::tr(res.converged ? "tfc_opt_conv"
+                                                : "tfc_opt_maxiter")));
 }
 
 // ── 成膜レシピの書き出し ────────────────────────────────────────────────────

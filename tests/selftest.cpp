@@ -5635,6 +5635,62 @@ static void testThinFilmStack()
         check(rb.valid && std::fabs(rb.d_nm[0] - 100.0) < 1e-6,
               "tmm-opt: clamps to the nearest feasible thickness");
 
+        // ── GA (大域探索) ────────────────────────────────────────────
+        // 同じ単層無反射膜。GA は乱数を使うが、(a) 初期値を 1 個体目に
+        // 入れてある + (b) エリート保存 なので **初期値より悪くならない**
+        // ことが原理的に保証される。そこを判定する。
+        {
+            OptimizeOptions g;
+            g.method = OptimizeMethod::Genetic;
+            g.population = 24;
+            g.generations = 40;
+            const OptimizeResult rg = optimizeThickness(ar, t, 0.0, { 60.0 }, g);
+            check(rg.valid && rg.d_nm.size() == 1, "tmm-ga: valid result");
+            check(rg.meritEnd <= rg.meritStart,
+                  "tmm-ga: the result is never worse than the starting point "
+                  "(the first individual is the start and elitism keeps it)");
+            check(!rg.converged,
+                  "tmm-ga: GA does not claim convergence (it has no such test)");
+            check(rg.iterations == g.generations,
+                  "tmm-ga: it runs exactly the requested number of generations");
+            // 解析解 (四分の一波長 91.67 nm) の近くへ来ること。GA は局所的な
+            // 詰めをしないので許容差はシンプレックスより緩く取る。
+            check(std::fabs(rg.d_nm[0] - dOpt) < 5.0,
+                  qPrintable(QString("tmm-ga: lands near the quarter-wave "
+                                     "thickness (%1 vs %2)")
+                                 .arg(rg.d_nm[0]).arg(dOpt)));
+
+            // 同じ seed なら同じ結果 (乱数は seed だけで決まる)
+            const OptimizeResult rg2 = optimizeThickness(ar, t, 0.0, { 60.0 }, g);
+            check(rg2.valid && rg2.d_nm[0] == rg.d_nm[0]
+                  && rg2.meritEnd == rg.meritEnd,
+                  "tmm-ga: the same seed reproduces the same result");
+            // seed を変えれば別の点を通る (探索が乱数に依っている証拠)。
+            // それでも初期値より悪くはならない。
+            OptimizeOptions g2 = g;
+            g2.seed = g.seed + 1;
+            const OptimizeResult rg3 = optimizeThickness(ar, t, 0.0, { 60.0 }, g2);
+            check(rg3.valid && rg3.meritEnd <= rg3.meritStart,
+                  "tmm-ga: another seed is still never worse than the start");
+
+            // 箱を守る (探索範囲は初期値の ±gaRange 倍と min/max の共通部分)
+            OptimizeOptions gb = g;
+            gb.minThick_nm = 100.0; gb.maxThick_nm = 120.0;
+            const OptimizeResult rb2 = optimizeThickness(ar, t, 0.0, { 110.0 }, gb);
+            check(rb2.valid && rb2.d_nm[0] >= 100.0 - 1e-9
+                  && rb2.d_nm[0] <= 120.0 + 1e-9,
+                  "tmm-ga: respects the thickness bounds");
+
+            // 世代数 0 / 個体数 1 は探索にならないので valid = false
+            OptimizeOptions gz = g;
+            gz.generations = 0;
+            check(!optimizeThickness(ar, t, 0.0, { 60.0 }, gz).valid,
+                  "tmm-ga: zero generations is rejected, not silently run");
+            gz = g; gz.population = 1;
+            check(!optimizeThickness(ar, t, 0.0, { 60.0 }, gz).valid,
+                  "tmm-ga: a population of one is rejected");
+        }
+
         // 多層でもメリットは悪化しない (単調改善)
         const StackAtLambda multi = [](double l, StackSample &s) {
             (void)l;

@@ -24,6 +24,7 @@
 #define OFD_OPTICS_THINFILMSTACK_H
 
 #include <functional>
+#include <cstdint>
 #include <vector>
 
 namespace ofd {
@@ -137,14 +138,39 @@ SensitivityResult thicknessSensitivity(const StackAtLambda &stack,
 // 係数 (反射 1 / 拡大 2 / 縮小 0.5 / 収縮 0.5) を使う。乱数を使わないので
 // 同じ入力からは常に同じ結果になる (selftest で決定性を検証)。
 //
-// needle / tunneling / GA といった層数を変える手法は実装していない
+// ── 遺伝的アルゴリズム (GA) ────────────────────────────────────────────────
+// シンプレックスは初期値の近くの谷しか降りられない (局所的)。膜厚の設計は
+// 谷がいくつもあるので、**箱全体を探す**手法を選べるようにした。実体は
+// `core/Optimizer` の実数値 GA (トーナメント選択 + SBX 交叉 + 多項式突然変異
+// + エリート保存) をそのまま使う — このファイルに探索を書き直さない。
+//
+// 3 つの約束:
+//   1. **初期集団の 1 個体目を初期膜厚にする**。エリート保存と合わせて、
+//      結果が初期値より悪くなることが原理的に起こらない。
+//   2. 乱数は seed からのみ決まるので、同じ入力・同じ seed なら同じ結果。
+//   3. 収束判定は無い (世代数だけ回す)。`converged` は常に false で、
+//      「収束した」とは言わない。
+//
+// needle / tunneling といった層数を変える手法は実装していない
 // (層の挿入は材料選択と一体で、別の設計判断が要る)。
+enum class OptimizeMethod {
+    Simplex = 0,   // Nelder-Mead (決定的・局所)
+    Genetic = 1    // 実数値 GA (core/Optimizer。seed で決定的・大域)
+};
+
 struct OptimizeOptions {
-    int    maxIter     = 600;      // 反復上限
+    OptimizeMethod method = OptimizeMethod::Simplex;
+    int    maxIter     = 600;      // 反復上限 (シンプレックス)
     double tolMerit    = 1e-7;     // シンプレックスの merit 幅がこれ未満で収束
     double minThick_nm = 1.0;      // 膜厚の下限 (これ未満には縮めない)
     double maxThick_nm = 5000.0;   // 膜厚の上限
     double initStep    = 0.10;     // 初期シンプレックスの相対ステップ (10%)
+
+    // GA。探索範囲は初期膜厚の ±gaRange 倍 (min/maxThick_nm でも切る)
+    int      population  = 40;     // >= 2
+    int      generations = 60;     // >= 1
+    double   gaRange     = 0.5;    // 0.5 = 初期値の 0.5〜1.5 倍を探す
+    uint64_t seed        = 20260813ull;
 };
 
 struct OptimizeResult {
@@ -153,7 +179,8 @@ struct OptimizeResult {
     double meritStart = 0.0;
     double meritEnd   = 0.0;
     int    iterations = 0;
-    bool   converged  = false;     // tolMerit に達したか (false = 反復上限)
+    bool   converged  = false;     // tolMerit に達したか (false = 反復上限)。
+                                   // GA は収束判定を持たないので常に false
 };
 
 // d0_nm は初期膜厚 (入射側 → 基板側)。stack が返す層数と一致していること。

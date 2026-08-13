@@ -21,6 +21,8 @@
 // Re(η_sub) = 0 → T = 0、|r| = 1 となって正しく振る舞う。
 #include "optics/ThinFilmStack.h"
 
+#include "core/Optimizer.h"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -438,6 +440,57 @@ OptimizeResult optimizeThickness(const StackAtLambda &stack,
     clampD(start);
     const double f0 = f(start);
     if (!(f0 < std::numeric_limits<double>::max())) return out;
+
+    // ── GA (大域探索) ────────────────────────────────────────────────────
+    // 探索そのものは core/Optimizer の実数値 GA に任せる。ここは変数の箱を
+    // 作って ask / tell を回すだけ (探索アルゴリズムを二重に持たない)。
+    if (opt.method == OptimizeMethod::Genetic) {
+        if (opt.population < 2 || opt.generations < 1) return out;
+        const double range = (opt.gaRange > 0.0) ? opt.gaRange : 0.5;
+        std::vector<ofd::optim::Variable> vars(n);
+        for (size_t j = 0; j < n; ++j) {
+            vars[j].lo = std::max(opt.minThick_nm, start[j] * (1.0 - range));
+            vars[j].hi = std::min(opt.maxThick_nm, start[j] * (1.0 + range));
+            if (!(vars[j].hi > vars[j].lo)) {   // 箱が潰れる層は動かさない
+                vars[j].lo = start[j];
+                vars[j].hi = std::nextafter(start[j],
+                                            std::numeric_limits<double>::max());
+            }
+            // 1 個体目を初期膜厚にする。エリート保存と合わせて、
+            // **結果が初期値より悪くなることが原理的に起こらない**
+            vars[j].init = start[j];
+            vars[j].hasInit = true;
+        }
+        ofd::optim::Options oo;
+        oo.method = ofd::optim::Method::Genetic;
+        oo.population = opt.population;
+        oo.generations = opt.generations;
+        oo.maximize = false;
+        oo.seed = opt.seed;
+        ofd::optim::Optimizer ga(vars, oo);
+        if (!ga.valid()) return out;
+        while (!ga.done()) {
+            const std::vector<std::vector<double>> &pts = ga.ask();
+            std::vector<double> vals(pts.size(), 0.0);
+            for (size_t i = 0; i < pts.size(); ++i) {
+                const double m = f(pts[i]);
+                // 評価不能は NaN で返す (Optimizer が「最悪」として扱う)。
+                // 大きな有限値で埋めると、それが良い点として残りうる
+                vals[i] = (m < std::numeric_limits<double>::max())
+                              ? m : std::numeric_limits<double>::quiet_NaN();
+            }
+            ga.tell(vals);
+        }
+        if (!ga.hasBest()) return out;
+        out.valid = true;
+        out.d_nm = ga.best();
+        clampD(out.d_nm);
+        out.meritStart = f0;
+        out.meritEnd = f(out.d_nm);
+        out.iterations = ga.generation();
+        out.converged = false;      // GA は収束判定を持たない
+        return out;
+    }
 
     // 初期シンプレックス: 各軸を initStep の相対量 (下限に張り付く層は
     // 絶対量) だけずらした n+1 頂点。乱数を使わないので再現する。
