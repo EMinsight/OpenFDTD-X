@@ -44,6 +44,19 @@
 
 using namespace ofd;
 
+// 面テーブルの列。**番号を直に書かない** — 列を足したときに
+// syncRowFromTable / applyStopHighlight での取りこぼしが起きるため。
+namespace {
+enum LensCol {
+    ColEnabled = 0,  // 有効チェック
+    ColVar,          // 最適化で曲率半径を動かしてよい面か (可変)
+    ColNo,           // 面番号
+    ColType, ColR, ColThick, ColGlass, ColSemiD, ColConic, ColComment,
+    ColOps,          // 挿入/削除ボタン
+    ColCount
+};
+} // namespace
+
 // ── タブ専用の翻訳キー (接頭辞 lde_) ────────────────────────────────────────
 namespace {
 const bool s_i18n = [] {
@@ -62,6 +75,13 @@ const bool s_i18n = [] {
     I18n::reg("lde_col_semid",   "半径",        "Semi-dia.");
     I18n::reg("lde_col_conic",   "コーニック",  "Conic");
     I18n::reg("lde_col_comment", "コメント",    "Comment");
+    I18n::reg("lde_col_var",     "可変",        "Var");
+    I18n::reg("lde_col_var_tip",
+              "最適化でこの面の曲率半径を動かしてよいか。1 面も印を付け"
+              "なければ、曲率が有限な面すべてを変数にします (従来の動作)。",
+              "Whether the optimiser may change this surface's radius. "
+              "If no surface is ticked, every surface with a finite radius "
+              "is used as a variable (the previous behaviour).");
     I18n::reg("lde_ins_tip",     "次に挿入",    "Insert after");
     I18n::reg("lde_del_tip",     "削除",        "Delete");
     I18n::reg("lde_types_label", "面種別:",     "Surface types:");
@@ -239,6 +259,25 @@ const bool s_i18n = [] {
               " ⚠ 残差は初期値より改善していません。値は書き戻していません。",
               " [!] The residual did not improve on the starting point. "
               "The values were not written back.");
+    I18n::reg("lde_opt_vars_marked",
+              " 動かしたのは「可変」に印を付けた面 %1 です。",
+              " The surfaces moved are the ones ticked as variable: %1.");
+    I18n::reg("lde_opt_vars_auto",
+              " 「可変」の印が無いので、曲率が有限な面 %1 をすべて動かして"
+              "います。",
+              " No surface is ticked as variable, so every surface with a "
+              "finite radius was moved: %1.");
+    I18n::reg("lde_opt_vars_skipped",
+              " (印は付いていても曲率を動かせない面が %1 面あり、"
+              "変数から外しました) ",
+              " (%1 ticked surface(s) have no movable radius and were left "
+              "out of the variables.)");
+    I18n::reg("lde_opt_marked_none",
+              "「可変」に印を付けた面はどれも曲率半径を動かせません "
+              "(Infinity か 0、または無効な面)。印を付け直してください。",
+              "None of the surfaces ticked as variable has a movable radius "
+              "(they are Infinity or 0, or disabled). Please tick different "
+              "surfaces.");
     I18n::reg("lde_opt_none",
               "曲率半径が有限の面がありません。最適化する変数がありません。",
               "There is no surface with a finite radius, so there is nothing "
@@ -696,24 +735,29 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     auto *sLde = new SectionBox(I18n::tr("lde_lde_section"), body);
     sLde->vbox()->addWidget(mutedLabel(I18n::tr("lde_table_hint"), sLde));
 
-    m_table = new QTableWidget(0, 10, sLde);
+    m_table = new QTableWidget(0, ColCount, sLde);
     m_table->setHorizontalHeaderLabels({
-        "", "#", I18n::tr("lde_col_type"), I18n::tr("lde_col_r"),
+        "", I18n::tr("lde_col_var"), "#",
+        I18n::tr("lde_col_type"), I18n::tr("lde_col_r"),
         I18n::tr("lde_col_thick"), I18n::tr("lde_col_glass"),
         I18n::tr("lde_col_semid"), I18n::tr("lde_col_conic"),
         I18n::tr("lde_col_comment"), "" });
+    m_table->horizontalHeaderItem(ColVar)
+        ->setToolTip(I18n::tr("lde_col_var_tip"));
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(30);
-    m_table->setColumnWidth(0, 26);
-    m_table->setColumnWidth(1, 26);
-    m_table->setColumnWidth(2, 70);
-    m_table->setColumnWidth(3, 82);
-    m_table->setColumnWidth(4, 82);
-    m_table->setColumnWidth(5, 96);
-    m_table->setColumnWidth(6, 60);
-    m_table->setColumnWidth(7, 64);
-    m_table->setColumnWidth(9, 56);
-    m_table->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Stretch);
+    m_table->setColumnWidth(ColEnabled, 26);
+    m_table->setColumnWidth(ColVar, 42);
+    m_table->setColumnWidth(ColNo, 26);
+    m_table->setColumnWidth(ColType, 70);
+    m_table->setColumnWidth(ColR, 82);
+    m_table->setColumnWidth(ColThick, 82);
+    m_table->setColumnWidth(ColGlass, 96);
+    m_table->setColumnWidth(ColSemiD, 60);
+    m_table->setColumnWidth(ColConic, 64);
+    m_table->setColumnWidth(ColOps, 56);
+    m_table->horizontalHeader()
+        ->setSectionResizeMode(ColComment, QHeaderView::Stretch);
     m_table->setMinimumHeight(320);
     sLde->vbox()->addWidget(m_table);
 
@@ -1024,18 +1068,26 @@ void LensEditorTab::rebuildTable()
         auto *en = new QTableWidgetItem;
         en->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         en->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
-        m_table->setItem(i, 0, en);
+        m_table->setItem(i, ColEnabled, en);
+
+        // 最適化の変数指定。**印が 1 つも無ければ従来どおり全曲面が変数**
+        // なので、既定のプロジェクトでは何も変わらない。
+        auto *var = new QTableWidgetItem;
+        var->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        var->setCheckState(r.variable ? Qt::Checked : Qt::Unchecked);
+        var->setToolTip(I18n::tr("lde_col_var_tip"));
+        m_table->setItem(i, ColVar, var);
 
         auto *no = new QTableWidgetItem(QString::number(i));
         no->setFlags(Qt::ItemIsEnabled);
         no->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_table->setItem(i, 1, no);
+        m_table->setItem(i, ColNo, no);
 
         auto *type = new QComboBox(m_table);
         type->addItems({ "OBJ", "STD", "STO", "ASP", "BIN", "EVN",
                          "HOL", "FRE", "IMG" });
         type->setCurrentText(r.type);
-        m_table->setCellWidget(i, 2, type);
+        m_table->setCellWidget(i, ColType, type);
         connect(type, &QComboBox::currentTextChanged, this,
                 [this, i](const QString &t) {
             if (m_updating || i >= m_rows.size()) return;
@@ -1049,24 +1101,24 @@ void LensEditorTab::rebuildTable()
             it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             return it;
         };
-        m_table->setItem(i, 3, num(r.R));
-        m_table->setItem(i, 4, num(r.thick));
+        m_table->setItem(i, ColR, num(r.R));
+        m_table->setItem(i, ColThick, num(r.thick));
 
         auto *gl = new QLineEdit(r.glass, m_table);
         gl->setFrame(false);
         auto *comp = new QCompleter(glassNames, gl);
         comp->setCaseSensitivity(Qt::CaseInsensitive);
         gl->setCompleter(comp);
-        m_table->setCellWidget(i, 5, gl);
+        m_table->setCellWidget(i, ColGlass, gl);
         connect(gl, &QLineEdit::textChanged, this, [this, i](const QString &t) {
             if (m_updating || i >= m_rows.size()) return;
             m_rows[i].glass = t;
             retrace();
         });
 
-        m_table->setItem(i, 6, num(r.semiD));
-        m_table->setItem(i, 7, num(r.conic));
-        m_table->setItem(i, 8, new QTableWidgetItem(r.comment));
+        m_table->setItem(i, ColSemiD, num(r.semiD));
+        m_table->setItem(i, ColConic, num(r.conic));
+        m_table->setItem(i, ColComment, new QTableWidgetItem(r.comment));
 
         // 挿入/削除ボタン (再構築はシグナル脱出後に遅延実行)
         auto *ops = new QWidget(m_table);
@@ -1081,7 +1133,7 @@ void LensEditorTab::rebuildTable()
         bDel->setToolTip(I18n::tr("lde_del_tip"));
         oh->addWidget(bIns);
         oh->addWidget(bDel);
-        m_table->setCellWidget(i, 9, ops);
+        m_table->setCellWidget(i, ColOps, ops);
         connect(bIns, &QPushButton::clicked, this, [this, i] {
             QTimer::singleShot(0, this, [this, i] {
                 LensSurface s;
@@ -1108,17 +1160,19 @@ void LensEditorTab::rebuildTable()
 void LensEditorTab::syncRowFromTable(int row)
 {
     LensSurface &r = m_rows[row];
-    if (auto *en = m_table->item(row, 0))
+    if (auto *en = m_table->item(row, ColEnabled))
         r.enabled = en->checkState() == Qt::Checked;
+    if (auto *va = m_table->item(row, ColVar))
+        r.variable = va->checkState() == Qt::Checked;
     auto cell = [this, row](int col) {
         auto *it = m_table->item(row, col);
         return it ? it->text() : QString();
     };
-    r.R       = cell(3);
-    r.thick   = cell(4);
-    r.semiD   = cell(6);
-    r.conic   = cell(7);
-    r.comment = cell(8);
+    r.R       = cell(ColR);
+    r.thick   = cell(ColThick);
+    r.semiD   = cell(ColSemiD);
+    r.conic   = cell(ColConic);
+    r.comment = cell(ColComment);
 }
 
 // mock の tr className="sel" 相当: STO 行をアクセント色でハイライト
@@ -1129,7 +1183,9 @@ void LensEditorTab::applyStopHighlight()
     for (int i = 0; i < m_rows.size(); ++i) {
         const QBrush bg = (m_rows[i].type == QStringLiteral("STO"))
             ? QBrush(QColor(184, 50, 128, 36)) : QBrush();
-        for (int c : { 0, 1, 3, 4, 6, 7, 8 })
+        for (int c : { int(ColEnabled), int(ColVar), int(ColNo), int(ColR),
+                       int(ColThick), int(ColSemiD), int(ColConic),
+                       int(ColComment) })
             if (auto *it = m_table->item(i, c))
                 it->setBackground(bg);
     }
@@ -1749,19 +1805,35 @@ void LensEditorTab::runOptimize()
     if (!okT || !(target > 0.0)) { m_optInfo->setText(I18n::tr("lde_opt_none"));
                                    return; }
 
-    // 変数にする行 (曲率が有限の面) を拾う
+    // 変数にする行を拾う。「可変」に印が 1 つでもあれば**その面だけ**を
+    // 動かし、1 つも無ければ従来どおり曲率が有限な面すべてを動かす。
+    // 印があっても曲率が動かせない面 (Infinity や 0) は変数にできないので、
+    // 黙って落とさずに何面落ちたかを画面に出す。
+    bool anyMarked = false;
+    for (const LensSurface &r : m_rows)
+        if (r.variable) { anyMarked = true; break; }
+
     QVector<int> varRows;
     QVector<double> x0;
+    int markedSkipped = 0;
     for (int i = 0; i < m_rows.size(); ++i) {
+        const bool wanted = anyMarked ? m_rows[i].variable : true;
+        if (!wanted) continue;
         const QString r = m_rows[i].R.trimmed();
         bool okR = false;
         const double v = r.toDouble(&okR);
-        if (!m_rows[i].enabled || !okR || !(std::fabs(v) > 0.0)) continue;
+        if (!m_rows[i].enabled || !okR || !(std::fabs(v) > 0.0)) {
+            if (anyMarked) ++markedSkipped;   // 印は付いていたが変数にできない
+            continue;
+        }
         varRows.push_back(i);
         x0.push_back(v);
     }
-    if (varRows.isEmpty()) { m_optInfo->setText(I18n::tr("lde_opt_none"));
-                             return; }
+    if (varRows.isEmpty()) {
+        m_optInfo->setText(anyMarked ? I18n::tr("lde_opt_marked_none")
+                                     : I18n::tr("lde_opt_none"));
+        return;
+    }
 
     const double epd = epdValue();
     const double field = fieldValue();
@@ -1852,6 +1924,17 @@ void LensEditorTab::runOptimize()
                             QString::number(res.rms, 'g', 3))
                        .arg(res.iterations).arg(res.evaluations)
                        .arg(QString());
+    // どの面を動かしたか (印による指定か、既定の全曲面か) を明記する。
+    // 面番号を書かないと「6 面」がどの 6 面か分からない。
+    {
+        QStringList nums;
+        for (int idx : varRows) nums << QString::number(idx);
+        note += (anyMarked ? I18n::tr("lde_opt_vars_marked")
+                           : I18n::tr("lde_opt_vars_auto"))
+                    .arg(nums.join(QStringLiteral(", ")));
+        if (markedSkipped > 0)
+            note += I18n::tr("lde_opt_vars_skipped").arg(markedSkipped);
+    }
     if (useSpot) {
         double spot1 = 0.0;
         spotOf(res.x, &spot1);

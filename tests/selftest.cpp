@@ -15327,6 +15327,56 @@ static void testLensSurfacePersistence()
               "lenssurf: a sidecar without the lens key leaves the table empty "
               "(= the default example)");
     }
+
+    // (c) 最適化の変数指定 (variable) — **印を付けた面だけキーが増える**
+    //     追加のみの拡張なので、印を付けなければ出力は従来と 1 バイトも
+    //     変わらないこと (絶対規則 2) をバイト列で判定する。
+    {
+        Project p;
+        QVector<LensSurfaceRow> rows = defaultLensSurfaces();
+        rows[2].R = QStringLiteral("51.123");     // 触った印 (lens キーを出す)
+        p.optical().lensSurfaces = rows;
+        const QString jOff = btyTmpPath("lens_var_off.ofdx");
+        OfdxIO::save(jOff, p);
+        QFile f(jOff);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: sidecar without marks");
+        const QByteArray off = f.readAll();
+        f.close();
+        check(!off.contains("\"variable\""),
+              "lenssurf: with no surface ticked the variable key is absent "
+              "(the file is byte-identical to the previous format)");
+
+        rows[2].variable = true;
+        rows[4].variable = true;
+        p.optical().lensSurfaces = rows;
+        const QString jOn = btyTmpPath("lens_var_on.ofdx");
+        OfdxIO::save(jOn, p);
+        QFile g(jOn);
+        check(g.open(QIODevice::ReadOnly), "lenssurf: sidecar with marks");
+        const QByteArray on = g.readAll();
+        g.close();
+        check(on.count("\"variable\"") == 2,
+              "lenssurf: exactly the ticked surfaces carry the variable key");
+
+        Project q;
+        QString err;
+        check(OfdxIO::load(jOn, q, &err), "lenssurf: variable sidecar reload");
+        const QVector<LensSurfaceRow> &got = q.optical().lensSurfaces;
+        bool same = got.size() == rows.size();
+        for (int i = 0; same && i < got.size(); ++i) same = (got[i] == rows[i]);
+        check(same, "lenssurf: the variable flags round-trip with the rest");
+
+        // 旧ファイル (variable キーが無い) を読むと印なしに戻る
+        Project r2;
+        check(OfdxIO::load(jOff, r2, &err),
+              "lenssurf: a sidecar without variable keys still loads");
+        bool anyMarked = false;
+        for (const LensSurfaceRow &s : r2.optical().lensSurfaces)
+            if (s.variable) anyMarked = true;
+        check(!anyMarked,
+              "lenssurf: an older sidecar reads back with no surface ticked "
+              "(so the optimiser keeps its previous behaviour)");
+    }
 }
 
 // ── 実光線追跡 (optics/RayTrace) ───────────────────────────────────────────

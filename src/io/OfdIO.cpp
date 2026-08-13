@@ -633,12 +633,17 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         // 触っていないプロジェクトの .ofdx は 1 バイトも変わらない。
         if (!o.lensSurfaces.isEmpty()) {
             QJsonArray surfaces;
-            for (const LensSurfaceRow &r : o.lensSurfaces)
-                surfaces.append(QJsonObject{
+            for (const LensSurfaceRow &r : o.lensSurfaces) {
+                QJsonObject so{
                     {"enabled", r.enabled}, {"type", r.type},
                     {"radius", r.R}, {"thickness", r.thick},
                     {"glass", r.glass}, {"semi_d", r.semiD},
-                    {"conic", r.conic}, {"comment", r.comment} });
+                    {"conic", r.conic}, {"comment", r.comment} };
+                // 最適化の変数指定は**印が付いた面だけ**キーを足す。
+                // 既定 (印なし) では出さないので、従来のファイルと同じ内容になる。
+                if (r.variable) so["variable"] = true;
+                surfaces.append(so);
+            }
             opt["lens"] = QJsonObject{ {"surfaces", surfaces} };
         }
         opt["bpm"] = QJsonObject{
@@ -1291,6 +1296,7 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 r.semiD   = so.value("semi_d").toString(r.semiD);
                 r.conic   = so.value("conic").toString(r.conic);
                 r.comment = so.value("comment").toString(r.comment);
+                r.variable = so.value("variable").toBool(r.variable);
                 o.lensSurfaces.push_back(r);
             }
         }
