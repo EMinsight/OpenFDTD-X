@@ -21,6 +21,8 @@
 // Re(η_sub) = 0 → T = 0、|r| = 1 となって正しく振る舞う。
 #include "optics/ThinFilmStack.h"
 
+#include "core/Optimizer.h"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -439,6 +441,57 @@ OptimizeResult optimizeThickness(const StackAtLambda &stack,
     const double f0 = f(start);
     if (!(f0 < std::numeric_limits<double>::max())) return out;
 
+    // ── GA (大域探索) ────────────────────────────────────────────────────
+    // 探索そのものは core/Optimizer の実数値 GA に任せる。ここは変数の箱を
+    // 作って ask / tell を回すだけ (探索アルゴリズムを二重に持たない)。
+    if (opt.method == OptimizeMethod::Genetic) {
+        if (opt.population < 2 || opt.generations < 1) return out;
+        const double range = (opt.gaRange > 0.0) ? opt.gaRange : 0.5;
+        std::vector<ofd::optim::Variable> vars(n);
+        for (size_t j = 0; j < n; ++j) {
+            vars[j].lo = std::max(opt.minThick_nm, start[j] * (1.0 - range));
+            vars[j].hi = std::min(opt.maxThick_nm, start[j] * (1.0 + range));
+            if (!(vars[j].hi > vars[j].lo)) {   // 箱が潰れる層は動かさない
+                vars[j].lo = start[j];
+                vars[j].hi = std::nextafter(start[j],
+                                            std::numeric_limits<double>::max());
+            }
+            // 1 個体目を初期膜厚にする。エリート保存と合わせて、
+            // **結果が初期値より悪くなることが原理的に起こらない**
+            vars[j].init = start[j];
+            vars[j].hasInit = true;
+        }
+        ofd::optim::Options oo;
+        oo.method = ofd::optim::Method::Genetic;
+        oo.population = opt.population;
+        oo.generations = opt.generations;
+        oo.maximize = false;
+        oo.seed = opt.seed;
+        ofd::optim::Optimizer ga(vars, oo);
+        if (!ga.valid()) return out;
+        while (!ga.done()) {
+            const std::vector<std::vector<double>> &pts = ga.ask();
+            std::vector<double> vals(pts.size(), 0.0);
+            for (size_t i = 0; i < pts.size(); ++i) {
+                const double m = f(pts[i]);
+                // 評価不能は NaN で返す (Optimizer が「最悪」として扱う)。
+                // 大きな有限値で埋めると、それが良い点として残りうる
+                vals[i] = (m < std::numeric_limits<double>::max())
+                              ? m : std::numeric_limits<double>::quiet_NaN();
+            }
+            ga.tell(vals);
+        }
+        if (!ga.hasBest()) return out;
+        out.valid = true;
+        out.d_nm = ga.best();
+        clampD(out.d_nm);
+        out.meritStart = f0;
+        out.meritEnd = f(out.d_nm);
+        out.iterations = ga.generation();
+        out.converged = false;      // GA は収束判定を持たない
+        return out;
+    }
+
     // 初期シンプレックス: 各軸を initStep の相対量 (下限に張り付く層は
     // 絶対量) だけずらした n+1 頂点。乱数を使わないので再現する。
     std::vector<std::vector<double>> simplex(n + 1, start);
@@ -525,9 +578,12 @@ ToleranceResult monteCarlo(const StackAtLambda &stack,
     out.skipped = g.skipped;
     if (!g.ok || g.nLayers < 0) return out;
 
-    const double m0 = meritOf(g, targets, aoi_deg, std::vector<double>(), nullptr);
+    bool nominalOk = false;
+    const double m0 = meritOf(g, targets, aoi_deg, std::vector<double>(),
+                              &nominalOk);
     if (!(m0 == m0)) return out;
     out.meritNominal = m0;
+    out.nominalPass = nominalOk;
 
     Gauss gauss(opt.seed);
     std::vector<double> scale(size_t(g.nLayers), 1.0);
@@ -535,11 +591,25 @@ ToleranceResult monteCarlo(const StackAtLambda &stack,
     merits.reserve(size_t(opt.trials));
     double sum = 0.0;
     int passed = 0;
+    // 等相関モデルの係数。ρ = 0 では共通成分を引かない (従来の乱数列を
+    // そのまま保つため — 既定の結果を 1 ビットも変えない)
+    const double rho = std::min(std::max(opt.correlation, 0.0), 1.0);
+    const bool   corr = (rho > 0.0);
+    const double wc = corr ? std::sqrt(rho) : 0.0;          // 共通成分の重み
+    const double wi = corr ? std::sqrt(1.0 - rho) : 1.0;    // 独立成分の重み
     for (int t = 0; t < opt.trials; ++t) {
         // 系統誤差 = 全層共通のレートドリフト (ランダム誤差と同じ 1σ)
         const double common = opt.systematic ? opt.sigmaRel * gauss() : 0.0;
-        for (int j = 0; j < g.nLayers; ++j)
-            scale[size_t(j)] = std::max(0.0, 1.0 + common + opt.sigmaRel * gauss());
+        // 等相関の共通成分。ρ = 1 なら独立成分の重みが 0 になり、全層が
+        // 同じ相対誤差になる
+        const double shared = corr ? gauss() : 0.0;
+        for (int j = 0; j < g.nLayers; ++j) {
+            // ρ = 1 では層ごとの乱数を引かない (引くと使わない乱数で
+            // 系列がずれるだけ)。ρ = 0 では従来と同じく z_j だけを引く
+            const double zi = (wi > 0.0) ? gauss() : 0.0;
+            const double e = opt.sigmaRel * (wc * shared + wi * zi);
+            scale[size_t(j)] = std::max(0.0, 1.0 + common + e);
+        }
         bool inTol = false;
         const double m = meritOf(g, targets, aoi_deg, scale, &inTol);
         if (!(m == m)) return out;

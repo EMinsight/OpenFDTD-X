@@ -70,11 +70,16 @@ struct LensSurfaceRow {
     QString semiD;     // 有効半径 [mm]
     QString conic;     // コーニック定数
     QString comment;
+    // 最適化で曲率半径を動かしてよい面か。**既定は false = 印なし** で、
+    // 1 面も印が無いときは「曲率が有限な面すべて」を変数にする従来動作。
+    // 既定のままなら .ofdx にキーごと出さない (追加のみ / 出力はバイト不変)。
+    bool    variable = false;
 
     bool operator==(const LensSurfaceRow &o) const {
         return enabled == o.enabled && type == o.type && R == o.R
             && thick == o.thick && glass == o.glass && semiD == o.semiD
-            && conic == o.conic && comment == o.comment;
+            && conic == o.conic && comment == o.comment
+            && variable == o.variable;
     }
     bool operator!=(const LensSurfaceRow &o) const { return !(*this == o); }
 };

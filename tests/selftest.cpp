@@ -34,7 +34,9 @@
 #include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
+#include "io/AbsorptionCsv.h"
 #include "io/BeamPatternCsv.h"
+#include "io/NkCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
 #include "io/TlSlice.h"
@@ -5561,6 +5563,83 @@ static void testThinFilmStack()
         check(r3.valid && r3.yield <= r1.yield,
               "tmm: yield decreases as the thickness error grows");
         check(r3.meritP90 >= r1.meritP90, "tmm: 90th percentile merit grows");
+        // ── 層間の相関 (等相関モデル) ────────────────────────────────
+        // ρ = 0 は従来と**ビット一致**でなければならない (既定を変えない)。
+        {
+            ToleranceOptions oc = o;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const ToleranceResult rc0 = monteCarlo(ar, t, 0.0, oc);
+            ToleranceOptions ol = o;
+            ol.sigmaRel = 0.05;                 // correlation を触らない従来路
+            const ToleranceResult rl = monteCarlo(ar, t, 0.0, ol);
+            check(rc0.valid && rl.valid
+                  && rc0.meritMean == rl.meritMean
+                  && rc0.meritP90 == rl.meritP90 && rc0.passed == rl.passed,
+                  "tmm-corr: rho = 0 reproduces the previous result exactly "
+                  "(the common draw is skipped, so the random stream is "
+                  "unchanged)");
+        }
+        // 1 層だけの系では ρ は周辺分布を変えない — 等相関の構成が
+        // **1 層あたりの分散 σ² を保つ** ことの検証。√ρ / √(1−ρ) ではなく
+        // ρ / (1−ρ) を掛けてしまうとここで分散が落ちて差が出る。
+        {
+            ToleranceOptions oc = o;
+            oc.trials = 4000;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const double m0 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            oc.correlation = 0.5;
+            const double m5 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            oc.correlation = 1.0;
+            const double m1 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            check(m0 > 0.0 && std::fabs(m5 - m0) < 0.06 * m0,
+                  qPrintable(QString("tmm-corr: with one layer, rho = 0.5 "
+                                     "keeps the same spread (%1 vs %2)")
+                                 .arg(m5).arg(m0)));
+            check(std::fabs(m1 - m0) < 0.06 * m0,
+                  qPrintable(QString("tmm-corr: and so does rho = 1 "
+                                     "(%1 vs %2)").arg(m1).arg(m0)));
+        }
+        // 多層では ρ が効く (層どうしの誤差が揃うと打ち消し合わない)
+        {
+            const double lam3 = 550.0;
+            const StackAtLambda three = [=](double l, StackSample &s) {
+                (void)l;
+                s.n0 = 1.0; s.nsub = 1.52;
+                s.layers.push_back({ 1.46, 0.0, lam3 / (4.0 * 1.46) });
+                s.layers.push_back({ 2.35, 0.0, lam3 / (2.0 * 2.35) });
+                s.layers.push_back({ 1.38, 0.0, lam3 / (4.0 * 1.38) });
+                return true;
+            };
+            ToleranceOptions oc = o;
+            oc.trials = 2000;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const ToleranceResult a0 = monteCarlo(three, t, 0.0, oc);
+            const ToleranceResult a0b = monteCarlo(three, t, 0.0, oc);
+            check(a0.valid && a0.meritMean == a0b.meritMean,
+                  "tmm-corr: multilayer Monte Carlo stays deterministic");
+            oc.correlation = 1.0;
+            const ToleranceResult a1 = monteCarlo(three, t, 0.0, oc);
+            check(a1.valid && a1.meritMean != a0.meritMean,
+                  "tmm-corr: with more than one layer the correlation changes "
+                  "the outcome (it is not silently ignored)");
+            // 範囲外の ρ は 0..1 に丸める (黙って外挿しない)
+            oc.correlation = 5.0;
+            const ToleranceResult ah = monteCarlo(three, t, 0.0, oc);
+            oc.correlation = 1.0;
+            const ToleranceResult a1b = monteCarlo(three, t, 0.0, oc);
+            check(ah.valid && ah.meritMean == a1b.meritMean,
+                  "tmm-corr: rho above 1 is clamped to 1");
+            oc.correlation = -3.0;
+            const ToleranceResult an = monteCarlo(three, t, 0.0, oc);
+            oc.correlation = 0.0;
+            const ToleranceResult a0c = monteCarlo(three, t, 0.0, oc);
+            check(an.valid && an.meritMean == a0c.meritMean,
+                  "tmm-corr: a negative rho is clamped to 0");
+        }
+
         // 評価できる λ が無ければ valid = false
         const StackAtLambda none = [](double, StackSample &) { return false; };
         check(!monteCarlo(none, t, 0.0, o).valid,
@@ -5632,6 +5711,62 @@ static void testThinFilmStack()
         // 下限に張り付くはず (最適解 91.7nm は下限の外側)
         check(rb.valid && std::fabs(rb.d_nm[0] - 100.0) < 1e-6,
               "tmm-opt: clamps to the nearest feasible thickness");
+
+        // ── GA (大域探索) ────────────────────────────────────────────
+        // 同じ単層無反射膜。GA は乱数を使うが、(a) 初期値を 1 個体目に
+        // 入れてある + (b) エリート保存 なので **初期値より悪くならない**
+        // ことが原理的に保証される。そこを判定する。
+        {
+            OptimizeOptions g;
+            g.method = OptimizeMethod::Genetic;
+            g.population = 24;
+            g.generations = 40;
+            const OptimizeResult rg = optimizeThickness(ar, t, 0.0, { 60.0 }, g);
+            check(rg.valid && rg.d_nm.size() == 1, "tmm-ga: valid result");
+            check(rg.meritEnd <= rg.meritStart,
+                  "tmm-ga: the result is never worse than the starting point "
+                  "(the first individual is the start and elitism keeps it)");
+            check(!rg.converged,
+                  "tmm-ga: GA does not claim convergence (it has no such test)");
+            check(rg.iterations == g.generations,
+                  "tmm-ga: it runs exactly the requested number of generations");
+            // 解析解 (四分の一波長 91.67 nm) の近くへ来ること。GA は局所的な
+            // 詰めをしないので許容差はシンプレックスより緩く取る。
+            check(std::fabs(rg.d_nm[0] - dOpt) < 5.0,
+                  qPrintable(QString("tmm-ga: lands near the quarter-wave "
+                                     "thickness (%1 vs %2)")
+                                 .arg(rg.d_nm[0]).arg(dOpt)));
+
+            // 同じ seed なら同じ結果 (乱数は seed だけで決まる)
+            const OptimizeResult rg2 = optimizeThickness(ar, t, 0.0, { 60.0 }, g);
+            check(rg2.valid && rg2.d_nm[0] == rg.d_nm[0]
+                  && rg2.meritEnd == rg.meritEnd,
+                  "tmm-ga: the same seed reproduces the same result");
+            // seed を変えれば別の点を通る (探索が乱数に依っている証拠)。
+            // それでも初期値より悪くはならない。
+            OptimizeOptions g2 = g;
+            g2.seed = g.seed + 1;
+            const OptimizeResult rg3 = optimizeThickness(ar, t, 0.0, { 60.0 }, g2);
+            check(rg3.valid && rg3.meritEnd <= rg3.meritStart,
+                  "tmm-ga: another seed is still never worse than the start");
+
+            // 箱を守る (探索範囲は初期値の ±gaRange 倍と min/max の共通部分)
+            OptimizeOptions gb = g;
+            gb.minThick_nm = 100.0; gb.maxThick_nm = 120.0;
+            const OptimizeResult rb2 = optimizeThickness(ar, t, 0.0, { 110.0 }, gb);
+            check(rb2.valid && rb2.d_nm[0] >= 100.0 - 1e-9
+                  && rb2.d_nm[0] <= 120.0 + 1e-9,
+                  "tmm-ga: respects the thickness bounds");
+
+            // 世代数 0 / 個体数 1 は探索にならないので valid = false
+            OptimizeOptions gz = g;
+            gz.generations = 0;
+            check(!optimizeThickness(ar, t, 0.0, { 60.0 }, gz).valid,
+                  "tmm-ga: zero generations is rejected, not silently run");
+            gz = g; gz.population = 1;
+            check(!optimizeThickness(ar, t, 0.0, { 60.0 }, gz).valid,
+                  "tmm-ga: a population of one is rejected");
+        }
 
         // 多層でもメリットは悪化しない (単調改善)
         const StackAtLambda multi = [](double l, StackSample &s) {
@@ -12354,6 +12489,67 @@ static void testMeshDiagnostics()
         return m;
     };
 
+    // 0) 体積 (発散定理)。閉じた立方体なら厳密に a³ になるはず。
+    //    表面積・体積は残響計算 (Sabine) にそのまま入るので、ここが狂うと
+    //    RT60 が静かにずれる。
+    {
+        const double a = 3.0;
+        const ImportedMesh cube = orientedCube(a);
+        const MeshDiagnostics d = analyzeMesh(cube);
+        check(d.watertight(), "meshdiag: the cube is watertight");
+        check(std::fabs(d.volume() - a * a * a) < 1e-9 * a * a * a,
+              qPrintable(QString("meshdiag: cube volume is exactly a^3 "
+                                 "(%1 vs %2)").arg(d.volume()).arg(a*a*a)));
+        check(d.signedVolume > 0.0,
+              "meshdiag: outward normals give a positive signed volume");
+        // 平行移動しても体積は変わらない (原点の取り方に依らない)
+        ImportedMesh moved = cube;
+        for (int i = 0; i < moved.vertices.size(); i += 3)
+            moved.vertices[i] += 1000.0f;
+        moved.bbox[0] += 1000.0; moved.bbox[3] += 1000.0;
+        const MeshDiagnostics dm = analyzeMesh(moved);
+        check(std::fabs(dm.volume() - a * a * a) < 1e-6 * a * a * a,
+              "meshdiag: volume is unchanged by translating the mesh far from "
+              "the origin");
+        // 2 倍に拡大したら体積は 8 倍 (面積は 4 倍)
+        const MeshDiagnostics d2 = analyzeMesh(orientedCube(2.0 * a));
+        check(std::fabs(d2.volume() - 8.0 * d.volume()) < 1e-6 * d2.volume(),
+              "meshdiag: doubling the edge multiplies the volume by 8");
+        // 面の向きを裏返すと符号だけ反転する (大きさは同じ)
+        ImportedMesh flipped = cube;
+        for (int t = 0; t < flipped.numTriangles; ++t) {
+            float *q = flipped.vertices.data() + t * 9;
+            for (int k = 0; k < 3; ++k) std::swap(q[3 + k], q[6 + k]);
+        }
+        const MeshDiagnostics df = analyzeMesh(flipped);
+        check(df.signedVolume < 0.0,
+              "meshdiag: inward normals give a negative signed volume");
+        check(std::fabs(df.volume() - d.volume()) < 1e-9 * d.volume(),
+              "meshdiag: and the magnitude is the same");
+    }
+    // 0b) 四面体 — 立方体以外でも厳密に合うこと (V = |det| / 6)。
+    //     頂点 (0,0,0) (L,0,0) (0,L,0) (0,0,L) なら V = L³/6。
+    {
+        const double L = 2.0;
+        ImportedMesh m;
+        m.name = "tetra";
+        const double p[4][3] = { {0,0,0}, {L,0,0}, {0,L,0}, {0,0,L} };
+        auto tri = [&](int i, int j, int k) {
+            addTri(m, p[i][0],p[i][1],p[i][2], p[j][0],p[j][1],p[j][2],
+                      p[k][0],p[k][1],p[k][2]);
+        };
+        tri(0, 2, 1);   // z=0 の面 (外向き = −z)
+        tri(0, 1, 3);   // y=0 の面
+        tri(0, 3, 2);   // x=0 の面
+        tri(1, 2, 3);   // 斜面
+        m.bbox[0] = m.bbox[1] = m.bbox[2] = 0.0;
+        m.bbox[3] = m.bbox[4] = m.bbox[5] = L;
+        const MeshDiagnostics d = analyzeMesh(m);
+        check(d.watertight(), "meshdiag: the tetrahedron is watertight");
+        check(std::fabs(d.volume() - L * L * L / 6.0) < 1e-9,
+              "meshdiag: tetrahedron volume is L^3/6");
+    }
+
     // 1) 健全な閉多様体: 穴なし・非多様体なし・向き一致・重複頂点 36−8=28
     {
         const ImportedMesh cube = orientedCube(0.02);
@@ -15326,6 +15522,56 @@ static void testLensSurfacePersistence()
         check(q.optical().lensSurfaces.isEmpty(),
               "lenssurf: a sidecar without the lens key leaves the table empty "
               "(= the default example)");
+    }
+
+    // (c) 最適化の変数指定 (variable) — **印を付けた面だけキーが増える**
+    //     追加のみの拡張なので、印を付けなければ出力は従来と 1 バイトも
+    //     変わらないこと (絶対規則 2) をバイト列で判定する。
+    {
+        Project p;
+        QVector<LensSurfaceRow> rows = defaultLensSurfaces();
+        rows[2].R = QStringLiteral("51.123");     // 触った印 (lens キーを出す)
+        p.optical().lensSurfaces = rows;
+        const QString jOff = btyTmpPath("lens_var_off.ofdx");
+        OfdxIO::save(jOff, p);
+        QFile f(jOff);
+        check(f.open(QIODevice::ReadOnly), "lenssurf: sidecar without marks");
+        const QByteArray off = f.readAll();
+        f.close();
+        check(!off.contains("\"variable\""),
+              "lenssurf: with no surface ticked the variable key is absent "
+              "(the file is byte-identical to the previous format)");
+
+        rows[2].variable = true;
+        rows[4].variable = true;
+        p.optical().lensSurfaces = rows;
+        const QString jOn = btyTmpPath("lens_var_on.ofdx");
+        OfdxIO::save(jOn, p);
+        QFile g(jOn);
+        check(g.open(QIODevice::ReadOnly), "lenssurf: sidecar with marks");
+        const QByteArray on = g.readAll();
+        g.close();
+        check(on.count("\"variable\"") == 2,
+              "lenssurf: exactly the ticked surfaces carry the variable key");
+
+        Project q;
+        QString err;
+        check(OfdxIO::load(jOn, q, &err), "lenssurf: variable sidecar reload");
+        const QVector<LensSurfaceRow> &got = q.optical().lensSurfaces;
+        bool same = got.size() == rows.size();
+        for (int i = 0; same && i < got.size(); ++i) same = (got[i] == rows[i]);
+        check(same, "lenssurf: the variable flags round-trip with the rest");
+
+        // 旧ファイル (variable キーが無い) を読むと印なしに戻る
+        Project r2;
+        check(OfdxIO::load(jOff, r2, &err),
+              "lenssurf: a sidecar without variable keys still loads");
+        bool anyMarked = false;
+        for (const LensSurfaceRow &s : r2.optical().lensSurfaces)
+            if (s.variable) anyMarked = true;
+        check(!anyMarked,
+              "lenssurf: an older sidecar reads back with no surface ticked "
+              "(so the optimiser keeps its previous behaviour)");
     }
 }
 
@@ -19184,7 +19430,47 @@ static void testDampedLeastSquares()
               "dls: and sits on the bound closest to the optimum");
     }
 
-    // ⑥ 残差が作れないときは成功と言わない
+    // ⑥ 重み付きの 2 目標 — 重みを変えるとどちらを優先するかが変わること。
+    //    レンズエディタの「f' + スポット RMS」がこの形をしている。閉形式で
+    //    検算できる最小の問題に落として、重みの効き方そのものを判定する:
+    //      残差 r = [x − a, w·x]  →  最小二乗解は x* = a/(1+w²)  (厳密)
+    //    第 1 目標の誤差 |x*−a| = a·w²/(1+w²) は w について単調増加、
+    //    第 2 目標 |w·x*| ではなく「第 2 目標の量」x* は単調減少する。
+    //    (画面に出している「重みを大きくすると 2 つ目を優先する」の中身)
+    {
+        const double a = 3.0;
+        double prevX = 0.0, prevErr = 0.0;
+        bool first = true;
+        const double ws[4] = { 0.1, 1.0, 10.0, 100.0 };
+        int mono = 0, exact = 0;
+        for (double w : ws) {
+            const ResidualFn fn = [&](const std::vector<double> &v,
+                                      std::vector<double> &r) {
+                r.assign(1, v[0] - a);
+                r.push_back(w * v[0]);
+                return true;
+            };
+            DlsOptions o;
+            o.maxIterations = 200;
+            const DlsResult r = solve(fn, { 0.0 }, o);
+            if (!r.ok) continue;
+            const double want = a / (1.0 + w * w);   // 閉形式
+            if (std::fabs(r.x[0] - want) < 1e-6 * std::max(1.0, want)) ++exact;
+            const double err = std::fabs(r.x[0] - a); // 第 1 目標の残り誤差
+            if (!first && r.x[0] < prevX && err > prevErr) ++mono;
+            first = false;
+            prevX = r.x[0];
+            prevErr = err;
+        }
+        check(exact == 4,
+              "dls: a weighted two-target problem hits the closed-form "
+              "solution x = a/(1+w^2) at every weight");
+        check(mono == 3,
+              "dls: raising the weight monotonically favours the second "
+              "target at the first target's expense");
+    }
+
+    // ⑦ 残差が作れないときは成功と言わない
     {
         const ResidualFn bad = [](const std::vector<double> &,
                                   std::vector<double> &) { return false; };
@@ -20754,6 +21040,270 @@ static void testBeamPatternCsv()
         f.close();
         check(!got.contains("measured"),
               "beamcsv: an untouched project writes no measured-pattern key");
+    }
+}
+
+
+// ── 実測 n,k テーブルの取込 (io/NkCsv) ─────────────────────────────────────
+// この読み取りで**静かに壊れる**のは 3 つ:
+//   1) 波長の単位の取り違え (nm と μm は 1000 倍違う。桁で推測している)
+//   2) k 列が無いのを「k = 0 を実測した」と読むこと (吸収ゼロの捏造)
+//   3) 壊れた行を部分的に受け入れて、途中までの曲線を返すこと
+// 判定はすべて **入力から直に分かる答え** との比較で、記録値の写しではない。
+static void testNkCsv()
+{
+    g_file = "nkcsv";
+    using ofd::parseNkCsv;
+    using ofd::NkTable;
+
+    // (1) いちばん素直な形 — nm 表記、k 列あり
+    {
+        const NkTable t = parseNkCsv(
+            "wavelength_nm,n,k\n"
+            "400,1.5300,0.0010\n"
+            "500,1.5200,0.0008\n"
+            "600,1.5150,0.0005\n");
+        check(t.ok, "nkcsv: a plain nm table parses");
+        check(t.points.size() == 3, "nkcsv: every data row is kept");
+        check(t.hasK, "nkcsv: the k column is detected");
+        check(t.unit == "nm" && t.unitFromHeader,
+              "nkcsv: the unit comes from the header word, not a guess");
+        // 400 nm = 0.4 μm — 変換は 1/1000 ちょうど
+        check(std::fabs(t.points[0].lambda_um - 0.4) < 1e-12,
+              "nkcsv: nm is converted to um by exactly 1/1000");
+        check(std::fabs(t.points[2].n - 1.5150) < 1e-12
+              && std::fabs(t.points[2].k - 0.0005) < 1e-12,
+              "nkcsv: n and k arrive verbatim");
+    }
+
+    // (2) 単位を書いていない μm 表記 — 桁から μm と読めること。
+    //     同じ数値を nm と読むと 0.4 nm (X 線) になるので、
+    //     取り違えると必ず結果が壊れる。
+    {
+        const NkTable t = parseNkCsv("0.40 1.53\n0.50 1.52\n0.60 1.515\n");
+        check(t.ok && t.unit == "um" && !t.unitFromHeader,
+              "nkcsv: a header-less table in the 0.4-0.6 range reads as um "
+              "(and says it was inferred)");
+        check(std::fabs(t.points[0].lambda_um - 0.40) < 1e-12,
+              "nkcsv: um values are kept as they are");
+        check(!t.hasK && t.points[0].k < 0.0,
+              "nkcsv: with no k column, k is missing data (negative), not 0");
+    }
+
+    // (3) 同じ数値でも単位を指定すれば推測しない — 1000 倍ちょうどずれる
+    {
+        const NkTable um = parseNkCsv("0.40 1.53\n0.60 1.51\n");
+        const NkTable nm = parseNkCsv("0.40 1.53\n0.60 1.51\n", "nm");
+        check(nm.ok && nm.unit == "nm",
+              "nkcsv: an explicit unit overrides the magnitude guess");
+        check(std::fabs(um.points[0].lambda_um
+                        - 1000.0 * nm.points[0].lambda_um) < 1e-12,
+              "nkcsv: reading the same file as um instead of nm scales the "
+              "wavelengths by exactly 1000");
+    }
+
+    // (4) メートル表記 (5.5e-7 のような書き方) も桁で分かる
+    {
+        const NkTable t = parseNkCsv("4.0e-7 1.53\n6.0e-7 1.51\n");
+        check(t.ok && t.unit == "m", "nkcsv: metre-scale values read as m");
+        check(std::fabs(t.points[0].lambda_um - 0.4) < 1e-12,
+              "nkcsv: m is converted to um by exactly 1e6");
+    }
+
+    // (5) 区切りと改行の揺れを吸収する — 同じ数値なら同じ結果
+    {
+        const NkTable a = parseNkCsv("400,1.53,0.001\n500,1.52,0.0008\n");
+        const NkTable b = parseNkCsv("400\t1.53\t0.001\r\n500\t1.52\t0.0008\r\n");
+        const NkTable c = parseNkCsv("400; 1.53; 0.001\n500; 1.52; 0.0008\n");
+        bool same = a.ok && b.ok && c.ok
+                 && a.points.size() == b.points.size()
+                 && a.points.size() == c.points.size();
+        for (std::size_t i = 0; same && i < a.points.size(); ++i)
+            same = std::fabs(a.points[i].lambda_um - b.points[i].lambda_um) < 1e-12
+                && std::fabs(a.points[i].lambda_um - c.points[i].lambda_um) < 1e-12
+                && std::fabs(a.points[i].n - b.points[i].n) < 1e-12
+                && std::fabs(a.points[i].n - c.points[i].n) < 1e-12;
+        check(same, "nkcsv: comma / tab+CRLF / semicolon give identical tables");
+    }
+
+    // (6) 並べ替えと重複 — 逆順で書いても昇順で返り、重複は最初の値が残る
+    {
+        const NkTable t = parseNkCsv(
+            "600,1.515\n400,1.530\n500,1.520\n500,9.999\n");
+        check(t.ok && t.points.size() == 3,
+              "nkcsv: a duplicate wavelength collapses to one point");
+        check(t.duplicates == 1, "nkcsv: and the duplicate is reported");
+        check(t.points[0].lambda_um < t.points[1].lambda_um
+              && t.points[1].lambda_um < t.points[2].lambda_um,
+              "nkcsv: rows come back sorted by wavelength");
+        check(std::fabs(t.points[1].n - 1.520) < 1e-12,
+              "nkcsv: the first value of a duplicate is kept, not the last");
+    }
+
+    // (7) コメントと空行は数に入れない。壊れた行は数えて飛ばす
+    {
+        const NkTable t = parseNkCsv(
+            "# measured 2026-08-13\n"
+            "\n"
+            "400,1.53\n"
+            "not,a,number\n"
+            "500,1.52\n");
+        check(t.ok && t.points.size() == 2,
+              "nkcsv: comments and blank lines do not become points");
+        check(t.skipped == 1,
+              "nkcsv: a broken row is skipped and counted (not silently lost)");
+    }
+
+    // (8) 有効な点が 2 点に満たなければ**全体を失敗**にする
+    {
+        const NkTable one = parseNkCsv("400,1.53\n");
+        check(!one.ok && one.points.empty() && !one.error.isEmpty(),
+              "nkcsv: a single row fails with a reason instead of returning "
+              "half a curve");
+        const NkTable none = parseNkCsv("lambda,n\nfoo,bar\n");
+        check(!none.ok && none.points.empty(),
+              "nkcsv: a file with no numbers fails too");
+        const NkTable dup = parseNkCsv("400,1.53\n400,1.54\n");
+        check(!dup.ok,
+              "nkcsv: two rows at the same wavelength are not two points");
+    }
+
+    // (9) 負の波長・非有限値は点にしない
+    {
+        const NkTable t = parseNkCsv("-400,1.53\n400,1.53\n500,1.52\n");
+        check(t.ok && t.points.size() == 2 && t.skipped == 1,
+              "nkcsv: a non-positive wavelength is rejected, not folded in");
+    }
+
+    // (10) 取り込んだ表を DispersionFit にそのまま渡せること。
+    //      Sellmeier 1 極 n²= 1 + Bλ²/(λ²−C) から作った点なので、
+    //      多極フィットは残差ほぼ 0 で通るはず (独立に分かる答え)。
+    {
+        const double B = 1.03961212, C = 0.00600069867;   // N-BK7 の第 1 極
+        QString text = "lambda_um,n\n";
+        for (int i = 0; i < 21; ++i) {
+            const double um = 0.4 + 0.03 * i;
+            const double n = std::sqrt(1.0 + B * um * um / (um * um - C));
+            text += QString::number(um, 'g', 12) + ","
+                  + QString::number(n, 'g', 12) + "\n";
+        }
+        const NkTable t = parseNkCsv(text);
+        check(t.ok && t.points.size() == 21 && t.unit == "um",
+              "nkcsv: a Sellmeier-generated table imports");
+        ofd::optics::FitOptions o;
+        o.model = ofd::optics::FitModel::MultiPole;
+        o.maxPoles = 2;
+        const ofd::optics::FitReport r = ofd::optics::fitDispersion(t.points, o);
+        check(r.status == ofd::optics::FitStatus::Ok,
+              "nkcsv: the imported points feed the dispersion fit directly");
+        check(r.rmsN < 1e-4,
+              qPrintable(QString("nkcsv: a one-pole Sellmeier curve is "
+                                 "recovered to the last digit (rms = %1)")
+                             .arg(r.rmsN, 0, 'g', 3)));
+        check(!r.hasK,
+              "nkcsv: with no k column the fit reports no k data (it does not "
+              "claim a lossless measurement)");
+    }
+}
+
+
+// ── 吸音率 α の取込と NRC (io/AbsorptionCsv) ───────────────────────────────
+// NRC は「表に書いた値」ではなく α から計算させることに意味がある。
+// 内蔵表では実際に 1 行 (コンクリート) だけ別の流儀の値が入っていて、
+// 残り 8 行と定義が食い違っていた。ここで定義を固定する。
+static void testAbsorptionCsv()
+{
+    g_file = "abscsv";
+    using ofd::parseAbsorptionCsv;
+    using ofd::AbsorptionTable;
+    using ofd::nrcFromAlpha;
+
+    // (1) ASTM C423 の定義そのもの: 250/500/1k/2k の平均を 0.05 刻みへ。
+    //     125 Hz と 4 kHz は入らない — そこを動かしても NRC は動かない。
+    {
+        const double a[6] = { 0.10, 0.20, 0.40, 0.60, 0.80, 0.90 };
+        // (0.20+0.40+0.60+0.80)/4 = 0.50 ちょうど
+        check(std::fabs(nrcFromAlpha(a) - 0.50) < 1e-12,
+              "abscsv: NRC is the mean of the 250/500/1k/2k bands");
+        double b[6] = { 0.10, 0.20, 0.40, 0.60, 0.80, 0.90 };
+        b[0] = 0.99; b[5] = 0.01;          // 125 Hz と 4 kHz だけ動かす
+        check(std::fabs(nrcFromAlpha(b) - 0.50) < 1e-12,
+              "abscsv: the 125 Hz and 4 kHz bands do not enter NRC");
+    }
+    // (2) 0.05 刻みの丸め
+    {
+        const double a1[6] = { 0, 0.06, 0.06, 0.06, 0.06, 0 };   // 平均 0.06
+        check(std::fabs(nrcFromAlpha(a1) - 0.05) < 1e-12,
+              "abscsv: 0.06 rounds down to 0.05");
+        const double a2[6] = { 0, 0.08, 0.08, 0.08, 0.08, 0 };   // 平均 0.08
+        check(std::fabs(nrcFromAlpha(a2) - 0.10) < 1e-12,
+              "abscsv: 0.08 rounds up to 0.10");
+        const double a3[6] = { 0, 0.075, 0.075, 0.075, 0.075, 0 };
+        check(std::fabs(nrcFromAlpha(a3) - 0.10) < 1e-12,
+              "abscsv: a value exactly halfway rounds up");
+    }
+    // (3) 内蔵表のコンクリート — 平均 0.0175 は 0.05 刻みでは 0.00 になる。
+    //     表には 0.02 (別の流儀) が書かれていた。定義はひとつに揃える。
+    {
+        const double concrete[6] = { 0.01, 0.01, 0.02, 0.02, 0.02, 0.03 };
+        check(std::fabs(nrcFromAlpha(concrete) - 0.0) < 1e-12,
+              "abscsv: a very low absorber gives NRC 0.00, not the 2-decimal "
+              "average that the built-in table used to show");
+    }
+    // (4) 読み取り: 名称に空白が入っても壊れない (空白は区切りにしない)
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "name,125,250,500,1k,2k,4k\n"
+            "Glass wool 50 mm,0.22,0.60,0.90,0.95,0.90,0.85\n"
+            "Heavy curtain,0.07,0.31,0.49,0.75,0.70,0.60\n");
+        check(t.ok && t.materials.size() == 2, "abscsv: a plain table parses");
+        check(t.materials[0].name == "Glass wool 50 mm",
+              "abscsv: a name containing spaces survives");
+        check(std::fabs(t.materials[0].alpha[2] - 0.90) < 1e-12,
+              "abscsv: the alpha values land in band order");
+        // 手計算: (0.60+0.90+0.95+0.90)/4 = 0.8375 → 0.85
+        check(std::fabs(nrcFromAlpha(t.materials[0].alpha) - 0.85) < 1e-12,
+              "abscsv: NRC of the imported row matches the hand calculation");
+    }
+    // (5) 区切りの揺れ
+    {
+        const AbsorptionTable a = parseAbsorptionCsv("A,0.1,0.2,0.3,0.4,0.5,0.6\n");
+        const AbsorptionTable b = parseAbsorptionCsv("A\t0.1\t0.2\t0.3\t0.4\t0.5\t0.6\r\n");
+        const AbsorptionTable c = parseAbsorptionCsv("A;0.1;0.2;0.3;0.4;0.5;0.6\n");
+        bool same = a.ok && b.ok && c.ok;
+        for (int i = 0; same && i < 6; ++i)
+            same = std::fabs(a.materials[0].alpha[i] - b.materials[0].alpha[i]) < 1e-12
+                && std::fabs(a.materials[0].alpha[i] - c.materials[0].alpha[i]) < 1e-12;
+        check(same, "abscsv: comma / tab+CRLF / semicolon give the same row");
+    }
+    // (6) α > 1 は残響室法 (ISO 354) では正常なので捨てない。数だけ報告する
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "Panel,0.30,0.80,1.05,1.10,0.95,0.80\n");
+        check(t.ok && t.materials.size() == 1,
+              "abscsv: alpha above 1 is kept (normal in ISO 354)");
+        check(t.overUnity == 1, "abscsv: and it is reported");
+        check(std::fabs(t.materials[0].alpha[3] - 1.10) < 1e-12,
+              "abscsv: the value above 1 is not clipped to 1");
+    }
+    // (7) 負値・列不足・名称なしは行ごと捨てる
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "# note\n"
+            "Good,0.10,0.20,0.30,0.40,0.50,0.60\n"
+            "Negative,-0.10,0.20,0.30,0.40,0.50,0.60\n"
+            "TooFew,0.10,0.20\n"
+            ",0.10,0.20,0.30,0.40,0.50,0.60\n");
+        check(t.ok && t.materials.size() == 1,
+              "abscsv: only the well-formed row becomes a material");
+        check(t.skipped == 3,
+              "abscsv: the negative / short / unnamed rows are counted");
+    }
+    // (8) 1 行も読めなければ失敗する
+    {
+        const AbsorptionTable t = parseAbsorptionCsv("name,125,250,500,1k,2k,4k\n");
+        check(!t.ok && t.materials.empty() && !t.error.isEmpty(),
+              "abscsv: a header with no data fails with a reason");
     }
 }
 
@@ -23377,6 +23927,8 @@ int main(int argc, char *argv[])
     testSourceDirectivity();
     testTlSlice3D();
     testBeamPatternCsv();
+    testNkCsv();
+    testAbsorptionCsv();
     testEyeDiagram();
     testCircuitImpulse();
     testPhaseNoise();

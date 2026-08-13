@@ -14,6 +14,12 @@
 // 「水密 (watertight)」の判定は 境界エッジ = 0 かつ 非多様体エッジ = 0。
 // これは閉多様体の必要条件で、ボクセル化 (内外判定) が成立する前提になる。
 //
+// 体積 (signedVolume) は発散定理で数える: V = Σ (v0 · (v1 × v2)) / 6。
+// **閉じたメッシュでしか意味を持たない** (穴があると足し合わせが打ち切られ、
+// 数字は出るが体積ではない) ので、使う側は watertight() を必ず見ること。
+// 符号は面の向きで決まり、負なら法線が内向き — 大きさは同じなので、
+// 「裏返っている」ことの検出に使える。
+//
 // *修復* (縫合・法線統一・デシメーション) は未実装 — ここは検出のみ。
 #pragma once
 #include "MeshImporter.h"
@@ -32,6 +38,11 @@ struct MeshDiagnostics {
     int    nonManifoldEdges = 0;      // 使用回数 3 以上の辺
     int    inconsistentEdges = 0;     // 2 枚が同じ向きにたどる辺 (法線不一致)
     double weldTolerance = 0.0;       // 頂点溶接の許容差 [m]
+    // 符号付き体積 (発散定理)。**watertight() が真のときだけ体積として
+    // 意味を持つ**。負 = 面の向きが内向き (大きさは同じ)
+    double signedVolume = 0.0;
+    double volume() const { return signedVolume < 0.0 ? -signedVolume
+                                                      : signedVolume; }
 
     // 閉多様体の必要条件 (穴が無く、辺を共有するのが常に 2 枚)
     bool watertight() const {

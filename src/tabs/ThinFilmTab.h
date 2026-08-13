@@ -4,9 +4,10 @@
 //     を選ぶと λ₀ における四分の一波長 (QWOT) 起点の層構成が組み上がる
 //   - 層構成   : 入射媒質 + 層スタック表 (材料/n/k/物理膜厚/nd·λ₀⁻¹/役割) + 基板
 //   - 分光特性 : 入射角・波長範囲 + R/T スペクトル MiniPlot + 指標表
-//   - 最適化設計: ターゲット表とメリット関数 + 膜厚のシンプレックス最適化
-//     (層数・材料を変える needle / tunneling / GA は未実装)
-//   - 製造・誤差: 膜厚誤差のモンテカルロ歩留まりと膜厚感度
+//   - 最適化設計: ターゲット表とメリット関数 + 膜厚の最適化
+//     (単純降下法 = Nelder-Mead と遺伝的アルゴリズムの 2 つ。層数・材料を
+//      変える needle / tunneling は未実装)
+//   - 製造・誤差: 膜厚誤差のモンテカルロ歩留まり (層間の相関つき) と膜厚感度
 //
 // 数値はすべて src/optics/ThinFilmStack (特性行列法, Qt 非依存) による実計算で、
 // 屈折率は src/optics/MaterialDispersion (公刊 Sellmeier) と core/GlassCatalog
@@ -128,6 +129,7 @@ private:
     QLineEdit    *m_thickErr;
     QCheckBox    *m_systematic;
     QCheckBox    *m_correlated;
+    QLineEdit    *m_correlation = nullptr;   // 相関係数 ρ (0..1)
     QButtonGroup *m_monitoring;
     QPushButton  *m_mcButton;
     QLabel       *m_yieldBadge;
