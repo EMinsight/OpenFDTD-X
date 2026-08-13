@@ -1093,6 +1093,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
                 // 念のため (末尾到達時に停止済みのはずだが二重に守る)
                 m_timer->stop();
                 m_playBtn->setText(I18n::tr("h5_play"));
+                pushSceneSlice();     // 3D の「再生中/停止中」を合わせる
                 return;
             }
             next = first;                             // ループ再生
@@ -1102,12 +1103,14 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             // ループ OFF: 末尾フレーム到達で停止 (ボタン表示も再生へ戻す)
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         }
     });
     connect(m_playBtn, &QPushButton::clicked, this, [this] {
         if (m_timer->isActive()) {
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         } else if (m_nframes > 1) {
             const int first = qBound(0, m_playFirst, m_nframes - 1);
             const int last = (m_playLast < 0) ? m_nframes - 1
@@ -1118,6 +1121,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             else if (m_frame < first) setFrame(first);
             m_timer->start();
             m_playBtn->setText(I18n::tr("h5_pause"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         }
     });
     connect(m_firstBtn, &QPushButton::clicked, this, [this] { setFrame(0); });
@@ -1765,53 +1769,84 @@ void H5ViewerTab::refreshOverlay()
 // 位置を推測せず何も送らない (CenterPane::applyResultSliceTo3D と同じ規則)。
 // 行 0 = 面内 第2軸の + 側、列 = 第1軸という並びは H5Reader が返すものと
 // Viewport3D が期待するものが一致しているので、そのまま渡す。
-void H5ViewerTab::pushSceneSlice()
+// 断面 1 枚ぶんを組み立てる。座標が足りず位置が決められないときは false
+// (位置不明の断面を 3D の適当な場所へ置くと結果の読み違いになる)。
+bool H5ViewerTab::buildSceneSlice(int axis, const QVector<double> &cells,
+                                  int rows, int cols,
+                                  const QString &planeName,
+                                  H5SliceForScene *out) const
 {
-    if (!m_sceneChk || !m_sceneChk->isChecked()) return;
-    // 伝搬時系列 (断面の軸と位置が決まる) 以外は対象にしない
-    if (!m_seriesMode || m_data.isEmpty() || m_rows <= 0 || m_cols <= 0) {
-        emit sceneSliceCleared();
-        return;
-    }
-    const int axis = sliceAxis();
+    if (!out || cells.isEmpty() || rows <= 0 || cols <= 0) return false;
+    axis = qBound(0, axis, 2);
     // 面内 2 軸の対応は H5Reader が返す行列の規約そのもの。定義を borrow して
     // 二重管理にしない (片方だけ直すと 3D の断面が黙って転置する)
     int uAxis = 0, vAxis = 2;
     H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
     // 3 軸ぶんの座標が要る (固定軸の位置と、面内 2 軸の範囲)
     if (m_coord[axis].isEmpty() || m_coord[uAxis].size() < 2
-        || m_coord[vAxis].size() < 2) {
-        emit sceneSliceCleared();
-        return;
-    }
+        || m_coord[vAxis].size() < 2)
+        return false;
+
     const int maxIdx = std::max(0, int(m_coord[axis].size()) - 1);
     const int idx = qBound(0, (m_secPos[axis] < 0) ? maxIdx / 2
                                                    : m_secPos[axis], maxIdx);
-
-    H5SliceForScene sl;
-    sl.cells = m_data;
-    sl.rows = m_rows;
-    sl.cols = m_cols;
-    sl.axis = axis;
-    sl.pos_m = m_coord[axis][idx];
-    sl.u0 = m_coord[uAxis].first();
-    sl.u1 = m_coord[uAxis].last();
-    sl.v0 = m_coord[vAxis].first();
-    sl.v1 = m_coord[vAxis].last();
+    out->cells = cells;
+    out->rows = rows;
+    out->cols = cols;
+    out->axis = axis;
+    out->pos_m = m_coord[axis][idx];
+    out->u0 = m_coord[uAxis].first();
+    out->u1 = m_coord[uAxis].last();
+    out->v0 = m_coord[vAxis].first();
+    out->v1 = m_coord[vAxis].last();
     // 手動スケールならその上限を渡してフレーム間で明るさを揃える。
     // 自動スケールのときは 0 を渡し、2D と同じ「フレームごとの正規化」にする
     // (2 つの画面で別々の正規化をすると同じデータが違う強さに見える)。
+    // 3 面ビューでは 3 枚とも 0 になり、3D 側が 3 面共通の最大値で揃える —
+    // 2D の 3 面ビューが合成 min/max を使うのと同じ扱いになる。
+    out->scaleMax = 0.0;
     if (!m_autoScale->isChecked()) {
         bool ok = false;
         const double hi = m_scaleMax->text().trimmed().toDouble(&ok);
-        if (ok && hi > 0.0) sl.scaleMax = hi;
+        if (ok && hi > 0.0) out->scaleMax = hi;
     }
+    // 再生コントロールの状況をそのまま渡す
+    out->frame = m_frame;
+    out->frameCount = m_nframes;
+    out->playing = (m_timer && m_timer->isActive());
     // 凡例には「何の・いつの・どこの断面か」を出す (3D 側だけ見ても分かる)
-    sl.label = I18n::tr("h5_scene_label")
-                   .arg(m_seriesComp, m_planeBox->currentText(),
-                        m_seriesFrameLabel,
-                        QString::number(sl.pos_m, 'g', 4));
-    emit sceneSliceReady(sl);
+    out->label = I18n::tr("h5_scene_label")
+                     .arg(m_seriesComp, planeName, m_seriesFrameLabel,
+                          QString::number(out->pos_m, 'g', 4));
+    return true;
+}
+
+void H5ViewerTab::pushSceneSlice()
+{
+    if (!m_sceneChk || !m_sceneChk->isChecked()) return;
+    // 伝搬時系列 (断面の軸と位置が決まる) 以外は対象にしない
+    if (!m_seriesMode) { emit sceneSliceCleared(); return; }
+
+    QVector<H5SliceForScene> out;
+    if (multiActive()) {
+        // 3 面ビュー: XY / XZ / YZ を 3 枚とも流す。2D で 3 面見えている
+        // のに 3D では 1 枚だけ、という食い違いを作らない
+        for (int p = 0; p < 3; ++p) {
+            H5SliceForScene sl;
+            if (buildSceneSlice(kPlaneAxis[p], m_multiData[p], m_multiRows[p],
+                                m_multiCols[p],
+                                I18n::tr(QLatin1String(kPlaneKey[kPlaneAxis[p]])),
+                                &sl))
+                out.push_back(sl);
+        }
+    } else {
+        H5SliceForScene sl;
+        if (buildSceneSlice(sliceAxis(), m_data, m_rows, m_cols,
+                            m_planeBox->currentText(), &sl))
+            out.push_back(sl);
+    }
+    if (out.isEmpty()) { emit sceneSliceCleared(); return; }
+    emit sceneSlicesReady(out);
 }
 
 // 断面のキャプション: 面名 + 固定軸のノード番号 (座標があれば [m] も)
@@ -1893,6 +1928,13 @@ void H5ViewerTab::loadMultiFrames()
     m_data = d[prim];
     m_rows = rows[prim];
     m_cols = cols[prim];
+    // 3D シーンへ 3 面とも流せるように保持する
+    for (int p = 0; p < 3; ++p) {
+        m_multiData[p] = d[p];
+        m_multiRows[p] = rows[p];
+        m_multiCols[p] = cols[p];
+    }
+    pushSceneSlice();
 
     m_previewBox->setTitle(I18n::tr("h5_multi_title").arg(m_seriesComp, label));
 }

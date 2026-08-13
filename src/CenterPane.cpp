@@ -760,16 +760,30 @@ void CenterPane::clearResultField()
 // 「結果断面を重ねる」が外れていると何も見えない**ので、受け取ったときに
 // トグルを入れて Field 表示へ切り替える (利用者が明示的に有効にした操作の
 // 続きなので、勝手な切替にはならない)。
-void CenterPane::showAnimationSlice(const H5SliceForScene &sl)
+void CenterPane::showAnimationSlice(const QVector<H5SliceForScene> &slices)
 {
-    if (sl.cells.isEmpty() || sl.rows <= 0 || sl.cols <= 0) {
+    QVector<Viewport3D::SliceSpec> specs;
+    for (const H5SliceForScene &sl : slices) {
+        if (sl.cells.isEmpty() || sl.rows <= 0 || sl.cols <= 0) continue;
+        Viewport3D::SliceSpec sp;
+        sp.cells = sl.cells;
+        sp.rows = sl.rows; sp.cols = sl.cols;
+        sp.axis = sl.axis; sp.pos_m = sl.pos_m;
+        sp.u0 = sl.u0; sp.u1 = sl.u1; sp.v0 = sl.v0; sp.v1 = sl.v1;
+        sp.label = sl.label;
+        sp.scaleMax = sl.scaleMax;
+        specs.push_back(sp);
+    }
+    if (specs.isEmpty()) {
         clearAnimationSlice();
         return;
     }
     m_animSliceActive = true;
-    m_viewport->setResultSlice(sl.cells, sl.rows, sl.cols, sl.axis, sl.pos_m,
-                               sl.u0, sl.u1, sl.v0, sl.v1, sl.label,
-                               sl.scaleMax);
+    m_viewport->setResultSlices(specs);
+    // 再生コントロールの状況 (全断面で同じ値なので先頭から取る)
+    m_viewport->setSlicePlayback(slices.first().frame,
+                                 slices.first().frameCount,
+                                 slices.first().playing);
     updateOverlayUi();
     if (m_overlayCheck->isEnabled() && !m_overlayCheck->isChecked())
         m_overlayCheck->setChecked(true);   // 見える状態にしてから渡す

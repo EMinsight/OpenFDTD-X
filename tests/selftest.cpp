@@ -36,6 +36,7 @@
 #include "optics/PhotonicCircuit.h"
 #include "io/AbsorptionCsv.h"
 #include "io/MeshProjection.h"
+#include "io/SlicePieces.h"
 #include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
@@ -21151,6 +21152,148 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 直交断面の切り分け (io/SlicePieces) ───────────────────────────────────
+// 3D シーンに断面を複数重ねるとき、面どうしが貫通するので四角形のままでは
+// 前後が決まらない。互いの位置で切ると貫通が無くなる — その「切れているか」
+// と「切り過ぎていないか」を固定する。
+static void testSlicePieces()
+{
+    g_file = "slicepieces";
+    using ofd::SlicePlane;
+    using ofd::SlicePiece;
+    using ofd::cutSlices;
+
+    // 1 枚だけなら切らない
+    {
+        SlicePlane a; a.axis = 2; a.pos = 0.0;
+        a.u0 = 0; a.u1 = 10; a.v0 = 0; a.v1 = 20;
+        QVector<SlicePlane> in; in.push_back(a);
+        const QVector<SlicePiece> out = cutSlices(in);
+        check(out.size() == 1, "slicepieces: a lone slice is not cut");
+        if (out.size() == 1)
+            check(out[0].ua == 0 && out[0].ub == 10
+                  && out[0].va == 0 && out[0].vb == 20,
+                  "slicepieces: the lone piece keeps the whole extent");
+    }
+
+    // 直交 3 面 (XY / XZ / YZ) — 各面が 4 分割されて計 12 片
+    // わざと非対称にする (辺の長さ・切る位置とも別々の値)。対称な箱だと
+    // u と v を取り違えても通ってしまう
+    QVector<SlicePlane> three;
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 3.0;    // Z 一定 : u=x, v=y
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane xz; xz.axis = 1; xz.pos = 7.0;    // Y 一定 : u=x, v=z
+        xz.u0 = 0; xz.u1 = 10; xz.v0 = 0; xz.v1 = 5;
+        SlicePlane yz; yz.axis = 0; yz.pos = 4.0;    // X 一定 : u=y, v=z
+        yz.u0 = 0; yz.u1 = 20; yz.v0 = 0; yz.v1 = 5;
+        three << xy << xz << yz;
+    }
+    const QVector<SlicePiece> cut = cutSlices(three);
+    check(cut.size() == 12,
+          "slicepieces: three orthogonal slices cut each other into 12 pieces");
+
+    // 面ごとに 4 片、かつ面積の合計が元の面積と一致する (隙間も重なりも無い)
+    for (int i = 0; i < 3; ++i) {
+        int n = 0;
+        double area = 0.0;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != i) continue;
+            ++n;
+            check(pc.ub > pc.ua && pc.vb > pc.va,
+                  "slicepieces: every piece has a positive extent");
+            area += (pc.ub - pc.ua) * (pc.vb - pc.va);
+        }
+        check(n == 4, "slicepieces: each slice is split into four pieces");
+        const double want = (three[i].u1 - three[i].u0)
+                          * (three[i].v1 - three[i].v0);
+        check(std::fabs(area - want) < 1e-9,
+              "slicepieces: the pieces tile the original slice exactly");
+    }
+
+    // 切れ目の位置が「他の面の位置」であること。XY 面 (u=x, v=y) は
+    // YZ 面 (X=4) で u=4 に、XZ 面 (Y=7) で v=7 に切られる。**この 2 つを
+    // 取り違えると転置**するので、両方を別々に判定する
+    {
+        bool cutAtU4 = false, cutAtV7 = false;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != 0) continue;
+            if (std::fabs(pc.ub - 4.0) < 1e-12) cutAtU4 = true;
+            if (std::fabs(pc.vb - 7.0) < 1e-12) cutAtV7 = true;
+        }
+        check(cutAtU4, "slicepieces: the XY slice is cut in u by the YZ plane");
+        check(cutAtV7, "slicepieces: the XY slice is cut in v by the XZ plane");
+    }
+    // XZ 面 (u=x, v=z) は YZ 面 (X=4) で u=4 に切られる。XY 面 (Z=3) は
+    // v=3 に切る。XY 面の位置 3 が u 側に現れてはいけない
+    {
+        bool u4 = false, v3 = false, wrong = false;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != 1) continue;
+            if (std::fabs(pc.ub - 4.0) < 1e-12) u4 = true;
+            if (std::fabs(pc.vb - 3.0) < 1e-12) v3 = true;
+            if (std::fabs(pc.ub - 3.0) < 1e-12) wrong = true;
+        }
+        check(u4 && v3, "slicepieces: the XZ slice is cut by both other planes");
+        check(!wrong, "slicepieces: a plane never cuts along the wrong in-plane axis");
+    }
+
+    // 平行な面は切らない (同じ軸の 2 枚)
+    {
+        SlicePlane a; a.axis = 2; a.pos = 1.0;
+        a.u0 = 0; a.u1 = 10; a.v0 = 0; a.v1 = 20;
+        SlicePlane b = a; b.pos = 2.0;
+        QVector<SlicePlane> in; in << a << b;
+        check(cutSlices(in).size() == 2,
+              "slicepieces: parallel slices do not cut each other");
+    }
+
+    // 範囲の外 / ちょうど端の位置では切らない (0 幅の小片を作らない)
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 0.0;
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane yz; yz.axis = 0; yz.pos = 50.0;   // u = 50 は範囲外
+        yz.u0 = 0; yz.u1 = 20; yz.v0 = 0; yz.v1 = 5;
+        QVector<SlicePlane> in; in << xy << yz;
+        int n = 0;
+        for (const SlicePiece &pc : cutSlices(in)) if (pc.plane == 0) ++n;
+        check(n == 1, "slicepieces: a plane outside the extent does not cut");
+
+        QVector<SlicePlane> in2; yz.pos = 10.0;      // ちょうど端 (u1)
+        in2 << xy << yz;
+        n = 0;
+        for (const SlicePiece &pc : cutSlices(in2)) if (pc.plane == 0) ++n;
+        check(n == 1, "slicepieces: a plane exactly at the edge does not cut");
+    }
+
+    // 面積を持たない指定・壊れた軸は捨てる (0 幅の小片を出さない)
+    {
+        SlicePlane bad; bad.axis = 2; bad.pos = 0.0;
+        bad.u0 = 5; bad.u1 = 5; bad.v0 = 0; bad.v1 = 1;    // u 幅 0
+        QVector<SlicePlane> in; in.push_back(bad);
+        check(cutSlices(in).isEmpty(),
+              "slicepieces: a degenerate slice yields no pieces");
+        SlicePlane oob; oob.axis = 7; oob.pos = 0.0;
+        oob.u0 = 0; oob.u1 = 1; oob.v0 = 0; oob.v1 = 1;
+        QVector<SlicePlane> in2; in2.push_back(oob);
+        check(cutSlices(in2).isEmpty(),
+              "slicepieces: an out-of-range axis yields no pieces");
+    }
+
+    // 同じ位置に複数の面があっても切れ目は 1 本 (0 幅の小片を作らない)
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 0.0;
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane a; a.axis = 0; a.pos = 4.0;
+        a.u0 = 0; a.u1 = 20; a.v0 = 0; a.v1 = 5;
+        SlicePlane b = a;                              // 同じ X = 4
+        QVector<SlicePlane> in; in << xy << a << b;
+        int n = 0;
+        for (const SlicePiece &pc : cutSlices(in)) if (pc.plane == 0) ++n;
+        check(n == 2, "slicepieces: duplicate planes make only one cut");
+    }
+}
+
 // ── 3D プレビューの投影 (io/MeshProjection) ───────────────────────────────
 // 正射影なので、既知の角度では手で書ける値になる。**軸の取り違えと符号の
 // 反転**がいちばん起きやすいので、そこを角度ごとに固定する。
@@ -24280,6 +24423,7 @@ int main(int argc, char *argv[])
     testSeriesSliceAxes();
     testSliceOverlay();
     testMeshProjection();
+    testSlicePieces();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

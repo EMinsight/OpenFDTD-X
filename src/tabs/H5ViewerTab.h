@@ -104,6 +104,11 @@ struct H5SliceForScene {
     // 正規化に使う最大値 (0 = このフレームの最大値)。手動スケール指定時は
     // その値を入れて、フレーム間で明るさが比較できるようにする
     double scaleMax = 0.0;
+    // 再生コントロールの状況。3D 側だけ見ても「今どのコマか / 再生中か」が
+    // 分かるようにする (2D と 3D で別々のコマを見ている誤解を防ぐ)
+    int  frame = 0;            // 現在フレーム (0 起点)
+    int  frameCount = 0;       // 全フレーム数 (0 = 不明)
+    bool playing = false;      // 再生中か
 };
 
 class H5ViewerTab : public QScrollArea {
@@ -117,7 +122,9 @@ public:
 signals:
     // 「3D シーンに重ねる」が有効なあいだ、表示中のフレームを流す。
     // 中継は MainWindow (タブ → CenterPane の直接依存を作らない)
-    void sceneSliceReady(const ofd::H5SliceForScene &slice);
+    // 3 面ビュー表示中は 3 枚まとめて流す (3D 側が互いの交線で切り分けて
+    // 前後を正しく描く)。単一断面のときは要素 1 個
+    void sceneSlicesReady(const QVector<ofd::H5SliceForScene> &slices);
     // 重ねるのをやめた / 座標が分からず流せない
     void sceneSliceCleared();
 
@@ -230,6 +237,10 @@ private:
     QCheckBox   *m_sceneChk = nullptr;
     QLabel      *m_sceneNote = nullptr;
     void pushSceneSlice();       // 表示中フレーム → 3D (条件を満たすときだけ)
+    // 断面 1 枚ぶんを組み立てる。座標から位置が決められないときは false
+    bool buildSceneSlice(int axis, const QVector<double> &cells,
+                         int rows, int cols, const QString &planeName,
+                         H5SliceForScene *out) const;
     void refreshOverlay();       // 形状・観測点 → 場マップの重ね描き
     QCheckBox   *m_ovGeom = nullptr;   // 形状の輪郭を重ねる
     QCheckBox   *m_ovMon = nullptr;    // 観測点を重ねる
@@ -242,6 +253,11 @@ private:
     QCheckBox   *m_multiChk = nullptr;
     QWidget     *m_multiWrap = nullptr;
     FieldCanvas *m_multiCanvas[3] = { nullptr, nullptr, nullptr };
+    // 3 面ビューで読んだ 3 断面の実データ (3D シーンへ流すのに使う)。
+    // loadMultiFrames が埋め、単一断面へ戻ると空になる
+    QVector<double> m_multiData[3];
+    int m_multiRows[3] = { 0, 0, 0 };
+    int m_multiCols[3] = { 0, 0, 0 };
     QLabel      *m_multiCaption[3] = { nullptr, nullptr, nullptr };
 
     // エクスポート

@@ -3,6 +3,8 @@
 #include "../core/ComponentCatalog.h"   // 部品→ドメイン許可表 (ComponentsTab と共有)
 #include "../core/Project.h"
 #include "../io/BellhopIO.h"
+#include "../io/H5Reader.h"    // seriesSliceAxes (面内 2 軸の対応の唯一の出所)
+#include "../io/SlicePieces.h" // 直交断面を互いの交線で切り分ける
 #include "../core/AimDirection.h"
 #include "../I18n.h"
 #include "FieldHeatmap.h"     // jet カラーマップ (2D 断面表示と同じ配色)
@@ -48,6 +50,17 @@ const bool s_i18n = [] {
     ofd::I18n::reg("vp_fld_decim",
         "表示のみ %1 セル毎に間引き",
         "display decimated: every %1 cells");
+    // 再生コントロールの状況 (H5アニメ) — 2D と同じコマを見ていることの明示
+    ofd::I18n::reg("vp_fld_playing",
+        "再生中  コマ %1 / %2",
+        "playing  frame %1 / %2");
+    ofd::I18n::reg("vp_fld_paused",
+        "停止中  コマ %1 / %2",
+        "paused  frame %1 / %2");
+    // 弱い値を透かしていることの明示 (消えているのではない)
+    ofd::I18n::reg("vp_fld_alpha",
+        "弱いところほど透過 (値は 2D 断面・CSV で読む)",
+        "weaker values are more transparent (read values in the 2D slice / CSV)");
     ofd::I18n::reg("vp_rays_sample",
         "サンプル表示 — ソルバ結果ではありません (24本 × 4反射)",
         "Sample display — not solver results (24 rays x 4 bounces)");
@@ -360,44 +373,84 @@ void Viewport3D::setResultSlice(const QVector<double> &cells, int rows,
                                 double u0, double u1, double v0, double v1,
                                 const QString &label, double scaleMax)
 {
-    const qint64 need = qint64(rows) * qint64(cols);
-    if (rows <= 0 || cols <= 0 || qint64(cells.size()) < need) {
-        clearResultSlice();
-        return;
-    }
-    m_sliceCells = cells;
-    m_sliceRows  = rows;
-    m_sliceCols  = cols;
-    m_sliceAxis  = qBound(0, axis, 2);
-    m_slicePos   = pos_m;
-    m_sliceU0 = u0; m_sliceU1 = u1;
-    m_sliceV0 = v0; m_sliceV1 = v1;
-    m_sliceLabel = label;
+    SliceSpec s;
+    s.cells = cells;
+    s.rows = rows; s.cols = cols;
+    s.axis = axis; s.pos_m = pos_m;
+    s.u0 = u0; s.u1 = u1; s.v0 = v0; s.v1 = v1;
+    s.label = label;
+    s.scaleMax = scaleMax;
+    QVector<SliceSpec> one;
+    one.push_back(s);
+    setResultSlices(one);
+}
+
+void Viewport3D::setResultSlices(const QVector<SliceSpec> &specs)
+{
+    QVector<Slice> keep;
+    QStringList labels;
     // 正規化は「与えられた実データの最大値」で行う (勝手な下駄を履かせない)。
     // scaleMax > 0 なら呼び側の指定を使う — 連続するフレームを共通の尺度で
     // 見せたいときに要る (フレームごとの最大値で割ると時間変化が消える)。
-    m_sliceMax = 0.0;
-    if (scaleMax > 0.0 && std::isfinite(scaleMax)) {
-        m_sliceMax = scaleMax;
-    } else {
-        for (qint64 i = 0; i < need; ++i) {
-            const double v = std::fabs(m_sliceCells[int(i)]);
-            if (std::isfinite(v) && v > m_sliceMax) m_sliceMax = v;
+    // **複数断面では全断面で 1 つの値に揃える** (カラーバーが 1 本しかない
+    // ので、面ごとに違う尺度で塗ると同じ色が違う強さを意味してしまう)。
+    double smax = 0.0;
+    bool given = false;
+    for (const SliceSpec &sp : specs) {
+        const qint64 need = qint64(sp.rows) * qint64(sp.cols);
+        if (sp.rows <= 0 || sp.cols <= 0 || qint64(sp.cells.size()) < need)
+            continue;                                    // 壊れた指定は捨てる
+        if (sp.scaleMax > 0.0 && std::isfinite(sp.scaleMax)) {
+            given = true;
+            smax = std::max(smax, sp.scaleMax);
+        }
+        Slice s;
+        s.cells = sp.cells;
+        s.rows = sp.rows; s.cols = sp.cols;
+        s.axis = qBound(0, sp.axis, 2);
+        s.pos = sp.pos_m;
+        s.u0 = sp.u0; s.u1 = sp.u1; s.v0 = sp.v0; s.v1 = sp.v1;
+        s.label = sp.label;
+        keep.push_back(s);
+        if (!sp.label.isEmpty()) labels << sp.label;
+    }
+    if (keep.isEmpty()) { clearResultSlice(); return; }
+
+    if (!given) {
+        for (const Slice &s : keep) {
+            const qint64 need = qint64(s.rows) * qint64(s.cols);
+            for (qint64 i = 0; i < need; ++i) {
+                const double v = std::fabs(s.cells[int(i)]);
+                if (std::isfinite(v) && v > smax) smax = v;
+            }
         }
     }
-    rebuildSliceImage();
+    m_slices = keep;
+    m_sliceMax = smax;
+    m_sliceLabel = labels.join(QStringLiteral(" / "));
+    rebuildSliceImages();
+    update();
+}
+
+void Viewport3D::setSlicePlayback(int frame, int frameCount, bool playing)
+{
+    if (m_sliceFrame == frame && m_sliceFrameCount == frameCount
+        && m_slicePlaying == playing) return;
+    m_sliceFrame = frame;
+    m_sliceFrameCount = frameCount;
+    m_slicePlaying = playing;
     update();
 }
 
 void Viewport3D::clearResultSlice()
 {
     if (!hasResultSlice() && m_sliceLabel.isEmpty()) return;
-    m_sliceCells.clear();
-    m_sliceRows = m_sliceCols = 0;
+    m_slices.clear();
     m_sliceMax = 0.0;
     m_sliceLabel.clear();
-    m_sliceImg = QImage();
     m_sliceDecim = 1;
+    m_sliceFrame = m_sliceFrameCount = 0;
+    m_slicePlaying = false;
     update();
 }
 
@@ -537,6 +590,22 @@ QPointF Viewport3D::projectPoint(double x, double y, double z) const
     // screen: x right, y down
     return QPointF(width()  / 2.0 + m_panPx.x() + x1,
                    height() / 2.0 + m_panPx.y() + y2);
+}
+
+// projectPoint と同じ基底の第 3 軸 e3 = (−sinA·sinE, cosA·sinE, cosE)。
+// 正射影なので画面座標からは決まらない奥行きをここで出す。**大きいほど
+// 手前** — el = 0 (真上から) では e3 = (0,0,1) で、z が大きいほど視点に
+// 近いことから向きが決まる。
+double Viewport3D::sceneDepth(double x, double y, double z) const
+{
+    const double az = m_azimuthDeg   * M_PI / 180.0;
+    const double el = m_elevationDeg * M_PI / 180.0;
+    const double dx = (x - m_cx) * m_scale;
+    const double dy = (y - m_cy) * m_scale;
+    const double dz = (z - m_cz) * m_scale;
+    return -dx * std::sin(az) * std::sin(el)
+         +  dy * std::cos(az) * std::sin(el)
+         +  dz * std::cos(el);
 }
 
 // 画面座標 → シーン座標 (projectPoint の逆変換)。
@@ -822,13 +891,24 @@ double Viewport3D::zView(double z) const
     return (m_domain == Domain::Underwater) ? z * m_vScale : z;
 }
 
-QPointF Viewport3D::projectSlicePoint(double u, double v) const
+// 面内座標 (u, v) → シーン座標。u/v がどの軸かは断面の固定軸で決まる
+// (io/H5Reader::seriesSliceAxes と同じ規約 — u は axis=0 のとき y、他は x。
+//  v は axis=2 のとき y、他は z)。
+void Viewport3D::sliceScenePoint(const Slice &s, double u, double v,
+                                 double out[3]) const
 {
-    switch (m_sliceAxis) {
-    case 0:  return projectPoint(m_slicePos, u, zView(v));   // YZ 面 (X 一定)
-    case 1:  return projectPoint(u, m_slicePos, zView(v));   // XZ 面 (Y 一定)
-    default: return projectPoint(u, v, m_slicePos);          // XY 面 (Z 一定)
+    switch (s.axis) {
+    case 0:  out[0] = s.pos; out[1] = u;     out[2] = zView(v); break; // YZ
+    case 1:  out[0] = u;     out[1] = s.pos; out[2] = zView(v); break; // XZ
+    default: out[0] = u;     out[1] = v;     out[2] = s.pos;    break; // XY
     }
+}
+
+QPointF Viewport3D::projectSlicePoint(const Slice &s, double u, double v) const
+{
+    double q[3];
+    sliceScenePoint(s, u, v, q);
+    return projectPoint(q[0], q[1], q[2]);
 }
 
 // 結果断面オーバーレイ — setResultSlice() で渡された実データを 3D 空間の
@@ -861,38 +941,90 @@ void Viewport3D::drawResultSlice(QPainter &p)
         return;
     }
 
-    // 断面の 4 隅を投影する。画像の (0,0) は行 0 = 第 2 軸の +側
-    const QPointF c00 = projectSlicePoint(m_sliceU0, m_sliceV1);
-    const QPointF c10 = projectSlicePoint(m_sliceU1, m_sliceV1);
-    const QPointF c11 = projectSlicePoint(m_sliceU1, m_sliceV0);
-    const QPointF c01 = projectSlicePoint(m_sliceU0, m_sliceV0);
+    // ── 断面を互いの交線で切り分ける ──────────────────────────────────────
+    // 断面が 2 枚以上あると互いに貫通するので、**四角形のままでは画家の
+    // アルゴリズムが原理的に成立しない** (どう並べても正しい前後にならない)。
+    // 各面を「他の面の位置」で切って小片にすると、切ったあとは互いに
+    // 貫通しないので重心の奥行きで厳密に前後が決まる。直交 3 面なら
+    // 各面が 4 分割されて計 12 片。
+    QVector<SlicePlane> planes;
+    planes.reserve(m_slices.size());
+    for (const Slice &s : m_slices) {
+        SlicePlane pl;
+        pl.axis = s.axis; pl.pos = s.pos;
+        pl.u0 = s.u0; pl.u1 = s.u1; pl.v0 = s.v0; pl.v1 = s.v1;
+        planes.push_back(pl);
+    }
+    // 切り分けは io/SlicePieces (Qt 非依存・selftest 済み)。ここは奥行きを
+    // 付けて並べ替えるだけ
+    QVector<SlicePiece> cut = cutSlices(planes);
+    QVector<QPair<double, SlicePiece>> pieces;
+    pieces.reserve(cut.size());
+    for (const SlicePiece &pc : cut) {
+        const Slice &s = m_slices[pc.plane];
+        double q[3];
+        sliceScenePoint(s, (pc.ua + pc.ub) / 2.0, (pc.va + pc.vb) / 2.0, q);
+        pieces.push_back({ sceneDepth(q[0], q[1], q[2]), pc });
+    }
+    // 奥から手前へ (io/MeshProjection と同じ向きの規約)
+    std::sort(pieces.begin(), pieces.end(),
+              [](const QPair<double, SlicePiece> &a,
+                 const QPair<double, SlicePiece> &b) {
+                  return a.first < b.first;
+              });
 
-    // 正射影なので断面の像は必ずアフィン変換で表せる。セル毎に四辺形を描くと
-    // 隣接セルの縁が重なって透明度が飽和する (下の形状が透けない) ため、
-    // 色画像を 1 回だけ貼る。25 万セルでも drawImage 1 回で済む。
-    if (!m_sliceImg.isNull()) {
-        const double iw = m_sliceImg.width(), ih = m_sliceImg.height();
+    for (const QPair<double, SlicePiece> &entry : pieces) {
+        const SlicePiece &pc = entry.second;
+        const Slice &s = m_slices[pc.plane];
+        if (s.img.isNull()) continue;
+        // 面全体の 4 隅 → 画像全体、というアフィン変換を 1 つ作り、小片は
+        // クリップで切り出す。正射影なので像は必ずアフィン変換で表せる。
+        // セル毎に四辺形を描くと隣接セルの縁が重なって透明度が飽和する
+        // (下の形状が透けない) ため、色画像を 1 回だけ貼る。
+        const QPointF c00 = projectSlicePoint(s, s.u0, s.v1);
+        const QPointF c10 = projectSlicePoint(s, s.u1, s.v1);
+        const QPointF c11 = projectSlicePoint(s, s.u1, s.v0);
+        const QPointF c01 = projectSlicePoint(s, s.u0, s.v0);
+        const double iw = s.img.width(), ih = s.img.height();
         const QPolygonF src{ QPointF(0, 0), QPointF(iw, 0),
                              QPointF(iw, ih), QPointF(0, ih) };
         const QPolygonF dst{ c00, c10, c11, c01 };
         QTransform t;
-        if (QTransform::quadToQuad(src, dst, t)) {
-            p.save();
-            // データを補間しない (実際のセル解像度をそのまま見せる)
-            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-            p.setRenderHint(QPainter::Antialiasing, false);
-            p.setOpacity(0.72);     // 形状ワイヤが透ける程度の透明度
-            p.setTransform(t, true);
-            p.drawImage(QPointF(0, 0), m_sliceImg);
-            p.restore();
-        }
+        if (!QTransform::quadToQuad(src, dst, t)) continue;
+
+        // 小片のクリップ領域 (画面座標)。同じ面の隣り合う小片のあいだに
+        // 隙間が出ないよう、重心まわりに僅かに広げる (重なるぶんには
+        // 同一面の同じ絵なので害が無い)
+        QPolygonF clip{ projectSlicePoint(s, pc.ua, pc.vb),
+                        projectSlicePoint(s, pc.ub, pc.vb),
+                        projectSlicePoint(s, pc.ub, pc.va),
+                        projectSlicePoint(s, pc.ua, pc.va) };
+        QPointF ctr;
+        for (const QPointF &q : clip) ctr += q;
+        ctr /= double(clip.size());
+        for (QPointF &q : clip) q = ctr + (q - ctr) * 1.01 + QPointF(0, 0);
+
+        p.save();
+        p.setClipRegion(QRegion(clip.toPolygon()));
+        // データを補間しない (実際のセル解像度をそのまま見せる)
+        p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setOpacity(0.72);         // 形状ワイヤが透ける程度の透明度
+        p.setTransform(t, true);
+        p.drawImage(QPointF(0, 0), s.img);
+        p.restore();
     }
 
-    // 断面の外枠 (面の位置を分かりやすく)
-    const QPolygonF outline{ c00, c10, c11, c01 };
+    // 断面の外枠 (面の位置を分かりやすく)。小片ではなく面ごとに 1 本
     p.setPen(QPen(QColor(255, 255, 255, 110), 1));
     p.setBrush(Qt::NoBrush);
-    p.drawPolygon(outline);
+    for (const Slice &s : m_slices) {
+        const QPolygonF outline{ projectSlicePoint(s, s.u0, s.v1),
+                                 projectSlicePoint(s, s.u1, s.v1),
+                                 projectSlicePoint(s, s.u1, s.v0),
+                                 projectSlicePoint(s, s.u0, s.v0) };
+        p.drawPolygon(outline);
+    }
 
     drawSliceLegend(p, m_sliceDecim);
 }
@@ -952,45 +1084,61 @@ void Viewport3D::drawOcean(QPainter &p)
 // 断面データ → 色画像 (行 0 = 第 2 軸の +側)。setResultSlice のたびに 1 回
 // だけ作り、再描画では貼るだけにする。巨大格子は平均で束ねて画像サイズを
 // 抑える (束ねたら m_sliceDecim に残して凡例に出す)。
-void Viewport3D::rebuildSliceImage()
+void Viewport3D::rebuildSliceImages()
 {
-    m_sliceImg = QImage();
     m_sliceDecim = 1;
-    if (!hasResultSlice()) return;
-
-    const int rows = m_sliceRows, cols = m_sliceCols;
-    const int maxDim = 1024;
-    int step = 1;
-    while ((cols + step - 1) / step > maxDim || (rows + step - 1) / step > maxDim)
-        ++step;
-    m_sliceDecim = step;
-
-    const int w = (cols + step - 1) / step;
-    const int h = (rows + step - 1) / step;
-    QImage img(w, h, QImage::Format_ARGB32);
-    if (img.isNull()) return;
+    // 正規化は全断面共通 (m_sliceMax)。面ごとの最大値では割らない
     const double inv = (m_sliceMax > 0.0) ? 1.0 / m_sliceMax : 0.0;
-    for (int r = 0; r < h; ++r) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(r));
-        const int r1 = std::min((r + 1) * step, rows);
-        for (int c = 0; c < w; ++c) {
-            const int c1 = std::min((c + 1) * step, cols);
-            double sum = 0.0;
-            int n = 0;
-            for (int rr = r * step; rr < r1; ++rr) {
-                const int base = rr * cols;
-                for (int cc = c * step; cc < c1; ++cc) {
-                    const double v = m_sliceCells[base + cc];
-                    if (std::isfinite(v)) { sum += std::fabs(v); ++n; }
+    for (Slice &s : m_slices) {
+        s.img = QImage();
+        s.decim = 1;
+        const int rows = s.rows, cols = s.cols;
+        if (rows <= 0 || cols <= 0) continue;
+        const int maxDim = 1024;
+        int step = 1;
+        while ((cols + step - 1) / step > maxDim
+               || (rows + step - 1) / step > maxDim)
+            ++step;
+        s.decim = step;
+        m_sliceDecim = std::max(m_sliceDecim, step);
+
+        const int w = (cols + step - 1) / step;
+        const int h = (rows + step - 1) / step;
+        QImage img(w, h, QImage::Format_ARGB32);
+        if (img.isNull()) continue;
+        for (int r = 0; r < h; ++r) {
+            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(r));
+            const int r1 = std::min((r + 1) * step, rows);
+            for (int c = 0; c < w; ++c) {
+                const int c1 = std::min((c + 1) * step, cols);
+                double sum = 0.0;
+                int n = 0;
+                for (int rr = r * step; rr < r1; ++rr) {
+                    const int base = rr * cols;
+                    for (int cc = c * step; cc < c1; ++cc) {
+                        const double v = s.cells[base + cc];
+                        if (std::isfinite(v)) { sum += std::fabs(v); ++n; }
+                    }
                 }
+                if (n == 0) { line[c] = qRgba(0, 0, 0, 0); continue; } // 値なし
+                const double t = qBound(0.0, sum / n * inv, 1.0);
+                const QColor col = FieldHeatmap::jet(t);
+                // ── 弱いところほど透かす ────────────────────────────────
+                // 場がほぼ 0 の一帯 (jet の濃い青) を不透明のまま塗ると、
+                // 奥の断面も物体形状も完全に隠れてしまう。3D に重ねる意味が
+                // 「何がどこにあるか」を一緒に見ることなので、強度で不透明度
+                // を付ける。t < kClear は完全に透ける。
+                // **これは表示の重み付けであってデータの間引きではない** —
+                // 値そのものは 2D 断面・CSV 側で読む。
+                const double kClear = 0.05;
+                double a = (t - kClear) / (1.0 - kClear);
+                a = (a <= 0.0) ? 0.0 : std::pow(a, 0.7);
+                line[c] = qRgba(col.red(), col.green(), col.blue(),
+                                int(qBound(0.0, a, 1.0) * 255.0 + 0.5));
             }
-            if (n == 0) { line[c] = qRgba(0, 0, 0, 0); continue; }  // 値なし
-            const double t = qBound(0.0, sum / n * inv, 1.0);
-            const QColor col = FieldHeatmap::jet(t);
-            line[c] = qRgba(col.red(), col.green(), col.blue(), 255);
         }
+        s.img = img;
     }
-    m_sliceImg = img;
 }
 
 // 結果断面の凡例 — カラーバー (0..1) + 実データである旨 + label
@@ -998,20 +1146,39 @@ void Viewport3D::drawSliceLegend(QPainter &p, int decim)
 {
     const QFontMetrics fm(p.font());
     // ── 左上: 実データ表記 + データセット名/時刻 + 断面位置 ─────────────
+    if (m_slices.isEmpty()) return;
     QStringList lines;
     lines << I18n::tr("vp_fld_real");
-    QString sub = QStringLiteral("%1 = %2 m")
-                      .arg(QLatin1String(sliceAxisName(m_sliceAxis)))
-                      .arg(QString::number(m_slicePos, 'g', 4));
+    // 断面ごとに「どの軸のどこか」を並べる (複数面のときにどれがどれか
+    // 分からなくならないように)
+    QStringList where;
+    for (const Slice &s : m_slices)
+        where << QStringLiteral("%1 = %2 m")
+                     .arg(QLatin1String(sliceAxisName(s.axis)))
+                     .arg(QString::number(s.pos, 'g', 4));
+    QString sub = where.join(QStringLiteral("  /  "));
     if (!m_sliceLabel.isEmpty())
         sub = m_sliceLabel + QStringLiteral("   ") + sub;
     lines << sub;
-    lines << QStringLiteral("%1 x %2").arg(m_sliceCols).arg(m_sliceRows)
+    // 解像度も面ごと。正規化最大値は全面共通の 1 つ (カラーバーが 1 本)
+    QStringList dims;
+    for (const Slice &s : m_slices)
+        dims << QStringLiteral("%1 x %2").arg(s.cols).arg(s.rows);
+    lines << dims.join(QStringLiteral("  /  "))
              + QStringLiteral("   ")
              + I18n::tr("vp_fld_norm")
                    .arg(QString::number(m_sliceMax, 'g', 4));
     if (decim > 1)
         lines << I18n::tr("vp_fld_decim").arg(decim);
+    // 再生コントロールの状況 — 2D 側と同じコマを見ていることが 3D だけでも
+    // 分かるようにする (コマ番号は 0 起点。2D の表示と同じ数え方)
+    const bool hasPlay = (m_sliceFrameCount > 0);
+    if (hasPlay)
+        lines << (m_slicePlaying ? I18n::tr("vp_fld_playing")
+                                 : I18n::tr("vp_fld_paused"))
+                     .arg(m_sliceFrame).arg(m_sliceFrameCount - 1);
+    // 弱いところを透かしていることを明記する (消えているのではなく薄い)
+    lines << I18n::tr("vp_fld_alpha");
 
     int w = 0;
     for (const QString &s : lines) w = std::max(w, fm.horizontalAdvance(s));
@@ -1026,6 +1193,20 @@ void Viewport3D::drawSliceLegend(QPainter &p, int decim)
         p.drawText(QRectF(box.x() + 8, box.y() + 6 + fm.height() * i,
                           box.width() - 16, fm.height()),
                    Qt::AlignLeft | Qt::AlignVCenter, lines[i]);
+    }
+
+    // 再生位置のバー (凡例の下辺。コマ位置が一目で分かるように)
+    if (hasPlay && m_sliceFrameCount > 1) {
+        const double t = qBound(0.0, double(m_sliceFrame)
+                                         / double(m_sliceFrameCount - 1), 1.0);
+        const QRectF bar(box.x() + 8, box.bottom() - 4,
+                         box.width() - 16, 2.0);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 60));
+        p.drawRect(bar);
+        p.setBrush(QColor(accentColor(m_domain)));
+        p.drawRect(QRectF(bar.x(), bar.y(), bar.width() * t, bar.height()));
+        p.setBrush(Qt::NoBrush);
     }
 
     // ── 右辺: カラーバー (0.0 〜 1.0) ───────────────────────────────────

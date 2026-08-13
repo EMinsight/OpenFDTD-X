@@ -84,7 +84,7 @@ public:
     // H5アニメの現在フレームを 3D シーンへ重ねる (MainWindow が中継する)。
     // 座標が分からないフレームはタブ側が送ってこないので、ここでは
     // 受け取ったものをそのまま置く。重ねる指定が外れたら消す。
-    void showAnimationSlice(const H5SliceForScene &slice);
+    void showAnimationSlice(const QVector<H5SliceForScene> &slices);
     void clearAnimationSlice();
 signals:
     // 3D シーンへの結果断面の反映結果。ok=false の detail は理由
