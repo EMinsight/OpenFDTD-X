@@ -133,6 +133,7 @@ private:
     QWidget *buildDefectsPage();
     void applyBudgetTable();
     void importMaterials();   // 吸音率 α の表 (CSV) を読んで材質表へ足す
+    void importRoomModel();   // 室形状 (STL/OBJ/PLY) から V と S を数える
     void refreshBudgetDerived();
     void refreshIrPage();        // IR解析: 帯域別指標 / 減衰曲線 / 検証表
     void refreshSpatialPage();   // 空間印象: LF/LFC (幾何) / G_late / 未計算欄
@@ -158,6 +159,8 @@ private:
     QTableWidget *m_hallMetrics;
     QTableWidget *m_alphaTable = nullptr;      // 吸音率 α の表 (取込で行が増える)
     QLabel       *m_matImportNote = nullptr;   // 取込の説明と結果
+    QComboBox    *m_modelUnit = nullptr;       // 取込モデルの単位 (m/mm/cm)
+    QLabel       *m_modelNote = nullptr;       // 取込モデルの説明と結果
     QLabel      *m_operaType, *m_operaInfo, *m_operaClosed, *m_operaNote;
     QTableWidget *m_operaMetrics, *m_operaPit;
 

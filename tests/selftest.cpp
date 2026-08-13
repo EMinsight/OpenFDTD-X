@@ -12356,6 +12356,67 @@ static void testMeshDiagnostics()
         return m;
     };
 
+    // 0) 体積 (発散定理)。閉じた立方体なら厳密に a³ になるはず。
+    //    表面積・体積は残響計算 (Sabine) にそのまま入るので、ここが狂うと
+    //    RT60 が静かにずれる。
+    {
+        const double a = 3.0;
+        const ImportedMesh cube = orientedCube(a);
+        const MeshDiagnostics d = analyzeMesh(cube);
+        check(d.watertight(), "meshdiag: the cube is watertight");
+        check(std::fabs(d.volume() - a * a * a) < 1e-9 * a * a * a,
+              qPrintable(QString("meshdiag: cube volume is exactly a^3 "
+                                 "(%1 vs %2)").arg(d.volume()).arg(a*a*a)));
+        check(d.signedVolume > 0.0,
+              "meshdiag: outward normals give a positive signed volume");
+        // 平行移動しても体積は変わらない (原点の取り方に依らない)
+        ImportedMesh moved = cube;
+        for (int i = 0; i < moved.vertices.size(); i += 3)
+            moved.vertices[i] += 1000.0f;
+        moved.bbox[0] += 1000.0; moved.bbox[3] += 1000.0;
+        const MeshDiagnostics dm = analyzeMesh(moved);
+        check(std::fabs(dm.volume() - a * a * a) < 1e-6 * a * a * a,
+              "meshdiag: volume is unchanged by translating the mesh far from "
+              "the origin");
+        // 2 倍に拡大したら体積は 8 倍 (面積は 4 倍)
+        const MeshDiagnostics d2 = analyzeMesh(orientedCube(2.0 * a));
+        check(std::fabs(d2.volume() - 8.0 * d.volume()) < 1e-6 * d2.volume(),
+              "meshdiag: doubling the edge multiplies the volume by 8");
+        // 面の向きを裏返すと符号だけ反転する (大きさは同じ)
+        ImportedMesh flipped = cube;
+        for (int t = 0; t < flipped.numTriangles; ++t) {
+            float *q = flipped.vertices.data() + t * 9;
+            for (int k = 0; k < 3; ++k) std::swap(q[3 + k], q[6 + k]);
+        }
+        const MeshDiagnostics df = analyzeMesh(flipped);
+        check(df.signedVolume < 0.0,
+              "meshdiag: inward normals give a negative signed volume");
+        check(std::fabs(df.volume() - d.volume()) < 1e-9 * d.volume(),
+              "meshdiag: and the magnitude is the same");
+    }
+    // 0b) 四面体 — 立方体以外でも厳密に合うこと (V = |det| / 6)。
+    //     頂点 (0,0,0) (L,0,0) (0,L,0) (0,0,L) なら V = L³/6。
+    {
+        const double L = 2.0;
+        ImportedMesh m;
+        m.name = "tetra";
+        const double p[4][3] = { {0,0,0}, {L,0,0}, {0,L,0}, {0,0,L} };
+        auto tri = [&](int i, int j, int k) {
+            addTri(m, p[i][0],p[i][1],p[i][2], p[j][0],p[j][1],p[j][2],
+                      p[k][0],p[k][1],p[k][2]);
+        };
+        tri(0, 2, 1);   // z=0 の面 (外向き = −z)
+        tri(0, 1, 3);   // y=0 の面
+        tri(0, 3, 2);   // x=0 の面
+        tri(1, 2, 3);   // 斜面
+        m.bbox[0] = m.bbox[1] = m.bbox[2] = 0.0;
+        m.bbox[3] = m.bbox[4] = m.bbox[5] = L;
+        const MeshDiagnostics d = analyzeMesh(m);
+        check(d.watertight(), "meshdiag: the tetrahedron is watertight");
+        check(std::fabs(d.volume() - L * L * L / 6.0) < 1e-9,
+              "meshdiag: tetrahedron volume is L^3/6");
+    }
+
     // 1) 健全な閉多様体: 穴なし・非多様体なし・向き一致・重複頂点 36−8=28
     {
         const ImportedMesh cube = orientedCube(0.02);

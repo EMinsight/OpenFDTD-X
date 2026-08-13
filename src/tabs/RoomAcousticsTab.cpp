@@ -2,6 +2,8 @@
 #include "RoomAcousticsTab.h"
 #include "TabHelpers.h"
 #include "../io/AbsorptionCsv.h"
+#include "../io/MeshImporter.h"
+#include "../io/MeshDiagnostics.h"
 #include "../acoustics/core/AcousticMetrics.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../core/OperaHalls.h"
@@ -308,6 +310,61 @@ const bool s_i18n = [] {
               "Absorption α (octave bands)");
     I18n::reg("rah_col_material", "材質", "Material");
     I18n::reg("rah_add_material", "＋ 材質を追加…", "＋ Add material…");
+    I18n::reg("rah_model_unit", "取込モデルの単位", "Unit of the imported model");
+    I18n::reg("rah_model_hint",
+              "「3Dモデル取込」で室形状 (STL / OBJ / PLY) を読むと、体積 V と "
+              "表面積 S を数えて残響計算へ入れます。メッシュのファイルには "
+              "単位が入っていないので、上の「取込モデルの単位」で指定して "
+              "ください (体積は取り違えると 10⁶〜10⁹ 倍ずれます)。",
+              "Import a room shape (STL / OBJ / PLY) with \"Import 3D model\" "
+              "and its volume V and surface area S are measured and fed into "
+              "the reverberation calculation. Mesh files carry no unit, so "
+              "pick one above (getting it wrong scales the volume by 10^6 to "
+              "10^9).");
+    I18n::reg("rah_model_dlg", "室形状のモデルを開く", "Open a room model");
+    I18n::reg("rah_model_fail", "取込に失敗しました: %1",
+              "Import failed: %1");
+    I18n::reg("rah_model_empty", "三角形が 1 枚もありません。",
+              "The file contains no triangles.");
+    // 穴があると体積は「数字は出るが体積ではない」— 入れてはいけない
+    I18n::reg("rah_model_open",
+              "%1 を読みましたが、閉じていないので体積を出せません "
+              "(穴のある辺 %2 本 / 3 枚以上が共有する辺 %3 本)。残響計算は "
+              "体積と表面積を対で使うため、「表面積も入れていません」 — "
+              "片方だけ入れ替えると元の体積と混ざった残響時間が出ます。"
+              "閉じたモデルで取り込み直してください。",
+              "Read %1, but it is not closed, so no volume can be measured "
+              "(%2 boundary edge(s), %3 non-manifold edge(s)). The "
+              "reverberation calculation uses volume and surface area "
+              "together, so the surface area was not filled in either — "
+              "replacing only one of them would mix the imported area with "
+              "the previous volume. Please re-import a closed model.");
+    I18n::reg("rah_model_ok",
+              "%1 を読みました (三角形 %2 枚、単位 %3)。体積 V = %4 m³、"
+              "表面積 S = %5 m² を残響計算へ入れました。",
+              "Read %1 (%2 triangles, unit %3). Volume V = %4 m3 and surface "
+              "area S = %5 m2 were fed into the reverberation calculation.");
+    I18n::reg("rah_model_flipped",
+              " 面の向きが内向きでした (体積の符号が負)。大きさは同じなので "
+              "そのまま使っています。",
+              " The faces point inward (the signed volume came out negative). "
+              "The magnitude is the same, so it is used as it is.");
+    I18n::reg("rah_model_toobig",
+              "%1 は三角形が多すぎて (%2 枚) 位相の検査を省略したため、"
+              "閉じているかを確認できません。体積も表面積も入れていません。",
+              "The topology check on %1 was skipped because it has too many "
+              "triangles (%2), so it is unknown whether the mesh is closed. "
+              "Neither volume nor surface area was filled in.");
+    I18n::reg("rah_model_range",
+              "%1 を単位 %2 で読むと体積 %3 m³ / 表面積 %4 m² になり、"
+              "入力欄の範囲 (%5〜%6) に入りません。単位の指定が違う可能性が "
+              "あります。黙って丸めると欄の数字とここの説明が食い違うので、"
+              "入れていません。",
+              "Reading %1 with the unit %2 gives a volume of %3 m3 and a "
+              "surface area of %4 m2, which fall outside the input range "
+              "(%5 to %6). The unit may be wrong. Nothing was filled in, "
+              "because silently clamping would make the fields disagree with "
+              "this message.");
     I18n::reg("rah_mat_import_hint",
               "取り込める形は「名称, α125, α250, α500, α1k, α2k, α4k」の "
               "CSV / TSV です (区切りは , ; TAB。名称に空白を含められるよう "
@@ -1163,7 +1220,8 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     crow->addWidget(m_hallBox, 1);
     auto *imp3dConcert = new QPushButton(I18n::tr("rah_import_3d"),
                                          m_concertPane);
-    tabhelp::markNotImplemented(imp3dConcert, I18n::tr(tabhelp::notimpl::kParser));   // 3D モデル取込は未配線
+    connect(imp3dConcert, &QPushButton::clicked, this,
+            &RoomAcousticsTab::importRoomModel);
     crow->addWidget(imp3dConcert);
     cv->addLayout(crow);
 
@@ -1197,7 +1255,8 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     }
     orow->addWidget(m_operaBox, 1);
     auto *imp3dOpera = new QPushButton(I18n::tr("rah_import_3d"), m_operaPane);
-    tabhelp::markNotImplemented(imp3dOpera, I18n::tr(tabhelp::notimpl::kParser));     // 3D モデル取込は未配線
+    connect(imp3dOpera, &QPushButton::clicked, this,
+            &RoomAcousticsTab::importRoomModel);
     orow->addWidget(imp3dOpera);
     ov->addLayout(orow);
 
@@ -1230,6 +1289,24 @@ QWidget *RoomAcousticsTab::buildHallPresetSection()
     ov->addLayout(scn);
     s->vbox()->addWidget(m_operaPane);
     m_operaPane->setVisible(false);
+
+    // 共通: 取込モデルの単位と結果。メッシュのファイルには単位が入って
+    // いない (STL / OBJ / PLY のいずれも) ので、**推測せず利用者に選ばせ、
+    // 使った単位を結果に書く**。体積は 1000 倍・10^9 倍で狂う量なので、
+    // 黙って決めると RT60 が静かにずれる。
+    auto *urow = new QHBoxLayout();
+    urow->addWidget(new QLabel(I18n::tr("rah_model_unit"), s));
+    m_modelUnit = new QComboBox(s);
+    m_modelUnit->addItems({ QStringLiteral("m"), QStringLiteral("mm"),
+                            QStringLiteral("cm") });
+    m_modelUnit->setMaximumWidth(90);
+    urow->addWidget(m_modelUnit);
+    urow->addStretch(1);
+    s->vbox()->addLayout(urow);
+    m_modelNote = new QLabel(I18n::tr("rah_model_hint"), s);
+    m_modelNote->setWordWrap(true);
+    m_modelNote->setStyleSheet("font-size:11px; color:#6B7280;");
+    s->vbox()->addWidget(m_modelNote);
 
     // 共通: 実測 vs シミュレーションの検証実行
     auto *run = new QHBoxLayout();
@@ -1736,6 +1813,90 @@ QWidget *RoomAcousticsTab::buildStagePage()
     v->addWidget(sc);
     v->addStretch(1);
     return page;
+}
+
+// 室形状の 3D モデル (STL / OBJ / PLY) を読んで体積 V と表面積 S を数え、
+// 残響計算のページへ入れる。読み取りは既存の io/MeshImporter、体積と位相は
+// io/MeshDiagnostics を使う (このタブに幾何の計算を書かない)。
+//
+// **閉じていないメッシュに体積は無い。** 発散定理の和は穴があっても数字を
+// 返すが、それは体積ではないので入れない (V は残響時間にそのまま効く)。
+void RoomAcousticsTab::importRoomModel()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("rah_model_dlg"), QString(),
+        MeshImporter::fileDialogFilter());
+    if (path.isEmpty()) return;
+
+    auto fail = [this](const QString &why) {
+        m_modelNote->setText(I18n::tr("rah_model_fail").arg(why));
+        m_modelNote->setStyleSheet("font-size:11px; color:#C0392B;");
+    };
+
+    QString err;
+    ImportedMesh mesh;
+    if (!MeshImporter::load(path, mesh, &err) || mesh.numTriangles <= 0) {
+        fail(err.isEmpty() ? I18n::tr("rah_model_empty") : err);
+        return;
+    }
+
+    // ファイル単位 → m。長さが k 倍なら面積は k²、体積は k³ 倍
+    const QString unit = m_modelUnit ? m_modelUnit->currentText()
+                                     : QStringLiteral("m");
+    const double k = (unit == QStringLiteral("mm")) ? 1.0e-3
+                   : (unit == QStringLiteral("cm")) ? 1.0e-2
+                                                    : 1.0;
+    const MeshDiagnostics d = analyzeMesh(mesh);
+    const double area_m2 = mesh.surfaceArea * k * k;
+
+    // 体積が出せないときは **表面積も入れない**。残響計算は V と S を対で
+    // 使う (Sabine: RT = 0.161 V / (S·α)) ので、片方だけ差し替えると
+    // 元の V と取り込んだ S が混ざった RT60 が静かに出てしまう。
+    if (d.skippedTooLarge || !d.valid) {
+        m_modelNote->setText(I18n::tr("rah_model_toobig")
+                                 .arg(QFileInfo(path).fileName())
+                                 .arg(mesh.numTriangles));
+        m_modelNote->setStyleSheet("font-size:11px; color:#B8860B;");
+        return;
+    }
+    if (!d.watertight()) {
+        m_modelNote->setText(I18n::tr("rah_model_open")
+                                 .arg(QFileInfo(path).fileName())
+                                 .arg(d.boundaryEdges)
+                                 .arg(d.nonManifoldEdges));
+        m_modelNote->setStyleSheet("font-size:11px; color:#B8860B;");
+        return;
+    }
+
+    const double vol_m3 = d.volume() * k * k * k;
+    // 入力欄には最小・最大がある。範囲外の値を渡すと **黙って丸められ**、
+    // 画面の説明と欄の数字が食い違う (単位を mm と取り違えたときに実際に
+    // 起きた: 説明は 0.0 m³、欄は下限の 10)。入れずに理由を出す。
+    if (vol_m3 < m_volume->minimum() || vol_m3 > m_volume->maximum()
+        || area_m2 < m_surface->minimum() || area_m2 > m_surface->maximum()) {
+        m_modelNote->setText(I18n::tr("rah_model_range")
+                                 .arg(QFileInfo(path).fileName())
+                                 .arg(unit)
+                                 .arg(QString::number(vol_m3, 'g', 3))
+                                 .arg(QString::number(area_m2, 'g', 3))
+                                 .arg(QString::number(m_volume->minimum(), 'g', 3),
+                                      QString::number(m_volume->maximum(), 'g', 3)));
+        m_modelNote->setStyleSheet("font-size:11px; color:#C0392B;");
+        return;
+    }
+    // 値を入れると valueChanged 経由で applyScalar が走り、RT60 まで更新される
+    m_volume->setValue(vol_m3);
+    m_surface->setValue(area_m2);
+
+    QString note = I18n::tr("rah_model_ok")
+                       .arg(QFileInfo(path).fileName())
+                       .arg(mesh.numTriangles)
+                       .arg(unit)
+                       .arg(QString::number(vol_m3, 'f', 1))
+                       .arg(QString::number(area_m2, 'f', 1));
+    if (d.signedVolume < 0.0) note += I18n::tr("rah_model_flipped");
+    m_modelNote->setText(note);
+    m_modelNote->setStyleSheet("font-size:11px; color:#2E7D32;");
 }
 
 // 吸音率 α の表 (CSV / TSV) を読んで材質表へ足す。

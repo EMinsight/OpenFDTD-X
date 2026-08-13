@@ -117,6 +117,28 @@ MeshDiagnostics analyzeMesh(const ImportedMesh &mesh, int maxTriangles)
         }
     }
 
+    // ── 2b) 符号付き体積 (発散定理) ──────────────────────────────────────
+    // V = Σ (v0 · (v1 × v2)) / 6。縮退三角形は寄与 0 なので除外は不要。
+    // 大きな座標での桁落ちを避けるため bbox 中心を原点にとる (平行移動で
+    // 体積は変わらない)。閉じていないメッシュでは意味を持たない値になるが、
+    // それは watertight() を見る側の責任 (ヘッダに明記)。
+    {
+        const double cx = 0.5 * (mesh.bbox[0] + mesh.bbox[3]);
+        const double cy = 0.5 * (mesh.bbox[1] + mesh.bbox[4]);
+        const double cz = 0.5 * (mesh.bbox[2] + mesh.bbox[5]);
+        double vol6 = 0.0;
+        for (int t = 0; t < n; ++t) {
+            const float *p = mesh.vertices.constData() + t * 9;
+            const double ax = p[0] - cx, ay = p[1] - cy, az = p[2] - cz;
+            const double bx = p[3] - cx, by = p[4] - cy, bz = p[5] - cz;
+            const double gx = p[6] - cx, gy = p[7] - cy, gz = p[8] - cz;
+            vol6 += ax * (by * gz - bz * gy)
+                  + ay * (bz * gx - bx * gz)
+                  + az * (bx * gy - by * gx);
+        }
+        d.signedVolume = vol6 / 6.0;
+    }
+
     for (auto it = edges.constBegin(); it != edges.constEnd(); ++it) {
         const EdgeUse &u = it.value();
         if (u.total == 1) {
