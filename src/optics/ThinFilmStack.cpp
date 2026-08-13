@@ -578,9 +578,12 @@ ToleranceResult monteCarlo(const StackAtLambda &stack,
     out.skipped = g.skipped;
     if (!g.ok || g.nLayers < 0) return out;
 
-    const double m0 = meritOf(g, targets, aoi_deg, std::vector<double>(), nullptr);
+    bool nominalOk = false;
+    const double m0 = meritOf(g, targets, aoi_deg, std::vector<double>(),
+                              &nominalOk);
     if (!(m0 == m0)) return out;
     out.meritNominal = m0;
+    out.nominalPass = nominalOk;
 
     Gauss gauss(opt.seed);
     std::vector<double> scale(size_t(g.nLayers), 1.0);
@@ -588,11 +591,25 @@ ToleranceResult monteCarlo(const StackAtLambda &stack,
     merits.reserve(size_t(opt.trials));
     double sum = 0.0;
     int passed = 0;
+    // 等相関モデルの係数。ρ = 0 では共通成分を引かない (従来の乱数列を
+    // そのまま保つため — 既定の結果を 1 ビットも変えない)
+    const double rho = std::min(std::max(opt.correlation, 0.0), 1.0);
+    const bool   corr = (rho > 0.0);
+    const double wc = corr ? std::sqrt(rho) : 0.0;          // 共通成分の重み
+    const double wi = corr ? std::sqrt(1.0 - rho) : 1.0;    // 独立成分の重み
     for (int t = 0; t < opt.trials; ++t) {
         // 系統誤差 = 全層共通のレートドリフト (ランダム誤差と同じ 1σ)
         const double common = opt.systematic ? opt.sigmaRel * gauss() : 0.0;
-        for (int j = 0; j < g.nLayers; ++j)
-            scale[size_t(j)] = std::max(0.0, 1.0 + common + opt.sigmaRel * gauss());
+        // 等相関の共通成分。ρ = 1 なら独立成分の重みが 0 になり、全層が
+        // 同じ相対誤差になる
+        const double shared = corr ? gauss() : 0.0;
+        for (int j = 0; j < g.nLayers; ++j) {
+            // ρ = 1 では層ごとの乱数を引かない (引くと使わない乱数で
+            // 系列がずれるだけ)。ρ = 0 では従来と同じく z_j だけを引く
+            const double zi = (wi > 0.0) ? gauss() : 0.0;
+            const double e = opt.sigmaRel * (wc * shared + wi * zi);
+            scale[size_t(j)] = std::max(0.0, 1.0 + common + e);
+        }
         bool inTol = false;
         const double m = meritOf(g, targets, aoi_deg, scale, &inTol);
         if (!(m == m)) return out;

@@ -252,6 +252,35 @@ const bool s_i18n = [] {
     I18n::reg("tfc_systematic", "系統誤差 (成膜レートドリフト)",
               "Systematic error (deposition-rate drift)");
     I18n::reg("tfc_correlated", "層間の誤差相関", "Layer-to-layer error correlation");
+    I18n::reg("tfc_corr_note",
+              "層間の誤差相関 ρ は、層ごとの相対誤差を "
+              "e = σ(√ρ·共通 + √(1−ρ)·層固有) と分ける等相関モデルです。"
+              "1 層あたりのばらつきは ρ に依らず σ のままで、層どうしの "
+              "相関係数が ρ になります。ρ = 0 は層ごとに独立 (チェックを "
+              "外したときと同じ)、ρ = 1 は全層が同じ相対誤差 (純粋な "
+              "レートドリフト)。「系統誤差」はこれとは別に足す共通ドリフトです。",
+              "The layer-to-layer error correlation rho splits each layer's "
+              "relative error as e = sigma(sqrt(rho)*common + "
+              "sqrt(1-rho)*per-layer). The spread of a single layer stays "
+              "sigma whatever rho is; what rho sets is the correlation "
+              "between layers. rho = 0 means independent layers (the same as "
+              "leaving the box unchecked) and rho = 1 means every layer takes "
+              "the same relative error (a pure rate drift). The systematic "
+              "error is a separate common drift added on top.");
+    I18n::reg("tfc_yield_model", "[前提: 膜厚誤差 1σ = %1%",
+              "[assumed: thickness error 1 sigma = %1%");
+    I18n::reg("tfc_yield_sys", " + 系統ドリフト", " + systematic drift");
+    I18n::reg("tfc_yield_indep", " / 層間は独立]", " / layers independent]");
+    I18n::reg("tfc_yield_corr", " / 層間の相関 ρ = %1]",
+              " / layer correlation rho = %1]");
+    I18n::reg("tfc_yield_nominal_fail",
+              " ※ 誤差ゼロの公称設計 (Merit %1) がすでに許容外の点を含むため、"
+              "歩留まりの低さは製造誤差ではなく設計が原因です "
+              "(膜厚誤差を小さくしても上がりません)。",
+              " Note: the nominal design itself (merit %1) already has points "
+              "outside tolerance, so the low yield comes from the design, not "
+              "from manufacturing scatter (reducing the thickness error will "
+              "not raise it).");
     I18n::reg("tfc_monitor", "モニタリング", "Monitoring");
     I18n::reg("tfc_mon_quartz",  "水晶振動子", "Quartz crystal");
     I18n::reg("tfc_mon_optical", "光学モニタ", "Optical monitor");
@@ -1091,11 +1120,20 @@ QWidget *ThinFilmTab::buildMfgPage()
     auto *cRow = new QHBoxLayout();
     m_systematic = makeCheck(I18n::tr("tfc_systematic"), true,  s);
     m_correlated = makeCheck(I18n::tr("tfc_correlated"), false, s);
-    tabhelp::markNotImplemented(m_correlated, I18n::tr(tabhelp::notimpl::kModel));   // 相関モデルは未実装
     cRow->addWidget(m_systematic);
     cRow->addWidget(m_correlated);
+    // 相関係数 ρ。チェックを入れたときだけ効くので、外れているうちは
+    // 触れないようにして「効かない値が入っている」状態を作らない
+    m_correlation = numEdit(QStringLiteral("0.5"), 60, s);
+    m_correlation->setEnabled(false);
+    cRow->addWidget(new QLabel(QStringLiteral("ρ ="), s));
+    cRow->addWidget(m_correlation);
+    connect(m_correlated, &QCheckBox::toggled, this, [this](bool on) {
+        m_correlation->setEnabled(on);
+    });
     cRow->addStretch(1);
     s->form()->addRow(cRow);
+    s->vbox()->addWidget(noteLabel(I18n::tr("tfc_corr_note"), s));
 
     auto *monRow = new QHBoxLayout();
     monRow->setSpacing(4);
@@ -1844,6 +1882,13 @@ void ThinFilmTab::runMonteCarlo()
     const double sigmaPct = m_thickErr->text().trimmed().toDouble(&sOk);
     o.sigmaRel = (sOk && sigmaPct >= 0.0) ? sigmaPct / 100.0 : 0.005;
     o.systematic = m_systematic->isChecked();
+    if (m_correlated->isChecked()) {
+        bool cOk = false;
+        const double rho = m_correlation->text().trimmed().toDouble(&cOk);
+        // 範囲外は 0..1 へ丸める (monteCarlo 側も丸めるが、画面に出す値と
+        // 実際に使う値を一致させるためここでも同じ値にする)
+        o.correlation = (cOk) ? std::min(std::max(rho, 0.0), 1.0) : 0.5;
+    }
 
     // 1000 試行 × 数十波長で数百 ms 程度 (43 層で実測 ~0.2 s)。
     // 進行中であることを砂時計カーソルで示す。
@@ -1856,10 +1901,26 @@ void ThinFilmTab::runMonteCarlo()
         m_yieldBadge->setStyleSheet(badgeCss("err"));
         return;
     }
+    // 歩留まりは σ・系統誤差・相関の 3 つの前提で変わる。数字だけ出すと
+    // 別の前提で出した値と見分けが付かないので、必ず前提を併記する。
+    QString model = I18n::tr("tfc_yield_model")
+                        .arg(QString::number(o.sigmaRel * 100.0, 'g', 3));
+    if (o.systematic) model += I18n::tr("tfc_yield_sys");
+    model += (o.correlation > 0.0)
+                 ? I18n::tr("tfc_yield_corr")
+                       .arg(QString::number(o.correlation, 'g', 3))
+                 : I18n::tr("tfc_yield_indep");
+    // 公称設計が許容内に入っていないなら、歩留まりが低い原因は製造誤差では
+    // なく設計そのもの。σ を下げても上がらないので、そう書く
+    // (「歩留まり 0%」だけだと製造の問題に見える)。
+    if (!r.nominalPass)
+        model += I18n::tr("tfc_yield_nominal_fail")
+                     .arg(QString::number(r.meritNominal, 'g', 3));
     m_yieldBadge->setText(I18n::tr("tfc_yield_fmt")
                               .arg(QString::number(r.yield * 100.0, 'f', 1))
                               .arg(r.passed)
-                              .arg(r.trials));
+                              .arg(r.trials)
+                          + QStringLiteral(" ") + model);
     m_yieldBadge->setStyleSheet(badgeCss(r.yield >= 0.9 ? "ok"
                                        : r.yield >= 0.5 ? "warn" : "err"));
 }

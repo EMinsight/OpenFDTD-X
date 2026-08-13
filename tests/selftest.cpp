@@ -5563,6 +5563,83 @@ static void testThinFilmStack()
         check(r3.valid && r3.yield <= r1.yield,
               "tmm: yield decreases as the thickness error grows");
         check(r3.meritP90 >= r1.meritP90, "tmm: 90th percentile merit grows");
+        // ── 層間の相関 (等相関モデル) ────────────────────────────────
+        // ρ = 0 は従来と**ビット一致**でなければならない (既定を変えない)。
+        {
+            ToleranceOptions oc = o;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const ToleranceResult rc0 = monteCarlo(ar, t, 0.0, oc);
+            ToleranceOptions ol = o;
+            ol.sigmaRel = 0.05;                 // correlation を触らない従来路
+            const ToleranceResult rl = monteCarlo(ar, t, 0.0, ol);
+            check(rc0.valid && rl.valid
+                  && rc0.meritMean == rl.meritMean
+                  && rc0.meritP90 == rl.meritP90 && rc0.passed == rl.passed,
+                  "tmm-corr: rho = 0 reproduces the previous result exactly "
+                  "(the common draw is skipped, so the random stream is "
+                  "unchanged)");
+        }
+        // 1 層だけの系では ρ は周辺分布を変えない — 等相関の構成が
+        // **1 層あたりの分散 σ² を保つ** ことの検証。√ρ / √(1−ρ) ではなく
+        // ρ / (1−ρ) を掛けてしまうとここで分散が落ちて差が出る。
+        {
+            ToleranceOptions oc = o;
+            oc.trials = 4000;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const double m0 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            oc.correlation = 0.5;
+            const double m5 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            oc.correlation = 1.0;
+            const double m1 = monteCarlo(ar, t, 0.0, oc).meritMean;
+            check(m0 > 0.0 && std::fabs(m5 - m0) < 0.06 * m0,
+                  qPrintable(QString("tmm-corr: with one layer, rho = 0.5 "
+                                     "keeps the same spread (%1 vs %2)")
+                                 .arg(m5).arg(m0)));
+            check(std::fabs(m1 - m0) < 0.06 * m0,
+                  qPrintable(QString("tmm-corr: and so does rho = 1 "
+                                     "(%1 vs %2)").arg(m1).arg(m0)));
+        }
+        // 多層では ρ が効く (層どうしの誤差が揃うと打ち消し合わない)
+        {
+            const double lam3 = 550.0;
+            const StackAtLambda three = [=](double l, StackSample &s) {
+                (void)l;
+                s.n0 = 1.0; s.nsub = 1.52;
+                s.layers.push_back({ 1.46, 0.0, lam3 / (4.0 * 1.46) });
+                s.layers.push_back({ 2.35, 0.0, lam3 / (2.0 * 2.35) });
+                s.layers.push_back({ 1.38, 0.0, lam3 / (4.0 * 1.38) });
+                return true;
+            };
+            ToleranceOptions oc = o;
+            oc.trials = 2000;
+            oc.sigmaRel = 0.05;
+            oc.correlation = 0.0;
+            const ToleranceResult a0 = monteCarlo(three, t, 0.0, oc);
+            const ToleranceResult a0b = monteCarlo(three, t, 0.0, oc);
+            check(a0.valid && a0.meritMean == a0b.meritMean,
+                  "tmm-corr: multilayer Monte Carlo stays deterministic");
+            oc.correlation = 1.0;
+            const ToleranceResult a1 = monteCarlo(three, t, 0.0, oc);
+            check(a1.valid && a1.meritMean != a0.meritMean,
+                  "tmm-corr: with more than one layer the correlation changes "
+                  "the outcome (it is not silently ignored)");
+            // 範囲外の ρ は 0..1 に丸める (黙って外挿しない)
+            oc.correlation = 5.0;
+            const ToleranceResult ah = monteCarlo(three, t, 0.0, oc);
+            oc.correlation = 1.0;
+            const ToleranceResult a1b = monteCarlo(three, t, 0.0, oc);
+            check(ah.valid && ah.meritMean == a1b.meritMean,
+                  "tmm-corr: rho above 1 is clamped to 1");
+            oc.correlation = -3.0;
+            const ToleranceResult an = monteCarlo(three, t, 0.0, oc);
+            oc.correlation = 0.0;
+            const ToleranceResult a0c = monteCarlo(three, t, 0.0, oc);
+            check(an.valid && an.meritMean == a0c.meritMean,
+                  "tmm-corr: a negative rho is clamped to 0");
+        }
+
         // 評価できる λ が無ければ valid = false
         const StackAtLambda none = [](double, StackSample &) { return false; };
         check(!monteCarlo(none, t, 0.0, o).valid,
