@@ -230,6 +230,10 @@ set(CORE_SOURCES
     # ボクセル化結果の断面 (プレビュー描画の計算側 — 絵と数を一致させる)
     src/io/VoxelSlice.cpp
     src/io/VoxelSlice.h
+    # 形状・観測点を断面へ投影する (H5アニメの重ね描きの計算側)。
+    # 断面と交わらないものは描かない判断もここに持つ
+    src/io/SliceOverlay.cpp
+    src/io/SliceOverlay.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。

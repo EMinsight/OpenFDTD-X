@@ -10,6 +10,8 @@
 #pragma once
 #include "../io/MovieExport.h"
 #include <QImage>
+#include <QPointF>
+#include <QRectF>
 #include <QScrollArea>
 #include <QVector>
 
@@ -44,6 +46,11 @@ public:
     void setColormap(int c);                 // 0=jet 1=viridis 2=seismic 3=gray
     void setScale(double lo, double hi);     // 正規化範囲 (表示側で 0..1 へ)
     void setShowGrid(bool on)  { m_grid = on; update(); }
+    // 断面へ投影済みの重ね描き (0..1 の正規化座標。計算は io/SliceOverlay)。
+    // ここは「もらった位置に描くだけ」— どこに写るかの判断は持たない
+    void setOverlay(const QVector<QRectF> &boxes, const QVector<QPointF> &pts)
+    { m_ovBoxes = boxes; m_ovPoints = pts; update(); }
+    void clearOverlay() { m_ovBoxes.clear(); m_ovPoints.clear(); update(); }
     void setShowAxes(bool on)  { m_axes = on; update(); }
     void setDatasetName(const QString &n) { m_name = n; update(); }
     bool hasData() const { return !m_img.isNull(); }
@@ -67,6 +74,9 @@ private:
     int     m_cmap = 0;                // 0=jet 1=viridis 2=seismic 3=grayscale
     double  m_lo = 0.0, m_hi = 1.0;
     bool    m_grid = false, m_axes = true;
+    // 重ね描き (0..1 の正規化座標。断面と交わるものだけが入っている)
+    QVector<QRectF> m_ovBoxes;
+    QVector<QPointF> m_ovPoints;
     QString m_name;                    // 左上オーバーレイ (データセット名)
 };
 
@@ -220,6 +230,9 @@ private:
     QCheckBox   *m_sceneChk = nullptr;
     QLabel      *m_sceneNote = nullptr;
     void pushSceneSlice();       // 表示中フレーム → 3D (条件を満たすときだけ)
+    void refreshOverlay();       // 形状・観測点 → 場マップの重ね描き
+    QCheckBox   *m_ovGeom = nullptr;   // 形状の輪郭を重ねる
+    QCheckBox   *m_ovMon = nullptr;    // 観測点を重ねる
     QString      m_seriesFrameLabel;   // 読み手が返したフレームの時刻表記
 
     QCheckBox   *m_multiChk = nullptr;

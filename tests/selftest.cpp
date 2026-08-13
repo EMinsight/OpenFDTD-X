@@ -35,6 +35,7 @@
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/AbsorptionCsv.h"
+#include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
 #include "io/NkCsv.h"
@@ -21149,6 +21150,129 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 形状・観測点の断面への投影 (io/SliceOverlay) ──────────────────────────
+// いちばん大事なのは「断面と交わらないものを描かない」こと。別の深さに
+// ある物体の輪郭が重なって見えたら、その断面に無いものを在るように
+// 見せることになる。正規化の向き (行 0 = v の + 側) も固定する。
+static void testSliceOverlay()
+{
+    g_file = "sliceoverlay";
+    using ofd::boxOnSlice;
+    using ofd::pointOnSlice;
+    using ofd::SliceRectNorm;
+    using ofd::SlicePointNorm;
+
+    // 表示範囲: u, v とも 0..10 m にして、正規化が 1/10 で読めるようにする
+    const double U0 = 0.0, U1 = 10.0, V0 = 0.0, V1 = 10.0;
+
+    // x 2..4, y 3..7, z 1..5 の直方体
+    ofd::Geometry g;
+    g.shape = 1;
+    g.g[0] = 2.0; g.g[1] = 4.0;      // x
+    g.g[2] = 3.0; g.g[3] = 7.0;      // y
+    g.g[4] = 1.0; g.g[5] = 5.0;      // z
+
+    // (1) 交わる断面 (z = 3、axis = 2 → u = x, v = y)
+    {
+        SliceRectNorm r;
+        check(boxOnSlice(g, 2, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: a box straddling the slice is projected");
+        check(std::fabs(r.u0 - 0.2) < 1e-12 && std::fabs(r.u1 - 0.4) < 1e-12,
+              qPrintable(QString("sliceoverlay: x 2..4 maps to u 0.2..0.4 "
+                                 "(got %1..%2)").arg(r.u0).arg(r.u1)));
+        // v は上から数える: y = 7 が上 (v0)、y = 3 が下 (v1)
+        check(std::fabs(r.v0 - 0.3) < 1e-12 && std::fabs(r.v1 - 0.7) < 1e-12,
+              qPrintable(QString("sliceoverlay: y 3..7 maps to v 0.3..0.7 "
+                                 "measured from the top (got %1..%2)")
+                             .arg(r.v0).arg(r.v1)));
+        check(r.v0 < r.v1,
+              "sliceoverlay: the +v edge comes out above the -v edge");
+    }
+    // (2) 交わらない断面は投影しない (これが本題)
+    {
+        SliceRectNorm r;
+        check(!boxOnSlice(g, 2, 7.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: a box that does not reach the slice is not drawn");
+        check(!boxOnSlice(g, 2, 0.5, U0, U1, V0, V1, &r),
+              "sliceoverlay: nor one that ends before it");
+        // 端はちょうど交わる (z = 1 と z = 5 は面に接する)
+        check(boxOnSlice(g, 2, 1.0, U0, U1, V0, V1, &r)
+              && boxOnSlice(g, 2, 5.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: the faces themselves count as touching");
+    }
+    // (3) 軸を変えると面内 2 軸も変わる (H5Reader と同じ対応)
+    {
+        SliceRectNorm r;
+        // axis = 0 (X 固定) → u = y, v = z
+        check(boxOnSlice(g, 0, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: fixing x projects the box too");
+        check(std::fabs(r.u0 - 0.3) < 1e-12 && std::fabs(r.u1 - 0.7) < 1e-12,
+              "sliceoverlay: with x fixed the columns run along y");
+        check(std::fabs(r.v0 - 0.5) < 1e-12 && std::fabs(r.v1 - 0.9) < 1e-12,
+              "sliceoverlay: and the rows run along z, measured from the top");
+        // axis = 1 (Y 固定) → u = x, v = z
+        check(boxOnSlice(g, 1, 5.0, U0, U1, V0, V1, &r)
+              && std::fabs(r.u0 - 0.2) < 1e-12
+              && std::fabs(r.v1 - 0.9) < 1e-12,
+              "sliceoverlay: with y fixed the columns run along x and the "
+              "rows along z");
+    }
+    // (4) 表示範囲の外へはみ出す部分は 0..1 に丸める (画面外を描かない)
+    {
+        ofd::Geometry big;
+        big.shape = 1;
+        big.g[0] = -5.0; big.g[1] = 50.0;
+        big.g[2] = -5.0; big.g[3] = 50.0;
+        big.g[4] = -5.0; big.g[5] = 50.0;
+        SliceRectNorm r;
+        check(boxOnSlice(big, 2, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: a box larger than the view still projects");
+        check(r.u0 == 0.0 && r.u1 == 1.0 && r.v0 == 0.0 && r.v1 == 1.0,
+              "sliceoverlay: and it is clipped to the view, not drawn outside");
+        // 面内で範囲とまったく重ならないものは描かない
+        ofd::Geometry away = g;
+        away.g[0] = 20.0; away.g[1] = 30.0;      // x が表示範囲の外
+        check(!boxOnSlice(away, 2, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: a box outside the view is not drawn");
+    }
+    // (5) 直方体以外・不正な引数は投影しない
+    {
+        ofd::Geometry sph = g;
+        sph.shape = 2;                      // 球
+        SliceRectNorm r;
+        check(!boxOnSlice(sph, 2, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: only boxes are projected (shape 1)");
+        check(!boxOnSlice(g, 5, 3.0, U0, U1, V0, V1, &r),
+              "sliceoverlay: an unknown axis is refused");
+        check(!boxOnSlice(g, 2, 3.0, 5.0, 5.0, V0, V1, &r),
+              "sliceoverlay: a degenerate view range is refused");
+        check(!boxOnSlice(g, 2, 3.0, U0, U1, V0, V1, nullptr),
+              "sliceoverlay: a null output pointer is refused");
+    }
+    // (6) 点 (観測点) — 固定軸の許容差の外なら描かない
+    {
+        SlicePointNorm q;
+        // 点 (2, 8, 4)。z = 4 の断面には居る
+        check(pointOnSlice(2.0, 8.0, 4.0, 2, 4.0, 0.0, U0, U1, V0, V1, &q),
+              "sliceoverlay: a point exactly on the slice is drawn");
+        check(std::fabs(q.u - 0.2) < 1e-12 && std::fabs(q.v - 0.2) < 1e-12,
+              qPrintable(QString("sliceoverlay: it lands at u 0.2 / v 0.2 "
+                                 "(got %1 / %2)").arg(q.u).arg(q.v)));
+        // 0.5 離れた断面: 許容差 0.6 なら描く / 0.4 なら描かない
+        check(pointOnSlice(2.0, 8.0, 4.0, 2, 4.5, 0.6, U0, U1, V0, V1, &q),
+              "sliceoverlay: within the tolerance it still counts");
+        check(!pointOnSlice(2.0, 8.0, 4.0, 2, 4.5, 0.4, U0, U1, V0, V1, &q),
+              "sliceoverlay: beyond the tolerance it is not drawn");
+        // 表示範囲の外の点は端へ貼り付けない
+        check(!pointOnSlice(20.0, 8.0, 4.0, 2, 4.0, 0.0, U0, U1, V0, V1, &q),
+              "sliceoverlay: a point outside the view is dropped, not clamped "
+              "to the edge");
+        // 負の許容差は 0 として扱う
+        check(!pointOnSlice(2.0, 8.0, 4.0, 2, 4.5, -1.0, U0, U1, V0, V1, &q),
+              "sliceoverlay: a negative tolerance behaves like zero");
+    }
+}
+
 // ── 伝搬時系列 断面の面内 2 軸 (H5Reader::seriesSliceAxes) ────────────────
 // この対応は「読み手が返す行列の並び」と「3D シーンへ置くときの軸」の
 // 両方が参照する。ずれると 3D の断面が黙って転置・入れ替わるので、
@@ -24062,6 +24186,7 @@ int main(int argc, char *argv[])
     testTlSlice3D();
     testBeamPatternCsv();
     testSeriesSliceAxes();
+    testSliceOverlay();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

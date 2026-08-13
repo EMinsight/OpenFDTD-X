@@ -2,6 +2,7 @@
 #include "H5ViewerTab.h"
 #include "../core/Project.h"
 #include "../io/MovieExport.h"
+#include "../io/SliceOverlay.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
@@ -131,6 +132,16 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_sec_xz", "XZ 面 (Y=固定)", "XZ plane (Y fixed)");
     ofd::I18n::reg("h5_sec_yz", "YZ 面 (X=固定)", "YZ plane (X fixed)");
     ofd::I18n::reg("h5_sec_pos", "位置", "Position");
+    ofd::I18n::reg("h5_overlay_tip_on",
+                   "いま見ている断面と交わる形状の輪郭 / 観測点だけを重ねます "
+                   "(別の深さにあるものは描きません)",
+                   "Overlays only the outlines and probes that intersect the "
+                   "slice being shown (things at other depths are not drawn)");
+    ofd::I18n::reg("h5_overlay_tip_off",
+                   "伝搬時系列で、断面の座標 (/metadata/Xn・Yn・Zn) が "
+                   "読めるファイルのときだけ使えます",
+                   "Available only for a propagation time series whose slice "
+                   "coordinates (/metadata/Xn, Yn, Zn) can be read");
     ofd::I18n::reg("h5_scene_chk", "3D シーンに重ねる",
                    "Overlay on the 3D scene");
     ofd::I18n::reg("h5_scene_tip_on",
@@ -611,6 +622,22 @@ void FieldCanvas::paintEvent(QPaintEvent *)
             p.drawLine(QPointF(0, y), QPointF(width(), y));
         }
     }
+    // 形状の輪郭と観測点 (断面と交わるものだけが渡ってくる)。
+    // 場を隠さないよう塗りつぶさず輪郭だけ描く
+    if (!m_ovBoxes.isEmpty()) {
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1.5));
+        for (const QRectF &r : m_ovBoxes)
+            p.drawRect(QRectF(r.x() * width(), r.y() * height(),
+                              r.width() * width(), r.height() * height()));
+    }
+    if (!m_ovPoints.isEmpty()) {
+        p.setBrush(QColor(255, 220, 80));
+        p.setPen(QPen(QColor(40, 40, 40), 1.0));
+        for (const QPointF &q : m_ovPoints)
+            p.drawEllipse(QPointF(q.x() * width(), q.y() * height()), 4.0, 4.0);
+    }
+
     if (m_axes) {
         // 軸は行列 index (列 0..cols-1 を下辺、行 0..rows-1 を左辺) で表示
         p.setPen(QColor(255, 255, 255, 150));
@@ -755,11 +782,16 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     ckAxes->setChecked(true);
     checks->addWidget(ckGrid);
     checks->addWidget(ckAxes);
-    // オーバーレイ 2 種はどこにも配線されていない → 未実装として無効化
+    // 重ね描き 2 種。断面の座標が読める伝搬時系列でのみ効く
+    // (updateSliceControls が有効/無効を決める)
     auto *ckOvGeom = new QCheckBox(I18n::tr("h5_overlay_geom"), sv);
     auto *ckOvMon  = new QCheckBox(I18n::tr("h5_overlay_mon"), sv);
-    ofd::tabhelp::markNotImplemented(ckOvGeom, I18n::tr(tabhelp::notimpl::kPlot));
-    ofd::tabhelp::markNotImplemented(ckOvMon, I18n::tr(tabhelp::notimpl::kPlot));
+    m_ovGeom = ckOvGeom;
+    m_ovMon  = ckOvMon;
+    connect(ckOvGeom, &QCheckBox::toggled, this,
+            [this] { refreshOverlay(); });
+    connect(ckOvMon, &QCheckBox::toggled, this,
+            [this] { refreshOverlay(); });
     checks->addWidget(ckOvGeom);
     checks->addWidget(ckOvMon);
     checks->addStretch(1);
@@ -1416,6 +1448,7 @@ void H5ViewerTab::loadCurrentFrame()
         m_previewBox->setTitle(I18n::tr("h5_series_title")
             .arg(m_seriesComp, m_planeBox->currentText(), label));
         showData(d, rows, cols);
+        refreshOverlay();       // 断面が変わると重ね描きも変わる
         pushSceneSlice();       // 3D シーンへ (重ねる設定のときだけ流れる)
         return;
     }
@@ -1460,6 +1493,14 @@ void H5ViewerTab::updateSliceControls()
     // 座標は loadSliceCoords が /metadata/Xn|Yn|Zn から読む
     const bool hasCoords = on && !m_coord[0].isEmpty()
                         && !m_coord[1].isEmpty() && !m_coord[2].isEmpty();
+    // 重ね描きも座標が要る (位置が決まらないものは重ねない)
+    for (QCheckBox *c : { m_ovGeom, m_ovMon }) {
+        if (!c) continue;
+        c->setEnabled(hasCoords);
+        c->setToolTip(I18n::tr(hasCoords ? "h5_overlay_tip_on"
+                                         : "h5_overlay_tip_off"));
+        if (!hasCoords && c->isChecked()) c->setChecked(false);
+    }
     if (m_sceneChk) {
         m_sceneChk->setEnabled(hasCoords);
         m_sceneChk->setToolTip(I18n::tr(hasCoords ? "h5_scene_tip_on"
@@ -1493,6 +1534,7 @@ void H5ViewerTab::updateSliceControls()
     m_secValue->setText(QStringLiteral("%1 / %2")
                             .arg(m_secPos[axis]).arg(maxIdx));
     updateMultiVisibility();
+    refreshOverlay();
 }
 
 // 3 面ビュー表示中か (チェック ON かつ伝搬時系列)
@@ -1551,7 +1593,67 @@ void H5ViewerTab::loadSliceCoords()
     }
 }
 
-// 表示中のフレームを 3D シーンへ流す。
+// 形状の輪郭と観測点を、いま見ている断面へ投影して場マップへ重ねる。
+//
+// 投影は io/SliceOverlay に閉じ込めてある。**断面と交わらないものは
+// 返ってこない** ので、ここでは受け取ったものを渡すだけ — 別の深さにある
+// 物体が今の断面に在るように見えることが無い。
+// 座標 (/metadata/Xn|Yn|Zn) が読めないファイルでは重ねられない (位置が
+// 決まらない) ので、そのときは何も渡さずチェックも無効になっている。
+void H5ViewerTab::refreshOverlay()
+{
+    if (!m_canvas) return;
+    const bool wantGeom = m_ovGeom && m_ovGeom->isEnabled()
+                       && m_ovGeom->isChecked();
+    const bool wantMon  = m_ovMon && m_ovMon->isEnabled()
+                       && m_ovMon->isChecked();
+    if (!m_seriesMode || (!wantGeom && !wantMon)) {
+        m_canvas->clearOverlay();
+        return;
+    }
+    const int axis = sliceAxis();
+    int uAxis = 0, vAxis = 1;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    if (m_coord[axis].isEmpty() || m_coord[uAxis].size() < 2
+        || m_coord[vAxis].size() < 2) {
+        m_canvas->clearOverlay();
+        return;
+    }
+    const int maxIdx = std::max(0, int(m_coord[axis].size()) - 1);
+    const int idx = qBound(0, (m_secPos[axis] < 0) ? maxIdx / 2
+                                                   : m_secPos[axis], maxIdx);
+    const double slice = m_coord[axis][idx];
+    const double uMin = m_coord[uAxis].first(), uMax = m_coord[uAxis].last();
+    const double vMin = m_coord[vAxis].first(), vMax = m_coord[vAxis].last();
+
+    QVector<QRectF> boxes;
+    if (wantGeom) {
+        for (const Geometry &g : m_p->geometries()) {
+            SliceRectNorm r;
+            if (boxOnSlice(g, axis, slice, uMin, uMax, vMin, vMax, &r))
+                boxes.push_back(QRectF(r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0));
+        }
+    }
+    QVector<QPointF> pts;
+    if (wantMon) {
+        // 観測点は面積を持たないので、断面 1 枚の厚み (節点間隔の半分) を
+        // 許容差にする。これより離れた点は「この断面に居ない」
+        double tol = 0.0;
+        if (idx + 1 < m_coord[axis].size())
+            tol = 0.5 * std::fabs(m_coord[axis][idx + 1] - slice);
+        else if (idx > 0)
+            tol = 0.5 * std::fabs(slice - m_coord[axis][idx - 1]);
+        for (const Probe &pr : m_p->probes()) {
+            SlicePointNorm q;
+            if (pointOnSlice(pr.x, pr.y, pr.z, axis, slice, tol,
+                             uMin, uMax, vMin, vMax, &q))
+                pts.push_back(QPointF(q.u, q.v));
+        }
+    }
+    m_canvas->setOverlay(boxes, pts);
+}
+
+// 表示中のフレームを 3D シーンへ流す。// 表示中のフレームを 3D シーンへ流す。
 //
 // **座標が分かるときだけ流す。** /metadata/Xn|Yn|Zn が無いファイル
 // (obpm の /field/Ixz など) は断面をどこへ置けばよいか決まらないので、
