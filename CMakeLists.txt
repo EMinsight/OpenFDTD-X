@@ -224,6 +224,9 @@ set(CORE_SOURCES
     # 実測 n,k テーブルの取込 (材料Explorer)。波長の単位は推測した根拠ごと返す
     src/io/NkCsv.cpp
     src/io/NkCsv.h
+    # 吸音率 α の取込 (室内音響)。NRC の定義 (ASTM C423) もここに閉じ込める
+    src/io/AbsorptionCsv.cpp
+    src/io/AbsorptionCsv.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。

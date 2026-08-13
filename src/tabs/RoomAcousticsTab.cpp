@@ -1,6 +1,7 @@
 // RoomAcousticsTab.cpp
 #include "RoomAcousticsTab.h"
 #include "TabHelpers.h"
+#include "../io/AbsorptionCsv.h"
 #include "../acoustics/core/AcousticMetrics.h"
 #include "../acoustics/qt/QtAcousticAdapter.h"
 #include "../core/OperaHalls.h"
@@ -307,6 +308,47 @@ const bool s_i18n = [] {
               "Absorption α (octave bands)");
     I18n::reg("rah_col_material", "材質", "Material");
     I18n::reg("rah_add_material", "＋ 材質を追加…", "＋ Add material…");
+    I18n::reg("rah_mat_import_hint",
+              "取り込める形は「名称, α125, α250, α500, α1k, α2k, α4k」の "
+              "CSV / TSV です (区切りは , ; TAB。名称に空白を含められるよう "
+              "空白は区切りにしません)。NRC は取り込んだ α から ASTM C423 の "
+              "定義で計算します。EASE の .xhn は書式が公開されていないため "
+              "取り込めません。",
+              "The importable form is \"name, a125, a250, a500, a1k, a2k, "
+              "a4k\" as CSV / TSV (separated by , ; or TAB — a space is not a "
+              "separator, so names may contain spaces). NRC is computed from "
+              "the imported alpha values per ASTM C423. EASE .xhn files cannot "
+              "be read because the format is not published.");
+    I18n::reg("rah_mat_import_dlg", "吸音率の表を開く",
+              "Open an absorption-coefficient table");
+    I18n::reg("rah_mat_import_filter",
+              "吸音率の表 (*.csv *.txt *.tsv);;すべて (*)",
+              "Absorption tables (*.csv *.txt *.tsv);;All files (*)");
+    I18n::reg("rah_mat_import_fail",
+              "取込に失敗しました: %1 (「名称, α125, α250, α500, α1k, α2k, "
+              "α4k」の 7 列が要ります)",
+              "Import failed: %1 (seven columns are required: name, a125, "
+              "a250, a500, a1k, a2k, a4k)");
+    I18n::reg("rah_mat_import_ok", "%1 から %2 材質を取り込みました。",
+              "Imported %2 material(s) from %1.");
+    I18n::reg("rah_mat_import_skip", " 読めなかった行が %1 行ありました。",
+              " %1 row(s) could not be read.");
+    // 残響室法では α > 1 が普通に出る。捨てずに、そう出ていることだけ伝える
+    I18n::reg("rah_mat_import_over",
+              " α が 1 を超える材質が %1 件あります (残響室法 ISO 354 では "
+              "試料端部の回折で普通に起こります。値はそのまま保持しています)。",
+              " %1 material(s) have alpha above 1 (this is normal in the "
+              "reverberation-room method of ISO 354, caused by diffraction at "
+              "the specimen edges; the values are kept as they are).");
+    I18n::reg("rah_nrc_note",
+              "NRC 列は α から計算しています — ASTM C423 の定義で "
+              "250/500/1k/2k Hz の平均を 0.05 刻みへ丸めた値です "
+              "(125 Hz と 4 kHz は入りません)。吸音の小さい材質はこの丸めで "
+              "0.00 になります。",
+              "The NRC column is computed from the alpha values: per ASTM "
+              "C423 it is the mean over 250/500/1k/2k Hz rounded to the "
+              "nearest 0.05 (125 Hz and 4 kHz do not enter). A material with "
+              "little absorption therefore rounds to 0.00.");
     I18n::reg("rah_scatter_section", "散乱係数 s (Scattering coefficient)",
               "Scattering coefficient s");
     I18n::reg("rah_scatter_hint",
@@ -1696,6 +1738,51 @@ QWidget *RoomAcousticsTab::buildStagePage()
     return page;
 }
 
+// 吸音率 α の表 (CSV / TSV) を読んで材質表へ足す。
+// NRC は内蔵材と同じく io/AbsorptionCsv の定義 (ASTM C423) で計算するので、
+// 取り込んだ行と内蔵行で NRC の意味が食い違わない。
+void RoomAcousticsTab::importMaterials()
+{
+    if (!m_alphaTable) return;
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("rah_mat_import_dlg"), QString(),
+        I18n::tr("rah_mat_import_filter"));
+    if (path.isEmpty()) return;
+
+    const AbsorptionTable t = readAbsorptionCsv(path);
+    if (!t.ok) {
+        m_matImportNote->setText(I18n::tr("rah_mat_import_fail").arg(t.error));
+        m_matImportNote->setStyleSheet("font-size:11px; color:#C0392B;");
+        return;
+    }
+
+    // 「＋ 材質を追加…」の行 (最終行) の手前へ挿し込む
+    int at = m_alphaTable->rowCount() - 1;
+    if (at < 0) at = 0;
+    for (const AbsorptionMaterial &m : t.materials) {
+        m_alphaTable->insertRow(at);
+        m_alphaTable->setItem(at, 0, new QTableWidgetItem(m.name));
+        for (int b = 0; b < 6; ++b)
+            m_alphaTable->setItem(at, b + 1,
+                                  numItem(QString::number(m.alpha[b], 'f', 2)));
+        auto *nrc = numItem(QString::number(nrcFromAlpha(m.alpha), 'f', 2));
+        QFont bold = nrc->font();
+        bold.setBold(true);
+        nrc->setFont(bold);
+        m_alphaTable->setItem(at, 7, nrc);
+        ++at;
+    }
+    m_alphaTable->setMinimumHeight(m_alphaTable->rowCount() * 30 + 42);
+
+    QString note = I18n::tr("rah_mat_import_ok")
+                       .arg(QFileInfo(path).fileName())
+                       .arg(int(t.materials.size()));
+    if (t.skipped > 0)   note += I18n::tr("rah_mat_import_skip").arg(t.skipped);
+    if (t.overUnity > 0) note += I18n::tr("rah_mat_import_over").arg(t.overUnity);
+    m_matImportNote->setText(note);
+    m_matImportNote->setStyleSheet("font-size:11px; color:#2E7D32;");
+}
+
 // 吸音材・散乱体DB — α / s のオクターブバンド表と面への割当 (EASE/ODEON 相当)。
 QWidget *RoomAcousticsTab::buildMaterialsPage()
 {
@@ -1710,33 +1797,45 @@ QWidget *RoomAcousticsTab::buildMaterialsPage()
     search->setPlaceholderText(I18n::tr("rah_mat_search"));
     tools->addWidget(search, 1);
     auto *matImport = new QPushButton(I18n::tr("rah_mat_import"), s);
-    tabhelp::markNotImplemented(matImport, I18n::tr(tabhelp::notimpl::kData));   // 材質 DB 取込は未配線
+    connect(matImport, &QPushButton::clicked, this,
+            &RoomAcousticsTab::importMaterials);
     tools->addWidget(matImport);
     s->vbox()->addLayout(tools);
+    m_matImportNote = new QLabel(I18n::tr("rah_mat_import_hint"), s);
+    m_matImportNote->setWordWrap(true);
+    m_matImportNote->setStyleSheet("font-size:11px; color:#6B7280;");
+    s->vbox()->addWidget(m_matImportNote);
     v->addWidget(s);
 
     // ── 吸音率 α
     auto *sa = new SectionBox(I18n::tr("rah_alpha_section"), page);
-    static const struct { const char *key; double a[6]; double nrc; } kMat[9] = {
-        { "rah_m_concrete",    { 0.01, 0.01, 0.02, 0.02, 0.02, 0.03 }, 0.02 },
-        { "rah_m_gypsum",      { 0.29, 0.10, 0.05, 0.04, 0.07, 0.09 }, 0.05 },
-        { "rah_m_wood_floor",  { 0.15, 0.11, 0.10, 0.07, 0.06, 0.07 }, 0.10 },
-        { "rah_m_carpet",      { 0.08, 0.24, 0.57, 0.69, 0.71, 0.73 }, 0.55 },
-        { "rah_m_gw50",        { 0.22, 0.60, 0.90, 0.95, 0.90, 0.85 }, 0.85 },
-        { "rah_m_perf_gw",     { 0.40, 0.75, 0.85, 0.60, 0.45, 0.30 }, 0.65 },
-        { "rah_m_curtain",     { 0.07, 0.31, 0.49, 0.75, 0.70, 0.60 }, 0.55 },
-        { "rah_m_seats_full",  { 0.39, 0.57, 0.80, 0.94, 0.92, 0.87 }, 0.80 },
-        { "rah_m_seats_empty", { 0.19, 0.37, 0.56, 0.67, 0.61, 0.59 }, 0.55 },
+    // NRC は持たせない — α から計算する (nrcFromAlpha)。値を並記すると
+    // 定義とずれても気付けないため、出所をひとつにする。
+    static const struct { const char *key; double a[6]; } kMat[9] = {
+        { "rah_m_concrete",    { 0.01, 0.01, 0.02, 0.02, 0.02, 0.03 } },
+        { "rah_m_gypsum",      { 0.29, 0.10, 0.05, 0.04, 0.07, 0.09 } },
+        { "rah_m_wood_floor",  { 0.15, 0.11, 0.10, 0.07, 0.06, 0.07 } },
+        { "rah_m_carpet",      { 0.08, 0.24, 0.57, 0.69, 0.71, 0.73 } },
+        { "rah_m_gw50",        { 0.22, 0.60, 0.90, 0.95, 0.90, 0.85 } },
+        { "rah_m_perf_gw",     { 0.40, 0.75, 0.85, 0.60, 0.45, 0.30 } },
+        { "rah_m_curtain",     { 0.07, 0.31, 0.49, 0.75, 0.70, 0.60 } },
+        { "rah_m_seats_full",  { 0.39, 0.57, 0.80, 0.94, 0.92, 0.87 } },
+        { "rah_m_seats_empty", { 0.19, 0.37, 0.56, 0.67, 0.61, 0.59 } },
     };
-    auto *alpha = makeStaticTable(sa,
+    m_alphaTable = makeStaticTable(sa,
         { I18n::tr("rah_col_material"), "125", "250", "500", "1k", "2k", "4k",
           "NRC" }, 10);
+    QTableWidget *alpha = m_alphaTable;
     for (int r = 0; r < 9; ++r) {
         alpha->setItem(r, 0, new QTableWidgetItem(I18n::tr(kMat[r].key)));
         for (int b = 0; b < 6; ++b)
             alpha->setItem(r, b + 1,
                            numItem(QString::number(kMat[r].a[b], 'f', 2)));
-        auto *nrc = numItem(QString::number(kMat[r].nrc, 'f', 2));
+        // NRC は表に書いた値ではなく **α から計算する** (ASTM C423)。
+        // 表へ直接書くと定義とずれても誰も気付かない — 実際に内蔵表の
+        // コンクリートだけ別の流儀 (平均を小数 2 桁へ丸めた 0.02) が
+        // 入っていて、残り 8 行 (0.05 刻み) と定義が食い違っていた。
+        auto *nrc = numItem(QString::number(nrcFromAlpha(kMat[r].a), 'f', 2));
         QFont bold = nrc->font();
         bold.setBold(true);
         nrc->setFont(bold);
@@ -1749,6 +1848,9 @@ QWidget *RoomAcousticsTab::buildMaterialsPage()
     alpha->setItem(9, 0, addMat);
     alpha->setSpan(9, 0, 1, 8);
     sa->vbox()->addWidget(alpha);
+    // NRC が α から計算されていることと、その定義を画面に書く。
+    // 書かないと丸めで 0.00 になった行が「値が無い」に見える。
+    sa->vbox()->addWidget(makeHint(I18n::tr("rah_nrc_note"), sa));
     v->addWidget(sa);
 
     // ── 散乱係数 s

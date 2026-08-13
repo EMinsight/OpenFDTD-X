@@ -34,6 +34,7 @@
 #include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
+#include "io/AbsorptionCsv.h"
 #include "io/BeamPatternCsv.h"
 #include "io/NkCsv.h"
 #include "io/BellhopIO.h"
@@ -21011,6 +21012,107 @@ static void testNkCsv()
     }
 }
 
+
+// ── 吸音率 α の取込と NRC (io/AbsorptionCsv) ───────────────────────────────
+// NRC は「表に書いた値」ではなく α から計算させることに意味がある。
+// 内蔵表では実際に 1 行 (コンクリート) だけ別の流儀の値が入っていて、
+// 残り 8 行と定義が食い違っていた。ここで定義を固定する。
+static void testAbsorptionCsv()
+{
+    g_file = "abscsv";
+    using ofd::parseAbsorptionCsv;
+    using ofd::AbsorptionTable;
+    using ofd::nrcFromAlpha;
+
+    // (1) ASTM C423 の定義そのもの: 250/500/1k/2k の平均を 0.05 刻みへ。
+    //     125 Hz と 4 kHz は入らない — そこを動かしても NRC は動かない。
+    {
+        const double a[6] = { 0.10, 0.20, 0.40, 0.60, 0.80, 0.90 };
+        // (0.20+0.40+0.60+0.80)/4 = 0.50 ちょうど
+        check(std::fabs(nrcFromAlpha(a) - 0.50) < 1e-12,
+              "abscsv: NRC is the mean of the 250/500/1k/2k bands");
+        double b[6] = { 0.10, 0.20, 0.40, 0.60, 0.80, 0.90 };
+        b[0] = 0.99; b[5] = 0.01;          // 125 Hz と 4 kHz だけ動かす
+        check(std::fabs(nrcFromAlpha(b) - 0.50) < 1e-12,
+              "abscsv: the 125 Hz and 4 kHz bands do not enter NRC");
+    }
+    // (2) 0.05 刻みの丸め
+    {
+        const double a1[6] = { 0, 0.06, 0.06, 0.06, 0.06, 0 };   // 平均 0.06
+        check(std::fabs(nrcFromAlpha(a1) - 0.05) < 1e-12,
+              "abscsv: 0.06 rounds down to 0.05");
+        const double a2[6] = { 0, 0.08, 0.08, 0.08, 0.08, 0 };   // 平均 0.08
+        check(std::fabs(nrcFromAlpha(a2) - 0.10) < 1e-12,
+              "abscsv: 0.08 rounds up to 0.10");
+        const double a3[6] = { 0, 0.075, 0.075, 0.075, 0.075, 0 };
+        check(std::fabs(nrcFromAlpha(a3) - 0.10) < 1e-12,
+              "abscsv: a value exactly halfway rounds up");
+    }
+    // (3) 内蔵表のコンクリート — 平均 0.0175 は 0.05 刻みでは 0.00 になる。
+    //     表には 0.02 (別の流儀) が書かれていた。定義はひとつに揃える。
+    {
+        const double concrete[6] = { 0.01, 0.01, 0.02, 0.02, 0.02, 0.03 };
+        check(std::fabs(nrcFromAlpha(concrete) - 0.0) < 1e-12,
+              "abscsv: a very low absorber gives NRC 0.00, not the 2-decimal "
+              "average that the built-in table used to show");
+    }
+    // (4) 読み取り: 名称に空白が入っても壊れない (空白は区切りにしない)
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "name,125,250,500,1k,2k,4k\n"
+            "Glass wool 50 mm,0.22,0.60,0.90,0.95,0.90,0.85\n"
+            "Heavy curtain,0.07,0.31,0.49,0.75,0.70,0.60\n");
+        check(t.ok && t.materials.size() == 2, "abscsv: a plain table parses");
+        check(t.materials[0].name == "Glass wool 50 mm",
+              "abscsv: a name containing spaces survives");
+        check(std::fabs(t.materials[0].alpha[2] - 0.90) < 1e-12,
+              "abscsv: the alpha values land in band order");
+        // 手計算: (0.60+0.90+0.95+0.90)/4 = 0.8375 → 0.85
+        check(std::fabs(nrcFromAlpha(t.materials[0].alpha) - 0.85) < 1e-12,
+              "abscsv: NRC of the imported row matches the hand calculation");
+    }
+    // (5) 区切りの揺れ
+    {
+        const AbsorptionTable a = parseAbsorptionCsv("A,0.1,0.2,0.3,0.4,0.5,0.6\n");
+        const AbsorptionTable b = parseAbsorptionCsv("A\t0.1\t0.2\t0.3\t0.4\t0.5\t0.6\r\n");
+        const AbsorptionTable c = parseAbsorptionCsv("A;0.1;0.2;0.3;0.4;0.5;0.6\n");
+        bool same = a.ok && b.ok && c.ok;
+        for (int i = 0; same && i < 6; ++i)
+            same = std::fabs(a.materials[0].alpha[i] - b.materials[0].alpha[i]) < 1e-12
+                && std::fabs(a.materials[0].alpha[i] - c.materials[0].alpha[i]) < 1e-12;
+        check(same, "abscsv: comma / tab+CRLF / semicolon give the same row");
+    }
+    // (6) α > 1 は残響室法 (ISO 354) では正常なので捨てない。数だけ報告する
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "Panel,0.30,0.80,1.05,1.10,0.95,0.80\n");
+        check(t.ok && t.materials.size() == 1,
+              "abscsv: alpha above 1 is kept (normal in ISO 354)");
+        check(t.overUnity == 1, "abscsv: and it is reported");
+        check(std::fabs(t.materials[0].alpha[3] - 1.10) < 1e-12,
+              "abscsv: the value above 1 is not clipped to 1");
+    }
+    // (7) 負値・列不足・名称なしは行ごと捨てる
+    {
+        const AbsorptionTable t = parseAbsorptionCsv(
+            "# note\n"
+            "Good,0.10,0.20,0.30,0.40,0.50,0.60\n"
+            "Negative,-0.10,0.20,0.30,0.40,0.50,0.60\n"
+            "TooFew,0.10,0.20\n"
+            ",0.10,0.20,0.30,0.40,0.50,0.60\n");
+        check(t.ok && t.materials.size() == 1,
+              "abscsv: only the well-formed row becomes a material");
+        check(t.skipped == 3,
+              "abscsv: the negative / short / unnamed rows are counted");
+    }
+    // (8) 1 行も読めなければ失敗する
+    {
+        const AbsorptionTable t = parseAbsorptionCsv("name,125,250,500,1k,2k,4k\n");
+        check(!t.ok && t.materials.empty() && !t.error.isEmpty(),
+              "abscsv: a header with no data fails with a reason");
+    }
+}
+
 // ── TL 断面 → 3D シーンの鉛直面 (io/TlSlice) ───────────────────────────────
 // 座標と値の対応づけだけを持つ部分。**向きと符号を間違えると静かに嘘の絵に
 // なる** ので、そこを重点的に判定する (色が裏返る / 上下が逆になる)。
@@ -23632,6 +23734,7 @@ int main(int argc, char *argv[])
     testTlSlice3D();
     testBeamPatternCsv();
     testNkCsv();
+    testAbsorptionCsv();
     testEyeDiagram();
     testCircuitImpulse();
     testPhaseNoise();

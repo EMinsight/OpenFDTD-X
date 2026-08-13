@@ -313,7 +313,7 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 
 | タブ | 件数 |
 |---|---|
-| RoomAcousticsTab | 12 |
+| RoomAcousticsTab | 11 (2026-08-13 に材質 DB 取込を実装して 12 → 11) |
 | GeometryTab | 9 |
 | ThinFilmTab | 7 |
 | H5ViewerTab | 6 |
@@ -321,6 +321,14 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 | SoundproofTab / OptimizeTab / LensEditorTab / DisplayOpticsTab / AnalysisGroupsTab / AcousticSourceTab | 各 3 |
 | Post2Tab / EmcTab / CircuitSolversTab / CabinAcousticsTab / AntennaCharTab | 各 2 |
 | その他 15 タブ | 各 1 |
+
+### 実装した / 実装しないと決めたもの (2026-08-13)
+
+| ボタン | 判断 |
+|---|---|
+| RoomAcousticsTab 材質 DB 取込 | **実装** (`io/AbsorptionCsv`)。利用者の「名称, α125…α4k」CSV / TSV を読む。区切りは `,` `;` TAB — **空白は区切りにしない** (材質名に空白が入るため)。α > 1 は残響室法 (ISO 354) の試料端部の回折で普通に起こる正当な測定値なので**捨てず**、そう出ている件数だけ報告する。負値・列不足・名称なしの行は捨てて数える。あわせて **NRC 列を α からの計算へ変更** — 内蔵表はコンクリートだけ「平均を小数 2 桁へ丸めた 0.02」で、残り 8 行の ASTM C423 (250/500/1k/2k の平均を 0.05 刻み) と定義が食い違っていた。定義を `nrcFromAlpha()` の 1 箇所に閉じ込め、画面にも定義を書いた (丸めで 0.00 になる行が「値が無い」に見えないため)。EASE の .xhn はボタン名に挙がっていたが**書式が公開されていない**ので取り込まない旨を画面に明示した |
+| AntennaCharTab の `.nec` / `.ffe` 書出 | **保留**。遠方界の書出先として並んでいるが、NEC の出力書式も FEKO の `.ffe` も**参照できる公開仕様を確認できなかった**。推測で書式を作ると読めないファイルを「書けた」と言うことになるので着手しない |
+| AntennaCharTab の `.h5` 書出 | **保留**。HDF5 は `USE_HDF5` の任意依存なので、既定ビルドで押せないボタンが残る |
 
 **2026-08-12 に改善済み。** `markNotImplemented()` は理由を必須にした
 (`markNotImplemented(b, I18n::tr(tabhelp::notimpl::kXxx))`)。ツールチップは
