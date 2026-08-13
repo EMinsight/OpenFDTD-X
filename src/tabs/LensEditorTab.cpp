@@ -5,6 +5,7 @@
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
 #include "../optics/DistortionGrid.h"
+#include "../optics/FieldCurvature.h"
 #include "../optics/EncircledEnergy.h"
 #include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
@@ -195,13 +196,43 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "像面湾曲図・波面 (Zernike) は未実装です。スポットダイアグラム・"
-              "レイファン・色収差・MTF・包絡エネルギー・歪曲格子は実光線追跡で"
+              "波面 (Zernike) は未実装です。スポットダイアグラム・レイファン・"
+              "色収差・MTF・包絡エネルギー・歪曲格子・像面湾曲は実光線追跡で"
               "計算します。",
-              "The field-curvature plot and the wavefront (Zernike) map are not "
-              "implemented. The spot diagram, the ray fan, the chromatic focal "
-              "shift, the MTF, the encircled energy and the distortion grid are "
-              "computed by real ray tracing.");
+              "The wavefront (Zernike) map is not implemented. The spot "
+              "diagram, the ray fan, the chromatic focal shift, the MTF, the "
+              "encircled energy, the distortion grid and the field curvature "
+              "are computed by real ray tracing.");
+    I18n::reg("lde_fc_x", "近軸像面からのずれ [mm]",
+              "Shift from the paraxial image plane [mm]");
+    I18n::reg("lde_fc_y", "視野半角 [deg]", "Half-field angle [deg]");
+    I18n::reg("lde_fc_res",
+              "視野端 (%1°) で サジタル %2 mm・タンジェンシャル %3 mm、"
+              "非点隔差の最大は %4 mm です。像空間では光線が直線なので、像面を "
+              "2 枚置いた外挿で交点を厳密に解いています (焦点探索なし)。",
+              "At the edge of the field (%1 deg) the sagittal focus is at "
+              "%2 mm and the tangential at %3 mm; the largest astigmatic "
+              "separation is %4 mm. Rays are straight in image space, so the "
+              "crossings are solved exactly by extrapolating between two image "
+              "planes (no focus search).");
+    I18n::reg("lde_fc_note",
+              " 実光線の交点なので、3 次収差 (ザイデル) の像面湾曲とは"
+              "別ものです (視野が大きいほど離れます)。同じ図には混ぜていません。",
+              " These are real-ray crossings, not the third-order (Seidel) "
+              "field curvature; the two diverge as the field grows and are not "
+              "mixed in one plot.");
+    I18n::reg("lde_fc_cut",
+              " ⚠ 指定した視野半角は %1° ですが、%2° より外では瞳端の光線が"
+              "けられて追跡できませんでした。曲線はそこまでです "
+              "(足りない部分を外挿してはいません)。",
+              " [!] The requested half-field is %1 deg, but beyond %2 deg the "
+              "marginal rays are vignetted and could not be traced. The curve "
+              "stops there (the missing part is not extrapolated).");
+    I18n::reg("lde_fc_bad",
+              "像面湾曲は視野と実光線追跡が要ります。視野が 0 か、上下・左右の"
+              "光線を追跡できませんでした。",
+              "The field-curvature plot needs a non-zero field and a successful "
+              "ray trace of the upper/lower and left/right rays.");
     I18n::reg("lde_dg_x", "像面 x [mm]", "Image plane x [mm]");
     I18n::reg("lde_dg_y", "像面 y [mm]", "Image plane y [mm]");
     I18n::reg("lde_dg_res",
@@ -793,6 +824,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                                  this, &LensEditorTab::runMtf);
         else if (i == 3) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runEncircled);
+        else if (i == 4) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runFieldCurvature);
         else if (i == 5) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runDistortion);
         else if (i == 6) connect(b, &QPushButton::clicked,
@@ -1627,6 +1660,98 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── 像面湾曲 (optics/FieldCurvature) ───────────────────────────────────────
+// 視野ごとに、瞳の上下 2 本 (タンジェンシャル) と左右 2 本 (サジタル) が
+// 交わる位置を求める。**像空間では光線が直線**なので、像面を 2 枚置いた
+// 外挿で厳密に解ける (焦点探索は要らない)。
+void LensEditorTab::runFieldCurvature()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    raytrace::System base;
+    base.surfaces = raytrace::fromParaxial(surfs);
+    base.imageDistance = (imageDistance >= 0.0)
+                             ? imageDistance
+                             : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    if (!(field > 0.0) || base.surfaces.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+
+    // 追跡役 — 像面を dz ずらして上下 / 左右の 4 本を返す
+    struct Ctx { const raytrace::System *sys; double epd; };
+    Ctx ctx{ &base, epd };
+    const auto tracer = [](double th, double dz, double out[4],
+                           void *user) -> bool {
+        Ctx *c = static_cast<Ctx *>(user);
+        raytrace::System s = *c->sys;
+        s.imageDistance += dz;
+        const raytrace::RayResult up = raytrace::traceRay(s, c->epd, th, 0.0,  0.9);
+        const raytrace::RayResult dn = raytrace::traceRay(s, c->epd, th, 0.0, -0.9);
+        const raytrace::RayResult lf = raytrace::traceRay(s, c->epd, th, -0.9, 0.0);
+        const raytrace::RayResult rt = raytrace::traceRay(s, c->epd, th,  0.9, 0.0);
+        if (!up.ok() || !dn.ok() || !lf.ok() || !rt.ok()) return false;
+        out[0] = up.y; out[1] = dn.y;      // タンジェンシャル (y で解く)
+        out[2] = lf.x; out[3] = rt.x;      // サジタル (x で解く)
+        return true;
+    };
+
+    // 2 枚目の像面のずらし量は答えに影響しない (外挿が厳密なため)。
+    // 数値の桁が落ちない程度に取る。
+    const double dz = 1.0;
+    const optics::FieldCurvatureResult fc =
+        optics::fieldCurvature(tracer, &ctx, field, 21, dz);
+    if (!fc.valid()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+
+    MiniSeries sag, tan;
+    sag.color = QColor("#0078D4");
+    sag.label = "sagittal";
+    tan.color = QColor("#E8A33D");
+    tan.label = "tangential";
+    for (const optics::FieldCurvaturePoint &p : fc.points) {
+        // 横軸をずれ、縦軸を視野にする (レンズ設計の慣用)
+        if (p.sagittalOk)   sag.pts.push_back(QPointF(p.sagittal_mm, p.field_deg));
+        if (p.tangentialOk) tan.pts.push_back(QPointF(p.tangential_mm, p.field_deg));
+    }
+    if (sag.pts.isEmpty() && tan.pts.isEmpty()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+    m_fanPlot->setSeries({ sag, tan });
+    m_fanPlot->setLabels(I18n::tr("lde_fc_x"), I18n::tr("lde_fc_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    const optics::FieldCurvaturePoint &edge = fc.points.back();
+    QString cut;
+    if (edge.field_deg < field - 1e-9)
+        cut = I18n::tr("lde_fc_cut")
+                  .arg(QString::number(field, 'f', 1),
+                       QString::number(edge.field_deg, 'f', 1));
+    m_anInfo->setText(I18n::tr("lde_fc_res")
+                          .arg(QString::number(edge.field_deg, 'f', 1),
+                               QString::number(edge.sagittal_mm, 'f', 4),
+                               QString::number(edge.tangential_mm, 'f', 4),
+                               QString::number(fc.maxAstigmatism_mm, 'f', 4))
+                      + I18n::tr("lde_fc_note") + cut);
+}
+
 // ── 歪曲格子 (optics/DistortionGrid) ───────────────────────────────────────
 // 主光線 (瞳中心 px = py = 0) を視野角ごとに追跡し、近軸の理想像高
 // y = f'·tanθ と比べる。**歪曲は主光線の当たる位置だけで決まる**ので、

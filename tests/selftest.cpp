@@ -28,6 +28,7 @@
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
 #include "optics/DistortionGrid.h"
+#include "optics/FieldCurvature.h"
 #include "optics/EncircledEnergy.h"
 #include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
@@ -19041,6 +19042,151 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 像面湾曲 (optics/FieldCurvature) ──────────────────────────────────────
+// 焦点を探索せず、像面 2 枚からの外挿で交点を閉形式で解く部分。
+// **答えが手で書ける直線**を与えて厳密に検める (追跡側の誤差と混ぜない)。
+static void testFieldCurvature()
+{
+    g_file = "fieldcurv";
+    using namespace ofd::optics;
+
+    // ① 2 直線の交点 — 手で解ける配置で厳密に
+    {
+        bool ok = false;
+        // a: 像面 0 で +1、Δ=2 で 0 へ  (傾き −0.5)
+        // b: 像面 0 で −1、Δ=2 で 0 へ  (傾き +0.5)
+        // → z = 2 で交わる
+        const double z = crossingZ(1.0, -1.0, 0.0, 0.0, 2.0, &ok);
+        check(ok, "fieldcurv: two converging rays do cross");
+        check(std::fabs(z - 2.0) < 1e-15,
+              qPrintable(QString("fieldcurv: they cross exactly where the "
+                                 "algebra says (z = 2, got %1)")
+                             .arg(z, 0, 'f', 15)));
+        // 手前で交わる場合は負になる (符号を潰さない)
+        bool ok2 = false;
+        const double zb = crossingZ(-1.0, 1.0, 0.0, 0.0, 2.0, &ok2);
+        check(ok2 && std::fabs(zb - 2.0) < 1e-15,
+              "fieldcurv: swapping the two rays gives the same crossing");
+        // 像面より手前 (z = −1) で交わる配置: a(z) = z+1、b(z) = −(z+1)
+        bool ok3 = false;
+        const double zn = crossingZ(1.0, -1.0, 3.0, -3.0, 2.0, &ok3);
+        check(ok3 && std::fabs(zn + 1.0) < 1e-15,
+              qPrintable(QString("fieldcurv: a crossing before the image plane "
+                                 "reads negative (z = -1, got %1)")
+                             .arg(zn, 0, 'f', 15)));
+    }
+
+    // ② 平行な 2 本は交わらない — 0 やとんでもない数を返さず無効にする
+    {
+        bool ok = true;
+        const double z = crossingZ(1.0, -1.0, 2.0, 0.0, 1.0, &ok);
+        check(!ok && z == 0.0,
+              "fieldcurv: parallel rays are reported as no crossing");
+        bool ok2 = true;
+        crossingZ(1.0, -1.0, 0.0, 0.0, 0.0, &ok2);
+        check(!ok2, "fieldcurv: a zero plane separation is rejected");
+    }
+
+    // ③ **外挿は厳密なので、2 枚目の像面をどこに置いても答えは同じ**
+    //    (刻み幅に依存しないこと = 探索ではないことの確認)
+    {
+        // 光線 a: y = 0.5 − 0.25 z、光線 b: y = −0.5 + 0.25 z → z = 2 で交わる
+        auto at = [](double z) {
+            return std::pair<double, double>(0.5 - 0.25 * z, -0.5 + 0.25 * z);
+        };
+        double worst = 0.0;
+        for (double dz : { 0.1, 1.0, 5.0, 100.0 }) {
+            const auto p0 = at(0.0);
+            const auto pd = at(dz);
+            bool ok = false;
+            const double z = crossingZ(p0.first, p0.second, pd.first,
+                                       pd.second, dz, &ok);
+            if (ok) worst = std::max(worst, std::fabs(z - 2.0));
+        }
+        check(worst < 1e-12,
+              qPrintable(QString("fieldcurv: the answer does not depend on "
+                                 "where the second plane is (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+    }
+
+    // ④ 曲線の組み立て — 収差の無い系 (どの視野でも像面上で交わる) は
+    //    サジタルもタンジェンシャルも 0
+    {
+        struct Fx {
+            static bool flat(double, double dz, double out[4], void *) {
+                // どの視野でも z = 0 で交わる 2 本 (像面 0 で一致)
+                out[0] = 0.0;  out[1] = 0.0;
+                out[2] = 0.0;  out[3] = 0.0;
+                // Δz では開いていく (交点は 0 のまま)
+                out[0] += -0.1 * dz; out[1] += 0.1 * dz;
+                out[2] += -0.1 * dz; out[3] += 0.1 * dz;
+                return true;
+            }
+        };
+        const FieldCurvatureResult r =
+            fieldCurvature(&Fx::flat, nullptr, 20.0, 5, 1.0);
+        check(r.valid() && r.points.size() == 5,
+              "fieldcurv: the curve has one point per field sample");
+        double worst = 0.0;
+        for (const FieldCurvaturePoint &p : r.points) {
+            check(p.sagittalOk && p.tangentialOk,
+                  "fieldcurv: both focal surfaces are found");
+            worst = std::max(worst, std::fabs(p.sagittal_mm)
+                                        + std::fabs(p.tangential_mm));
+        }
+        check(worst < 1e-12,
+              "fieldcurv: a flat field puts both surfaces exactly at 0");
+        check(r.maxAstigmatism_mm < 1e-12,
+              "fieldcurv: and leaves no astigmatism");
+        check(std::fabs(r.points.back().field_deg - 20.0) < 1e-12,
+              "fieldcurv: the last sample is the full field");
+    }
+
+    // ⑤ 非点収差がある系 — T と S が離れ、その差が出ること
+    {
+        struct Fx {
+            // タンジェンシャルは z = −θ²/100、サジタルは z = −θ²/300 で交わる
+            static bool astig(double th, double dz, double out[4], void *) {
+                const double zt = -th * th / 100.0;
+                const double zs = -th * th / 300.0;
+                // z_t で交わる 2 本: a(z) = (z − zt)、b(z) = −(z − zt)
+                out[0] = (0.0 - zt);   out[1] = -(0.0 - zt);
+                out[2] = (0.0 - zs);   out[3] = -(0.0 - zs);
+                // Δz 進んだ像面での値
+                out[0] = (0.0 - zt);   out[1] = -(0.0 - zt);
+                if (dz != 0.0) {
+                    out[0] = (dz - zt);  out[1] = -(dz - zt);
+                    out[2] = (dz - zs);  out[3] = -(dz - zs);
+                }
+                return true;
+            }
+        };
+        const FieldCurvatureResult r =
+            fieldCurvature(&Fx::astig, nullptr, 30.0, 4, 1.0);
+        double worst = 0.0;
+        for (const FieldCurvaturePoint &p : r.points) {
+            const double wt = -p.field_deg * p.field_deg / 100.0;
+            const double ws = -p.field_deg * p.field_deg / 300.0;
+            worst = std::max(worst, std::fabs(p.tangential_mm - wt));
+            worst = std::max(worst, std::fabs(p.sagittal_mm - ws));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("fieldcurv: both surfaces come out where the "
+                                 "test put them (worst %1 mm)")
+                             .arg(worst, 0, 'e', 2)));
+        const double lastT = -30.0 * 30.0 / 100.0;
+        const double lastS = -30.0 * 30.0 / 300.0;
+        check(std::fabs(r.maxAstigmatism_mm - std::fabs(lastT - lastS)) < 1e-9,
+              "fieldcurv: the reported astigmatism is |T - S| at its largest");
+    }
+
+    // ⑥ 壊れた入力
+    {
+        check(!fieldCurvature(nullptr, nullptr, 20.0, 5, 1.0).valid(),
+              "fieldcurv: no tracer gives an empty result");
+    }
+}
+
 // ── 歪曲格子 (optics/DistortionGrid) ──────────────────────────────────────
 // 写像を**こちらから解析的に与えられる**ので、格子の組み方と歪曲率の定義を
 // 厳密に検められる (実光線追跡を挟むと追跡側の誤差と混ざって切り分けられない)。
@@ -23085,6 +23231,7 @@ int main(int argc, char *argv[])
     testMtf();
     testEncircledEnergy();
     testDistortionGrid();
+    testFieldCurvature();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();

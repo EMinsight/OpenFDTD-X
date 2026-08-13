@@ -317,6 +317,7 @@ set(CORE_SOURCES
     # FSR = λ²/(ng L) と直接突き合わせる
     src/optics/CircuitImpulse.cpp
     src/optics/DistortionGrid.cpp
+    src/optics/FieldCurvature.cpp
     src/optics/EncircledEnergy.cpp
     src/optics/Mtf.cpp
     src/optics/PhaseNoise.cpp

@@ -107,6 +107,7 @@ private slots:
     void runMtf();                  // 📊 MTF (回折限界 + 幾何)
     void runEncircled();            // ⬡ 包絡エネルギー (幾何)
     void runDistortion();           // ▦ 歪曲格子 (主光線 vs 近軸)
+    void runFieldCurvature();       // ⌖ 像面湾曲 (実光線の交点)
     void addWavelength();           // + 波長サンプルの追加
 
 private:
