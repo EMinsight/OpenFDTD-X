@@ -35,6 +35,7 @@
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/AbsorptionCsv.h"
+#include "io/MeshProjection.h"
 #include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
@@ -21150,6 +21151,97 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 3D プレビューの投影 (io/MeshProjection) ───────────────────────────────
+// 正射影なので、既知の角度では手で書ける値になる。**軸の取り違えと符号の
+// 反転**がいちばん起きやすいので、そこを角度ごとに固定する。
+static void testMeshProjection()
+{
+    g_file = "meshproj";
+    using ofd::projectPoint;
+
+    double u = 0, v = 0, d = 0;
+    // az = 0 / el = 0: 視線は +X。画面右 = +Y、画面上 = +Z、奥行き = +X
+    projectPoint(1, 0, 0, 0, 0, &u, &v, &d);
+    check(std::fabs(u) < 1e-12 && std::fabs(v) < 1e-12
+          && std::fabs(d - 1.0) < 1e-12,
+          "meshproj: looking along +X puts x into depth, not the screen");
+    projectPoint(0, 1, 0, 0, 0, &u, &v, &d);
+    check(std::fabs(u - 1.0) < 1e-12 && std::fabs(v) < 1e-12
+          && std::fabs(d) < 1e-12,
+          "meshproj: +Y goes to the right of the screen");
+    projectPoint(0, 0, 1, 0, 0, &u, &v, &d);
+    check(std::fabs(u) < 1e-12 && std::fabs(v - 1.0) < 1e-12
+          && std::fabs(d) < 1e-12,
+          "meshproj: +Z goes up the screen");
+
+    // az = 90: 視線は +Y。画面右 = −X
+    projectPoint(1, 0, 0, 90, 0, &u, &v, &d);
+    check(std::fabs(u + 1.0) < 1e-12 && std::fabs(d) < 1e-12,
+          "meshproj: turning 90 degrees swaps which axis runs across");
+    projectPoint(0, 1, 0, 90, 0, &u, &v, &d);
+    check(std::fabs(u) < 1e-12 && std::fabs(d - 1.0) < 1e-12,
+          "meshproj: and +Y becomes the viewing direction");
+
+    // el = 90 (真上から): 画面上 = −X、奥行き = +Z
+    projectPoint(1, 0, 0, 0, 90, &u, &v, &d);
+    check(std::fabs(v + 1.0) < 1e-12 && std::fabs(d) < 1e-12,
+          "meshproj: looking straight down puts +X down the screen");
+    projectPoint(0, 0, 1, 0, 90, &u, &v, &d);
+    check(std::fabs(v) < 1e-12 && std::fabs(d - 1.0) < 1e-12,
+          "meshproj: and +Z becomes the viewing direction");
+
+    // 原点は常に原点へ写る / 長さは保たれる (正射影なので拡大しない)
+    for (int a = 0; a < 360; a += 37)
+        for (int e = -90; e <= 90; e += 45) {
+            projectPoint(0, 0, 0, a, e, &u, &v, &d);
+            check(std::fabs(u) < 1e-12 && std::fabs(v) < 1e-12
+                  && std::fabs(d) < 1e-12,
+                  "meshproj: the origin always maps to the origin");
+            // 単位ベクトル 3 本の像は u,v,depth 空間で正規直交のはず
+            double u1, v1, d1, u2, v2, d2, u3, v3, d3;
+            projectPoint(1, 0, 0, a, e, &u1, &v1, &d1);
+            projectPoint(0, 1, 0, a, e, &u2, &v2, &d2);
+            projectPoint(0, 0, 1, a, e, &u3, &v3, &d3);
+            const double n1 = u1*u1 + v1*v1 + d1*d1;
+            const double n2 = u2*u2 + v2*v2 + d2*d2;
+            const double n3 = u3*u3 + v3*v3 + d3*d3;
+            check(std::fabs(n1 - 1.0) < 1e-12 && std::fabs(n2 - 1.0) < 1e-12
+                  && std::fabs(n3 - 1.0) < 1e-12,
+                  "meshproj: the projection is a rotation (lengths are kept)");
+            const double dot12 = u1*u2 + v1*v2 + d1*d2;
+            const double dot13 = u1*u3 + v1*v3 + d1*d3;
+            const double dot23 = u2*u3 + v2*v3 + d2*d3;
+            check(std::fabs(dot12) < 1e-12 && std::fabs(dot13) < 1e-12
+                  && std::fabs(dot23) < 1e-12,
+                  "meshproj: and it stays orthogonal (no shear)");
+        }
+
+    // メッシュ全体: 三角形の数だけ返り、深さと陰影が入っていること
+    {
+        const ImportedMesh cube = boxMesh(-1, -1, -1, 1, 1, 1);
+        const QVector<ofd::ProjectedTri> tri = ofd::projectMesh(cube, 30, 20);
+        check(tri.size() == cube.numTriangles,
+              "meshproj: every triangle is projected");
+        bool shadeOk = true, depthSpread = false;
+        double dmin = 1e9, dmax = -1e9;
+        for (const ofd::ProjectedTri &t : tri) {
+            if (!(t.shade >= 0.25 - 1e-9 && t.shade <= 1.0 + 1e-9))
+                shadeOk = false;
+            dmin = std::min(dmin, t.depth);
+            dmax = std::max(dmax, t.depth);
+        }
+        depthSpread = (dmax > dmin);
+        check(shadeOk, "meshproj: the shading stays inside 0.25..1 so that no "
+                       "face becomes invisible");
+        check(depthSpread,
+              "meshproj: the faces get different depths, so painting them back "
+              "to front actually hides the far side");
+        // 空メッシュは空を返す (呼び出し側で分岐しなくてよい)
+        check(ofd::projectMesh(ImportedMesh(), 30, 20).isEmpty(),
+              "meshproj: an empty mesh projects to nothing");
+    }
+}
+
 // ── 形状・観測点の断面への投影 (io/SliceOverlay) ──────────────────────────
 // いちばん大事なのは「断面と交わらないものを描かない」こと。別の深さに
 // ある物体の輪郭が重なって見えたら、その断面に無いものを在るように
@@ -24187,6 +24279,7 @@ int main(int argc, char *argv[])
     testBeamPatternCsv();
     testSeriesSliceAxes();
     testSliceOverlay();
+    testMeshProjection();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

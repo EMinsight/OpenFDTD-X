@@ -123,6 +123,7 @@ private:
     // ボクセル化の設定 (プレビューと本番で共用 — 絵と結果を食い違わせない)
     VoxelOptions currentVoxelOptions() const;
     void previewVoxelization();          // 追加せずに断面だけ見る
+    void preview3dMesh();                // 取込メッシュを 3D で見る
     ImportedMesh  m_lastMesh;             // 取込 STL (配置・変換の適用後)
     ImportedMesh  m_rawMesh;              // 取込 STL (変換前 — placement の基準)
     bool          m_hasMesh = false;

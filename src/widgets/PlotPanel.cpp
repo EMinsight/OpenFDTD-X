@@ -102,6 +102,9 @@ const bool s_i18n = [] {
     ofd::I18n::reg("pp_smith_total", "∞ (全反射)", "∞ (total reflection)");
     ofd::I18n::reg("pp_smith_marks", "○ = f 最小 / ● = f 最大",
                    "○ = lowest f / ● = highest f");
+    // 目盛の数値は Z0 正規化値。Ω と読み違えないよう Z0 倍した値も併記する
+    ofd::I18n::reg("pp_smith_norm", "目盛は Z0 正規化値 (1 = %1 Ω)",
+                   "Grid values are normalized to Z0 (1 = %1 Ω)");
     ofd::I18n::reg("ppb_freq_none_tip",
         "計算を実行すると <kernel>.log の給電点表がここに表示されます",
         "Run the solver to show the feed table from <kernel>.log here");
@@ -589,28 +592,89 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
     };
     const QRectF unit(c.x() - R, c.y() - R, 2 * R, 2 * R);
 
-    // 目盛 (単位円の内側だけ) — 円弧のはみ出しはクリップで落とす
+    // ── 目盛 (単位円の内側だけ) — 円弧のはみ出しはクリップで落とす ────────
+    // 目盛値は市販のスミスチャートに合わせた 2 段階。主目盛 (太め・ラベル
+    // 付き) と副目盛 (細め) を分けないと、線を増やしたときに軌跡が埋もれる。
+    // 色は palette().midlight() ではなく **文字色 + α** から作る。midlight は
+    // 明色テーマで #cacaca (地色 #fafafa との差が僅か) しかなく、チャートを
+    // 小さく描いたときに目盛が消えて「線が無い」ように見える。文字色基準なら
+    // 明暗どちらのテーマでも同じ濃さの差が出る。
+    static const double kMajor[] = { 0.2, 0.5, 1.0, 2.0, 5.0 };
+    // 副目盛は r と x で別にする。等リアクタンス円弧は Γ = +1 へ集まるので、
+    // x の大きいものまで引くと右端が真っ黒な扇になって軌跡が読めなくなる
+    // (等抵抗円は大きい r ほど右端の小円になるので詰まり方が緩い)
+    static const double kMinorR[] = { 0.1, 0.3, 0.4, 0.6, 0.8,
+                                      1.5, 3.0, 4.0, 10.0, 20.0 };
+    static const double kMinorX[] = { 0.1, 0.3, 0.4, 0.6, 0.8,
+                                      1.5, 3.0, 4.0 };
+    QColor gMinor = palette().text().color(); gMinor.setAlpha(50);
+    QColor gMajor = palette().text().color(); gMajor.setAlpha(105);
+
     QPainterPath clip;
     clip.addEllipse(unit);
     p.save();
     p.setClipPath(clip);
-    p.setPen(QPen(palette().midlight().color(), 1));
-    for (double r : { 0.2, 0.5, 1.0, 2.0, 5.0 }) {
-        const em::SmithCircle g = em::constantResistanceCircle(r);
-        if (!g.valid) continue;
-        p.drawEllipse(QPointF(c.x() + g.cx * R, c.y() - g.cy * R),
-                      g.radius * R, g.radius * R);
-    }
-    for (double x : { 0.2, 0.5, 1.0, 2.0, 5.0 }) {
-        for (double sgn : { 1.0, -1.0 }) {
-            const em::SmithCircle g = em::constantReactanceCircle(sgn * x);
-            if (!g.valid) continue;
+    // 等抵抗円 (r 一定) は Γ = +1 で、等リアクタンス円弧 (x 一定) も Γ = +1 で
+    // 互いに接する。副目盛 → 主目盛の順に描いて主目盛を上に出す
+    auto arc = [&](const em::SmithCircle &g) {
+        if (g.valid)
             p.drawEllipse(QPointF(c.x() + g.cx * R, c.y() - g.cy * R),
                           g.radius * R, g.radius * R);
-        }
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+        p.setPen(QPen(pass ? gMajor : gMinor, 1));
+        const double *rv = pass ? kMajor : kMinorR;
+        const int nr = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
+                            : int(sizeof(kMinorR) / sizeof(*kMinorR));
+        for (int i = 0; i < nr; ++i)
+            arc(em::constantResistanceCircle(rv[i]));
+        const double *xv = pass ? kMajor : kMinorX;
+        const int nx = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
+                            : int(sizeof(kMinorX) / sizeof(*kMinorX));
+        for (int i = 0; i < nx; ++i)
+            for (double sgn : { 1.0, -1.0 })
+                arc(em::constantReactanceCircle(sgn * xv[i]));
     }
+    p.setPen(QPen(gMajor, 1));
     p.drawLine(at(-1.0, 0.0), at(1.0, 0.0));  // 実軸 (x = 0)
     p.restore();
+
+    // ── 主目盛のラベル ────────────────────────────────────────────────────
+    // 数値が無いと「線がある」だけで読み取れない。r は実軸上 (Γ = (r−1)/(r+1))、
+    // x は単位円との交点 (r = 0 のとき Γ = ((x²−1) + 2jx)/(1 + x²)) の少し外側。
+    // 正規化値なので Z0 倍すると Ω になる旨は読み取り欄の Z0 表記で分かる。
+    {
+        QFont lf = p.font();
+        const QFont keepLf = lf;
+        lf.setPointSizeF(qMax(6.0, lf.pointSizeF() - 2.0));
+        p.setFont(lf);
+        const QFontMetricsF lm(lf);
+        p.setPen(palette().mid().color());
+        for (double r : kMajor) {
+            const QPointF q = at((r - 1.0) / (r + 1.0), 0.0);
+            const QString t = QString::number(r, 'g', 2);
+            p.drawText(QPointF(q.x() - lm.horizontalAdvance(t) / 2.0,
+                               q.y() + lm.height()), t);
+        }
+        for (double x : kMajor) {
+            for (double sgn : { 1.0, -1.0 }) {
+                const double xv = sgn * x;
+                const double den = 1.0 + xv * xv;
+                const double gre = (xv * xv - 1.0) / den;
+                const double gim = 2.0 * xv / den;
+                // 円の**内側**へ 13 px 入れる。外へ出すと右側の読み取り欄
+                // (readout) と重なる幅のときがある (side は幅で決まるため)
+                const double k = 1.0 - 13.0 / R;
+                const QPointF q = at(gre * k, gim * k);
+                const QString t = (sgn > 0 ? QStringLiteral("j")
+                                           : QStringLiteral("−j"))
+                                  + QString::number(x, 'g', 2);
+                p.drawText(QPointF(q.x() - lm.horizontalAdvance(t) / 2.0,
+                                   q.y() + lm.height() / 3.0), t);
+            }
+        }
+        p.setFont(keepLf);
+    }
 
     // 単位円 (|Γ| = 1) と中心 (整合点 Z = Z0)
     p.setPen(QPen(palette().mid().color(), 1));
@@ -686,6 +750,7 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
     ty += 4.0;
     p.setPen(palette().mid().color());
     line(I18n::tr("pp_smith_marks"));
+    line(I18n::tr("pp_smith_norm").arg(QString::number(s.z0, 'g', 4)));
 
     // 1 給電点 = 1 ポートである旨 (S21 が無いことの説明)
     QFont f = p.font();
