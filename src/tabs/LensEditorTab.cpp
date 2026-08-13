@@ -4,6 +4,10 @@
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/ParaxialTrace.h"
+#include "../optics/DistortionGrid.h"
+#include "../optics/FieldCurvature.h"
+#include "../optics/EncircledEnergy.h"
+#include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
 #include "../optics/SeidelAberration.h"
 #include "../widgets/MiniPlot.h"
@@ -192,13 +196,110 @@ const bool s_i18n = [] {
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
     I18n::reg("lde_an_why",
-              "MTF・包絡エネルギー・像面湾曲図・歪曲格子・波面 (Zernike) は"
-              "未実装です。スポットダイアグラム・レイファン・色収差は実光線"
-              "追跡で計算します。",
-              "MTF, encircled energy, the field-curvature plot, the distortion "
-              "grid and the wavefront (Zernike) map are not implemented. The "
-              "spot diagram, the ray fan and the chromatic focal shift are "
-              "computed by real ray tracing.");
+              "波面 (Zernike) は未実装です。スポットダイアグラム・レイファン・"
+              "色収差・MTF・包絡エネルギー・歪曲格子・像面湾曲は実光線追跡で"
+              "計算します。",
+              "The wavefront (Zernike) map is not implemented. The spot "
+              "diagram, the ray fan, the chromatic focal shift, the MTF, the "
+              "encircled energy, the distortion grid and the field curvature "
+              "are computed by real ray tracing.");
+    I18n::reg("lde_fc_x", "近軸像面からのずれ [mm]",
+              "Shift from the paraxial image plane [mm]");
+    I18n::reg("lde_fc_y", "視野半角 [deg]", "Half-field angle [deg]");
+    I18n::reg("lde_fc_res",
+              "視野端 (%1°) で サジタル %2 mm・タンジェンシャル %3 mm、"
+              "非点隔差の最大は %4 mm です。像空間では光線が直線なので、像面を "
+              "2 枚置いた外挿で交点を厳密に解いています (焦点探索なし)。",
+              "At the edge of the field (%1 deg) the sagittal focus is at "
+              "%2 mm and the tangential at %3 mm; the largest astigmatic "
+              "separation is %4 mm. Rays are straight in image space, so the "
+              "crossings are solved exactly by extrapolating between two image "
+              "planes (no focus search).");
+    I18n::reg("lde_fc_note",
+              " 実光線の交点なので、3 次収差 (ザイデル) の像面湾曲とは"
+              "別ものです (視野が大きいほど離れます)。同じ図には混ぜていません。",
+              " These are real-ray crossings, not the third-order (Seidel) "
+              "field curvature; the two diverge as the field grows and are not "
+              "mixed in one plot.");
+    I18n::reg("lde_fc_cut",
+              " ⚠ 指定した視野半角は %1° ですが、%2° より外では瞳端の光線が"
+              "けられて追跡できませんでした。曲線はそこまでです "
+              "(足りない部分を外挿してはいません)。",
+              " [!] The requested half-field is %1 deg, but beyond %2 deg the "
+              "marginal rays are vignetted and could not be traced. The curve "
+              "stops there (the missing part is not extrapolated).");
+    I18n::reg("lde_fc_bad",
+              "像面湾曲は視野と実光線追跡が要ります。視野が 0 か、上下・左右の"
+              "光線を追跡できませんでした。",
+              "The field-curvature plot needs a non-zero field and a successful "
+              "ray trace of the upper/lower and left/right rays.");
+    I18n::reg("lde_dg_x", "像面 x [mm]", "Image plane x [mm]");
+    I18n::reg("lde_dg_y", "像面 y [mm]", "Image plane y [mm]");
+    I18n::reg("lde_dg_res",
+              "隅 (視野半角 %1°) での歪曲は %2 %%、格子内の最大は %3 %% です。"
+              "薄い線が理想の格子 (y = f'·tanθ、f' = %4 mm)、濃い線が主光線の"
+              "実追跡です。",
+              "At the corner (half-field %1 deg) the distortion is %2 %%; the "
+              "largest in the grid is %3 %%. The faint lines are the ideal grid "
+              "(y = f'*tan(theta), f' = %4 mm) and the solid lines are the real "
+              "chief-ray trace.");
+    I18n::reg("lde_dg_note",
+              " 歪曲は主光線の像高だけで決まるので、ぼけ (収差) の大きさとは"
+              "別ものです。正が糸巻き型、負が樽型。",
+              " Distortion depends only on where the chief ray lands, so it is "
+              "independent of how blurred the spot is. Positive is pincushion, "
+              "negative is barrel.");
+    I18n::reg("lde_dg_bad",
+              "歪曲格子は近軸の焦点距離と主光線の実追跡が要ります。視野が 0 か、"
+              "主光線を追跡できませんでした。",
+              "The distortion grid needs a paraxial focal length and a chief-ray "
+              "trace. The field is zero, or the chief ray could not be traced.");
+    I18n::reg("lde_ee_x", "重心からの半径 [mm]", "Radius from the centroid [mm]");
+    I18n::reg("lde_ee_y", "包絡エネルギー", "Encircled energy");
+    I18n::reg("lde_ee_res",
+              "光線 %1 本、RMS スポット半径 %2 mm。重心から見て 50 %% が "
+              "%3 mm、80 %% が %4 mm、90 %% が %5 mm の円に入ります "
+              "(最外は %6 mm)。",
+              "%1 rays, RMS spot radius %2 mm. Measured from the centroid, "
+              "50 %% falls inside %3 mm, 80 %% inside %4 mm and 90 %% inside "
+              "%5 mm (the outermost ray is at %6 mm).");
+    I18n::reg("lde_ee_note",
+              " 光線 1 本を等しい重みとして数えた幾何の値で、回折は含みません "
+              "(エアリーの包絡エネルギーは第 1 種ベッセル関数が要り、MSVC に"
+              "無いため未実装)。半径は補間せず、実際にその割合を包む光線の"
+              "距離をそのまま出しています。",
+              " These are geometric values counting each ray equally; "
+              "diffraction is not included (the Airy encircled energy needs "
+              "Bessel functions, which MSVC lacks). Radii are not interpolated "
+              "-- each is the distance of the ray that actually encloses that "
+              "fraction.");
+    I18n::reg("lde_mtf_x", "空間周波数 [cycles/mm]", "Spatial frequency [cyc/mm]");
+    I18n::reg("lde_mtf_y", "MTF", "MTF");
+    I18n::reg("lde_mtf_res",
+              "λ = %1 nm・F/%2 → カットオフ %3 cyc/mm。回折限界が 50 %% に"
+              "落ちるのは %4 cyc/mm、この系の幾何 MTF は %5 cyc/mm です "
+              "(光線 %6 本、RMS スポット半径 %7 mm)。",
+              "lambda = %1 nm, F/%2 -> cutoff %3 cyc/mm. The diffraction limit "
+              "falls to 50 %% at %4 cyc/mm; this system's geometric MTF does so "
+              "at %5 cyc/mm (%6 rays, RMS spot radius %7 mm).");
+    I18n::reg("lde_mtf_note",
+              " 幾何 MTF は光線の当たり方だけから出しているので回折を含みま"
+              "せん。高い空間周波数では実際より良く出るので、回折限界の曲線"
+              "と併せて読んでください (収差込みの回折 MTF は瞳での位相が要る"
+              "ため未実装)。光線本数が有限なので、幾何 MTF は細かく振動します "
+              "(平滑化していません — 本数を増やすと落ち着きます)。",
+              " The geometric MTF comes only from where the rays land, so it "
+              "does not include diffraction and looks better than reality at "
+              "high frequencies; read it together with the diffraction-limit "
+              "curve. (A diffraction MTF including aberrations needs the pupil "
+              "phase and is not implemented.) The ray count is finite, so the "
+              "geometric curve ripples; it is not smoothed (tracing more rays "
+              "settles it).");
+    I18n::reg("lde_mtf_bad",
+              "MTF は近軸の F 値と実光線追跡が要ります。面テーブルが解けないか、"
+              "追跡できた光線がありません。",
+              "The MTF needs a paraxial f-number and a successful ray trace. "
+              "The surface table cannot be solved, or no ray was traced.");
     I18n::reg("lde_an_idle",
               "「スポットダイアグラム」または「レイファン」を押すと、面テーブルの"
               "系を実光線追跡して結果を描きます。",
@@ -719,6 +820,14 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                             this, &LensEditorTab::runSpotDiagram);
         else if (i == 1) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runRayFan);
+        else if (i == 2) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runMtf);
+        else if (i == 3) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runEncircled);
+        else if (i == 4) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runFieldCurvature);
+        else if (i == 5) connect(b, &QPushButton::clicked,
+                                 this, &LensEditorTab::runDistortion);
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
         else {
@@ -1551,6 +1660,320 @@ void LensEditorTab::addWavelength()
 // 各波長で面テーブルの屈折率を引き直して近軸追跡し、バックフォーカスの
 // 主波長からのずれを描く。薄レンズなら C 線と F 線の差は f/V (アッベ数の
 // 定義そのもの) になる — selftest でその恒等式を検証している。
+// ── 像面湾曲 (optics/FieldCurvature) ───────────────────────────────────────
+// 視野ごとに、瞳の上下 2 本 (タンジェンシャル) と左右 2 本 (サジタル) が
+// 交わる位置を求める。**像空間では光線が直線**なので、像面を 2 枚置いた
+// 外挿で厳密に解ける (焦点探索は要らない)。
+void LensEditorTab::runFieldCurvature()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    raytrace::System base;
+    base.surfaces = raytrace::fromParaxial(surfs);
+    base.imageDistance = (imageDistance >= 0.0)
+                             ? imageDistance
+                             : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    if (!(field > 0.0) || base.surfaces.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+
+    // 追跡役 — 像面を dz ずらして上下 / 左右の 4 本を返す
+    struct Ctx { const raytrace::System *sys; double epd; };
+    Ctx ctx{ &base, epd };
+    const auto tracer = [](double th, double dz, double out[4],
+                           void *user) -> bool {
+        Ctx *c = static_cast<Ctx *>(user);
+        raytrace::System s = *c->sys;
+        s.imageDistance += dz;
+        const raytrace::RayResult up = raytrace::traceRay(s, c->epd, th, 0.0,  0.9);
+        const raytrace::RayResult dn = raytrace::traceRay(s, c->epd, th, 0.0, -0.9);
+        const raytrace::RayResult lf = raytrace::traceRay(s, c->epd, th, -0.9, 0.0);
+        const raytrace::RayResult rt = raytrace::traceRay(s, c->epd, th,  0.9, 0.0);
+        if (!up.ok() || !dn.ok() || !lf.ok() || !rt.ok()) return false;
+        out[0] = up.y; out[1] = dn.y;      // タンジェンシャル (y で解く)
+        out[2] = lf.x; out[3] = rt.x;      // サジタル (x で解く)
+        return true;
+    };
+
+    // 2 枚目の像面のずらし量は答えに影響しない (外挿が厳密なため)。
+    // 数値の桁が落ちない程度に取る。
+    const double dz = 1.0;
+    const optics::FieldCurvatureResult fc =
+        optics::fieldCurvature(tracer, &ctx, field, 21, dz);
+    if (!fc.valid()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+
+    MiniSeries sag, tan;
+    sag.color = QColor("#0078D4");
+    sag.label = "sagittal";
+    tan.color = QColor("#E8A33D");
+    tan.label = "tangential";
+    for (const optics::FieldCurvaturePoint &p : fc.points) {
+        // 横軸をずれ、縦軸を視野にする (レンズ設計の慣用)
+        if (p.sagittalOk)   sag.pts.push_back(QPointF(p.sagittal_mm, p.field_deg));
+        if (p.tangentialOk) tan.pts.push_back(QPointF(p.tangential_mm, p.field_deg));
+    }
+    if (sag.pts.isEmpty() && tan.pts.isEmpty()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_fc_bad"));
+        return;
+    }
+    m_fanPlot->setSeries({ sag, tan });
+    m_fanPlot->setLabels(I18n::tr("lde_fc_x"), I18n::tr("lde_fc_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    const optics::FieldCurvaturePoint &edge = fc.points.back();
+    QString cut;
+    if (edge.field_deg < field - 1e-9)
+        cut = I18n::tr("lde_fc_cut")
+                  .arg(QString::number(field, 'f', 1),
+                       QString::number(edge.field_deg, 'f', 1));
+    m_anInfo->setText(I18n::tr("lde_fc_res")
+                          .arg(QString::number(edge.field_deg, 'f', 1),
+                               QString::number(edge.sagittal_mm, 'f', 4),
+                               QString::number(edge.tangential_mm, 'f', 4),
+                               QString::number(fc.maxAstigmatism_mm, 'f', 4))
+                      + I18n::tr("lde_fc_note") + cut);
+}
+
+// ── 歪曲格子 (optics/DistortionGrid) ───────────────────────────────────────
+// 主光線 (瞳中心 px = py = 0) を視野角ごとに追跡し、近軸の理想像高
+// y = f'·tanθ と比べる。**歪曲は主光線の当たる位置だけで決まる**ので、
+// スポットのぼけとは別の量。
+void LensEditorTab::runDistortion()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    const paraxial::SystemData pd =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+
+    if (!pd.valid || !(pd.efl > 0.0) || !(field > 0.0)) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_dg_bad"));
+        return;
+    }
+
+    // 視野半角 → 主光線の像高。追跡に失敗したら理想値を返さず 0 を返す
+    // (失敗を「歪曲 −100 %」として描かないよう、下で本数を数えて弾く)
+    int failed = 0;
+    const optics::FieldMapping map = [&](double th) -> double {
+        const raytrace::RayResult r = raytrace::traceRay(sys, epd, th, 0.0, 0.0);
+        if (!r.ok()) { ++failed; return 0.0; }
+        return std::hypot(r.x, r.y);
+    };
+    const optics::DistortionGridResult g =
+        optics::distortionGrid(map, pd.efl, field, 9);
+    if (!g.valid() || failed > 0) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_dg_bad"));
+        return;
+    }
+
+    // 行と列を折れ線にして描く (理想は薄く、実際は濃く)
+    QVector<MiniSeries> series;
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool ideal = (pass == 0);
+        for (int k = 0; k < g.n; ++k) {
+            MiniSeries row, col;
+            row.color = ideal ? QColor(136, 153, 170, 110) : QColor("#0078D4");
+            col.color = row.color;
+            for (int i = 0; i < g.n; ++i) {
+                const optics::DistortionNode &a = g.nodes[k * g.n + i];
+                const optics::DistortionNode &b = g.nodes[i * g.n + k];
+                row.pts.push_back(QPointF(ideal ? a.xIdeal_mm : a.xReal_mm,
+                                          ideal ? a.yIdeal_mm : a.yReal_mm));
+                col.pts.push_back(QPointF(ideal ? b.xIdeal_mm : b.xReal_mm,
+                                          ideal ? b.yIdeal_mm : b.yReal_mm));
+            }
+            series.push_back(row);
+            series.push_back(col);
+        }
+    }
+    m_fanPlot->setSeries(series);
+    m_fanPlot->setLabels(I18n::tr("lde_dg_x"), I18n::tr("lde_dg_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    m_anInfo->setText(I18n::tr("lde_dg_res")
+                          .arg(QString::number(field, 'f', 1),
+                               QString::number(g.cornerPercent, 'f', 3),
+                               QString::number(g.maxPercent, 'f', 3),
+                               QString::number(pd.efl, 'f', 3))
+                      + I18n::tr("lde_dg_note"));
+}
+
+// ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
+// MTF と同じ実光線追跡の交点を使う。中心は重心 (どこから測ったかを画面に
+// 書く — 主光線基準とは値が変わるため)。
+void LensEditorTab::runEncircled()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    const raytrace::SpotResult sp = raytrace::spotDiagram(sys, epd, field, 12);
+    if (!sp.valid || sp.x.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    const optics::EeCurve ee =
+        optics::encircledEnergy(sp.x, sp.y, sp.centroidX, sp.centroidY, 128);
+    if (!ee.valid()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_an_fail"));
+        return;
+    }
+
+    MiniSeries s;
+    s.color = QColor("#0078D4");
+    s.label = "encircled energy";
+    for (std::size_t i = 0; i < ee.radius_mm.size(); ++i)
+        s.pts.push_back(QPointF(ee.radius_mm[i], ee.fraction[i]));
+    m_fanPlot->setYRange(0.0, 1.05);
+    m_fanPlot->setSeries({ s });
+    m_fanPlot->setLabels(I18n::tr("lde_ee_x"), I18n::tr("lde_ee_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    auto rad = [&](double f) {
+        return optics::radiusForFraction(sp.x, sp.y, sp.centroidX,
+                                         sp.centroidY, f);
+    };
+    m_anInfo->setText(I18n::tr("lde_ee_res")
+                          .arg(ee.rays)
+                          .arg(QString::number(ee.rmsRadius_mm, 'f', 4),
+                               QString::number(rad(0.5), 'f', 4),
+                               QString::number(rad(0.8), 'f', 4),
+                               QString::number(rad(0.9), 'f', 4),
+                               QString::number(ee.maxRadius_mm, 'f', 4))
+                      + I18n::tr("lde_ee_note"));
+}
+
+// ── MTF (optics/Mtf) ───────────────────────────────────────────────────────
+// 回折限界 (円形瞳の自己相関の閉形式) と、実光線追跡の像面交点から出した
+// 幾何 MTF を**2 本並べて**描く。幾何は回折を含まないので高い周波数では
+// 実際より良く出る — そのことを必ず画面に書く。
+void LensEditorTab::runMtf()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+
+    // 近軸の F 値 (回折限界のカットオフを決める)
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    const paraxial::SystemData d =
+        paraxial::analyze(surfs, imageDistance, epd, field);
+
+    // 実光線追跡で像面交点を得る (スポットダイアグラムと同じ経路)
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+    const raytrace::SpotResult sp = raytrace::spotDiagram(sys, epd, field, 12);
+
+    if (!d.valid || !(d.fnumber > 0.0) || !sp.valid || sp.x.empty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_mtf_bad"));
+        return;
+    }
+
+    // 断面は接線方向 (x) を採る。重心を引いておく (平行移動は MTF を
+    // 変えないが、数値の桁を落とさないため)
+    std::vector<double> xs;
+    xs.reserve(sp.x.size());
+    for (double v : sp.x) xs.push_back(v - sp.centroidX);
+
+    const optics::MtfCurve mc =
+        optics::mtfCurve(xs, primary, d.fnumber, 128);
+    if (!mc.valid()) {
+        m_fanPlot->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_mtf_bad"));
+        return;
+    }
+
+    MiniSeries diff;
+    diff.color = QColor("#8899AA");
+    diff.label = "diffraction limit";
+    MiniSeries geo;
+    geo.color = QColor("#0078D4");
+    geo.label = "geometric";
+    for (std::size_t i = 0; i < mc.nu.size(); ++i) {
+        diff.pts.push_back(QPointF(mc.nu[i], mc.diffraction[i]));
+        if (i < mc.geometric.size())
+            geo.pts.push_back(QPointF(mc.nu[i], mc.geometric[i]));
+    }
+    m_fanPlot->setYRange(0.0, 1.05);
+    m_fanPlot->setSeries({ diff, geo });
+    m_fanPlot->setLabels(I18n::tr("lde_mtf_x"), I18n::tr("lde_mtf_y"));
+    m_fanPlot->setVisible(true);
+    m_spotView->setVisible(false);
+
+    const double nc = optics::mtfCutoff_cyc_per_mm(primary, d.fnumber);
+    const double f50d = optics::frequencyAtMtf(mc.nu, mc.diffraction, 0.5);
+    const double f50g = optics::frequencyAtMtf(mc.nu, mc.geometric, 0.5);
+    m_anInfo->setText(I18n::tr("lde_mtf_res")
+                          .arg(QString::number(primary, 'f', 1),
+                               QString::number(d.fnumber, 'f', 2),
+                               QString::number(nc, 'f', 1),
+                               QString::number(f50d, 'f', 1),
+                               QString::number(f50g, 'f', 1))
+                          .arg(int(sp.x.size()))
+                          .arg(QString::number(sp.rmsRadius, 'f', 4))
+                      + I18n::tr("lde_mtf_note"));
+}
+
 void LensEditorTab::runChromatic()
 {
     if (m_waves.isEmpty()) return;

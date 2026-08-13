@@ -27,6 +27,11 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/DampedLeastSquares.h"
+#include "optics/DistortionGrid.h"
+#include "optics/FieldCurvature.h"
+#include "optics/EncircledEnergy.h"
+#include "optics/Mtf.h"
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/BeamPatternCsv.h"
@@ -19038,6 +19043,645 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 減衰最小二乗 (optics/DampedLeastSquares) ──────────────────────────────
+// レンズ最適化の中身。**答えが独立に分かる問題**で検める:
+//   線形最小二乗は正規方程式の解が閉形式で書けるし、単レンズの焦点距離は
+//   レンズメーカーの式で解ける。「収束した」ではなく「正解に一致した」を見る。
+static void testDampedLeastSquares()
+{
+    g_file = "dls";
+    using namespace ofd::optics;
+
+    // ① 連立一次方程式のソルバ (最適化の中で使うので単体でも検める)
+    {
+        // 2x + y = 5、x − 3y = −8  → x = 1, y = 3
+        std::vector<std::vector<double>> A = { {2.0, 1.0}, {1.0, -3.0} };
+        std::vector<double> b = { 5.0, -8.0 }, x;
+        check(solveLinear(A, b, &x), "dls: a 2x2 system solves");
+        check(std::fabs(x[0] - 1.0) < 1e-12 && std::fabs(x[1] - 3.0) < 1e-12,
+              "dls: it gives the exact solution");
+        std::vector<std::vector<double>> S = { {1.0, 2.0}, {2.0, 4.0} };
+        check(!solveLinear(S, { 1.0, 2.0 }, &x),
+              "dls: a singular system is rejected rather than guessed");
+    }
+
+    // ② 直線あてはめ — 最小二乗解は閉形式で書けるので厳密に比べられる。
+    //    データを直線ちょうどに置けば残差 0 の解がある。
+    {
+        const double aTrue = 2.5, bTrue = -1.25;
+        const int m = 7;
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            r.assign(m, 0.0);
+            for (int i = 0; i < m; ++i) {
+                const double t = 0.5 * i;
+                r[i] = v[0] * t + v[1] - (aTrue * t + bTrue);
+            }
+            return true;
+        };
+        DlsOptions o;
+        o.step = { 1e-6, 1e-6 };
+        const DlsResult r = solve(fn, { 0.0, 0.0 }, o);
+        check(r.ok, "dls: the line fit runs");
+        check(std::fabs(r.x[0] - aTrue) < 1e-9
+                  && std::fabs(r.x[1] - bTrue) < 1e-9,
+              qPrintable(QString("dls: it finds the exact line (a = %1, "
+                                 "b = %2)").arg(r.x[0], 0, 'f', 9)
+                             .arg(r.x[1], 0, 'f', 9)));
+        check(r.rms < 1e-9 && r.rms < r.rms0,
+              "dls: the residual is driven to zero and improves on the start");
+        check(r.evaluations > 0 && r.iterations >= 1,
+              "dls: it reports how much work it did");
+    }
+
+    // ③ 残差 0 にできない問題 — **正規方程式の解 (閉形式) と一致すること**。
+    //    y = a·t + b に乗らない点を混ぜ、最小二乗解を手で解いて比べる。
+    {
+        const double t[4] = { 0.0, 1.0, 2.0, 3.0 };
+        const double y[4] = { 0.1, 0.9, 2.1, 2.9 };
+        // 閉形式: a = (mΣty − ΣtΣy)/(mΣt² − (Σt)²)、b = (Σy − aΣt)/m
+        double st = 0, sy = 0, stt = 0, sty = 0;
+        for (int i = 0; i < 4; ++i) {
+            st += t[i]; sy += y[i]; stt += t[i] * t[i]; sty += t[i] * y[i];
+        }
+        const double aRef = (4 * sty - st * sy) / (4 * stt - st * st);
+        const double bRef = (sy - aRef * st) / 4.0;
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            r.assign(4, 0.0);
+            for (int i = 0; i < 4; ++i) r[i] = v[0] * t[i] + v[1] - y[i];
+            return true;
+        };
+        const DlsResult r = solve(fn, { 5.0, 5.0 });
+        check(std::fabs(r.x[0] - aRef) < 1e-8
+                  && std::fabs(r.x[1] - bRef) < 1e-8,
+              qPrintable(QString("dls: with noisy data it lands on the "
+                                 "normal-equation solution (a %1 vs %2)")
+                             .arg(r.x[0], 0, 'f', 8).arg(aRef, 0, 'f', 8)));
+        check(r.rms > 0.0,
+              "dls: and does not pretend the residual is zero");
+    }
+
+    // ④ **レンズメーカーの式**で答えが分かる問題を、リポジトリの近軸追跡を
+    //    通して解く。平凸レンズ (R2 = ∞、薄い) の焦点距離は f = R1/(n−1) なので、
+    //    目標 f を与えたときに収束すべき R1 が厳密に決まる。
+    {
+        const double nGlass = 1.5168;      // N-BK7 の d 線
+        const double targetF = 100.0;      // 目標焦点距離 [mm]
+        const double wantR1 = targetF * (nGlass - 1.0);   // レンズメーカーの式
+
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            std::vector<ofd::paraxial::Surface> s(3);
+            s[0].R = v[0];                 // 第 1 面 (可変)
+            s[0].thickness = 0.05;         // 十分薄い
+            s[0].nAfter = nGlass;
+            s[1].R = 0.0;                  // 平面 (R = 0 は「平面」の約束)
+            s[1].thickness = 50.0;
+            s[1].nAfter = 1.0;
+            s[2].R = 0.0;
+            s[2].thickness = 0.0;
+            s[2].nAfter = 1.0;
+            const ofd::paraxial::SystemData d =
+                ofd::paraxial::analyze(s, -1.0, 10.0, 0.0);
+            if (!d.valid || !(std::fabs(d.efl) > 0.0)) return false;
+            r.assign(1, d.efl - targetF);
+            return true;
+        };
+        DlsOptions o;
+        o.step = { 1e-4 };
+        o.maxIterations = 80;
+        const DlsResult r = solve(fn, { 30.0 }, o);   // 出発点はわざと外す
+        check(r.ok, "dls: the lens problem runs");
+        if (r.ok && !r.x.empty()) {
+            check(std::fabs(r.x[0] - wantR1) < 1e-4,
+                  qPrintable(QString("dls: it converges to the lensmaker "
+                                     "radius R = f(n-1) (want %1, got %2 mm)")
+                                 .arg(wantR1, 0, 'f', 6)
+                                 .arg(r.x[0], 0, 'f', 6)));
+            check(r.rms < 1e-6,
+                  qPrintable(QString("dls: and hits the target focal length "
+                                     "(residual %1 mm)").arg(r.rms, 0, 'e', 2)));
+            check(r.rms < r.rms0,
+                  "dls: the starting point really was off (it improved)");
+        }
+    }
+
+    // ⑤ 箱制約 — 範囲の外へ出さない
+    {
+        const ResidualFn fn = [](const std::vector<double> &v,
+                                 std::vector<double> &r) {
+            r.assign(1, v[0] - 10.0);      // 本当は 10 が最適
+            return true;
+        };
+        DlsOptions o;
+        o.lower = { 0.0 };
+        o.upper = { 4.0 };                 // 上限で止まるはず
+        const DlsResult r = solve(fn, { 1.0 }, o);
+        check(r.ok && r.x[0] <= 4.0 + 1e-12,
+              "dls: the solution stays inside the box");
+        check(std::fabs(r.x[0] - 4.0) < 1e-6,
+              "dls: and sits on the bound closest to the optimum");
+    }
+
+    // ⑥ 残差が作れないときは成功と言わない
+    {
+        const ResidualFn bad = [](const std::vector<double> &,
+                                  std::vector<double> &) { return false; };
+        const DlsResult r = solve(bad, { 1.0 });
+        check(!r.ok && !r.note.empty(),
+              "dls: a residual that cannot be built fails with a reason");
+        const DlsResult none = solve(nullptr, { 1.0 });
+        check(!none.ok, "dls: no function at all fails too");
+    }
+}
+
+// ── 像面湾曲 (optics/FieldCurvature) ──────────────────────────────────────
+// 焦点を探索せず、像面 2 枚からの外挿で交点を閉形式で解く部分。
+// **答えが手で書ける直線**を与えて厳密に検める (追跡側の誤差と混ぜない)。
+static void testFieldCurvature()
+{
+    g_file = "fieldcurv";
+    using namespace ofd::optics;
+
+    // ① 2 直線の交点 — 手で解ける配置で厳密に
+    {
+        bool ok = false;
+        // a: 像面 0 で +1、Δ=2 で 0 へ  (傾き −0.5)
+        // b: 像面 0 で −1、Δ=2 で 0 へ  (傾き +0.5)
+        // → z = 2 で交わる
+        const double z = crossingZ(1.0, -1.0, 0.0, 0.0, 2.0, &ok);
+        check(ok, "fieldcurv: two converging rays do cross");
+        check(std::fabs(z - 2.0) < 1e-15,
+              qPrintable(QString("fieldcurv: they cross exactly where the "
+                                 "algebra says (z = 2, got %1)")
+                             .arg(z, 0, 'f', 15)));
+        // 手前で交わる場合は負になる (符号を潰さない)
+        bool ok2 = false;
+        const double zb = crossingZ(-1.0, 1.0, 0.0, 0.0, 2.0, &ok2);
+        check(ok2 && std::fabs(zb - 2.0) < 1e-15,
+              "fieldcurv: swapping the two rays gives the same crossing");
+        // 像面より手前 (z = −1) で交わる配置: a(z) = z+1、b(z) = −(z+1)
+        bool ok3 = false;
+        const double zn = crossingZ(1.0, -1.0, 3.0, -3.0, 2.0, &ok3);
+        check(ok3 && std::fabs(zn + 1.0) < 1e-15,
+              qPrintable(QString("fieldcurv: a crossing before the image plane "
+                                 "reads negative (z = -1, got %1)")
+                             .arg(zn, 0, 'f', 15)));
+    }
+
+    // ② 平行な 2 本は交わらない — 0 やとんでもない数を返さず無効にする
+    {
+        bool ok = true;
+        const double z = crossingZ(1.0, -1.0, 2.0, 0.0, 1.0, &ok);
+        check(!ok && z == 0.0,
+              "fieldcurv: parallel rays are reported as no crossing");
+        bool ok2 = true;
+        crossingZ(1.0, -1.0, 0.0, 0.0, 0.0, &ok2);
+        check(!ok2, "fieldcurv: a zero plane separation is rejected");
+    }
+
+    // ③ **外挿は厳密なので、2 枚目の像面をどこに置いても答えは同じ**
+    //    (刻み幅に依存しないこと = 探索ではないことの確認)
+    {
+        // 光線 a: y = 0.5 − 0.25 z、光線 b: y = −0.5 + 0.25 z → z = 2 で交わる
+        auto at = [](double z) {
+            return std::pair<double, double>(0.5 - 0.25 * z, -0.5 + 0.25 * z);
+        };
+        double worst = 0.0;
+        for (double dz : { 0.1, 1.0, 5.0, 100.0 }) {
+            const auto p0 = at(0.0);
+            const auto pd = at(dz);
+            bool ok = false;
+            const double z = crossingZ(p0.first, p0.second, pd.first,
+                                       pd.second, dz, &ok);
+            if (ok) worst = std::max(worst, std::fabs(z - 2.0));
+        }
+        check(worst < 1e-12,
+              qPrintable(QString("fieldcurv: the answer does not depend on "
+                                 "where the second plane is (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+    }
+
+    // ④ 曲線の組み立て — 収差の無い系 (どの視野でも像面上で交わる) は
+    //    サジタルもタンジェンシャルも 0
+    {
+        struct Fx {
+            static bool flat(double, double dz, double out[4], void *) {
+                // どの視野でも z = 0 で交わる 2 本 (像面 0 で一致)
+                out[0] = 0.0;  out[1] = 0.0;
+                out[2] = 0.0;  out[3] = 0.0;
+                // Δz では開いていく (交点は 0 のまま)
+                out[0] += -0.1 * dz; out[1] += 0.1 * dz;
+                out[2] += -0.1 * dz; out[3] += 0.1 * dz;
+                return true;
+            }
+        };
+        const FieldCurvatureResult r =
+            fieldCurvature(&Fx::flat, nullptr, 20.0, 5, 1.0);
+        check(r.valid() && r.points.size() == 5,
+              "fieldcurv: the curve has one point per field sample");
+        double worst = 0.0;
+        for (const FieldCurvaturePoint &p : r.points) {
+            check(p.sagittalOk && p.tangentialOk,
+                  "fieldcurv: both focal surfaces are found");
+            worst = std::max(worst, std::fabs(p.sagittal_mm)
+                                        + std::fabs(p.tangential_mm));
+        }
+        check(worst < 1e-12,
+              "fieldcurv: a flat field puts both surfaces exactly at 0");
+        check(r.maxAstigmatism_mm < 1e-12,
+              "fieldcurv: and leaves no astigmatism");
+        check(std::fabs(r.points.back().field_deg - 20.0) < 1e-12,
+              "fieldcurv: the last sample is the full field");
+    }
+
+    // ⑤ 非点収差がある系 — T と S が離れ、その差が出ること
+    {
+        struct Fx {
+            // タンジェンシャルは z = −θ²/100、サジタルは z = −θ²/300 で交わる
+            static bool astig(double th, double dz, double out[4], void *) {
+                const double zt = -th * th / 100.0;
+                const double zs = -th * th / 300.0;
+                // z_t で交わる 2 本: a(z) = (z − zt)、b(z) = −(z − zt)
+                out[0] = (0.0 - zt);   out[1] = -(0.0 - zt);
+                out[2] = (0.0 - zs);   out[3] = -(0.0 - zs);
+                // Δz 進んだ像面での値
+                out[0] = (0.0 - zt);   out[1] = -(0.0 - zt);
+                if (dz != 0.0) {
+                    out[0] = (dz - zt);  out[1] = -(dz - zt);
+                    out[2] = (dz - zs);  out[3] = -(dz - zs);
+                }
+                return true;
+            }
+        };
+        const FieldCurvatureResult r =
+            fieldCurvature(&Fx::astig, nullptr, 30.0, 4, 1.0);
+        double worst = 0.0;
+        for (const FieldCurvaturePoint &p : r.points) {
+            const double wt = -p.field_deg * p.field_deg / 100.0;
+            const double ws = -p.field_deg * p.field_deg / 300.0;
+            worst = std::max(worst, std::fabs(p.tangential_mm - wt));
+            worst = std::max(worst, std::fabs(p.sagittal_mm - ws));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("fieldcurv: both surfaces come out where the "
+                                 "test put them (worst %1 mm)")
+                             .arg(worst, 0, 'e', 2)));
+        const double lastT = -30.0 * 30.0 / 100.0;
+        const double lastS = -30.0 * 30.0 / 300.0;
+        check(std::fabs(r.maxAstigmatism_mm - std::fabs(lastT - lastS)) < 1e-9,
+              "fieldcurv: the reported astigmatism is |T - S| at its largest");
+    }
+
+    // ⑥ 壊れた入力
+    {
+        check(!fieldCurvature(nullptr, nullptr, 20.0, 5, 1.0).valid(),
+              "fieldcurv: no tracer gives an empty result");
+    }
+}
+
+// ── 歪曲格子 (optics/DistortionGrid) ──────────────────────────────────────
+// 写像を**こちらから解析的に与えられる**ので、格子の組み方と歪曲率の定義を
+// 厳密に検められる (実光線追跡を挟むと追跡側の誤差と混ざって切り分けられない)。
+static void testDistortionGrid()
+{
+    g_file = "distort";
+    using namespace ofd::optics;
+    const double f = 50.0;          // 焦点距離 [mm]
+    const double hf = 20.0;         // 視野半角 [deg] (隅)
+
+    // ① 理想写像 y = f·tanθ なら歪曲は**どこでも厳密に 0**
+    {
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) { return f * std::tan(th * M_PI / 180.0); },
+            f, hf, 7);
+        check(g.valid(), "distort: the grid builds");
+        check(g.n == 7 && int(g.nodes.size()) == 49,
+              "distort: it has n x n nodes");
+        double worst = 0.0;
+        for (const DistortionNode &nd : g.nodes)
+            worst = std::max(worst, std::fabs(nd.percent));
+        check(worst < 1e-12,
+              qPrintable(QString("distort: the ideal mapping f*tan(theta) has "
+                                 "zero distortion everywhere (worst %1 %)")
+                             .arg(worst, 0, 'e', 2)));
+        // 理想なら実点と理想点が重なる
+        double dmax = 0.0;
+        for (const DistortionNode &nd : g.nodes)
+            dmax = std::max(dmax, std::hypot(nd.xReal_mm - nd.xIdeal_mm,
+                                             nd.yReal_mm - nd.yIdeal_mm));
+        check(dmax < 1e-12,
+              "distort: the real and ideal grids coincide exactly");
+        // 隅がちょうど最大視野になっていること
+        check(std::fabs(g.nodes.front().field_deg - hf) < 1e-12,
+              "distort: the corner node sits at the full field angle");
+    }
+
+    // ② 3 次の歪曲 y = f·tanθ·(1 + k·tan²θ) なら D = k·tan²θ が厳密解
+    {
+        const double k = 0.02;
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) {
+                const double t = std::tan(th * M_PI / 180.0);
+                return f * t * (1.0 + k * t * t);
+            }, f, hf, 5);
+        double worst = 0.0;
+        for (const DistortionNode &nd : g.nodes) {
+            const double t = std::tan(nd.field_deg * M_PI / 180.0);
+            const double want = 100.0 * k * t * t;
+            worst = std::max(worst, std::fabs(nd.percent - want));
+        }
+        check(worst < 1e-9,
+              qPrintable(QString("distort: a cubic mapping gives D = k*tan^2 "
+                                 "exactly (worst %1 point)")
+                             .arg(worst, 0, 'e', 2)));
+        // 樽型 (k < 0) は符号が反転する
+        const DistortionGridResult gb = distortionGrid(
+            [&](double th) {
+                const double t = std::tan(th * M_PI / 180.0);
+                return f * t * (1.0 - k * t * t);
+            }, f, hf, 5);
+        check(g.cornerPercent > 0.0 && gb.cornerPercent < 0.0,
+              "distort: pincushion is positive and barrel is negative");
+        check(std::fabs(g.cornerPercent + gb.cornerPercent) < 1e-9,
+              "distort: the two are equal and opposite at the corner");
+        // 隅がいちばん大きい (視野が大きいほど歪む)
+        check(std::fabs(g.maxPercent - g.cornerPercent) < 1e-12,
+              "distort: the largest distortion is at the corner");
+    }
+
+    // ③ 軸上は 0/0 になるが 0 と定義する (無限大にして絵を壊さない)
+    {
+        check(distortionPercent(0.0, 0.0) == 0.0,
+              "distort: on axis the distortion is defined as 0, not infinity");
+        check(std::fabs(distortionPercent(1.05, 1.0) - 5.0) < 1e-12,
+              "distort: 5 % more than ideal reads as +5 %");
+        const DistortionGridResult g = distortionGrid(
+            [&](double th) { return f * std::tan(th * M_PI / 180.0); },
+            f, hf, 3);          // 中央の節点が軸上 (3 は奇数)
+        const DistortionNode &c = g.nodes[4];
+        check(std::fabs(c.field_deg) < 1e-15 && c.percent == 0.0,
+              "distort: the central node is on axis and reads 0");
+        check(std::fabs(c.xReal_mm) < 1e-15 && std::fabs(c.yReal_mm) < 1e-15,
+              "distort: and lands on the axis");
+    }
+
+    // ④ 壊れた入力は空を返す (でっち上げない)
+    {
+        check(!distortionGrid(nullptr, f, hf, 5).valid(),
+              "distort: no mapping gives an empty grid");
+        check(!distortionGrid([&](double){ return 0.0; }, 0.0, hf, 5).valid(),
+              "distort: a zero focal length gives an empty grid");
+        check(!distortionGrid([&](double){ return 0.0; }, f, hf, 1).valid(),
+              "distort: a 1 x 1 grid is rejected");
+    }
+}
+
+// ── 包絡エネルギー (optics/EncircledEnergy) ────────────────────────────────
+// 「数えるだけ」に見えるが、境界の扱い (r ちょうどを含むか) と、割合から
+// 半径を引くときの丸めで静かに 1 本ずれる。**答えが手で書ける配置**で確かめる。
+static void testEncircledEnergy()
+{
+    g_file = "ee";
+    using namespace ofd::optics;
+
+    // ① 半径 1, 2, 3 に 1 本ずつ — 答えが手で書ける
+    {
+        const std::vector<double> x = { 1.0, 2.0, 3.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0 };
+        const EeCurve c = encircledEnergy(x, y, 0.0, 0.0, 7);
+        check(c.valid(), "ee: the curve builds");
+        check(c.rays == 3, "ee: it counts every ray");
+        check(std::fabs(c.maxRadius_mm - 3.0) < 1e-15,
+              "ee: the outermost radius is the farthest ray");
+        // RMS = sqrt((1+4+9)/3)
+        check(std::fabs(c.rmsRadius_mm - std::sqrt(14.0 / 3.0)) < 1e-12,
+              "ee: the RMS radius is sqrt(mean of r^2)");
+        check(std::fabs(c.fraction.front()) < 1e-15,
+              "ee: nothing is enclosed at zero radius");
+        check(std::fabs(c.fraction.back() - 1.0) < 1e-15,
+              "ee: everything is enclosed at the outermost radius");
+        // 単調非減少
+        bool mono = true;
+        for (std::size_t i = 1; i < c.fraction.size(); ++i)
+            if (c.fraction[i] < c.fraction[i - 1] - 1e-15) mono = false;
+        check(mono, "ee: the fraction never decreases with radius");
+        // 半径ちょうどの点は「内側」に数える (境界の扱いを固定する)
+        const EeCurve c2 = encircledEnergy(x, y, 0.0, 0.0, 4);   // 0,1,2,3
+        check(std::fabs(c2.fraction[1] - 1.0 / 3.0) < 1e-15,
+              "ee: a ray exactly on the radius counts as inside");
+        check(std::fabs(c2.fraction[2] - 2.0 / 3.0) < 1e-15,
+              "ee: two of three rays are inside r = 2");
+    }
+
+    // ② 割合から半径を引く — **補間しない**ので、必ず実在の光線半径が返る
+    {
+        const std::vector<double> x = { 1.0, 2.0, 3.0, 4.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0, 0.0 };
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.25) - 1.0) < 1e-15,
+              "ee: 25 % of four rays is the first ray's radius");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.5) - 2.0) < 1e-15,
+              "ee: 50 % is the second");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 0.6) - 3.0) < 1e-15,
+              "ee: 60 % needs the third (it does not interpolate)");
+        check(std::fabs(radiusForFraction(x, y, 0, 0, 1.0) - 4.0) < 1e-15,
+              "ee: 100 % is the outermost");
+        check(radiusForFraction(x, y, 0, 0, 0.0) == 0.0
+                  && radiusForFraction(x, y, 0, 0, 1.5) == 0.0,
+              "ee: a fraction outside (0, 1] gives 0 rather than a guess");
+    }
+
+    // ③ 一様に散らした円板は EE(r) = (r/R)² に従う (面積比)。
+    //    半径を √ で刻んで面積等分に置けば**厳密に**そうなる。
+    {
+        const int n = 400;
+        const double R = 2.0;
+        std::vector<double> x, y;
+        for (int i = 0; i < n; ++i) {
+            // 面積等分: r_i = R·sqrt((i+0.5)/n)
+            const double r = R * std::sqrt((i + 0.5) / double(n));
+            const double th = 2.0 * M_PI * 0.618033988749895 * i;  // 黄金角
+            x.push_back(r * std::cos(th));
+            y.push_back(r * std::sin(th));
+        }
+        double worst = 0.0;
+        for (double frac : { 0.25, 0.5, 0.75 }) {
+            const double got = radiusForFraction(x, y, 0.0, 0.0, frac);
+            const double want = R * std::sqrt(frac);   // (r/R)² = frac
+            worst = std::max(worst, std::fabs(got - want) / want);
+        }
+        check(worst < 0.01,
+              qPrintable(QString("ee: a uniformly filled disc follows "
+                                 "EE(r) = (r/R)^2 (worst %1 %)")
+                             .arg(worst * 100.0, 0, 'f', 2)));
+    }
+
+    // ④ 中心の取り方で値が変わること (重心か主光線かを示す必要がある理由)
+    {
+        const std::vector<double> x = { 0.0, 1.0, 2.0 };
+        const std::vector<double> y = { 0.0, 0.0, 0.0 };
+        const double atCentroid = radiusForFraction(x, y, 1.0, 0.0, 1.0);
+        const double atChief    = radiusForFraction(x, y, 0.0, 0.0, 1.0);
+        check(std::fabs(atCentroid - 1.0) < 1e-15,
+              "ee: measured from the centroid the spot radius is 1");
+        check(std::fabs(atChief - 2.0) < 1e-15,
+              "ee: measured from the chief ray it is 2 -- the centre matters");
+    }
+
+    // ⑤ 空の入力は空を返す (0 本を 100 % と言わない)
+    {
+        const EeCurve c = encircledEnergy({}, {}, 0.0, 0.0, 16);
+        check(!c.valid() && c.rays == 0,
+              "ee: no rays gives an empty curve rather than a full one");
+    }
+}
+
+// ── MTF (optics/Mtf) ──────────────────────────────────────────────────────
+// 回折限界は「2 つの円の重なり面積」の閉形式なので、**面積を数値積分で
+// 独立に出して**突き合わせる。幾何 MTF は等間隔に並べた光線なら
+// Dirichlet 核が厳密解になるので、それと突き合わせる。
+static void testMtf()
+{
+    g_file = "mtf";
+    using namespace ofd::optics;
+    const double lam = 550.0;      // nm
+    const double fnum = 4.0;
+    const double nc = mtfCutoff_cyc_per_mm(lam, fnum);
+
+    // ① カットオフ νc = 1/(λ·F#)
+    {
+        check(std::fabs(nc - 1.0 / (550.0e-6 * 4.0)) < 1e-9,
+              qPrintable(QString("mtf: the cutoff is 1/(lambda*F#) = %1 "
+                                 "cyc/mm").arg(nc, 0, 'f', 2)));
+        check(std::fabs(mtfCutoff_cyc_per_mm(lam, 8.0) - 0.5 * nc) < 1e-9,
+              "mtf: doubling the f-number halves the cutoff");
+        check(mtfCutoff_cyc_per_mm(0.0, 4.0) == 0.0,
+              "mtf: an invalid wavelength gives 0 rather than infinity");
+    }
+
+    // ② 回折限界 MTF — **瞳の重なり面積を数値積分で独立に出して**照合する。
+    //    半径 1 の円を 2s = ν/νc ずらしたときの重なり面積 / π。
+    {
+        double worst = 0.0;
+        for (double frac : { 0.0, 0.1, 0.25, 0.5, 0.75, 0.9 }) {
+            const double nu = frac * nc;
+            // 中心を ∓s に置くと中心間距離は 2s。閉形式の引数 ν/νc は
+            // 「中心間距離 ÷ 直径」なので s = ν/νc になる。
+            const double s = frac;
+            // 重なり面積 = 2∫ (縦の重なり) dx を台形則で
+            const int N = 200000;
+            double area = 0.0;
+            const double x0 = -1.0, x1 = 1.0;
+            const double h = (x1 - x0) / N;
+            for (int i = 0; i <= N; ++i) {
+                const double x = x0 + i * h;
+                // 左右にずらした 2 円の共通部分の縦幅
+                const double a = 1.0 - (x + s) * (x + s);
+                const double b = 1.0 - (x - s) * (x - s);
+                if (a <= 0.0 || b <= 0.0) continue;
+                const double y = 2.0 * std::min(std::sqrt(a), std::sqrt(b));
+                area += ((i == 0 || i == N) ? 0.5 : 1.0) * y * h;
+            }
+            const double want = area / M_PI;
+            const double got = diffractionLimitedMtf(nu, lam, fnum);
+            worst = std::max(worst, std::fabs(got - want));
+        }
+        check(worst < 2e-5,
+              qPrintable(QString("mtf: the closed form equals the numerically "
+                                 "integrated pupil overlap (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+        check(std::fabs(diffractionLimitedMtf(0.0, lam, fnum) - 1.0) < 1e-15,
+              "mtf: the diffraction MTF is exactly 1 at zero frequency");
+        check(diffractionLimitedMtf(nc, lam, fnum) == 0.0,
+              "mtf: it is exactly 0 at the cutoff");
+        check(diffractionLimitedMtf(1.5 * nc, lam, fnum) == 0.0,
+              "mtf: and stays 0 beyond the cutoff");
+        // 単調減少
+        bool mono = true;
+        double prev = 1.0;
+        for (int i = 1; i <= 50; ++i) {
+            const double v = diffractionLimitedMtf(nc * i / 50.0, lam, fnum);
+            if (v > prev + 1e-12) mono = false;
+            prev = v;
+        }
+        check(mono, "mtf: the diffraction MTF decreases monotonically");
+    }
+
+    // ③ 幾何 MTF — 1 点に集まった光線は全周波数で 1 (幾何的には完全)
+    {
+        std::vector<double> pt(64, 0.123);
+        check(std::fabs(geometricMtf(pt, 0.0) - 1.0) < 1e-15,
+              "mtf: a perfect point has MTF = 1 at zero frequency");
+        check(std::fabs(geometricMtf(pt, 137.0) - 1.0) < 1e-12,
+              "mtf: and 1 at every frequency (no geometric blur at all)");
+        // 平行移動しても変わらない (絶対値を取っているので)
+        std::vector<double> shifted = pt;
+        for (double &v : shifted) v += 4.56;
+        check(std::fabs(geometricMtf(shifted, 137.0)
+                        - geometricMtf(pt, 137.0)) < 1e-12,
+              "mtf: shifting the whole spot does not change the MTF");
+    }
+
+    // ④ 幾何 MTF — **等間隔 N 点なら Dirichlet 核が厳密解**:
+    //      |sin(πνNd) / (N·sin(πνd))|      (d = 点の間隔)
+    //    ビンに刻まずに求めているので、ここが厳密に一致する。
+    {
+        const int N = 64;
+        const double d = 0.001;           // 1 μm 間隔
+        std::vector<double> xs;
+        for (int i = 0; i < N; ++i) xs.push_back(i * d);
+        double worst = 0.0;
+        for (double nu : { 5.0, 37.0, 111.0, 250.0 }) {
+            const double num = std::sin(M_PI * nu * N * d);
+            const double den = N * std::sin(M_PI * nu * d);
+            const double want = std::fabs(den) > 1e-15
+                                    ? std::fabs(num / den) : 1.0;
+            worst = std::max(worst, std::fabs(geometricMtf(xs, nu) - want));
+        }
+        check(worst < 1e-12,
+              qPrintable(QString("mtf: equally spaced rays match the Dirichlet "
+                                 "kernel exactly (worst %1)")
+                             .arg(worst, 0, 'e', 2)));
+        // 一様に幅 w へ広がった像は最初のゼロが ν = 1/w に来る (sinc)
+        const double w = N * d;
+        const double atZero = geometricMtf(xs, 1.0 / w);
+        check(atZero < 0.02,
+              qPrintable(QString("mtf: a uniform blur of width w has its first "
+                                 "null at 1/w (got %1)")
+                             .arg(atZero, 0, 'f', 4)));
+    }
+
+    // ⑤ 曲線と、MTF がしきい値を切る周波数
+    {
+        std::vector<double> xs;
+        for (int i = 0; i < 200; ++i) xs.push_back(0.02 * (i / 199.0 - 0.5));
+        const MtfCurve c = mtfCurve(xs, lam, fnum, 64);
+        check(c.valid(), "mtf: the curve builds");
+        check(c.nu.size() == 64 && c.diffraction.size() == 64
+                  && c.geometric.size() == 64,
+              "mtf: every series has the requested number of points");
+        check(std::fabs(c.nu.back() - nc) < 1e-9,
+              "mtf: the curve runs up to the cutoff");
+        check(std::fabs(c.diffraction.front() - 1.0) < 1e-15
+                  && std::fabs(c.geometric.front() - 1.0) < 1e-15,
+              "mtf: both curves start at 1");
+        // 収差 (幅 20 μm のぼけ) があるので幾何は回折限界より早く落ちる
+        const double f50g = frequencyAtMtf(c.nu, c.geometric, 0.5);
+        const double f50d = frequencyAtMtf(c.nu, c.diffraction, 0.5);
+        check(f50g > 0.0 && f50d > 0.0,
+              "mtf: both curves cross the 50 % level inside the band");
+        check(f50g < f50d,
+              qPrintable(QString("mtf: a blurred spot loses contrast sooner "
+                                 "than the diffraction limit (%1 < %2 cyc/mm)")
+                             .arg(f50g, 0, 'f', 1).arg(f50d, 0, 'f', 1)));
+        // 座標を渡さなければ幾何の列は空 (無いものを 0 で埋めない)
+        const MtfCurve d0 = mtfCurve({}, lam, fnum, 16);
+        check(d0.geometric.empty(),
+              "mtf: with no ray data the geometric series stays empty");
+    }
+}
+
 // ── メッシュ精度 → セル寸法 → Courant 限界 (core/FdtdVerification) ────────
 // メッシュ精度スライダが Δt に効く道筋。**既にある courantNumber() の逆**に
 // なっていることを往復で確かめ、既存の Project::courantDt() とも突き合わせる
@@ -22738,6 +23382,11 @@ int main(int argc, char *argv[])
     testPhaseNoise();
     testRayPaths();
     testCourantFromAccuracy();
+    testMtf();
+    testEncircledEnergy();
+    testDistortionGrid();
+    testFieldCurvature();
+    testDampedLeastSquares();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
