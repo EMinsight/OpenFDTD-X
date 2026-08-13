@@ -162,6 +162,7 @@ private:
     // 開いている .h5 の実スキーマから h5py 読込コードを生成して保存する
     // (notebook=false: .py スクリプト / true: .ipynb ノートブック)
     void exportPythonScript(bool notebook);
+    void exportMatlabScript();   // MATLAB / Octave 読み込みスクリプト (.m)
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);

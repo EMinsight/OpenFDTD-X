@@ -334,6 +334,152 @@ QString pyQuote(const QString &s)
     return QLatin1Char('"') + t + QLatin1Char('"');
 }
 
+// MATLAB の文字列リテラル (シングルクォート内はクォートを 2 重にして escape)
+QString mlQuote(const QString &s)
+{
+    QString t = s;
+    t.replace(QLatin1Char('\''), QLatin1String("''"));
+    return QLatin1Char('\'') + t + QLatin1Char('\'');
+}
+
+// ── MATLAB / Octave 読み込みスクリプト ────────────────────────────────────
+// 選ぶデータセットの規則は buildH5PyCode と同じ (新レイアウトの時系列 →
+// 旧レイアウト /data%06d → 最初の 2D)。
+//
+// **MATLAB の h5read は次元を逆順に返す。** HDF5 側で (Nt, Nx+1, Ny+1,
+// Nz+1, 3) と宣言されている配列は、MATLAB では (3, Nz+1, Ny+1, Nx+1, Nt)
+// になる (いちばん速く変わる軸が先頭に来るため)。ここを取り違えると
+// 転置した絵が出るので、生成するコードもコメントもこの向きで書く。
+QStringList buildMatlabCode(const QString &filePath,
+                            const QVector<ofd::H5DatasetInfo> &dsets)
+{
+    QStringList c;
+    c << QStringLiteral("path = %1;").arg(mlQuote(filePath))
+      << QString()
+      << QStringLiteral("% 全データセットの確認 (パス・形状・型)")
+      << QStringLiteral("info = h5info(path);")
+      << QStringLiteral("disp(info);")
+      << QString()
+      << QStringLiteral("% 注意: h5read は HDF5 の宣言と **逆順** の次元で"
+                        "返す")
+      << QStringLiteral("%       (HDF5 で (a, b, c) なら MATLAB では "
+                        "(c, b, a))。");
+
+    // (a) 新レイアウトの伝搬時系列 (E 優先)
+    QString seriesPath;
+    for (const char *p : { "/timeseries/E", "/timeseries/H" }) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.path == QLatin1String(p)) { seriesPath = ds.path; break; }
+        if (!seriesPath.isEmpty()) break;
+    }
+    // (b) 旧レイアウト /data%06d/E|H — 最大 (最終) グループ番号を選ぶ
+    QString dataPath;
+    if (seriesPath.isEmpty()) {
+        static const QRegularExpression dataRe(
+            QStringLiteral("^/data(\\d+)/(E|H)$"));
+        for (const char *comp : { "E", "H" }) {
+            qlonglong best = -1;
+            for (const ofd::H5DatasetInfo &ds : dsets) {
+                const QRegularExpressionMatch m = dataRe.match(ds.path);
+                if (!m.hasMatch()
+                        || m.captured(2) != QLatin1String(comp)) continue;
+                const qlonglong num = m.captured(1).toLongLong();
+                if (num > best) { best = num; dataPath = ds.path; }
+            }
+            if (best >= 0) break;
+        }
+    }
+    // (c) 最初の 2D データセット
+    QString flatPath;
+    if (seriesPath.isEmpty() && dataPath.isEmpty()) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.dims.size() == 2) { flatPath = ds.path; break; }
+    }
+
+    bool hasPlot = true;
+    QString xlab = QStringLiteral("x index"), ylab = QStringLiteral("y index");
+    if (!seriesPath.isEmpty()) {
+        const QString comp = seriesPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("% 伝搬時系列 (瞬時値)。HDF5: "
+                            "(Nt, Nx+1, Ny+1, Nz+1, 3)")
+          << QStringLiteral("%                    MATLAB: "
+                            "(3, Nz+1, Ny+1, Nx+1, Nt)")
+          << QStringLiteral("E = h5read(path, %1);").arg(mlQuote(seriesPath))
+          << QStringLiteral("sz = size(E);")
+          << QStringLiteral("nz1 = sz(2); nt = sz(5);")
+          << QStringLiteral("frame = E(:, :, :, :, nt);"
+                            "        % 最終フレーム: (3, Nz+1, Ny+1, Nx+1)")
+          << QStringLiteral("amp = squeeze(sqrt(sum(frame .^ 2, 1)));"
+                            "  % |%1|: (Nz+1, Ny+1, Nx+1)").arg(comp)
+          << QStringLiteral("kz = floor(nz1 / 2) + 1;"
+                            "               % z 中央断面 (1 起点)")
+          << QStringLiteral("img = squeeze(amp(kz, :, :));"
+                            "          % (Ny+1, Nx+1) — 行 = y")
+          << QStringLiteral("titleStr = sprintf(%1, nt - 1, kz - 1);")
+                 .arg(mlQuote(seriesPath + QStringLiteral("  |") + comp
+                              + QStringLiteral("|  frame %d  z index %d")));
+    } else if (!dataPath.isEmpty()) {
+        const QString comp = dataPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("% 旧レイアウト %1: HDF5 (1, NFreq2, NN, 6) →")
+                 .arg(dataPath)
+          << QStringLiteral("% MATLAB (6, NN, NFreq2, 1)。/metadata の"
+                            "格子定数でノード番号を空間へ展開する")
+          << QStringLiteral("% n = Ni*i + Nj*j + Nk*k + N0 (0 起点)")
+          << QStringLiteral("Nx = double(h5read(path, '/metadata/Nx'));")
+          << QStringLiteral("Ny = double(h5read(path, '/metadata/Ny'));")
+          << QStringLiteral("Nz = double(h5read(path, '/metadata/Nz'));")
+          << QStringLiteral("Ni = double(h5read(path, '/metadata/Ni'));")
+          << QStringLiteral("Nj = double(h5read(path, '/metadata/Nj'));")
+          << QStringLiteral("Nk = double(h5read(path, '/metadata/Nk'));")
+          << QStringLiteral("N0 = double(h5read(path, '/metadata/N0'));")
+          << QStringLiteral("D = h5read(path, %1);").arg(mlQuote(dataPath))
+          << QStringLiteral("e = squeeze(D(:, :, 1, 1));"
+                            "     % 周波数 0: (6, NN)")
+          << QStringLiteral("amp = sqrt(sum(double(e) .^ 2, 1));"
+                            "  % |%1| (実部 3 + 虚部 3 の RSS): (1, NN)")
+                 .arg(comp)
+          << QStringLiteral("kz = floor(Nz / 2);"
+                            "                % z 中央断面 (0 起点)")
+          << QStringLiteral("ii = 0:Nx;  jj = (0:Ny)';")
+          << QStringLiteral("idx = Ni * ii + Nj * jj + Nk * kz + N0;"
+                            "  % (Ny+1, Nx+1)")
+          << QStringLiteral("img = reshape(amp(idx + 1), size(idx));"
+                            "  % +1 = MATLAB の 1 起点")
+          << QStringLiteral("titleStr = sprintf(%1, kz);")
+                 .arg(mlQuote(dataPath + QStringLiteral("  |") + comp
+                              + QStringLiteral("|  z index %d")));
+    } else if (!flatPath.isEmpty()) {
+        xlab = QStringLiteral("col");
+        ylab = QStringLiteral("row");
+        c << QString()
+          << QStringLiteral("% 2D データセットをそのまま表示 "
+                            "(h5read は転置して返すので .' で戻す)")
+          << QStringLiteral("img = double(h5read(path, %1)).';")
+                 .arg(mlQuote(flatPath))
+          << QStringLiteral("titleStr = %1;").arg(mlQuote(flatPath));
+    } else {
+        hasPlot = false;
+        c << QString()
+          << QStringLiteral("% 表示に適した 2D / 時系列データセットが"
+                            "見つからないため列挙のみ");
+    }
+
+    if (hasPlot) {
+        c << QString()
+          << QStringLiteral("figure;")
+          << QStringLiteral("imagesc(img);")
+          << QStringLiteral("axis xy; axis image;"
+                            "   % xy = 行 0 を下に (imshow の既定と逆)")
+          << QStringLiteral("colormap(jet); colorbar;")
+          << QStringLiteral("title(titleStr, 'Interpreter', 'none');")
+          << QStringLiteral("xlabel(%1); ylabel(%2);")
+                 .arg(mlQuote(xlab), mlQuote(ylab));
+    }
+    return c;
+}
+
 // 列挙結果の 1 行表記 "  /timeseries/E  float32 (100 × 41 × 41 × 41 × 3)"
 QStringList schemaLines(const QVector<ofd::H5DatasetInfo> &dsets)
 {
@@ -1052,8 +1198,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     auto *jupBtn = new QPushButton(I18n::tr("h5_int_jupyter"), sg);
     auto *pvBtn  = new QPushButton(I18n::tr("h5_int_paraview"), sg);
     auto *mlBtn  = new QPushButton(I18n::tr("h5_int_matlab"), sg);
-    for (QPushButton *b : { pvBtn, mlBtn })
-        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
+    // ParaView (XDMF) は未実装のまま → 無効化。理由は
+    // docs/unwired-inventory.md に記録してある (配列の軸順が XDMF の
+    // 3DRectMesh の規約と逆で、XDMF には転置が無いため、そのまま書くと
+    // x と z が入れ替わった絵が出る)
+    ofd::tabhelp::markNotImplemented(pvBtn, I18n::tr(tabhelp::notimpl::kExternal));
+    connect(mlBtn, &QPushButton::clicked, this,
+            [this] { exportMatlabScript(); });
     connect(pyBtn, &QPushButton::clicked, this,
             [this] { exportPythonScript(false); });
     connect(jupBtn, &QPushButton::clicked, this,
@@ -1983,6 +2134,32 @@ void H5ViewerTab::exportCsvCurrent()
 // 開いている .h5 の実スキーマ (列挙結果) から h5py 読み込みコードを生成し、
 // .py スクリプト / .ipynb ノートブック (JSON 直書き) として保存する。
 // 外部ツール (python / jupyter) の起動は行わない — 生成のみ
+// MATLAB / Octave 読み込みスクリプト (.m)。Python 版と同じく **ファイルを
+// 生成するだけ** で外部ツールの起動はしない。
+void H5ViewerTab::exportMatlabScript()
+{
+    if (m_filePath.isEmpty() || m_dsets.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("h5_integration"),
+                                 I18n::tr("h5_int_need_file"));
+        return;
+    }
+    const QFileInfo fi(m_filePath);
+    QStringList lines;
+    lines << QStringLiteral("% OpenFDTD-X (H5 アニメタブ) が生成した "
+                            "MATLAB / Octave 読み込みスクリプト")
+          << QStringLiteral("% 対象: %1").arg(m_filePath)
+          << QStringLiteral("% 生成時点のデータセット (実スキーマ):");
+    for (const QString &l : schemaLines(m_dsets))
+        lines << QStringLiteral("%") + l;
+    lines << QString();
+    lines += buildMatlabCode(m_filePath, m_dsets);
+    tabhelp::saveTextFile(this, I18n::tr("h5_int_matlab"),
+                          fi.completeBaseName() + QStringLiteral("_h5.m"),
+                          QStringLiteral("MATLAB script (*.m)"),
+                          lines.join(QLatin1Char('\n'))
+                              + QLatin1Char('\n'));
+}
+
 void H5ViewerTab::exportPythonScript(bool notebook)
 {
     if (m_filePath.isEmpty() || m_dsets.isEmpty()) {
