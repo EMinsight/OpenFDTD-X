@@ -35,6 +35,7 @@
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/BeamPatternCsv.h"
+#include "io/NkCsv.h"
 #include "io/BellhopIO.h"
 #include "io/ShdReader.h"
 #include "io/TlSlice.h"
@@ -20847,6 +20848,169 @@ static void testBeamPatternCsv()
     }
 }
 
+
+// ── 実測 n,k テーブルの取込 (io/NkCsv) ─────────────────────────────────────
+// この読み取りで**静かに壊れる**のは 3 つ:
+//   1) 波長の単位の取り違え (nm と μm は 1000 倍違う。桁で推測している)
+//   2) k 列が無いのを「k = 0 を実測した」と読むこと (吸収ゼロの捏造)
+//   3) 壊れた行を部分的に受け入れて、途中までの曲線を返すこと
+// 判定はすべて **入力から直に分かる答え** との比較で、記録値の写しではない。
+static void testNkCsv()
+{
+    g_file = "nkcsv";
+    using ofd::parseNkCsv;
+    using ofd::NkTable;
+
+    // (1) いちばん素直な形 — nm 表記、k 列あり
+    {
+        const NkTable t = parseNkCsv(
+            "wavelength_nm,n,k\n"
+            "400,1.5300,0.0010\n"
+            "500,1.5200,0.0008\n"
+            "600,1.5150,0.0005\n");
+        check(t.ok, "nkcsv: a plain nm table parses");
+        check(t.points.size() == 3, "nkcsv: every data row is kept");
+        check(t.hasK, "nkcsv: the k column is detected");
+        check(t.unit == "nm" && t.unitFromHeader,
+              "nkcsv: the unit comes from the header word, not a guess");
+        // 400 nm = 0.4 μm — 変換は 1/1000 ちょうど
+        check(std::fabs(t.points[0].lambda_um - 0.4) < 1e-12,
+              "nkcsv: nm is converted to um by exactly 1/1000");
+        check(std::fabs(t.points[2].n - 1.5150) < 1e-12
+              && std::fabs(t.points[2].k - 0.0005) < 1e-12,
+              "nkcsv: n and k arrive verbatim");
+    }
+
+    // (2) 単位を書いていない μm 表記 — 桁から μm と読めること。
+    //     同じ数値を nm と読むと 0.4 nm (X 線) になるので、
+    //     取り違えると必ず結果が壊れる。
+    {
+        const NkTable t = parseNkCsv("0.40 1.53\n0.50 1.52\n0.60 1.515\n");
+        check(t.ok && t.unit == "um" && !t.unitFromHeader,
+              "nkcsv: a header-less table in the 0.4-0.6 range reads as um "
+              "(and says it was inferred)");
+        check(std::fabs(t.points[0].lambda_um - 0.40) < 1e-12,
+              "nkcsv: um values are kept as they are");
+        check(!t.hasK && t.points[0].k < 0.0,
+              "nkcsv: with no k column, k is missing data (negative), not 0");
+    }
+
+    // (3) 同じ数値でも単位を指定すれば推測しない — 1000 倍ちょうどずれる
+    {
+        const NkTable um = parseNkCsv("0.40 1.53\n0.60 1.51\n");
+        const NkTable nm = parseNkCsv("0.40 1.53\n0.60 1.51\n", "nm");
+        check(nm.ok && nm.unit == "nm",
+              "nkcsv: an explicit unit overrides the magnitude guess");
+        check(std::fabs(um.points[0].lambda_um
+                        - 1000.0 * nm.points[0].lambda_um) < 1e-12,
+              "nkcsv: reading the same file as um instead of nm scales the "
+              "wavelengths by exactly 1000");
+    }
+
+    // (4) メートル表記 (5.5e-7 のような書き方) も桁で分かる
+    {
+        const NkTable t = parseNkCsv("4.0e-7 1.53\n6.0e-7 1.51\n");
+        check(t.ok && t.unit == "m", "nkcsv: metre-scale values read as m");
+        check(std::fabs(t.points[0].lambda_um - 0.4) < 1e-12,
+              "nkcsv: m is converted to um by exactly 1e6");
+    }
+
+    // (5) 区切りと改行の揺れを吸収する — 同じ数値なら同じ結果
+    {
+        const NkTable a = parseNkCsv("400,1.53,0.001\n500,1.52,0.0008\n");
+        const NkTable b = parseNkCsv("400\t1.53\t0.001\r\n500\t1.52\t0.0008\r\n");
+        const NkTable c = parseNkCsv("400; 1.53; 0.001\n500; 1.52; 0.0008\n");
+        bool same = a.ok && b.ok && c.ok
+                 && a.points.size() == b.points.size()
+                 && a.points.size() == c.points.size();
+        for (std::size_t i = 0; same && i < a.points.size(); ++i)
+            same = std::fabs(a.points[i].lambda_um - b.points[i].lambda_um) < 1e-12
+                && std::fabs(a.points[i].lambda_um - c.points[i].lambda_um) < 1e-12
+                && std::fabs(a.points[i].n - b.points[i].n) < 1e-12
+                && std::fabs(a.points[i].n - c.points[i].n) < 1e-12;
+        check(same, "nkcsv: comma / tab+CRLF / semicolon give identical tables");
+    }
+
+    // (6) 並べ替えと重複 — 逆順で書いても昇順で返り、重複は最初の値が残る
+    {
+        const NkTable t = parseNkCsv(
+            "600,1.515\n400,1.530\n500,1.520\n500,9.999\n");
+        check(t.ok && t.points.size() == 3,
+              "nkcsv: a duplicate wavelength collapses to one point");
+        check(t.duplicates == 1, "nkcsv: and the duplicate is reported");
+        check(t.points[0].lambda_um < t.points[1].lambda_um
+              && t.points[1].lambda_um < t.points[2].lambda_um,
+              "nkcsv: rows come back sorted by wavelength");
+        check(std::fabs(t.points[1].n - 1.520) < 1e-12,
+              "nkcsv: the first value of a duplicate is kept, not the last");
+    }
+
+    // (7) コメントと空行は数に入れない。壊れた行は数えて飛ばす
+    {
+        const NkTable t = parseNkCsv(
+            "# measured 2026-08-13\n"
+            "\n"
+            "400,1.53\n"
+            "not,a,number\n"
+            "500,1.52\n");
+        check(t.ok && t.points.size() == 2,
+              "nkcsv: comments and blank lines do not become points");
+        check(t.skipped == 1,
+              "nkcsv: a broken row is skipped and counted (not silently lost)");
+    }
+
+    // (8) 有効な点が 2 点に満たなければ**全体を失敗**にする
+    {
+        const NkTable one = parseNkCsv("400,1.53\n");
+        check(!one.ok && one.points.empty() && !one.error.isEmpty(),
+              "nkcsv: a single row fails with a reason instead of returning "
+              "half a curve");
+        const NkTable none = parseNkCsv("lambda,n\nfoo,bar\n");
+        check(!none.ok && none.points.empty(),
+              "nkcsv: a file with no numbers fails too");
+        const NkTable dup = parseNkCsv("400,1.53\n400,1.54\n");
+        check(!dup.ok,
+              "nkcsv: two rows at the same wavelength are not two points");
+    }
+
+    // (9) 負の波長・非有限値は点にしない
+    {
+        const NkTable t = parseNkCsv("-400,1.53\n400,1.53\n500,1.52\n");
+        check(t.ok && t.points.size() == 2 && t.skipped == 1,
+              "nkcsv: a non-positive wavelength is rejected, not folded in");
+    }
+
+    // (10) 取り込んだ表を DispersionFit にそのまま渡せること。
+    //      Sellmeier 1 極 n²= 1 + Bλ²/(λ²−C) から作った点なので、
+    //      多極フィットは残差ほぼ 0 で通るはず (独立に分かる答え)。
+    {
+        const double B = 1.03961212, C = 0.00600069867;   // N-BK7 の第 1 極
+        QString text = "lambda_um,n\n";
+        for (int i = 0; i < 21; ++i) {
+            const double um = 0.4 + 0.03 * i;
+            const double n = std::sqrt(1.0 + B * um * um / (um * um - C));
+            text += QString::number(um, 'g', 12) + ","
+                  + QString::number(n, 'g', 12) + "\n";
+        }
+        const NkTable t = parseNkCsv(text);
+        check(t.ok && t.points.size() == 21 && t.unit == "um",
+              "nkcsv: a Sellmeier-generated table imports");
+        ofd::optics::FitOptions o;
+        o.model = ofd::optics::FitModel::MultiPole;
+        o.maxPoles = 2;
+        const ofd::optics::FitReport r = ofd::optics::fitDispersion(t.points, o);
+        check(r.status == ofd::optics::FitStatus::Ok,
+              "nkcsv: the imported points feed the dispersion fit directly");
+        check(r.rmsN < 1e-4,
+              qPrintable(QString("nkcsv: a one-pole Sellmeier curve is "
+                                 "recovered to the last digit (rms = %1)")
+                             .arg(r.rmsN, 0, 'g', 3)));
+        check(!r.hasK,
+              "nkcsv: with no k column the fit reports no k data (it does not "
+              "claim a lossless measurement)");
+    }
+}
+
 // ── TL 断面 → 3D シーンの鉛直面 (io/TlSlice) ───────────────────────────────
 // 座標と値の対応づけだけを持つ部分。**向きと符号を間違えると静かに嘘の絵に
 // なる** ので、そこを重点的に判定する (色が裏返る / 上下が逆になる)。
@@ -23467,6 +23631,7 @@ int main(int argc, char *argv[])
     testSourceDirectivity();
     testTlSlice3D();
     testBeamPatternCsv();
+    testNkCsv();
     testEyeDiagram();
     testCircuitImpulse();
     testPhaseNoise();

@@ -12,8 +12,10 @@
 // フィットできないので、診断は「評価対象外」と表示する (偽の合格を出さない)。
 #pragma once
 #include <QScrollArea>
+#include <QStringList>
 #include <QVector>
 
+#include "../io/NkCsv.h"
 #include "../optics/DispersionFit.h"
 #include "../widgets/MiniPlot.h"
 
@@ -40,12 +42,16 @@ private slots:
     void filterTree(const QString &query);
     void addToMaterials();
     void runFit();                  // 参照データへ分散モデルを当てる (実計算)
+    void importNk();                // 実測 n,k テーブル (CSV) を読み込む
 
 private:
     // DBの1材料。glassIndex >= 0 なら GlassCatalog::all() の光学ガラス。
     struct Entry {
         QString id, name, model, range;
         int     glassIndex = -1;
+        // >= 0 なら m_imports の実測テーブル。内蔵データ (公刊 Sellmeier) と
+        // 混ざらないよう、フィットも表示も実測点をそのまま使う。
+        int     importIndex = -1;
     };
     void buildDatabase();
     void showEntry(int index);
@@ -70,6 +76,9 @@ private:
     QLineEdit      *m_epsInfL, *m_wpL, *m_gammaL, *m_w0L;    // Lorentz
     MiniPlot       *m_plotN, *m_plotK;
     QPushButton    *m_addBtn = nullptr;
+    QComboBox      *m_nkUnit = nullptr;    // 取込時の波長単位 (自動/nm/um/m)
+    QVector<NkTable> m_imports;            // 取り込んだ実測テーブル
+    QStringList      m_importNames;        // 表示名 (ファイル名)
     QLabel         *m_previewNote = nullptr;   // 実分散 / 例示曲線の別を明示
     int             m_sel = 0;
 

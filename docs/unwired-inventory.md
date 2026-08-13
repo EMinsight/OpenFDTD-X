@@ -173,6 +173,7 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 | 未反映の内容 | 反映されるもの | 区分 | 実装に要るもの |
 |---|---|---|---|
 | 非線形・利得・磁性のチェック | — | **B** | 非線形・利得はカーネルの入力キーが要る (磁性は material の amur/msgm で一部可) |
+| (解消済み) 実測 n,k テーブルの取込 | 実測の n,k を読み込んで、内蔵材と同じようにフィット・診断・物性値への追加ができる | **C** | 2026-08-13 に配線 (`io/NkCsv`)。CSV / TSV / 空白区切り、`,` `;` TAB 空白のいずれの区切りも、CRLF / LF も受ける。**波長の単位を黙って決めない** — ヘッダの単位語 (nm / um / μm / micron / m) があればそれに従い、無ければ値の中央値の桁で決めて「桁から推測した」と画面に書く。「波長単位」で明示すれば推測しない。**k 列が無いときは 0 ではなく「データ無し」** (`NkSample::k < 0`) として扱い、k の曲線を描かない (0 の直線を引くと吸収ゼロを実測したことになる)。壊れた行は数えて飛ばし、有効な点が 2 点未満なら**全体を失敗**にする (途中までの曲線を返さない)。フィットは**測った点をそのまま**使い等間隔に引き直さない (補間値を実測としてフィットしないため)。ヘッドレス描画で 3 件の不具合を発見・修正: 取込データが「実データ無し」扱いでフィットも追加も押せなかった / 材料を選び直してもフィット範囲が前の材料のままで必ず「範囲が重ならない」になった / 状態表示が取込データにも「公刊 Sellmeier 係数を 64 点サンプル」と出ていた (出所も点数も嘘) |
 
 ### MonitorsTab
 
@@ -316,7 +317,7 @@ tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok"));
 | GeometryTab | 9 |
 | ThinFilmTab | 7 |
 | H5ViewerTab | 6 |
-| MaterialExplorerTab | 4 |
+| MaterialExplorerTab | 3 (2026-08-13 に n,k 取込を実装して 4 → 3) |
 | SoundproofTab / OptimizeTab / LensEditorTab / DisplayOpticsTab / AnalysisGroupsTab / AcousticSourceTab | 各 3 |
 | Post2Tab / EmcTab / CircuitSolversTab / CabinAcousticsTab / AntennaCharTab | 各 2 |
 | その他 15 タブ | 各 1 |

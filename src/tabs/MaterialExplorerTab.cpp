@@ -10,6 +10,8 @@
 #include "TabHelpers.h"
 
 #include <QComboBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QCheckBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -34,12 +36,16 @@ const bool s_i18n = [] {
         "金属・半導体・誘電体・2D材料のデータベース。誘電体 6 種 (SiO2/Si3N4/"
         "Al2O3/Si/TiO2/PMMA) と光学ガラスは公刊 Sellmeier 係数の実分散を内蔵し、"
         "分散モデルのフィットと診断 (残差・因果律・受動性) を実計算できます。"
-        "それ以外は例示表示のみでフィットできません (n,k 取込は未実装)。",
+        "それ以外は例示表示のみでフィットできません。実測の n,k テーブル "
+        "(CSV / TSV) は「n,k 取込」で読み込めば、内蔵材と同じようにフィット・"
+        "診断・物性値への追加ができます。",
         "Database of metals, semiconductors, dielectrics and 2D materials. "
         "Six dielectrics (SiO2/Si3N4/Al2O3/Si/TiO2/PMMA) and optical glasses "
         "carry real published Sellmeier dispersion and can be fitted and "
         "diagnosed (residual, causality, passivity) for real. The other entries "
-        "are illustrative only and cannot be fitted (n,k import is not "
+        "are illustrative only and cannot be fitted. A measured n,k table "
+        "(CSV / TSV) can be brought in with \"Import n,k\" and is then fitted, "
+        "diagnosed and added just like the built-in materials."
         "implemented).");
     ofd::I18n::reg("mex_prev_real",
         "実 Sellmeier 分散 (公刊係数) — 有効範囲 %1 のみ描画。この範囲では k≈0",
@@ -54,12 +60,63 @@ const bool s_i18n = [] {
         "material (Add is disabled)");
     ofd::I18n::reg("mex_add_na_tip",
         "実分散データが無い材料は物性値に追加できません (誤った εr を"
-        "書き込まないため)。n,k 取込は未実装です",
+        "書き込まないため)。実測値があれば「n,k 取込」で読み込んでください",
         "Materials without real dispersion data cannot be added (to avoid "
-        "writing an incorrect εr). n,k import is not implemented");
+        "writing an incorrect εr). If you have measured data, bring it in with "
+        "\"Import n,k\"");
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
+    ofd::I18n::reg("mex_nk_unit",     "波長単位", "Wavelength unit");
+    ofd::I18n::reg("mex_nk_auto",     "自動", "Auto");
+    ofd::I18n::reg("mex_nk_dialog",   "実測 n,k テーブルを開く",
+                   "Open a measured n,k table");
+    ofd::I18n::reg("mex_nk_filter",
+                   "n,k テーブル (*.csv *.txt *.tsv *.dat);;すべて (*)",
+                   "n,k tables (*.csv *.txt *.tsv *.dat);;All files (*)");
+    ofd::I18n::reg("mex_nk_fail",
+                   "取込に失敗しました: %1 (数値の行が 2 行以上、"
+                   "「波長, n」または「波長, n, k」の並びで必要です)",
+                   "Import failed: %1 (at least two numeric rows are needed, "
+                   "laid out as \"wavelength, n\" or \"wavelength, n, k\")");
+    // 単位は推測することがあるので、**どう決めたかを必ず書く**
+    ofd::I18n::reg("mex_nk_ok_head",
+                   "%1 を取り込みました: %2 点、%3 〜 %4 nm。",
+                   "Imported %1: %2 points, %3 to %4 nm.");
+    ofd::I18n::reg("mex_nk_unit_hdr",
+                   " 波長の単位はヘッダの表記から %1 と読みました。",
+                   " The wavelength unit was read as %1 from the header.");
+    ofd::I18n::reg("mex_nk_unit_guess",
+                   " 波長の単位はヘッダに書かれていないため、値の桁から %1 と"
+                   "解釈しました。違う場合は「波長単位」で指定して読み直して"
+                   "ください。",
+                   " The header does not name a wavelength unit, so %1 was "
+                   "inferred from the magnitude of the values. If that is "
+                   "wrong, pick the unit in \"Wavelength unit\" and import "
+                   "again.");
+    ofd::I18n::reg("mex_nk_unit_user",
+                   " 波長の単位は指定どおり %1 として読みました。",
+                   " The wavelength unit was taken as %1 as you specified.");
+    ofd::I18n::reg("mex_nk_nok",
+                   " k の列が無いので消衰係数は「データ無し」として扱います "
+                   "(0 とは書きません)。",
+                   " There is no k column, so the extinction coefficient is "
+                   "treated as missing data (it is not recorded as 0).");
+    ofd::I18n::reg("mex_nk_skipped",
+                   " 読めなかった行が %1 行あり、読み飛ばしました。",
+                   " %1 row(s) could not be read and were skipped.");
+    ofd::I18n::reg("mex_nk_dup",
+                   " 波長が重複した点が %1 点あり、最初の値を残しました。",
+                   " %1 point(s) had a duplicate wavelength; the first value "
+                   "was kept.");
+    ofd::I18n::reg("mex_nk_group", "取込 / Imported", "Imported");
+    ofd::I18n::reg("mex_prev_import",
+                   "取り込んだ実測値です (%1)。曲線は測った点の線形補間で、"
+                   "範囲外は外挿しません。",
+                   "This is the measured data you imported (%1). The curve is "
+                   "a linear interpolation of the measured points and is not "
+                   "extrapolated beyond them.");
+    ofd::I18n::reg("mex_nk_model", "実測", "Measured");
     ofd::I18n::reg("mex_riinfo",      "🌐 refractiveindex.info",
                                       "🌐 refractiveindex.info");
     ofd::I18n::reg("mex_selected",    "選択中: %1", "Selected: %1");
@@ -101,6 +158,14 @@ const bool s_i18n = [] {
         "参照データ: %1 の公刊 Sellmeier 係数を %2〜%3 nm で %4 点サンプル",
         "Reference data: published Sellmeier coefficients of %1, sampled at %4 "
         "points over %2-%3 nm");
+    // 取り込んだ実測データは出所も点数も違う — 同じ文言を使い回すと
+    // 「公刊 Sellmeier を 64 点サンプル」と嘘になる (ヘッドレス描画で発見)
+    ofd::I18n::reg("mex_fit_src_import",
+        "参照データ: 取り込んだ実測値 %1 の %2〜%3 nm にある %4 点 "
+        "(測った点をそのまま使い、等間隔に引き直していません)",
+        "Reference data: %4 measured point(s) of the imported file %1 between "
+        "%2 and %3 nm (the measured points are used as they are, not "
+        "resampled on a uniform grid)");
     ofd::I18n::reg("mex_fit_done",
         "フィット完了: 極 %1 個 · RMS 誤差 (n) = %2 · 最大誤差 %3",
         "Fit done: %1 pole(s), RMS error (n) = %2, max error %3");
@@ -111,9 +176,9 @@ const bool s_i18n = [] {
         "definition (the reference data is used as is).");
     ofd::I18n::reg("mex_fit_nodata",
         "この材料は実分散データを内蔵していないためフィットできません "
-        "(n,k 取込は未実装)。",
+        "(実測値があれば「n,k 取込」で読み込めばフィットできます)。",
         "This entry has no built-in real dispersion data, so it cannot be "
-        "fitted (n,k import is not implemented).");
+        "fitted (import a measured table with \"Import n,k\" to fit it).");
     ofd::I18n::reg("mex_fit_badrange",
         "フィット範囲 %1〜%2 nm が参照データの有効範囲 %3〜%4 nm と重なりません。",
         "The fit range %1-%2 nm does not overlap the validity range of the "
@@ -296,12 +361,25 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *dbBtns = new QHBoxLayout();
     auto *impNk = new QPushButton(I18n::tr("mex_import_nk"), sDb);
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
-    tabhelp::markNotImplemented(impNk, I18n::tr(tabhelp::notimpl::kParser));   // n,k 取込は未配線
+    connect(impNk, &QPushButton::clicked, this,
+            &MaterialExplorerTab::importNk);
     tabhelp::markNotImplemented(riBtn, I18n::tr(tabhelp::notimpl::kExternal));   // refractiveindex.info 連携は未配線
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
     sDb->vbox()->addLayout(dbBtns);
+    // 波長の単位。既定は「自動」(ヘッダの単位語 → 無ければ値の桁) で、
+    // 推測になったときは画面にそう書く。ここで明示すれば推測しない。
+    // ボタンと同じ行に置くと横幅が足りずラベルが切れるので行を分ける。
+    auto *unitRow = new QHBoxLayout();
+    unitRow->addWidget(new QLabel(I18n::tr("mex_nk_unit"), sDb));
+    m_nkUnit = new QComboBox(sDb);
+    m_nkUnit->addItems({ I18n::tr("mex_nk_auto"), QStringLiteral("nm"),
+                         QStringLiteral("um"), QStringLiteral("m") });
+    m_nkUnit->setMaximumWidth(90);
+    unitRow->addWidget(m_nkUnit);
+    unitRow->addStretch(1);
+    sDb->vbox()->addLayout(unitRow);
     lv->addWidget(sDb);
     lv->addStretch(1);
     mid->addWidget(left);
@@ -569,10 +647,79 @@ void MaterialExplorerTab::buildDatabase()
                           QStringLiteral("Sellmeier"),
                           QString::fromUtf8("0.4–1.6 μm"), i });
     }
+    // 取り込んだ実測テーブル (あれば末尾に別グループで置く)。**内蔵データと
+    // 同じ木に混ぜても、区分は「実測」と出して区別が付くようにする**。
+    if (!m_imports.isEmpty()) {
+        auto *gImp = addGroup(I18n::tr("mex_nk_group"));
+        for (int i = 0; i < m_imports.size(); ++i) {
+            const NkTable &t = m_imports[i];
+            Entry e;
+            e.id = QStringLiteral("import_%1").arg(i);
+            e.name = t.error.isEmpty() ? m_importNames.value(i)
+                                       : m_importNames.value(i);
+            e.model = I18n::tr("mex_nk_model");
+            e.range = QStringLiteral("%1–%2 nm")
+                          .arg(t.minLambda_um() * 1000.0, 0, 'f', 0)
+                          .arg(t.maxLambda_um() * 1000.0, 0, 'f', 0);
+            e.importIndex = i;
+            addItem(gImp, e);
+        }
+    }
     m_tree->expandAll();
     if (m_tree->topLevelItemCount() > 0
         && m_tree->topLevelItem(0)->childCount() > 0)
         m_tree->setCurrentItem(m_tree->topLevelItem(0)->child(0));
+}
+
+// 実測 n,k テーブル (CSV / TSV / 空白区切り) を読んでデータベースへ足す。
+// **波長の単位をどう決めたかを必ず画面に書く** (推測を黙って通さない)。
+void MaterialExplorerTab::importNk()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("mex_nk_dialog"), QString(), I18n::tr("mex_nk_filter"));
+    if (path.isEmpty()) return;
+
+    QString unit;                       // 空 = 自動 (ヘッダ → 桁)
+    if (m_nkUnit && m_nkUnit->currentIndex() > 0)
+        unit = m_nkUnit->currentText();
+    const NkTable t = readNkCsv(path, unit);
+
+    if (!t.ok) {
+        m_fitStatus->setText(I18n::tr("mex_nk_fail").arg(t.error));
+        m_fitStatus->setStyleSheet("font-size:11px; color:#C0392B;");
+        return;
+    }
+
+    const QString name = QFileInfo(path).fileName();
+    m_imports.push_back(t);
+    m_importNames.push_back(name);
+    buildDatabase();
+
+    // 取り込んだものを選び、読み取り結果を説明する
+    const int target = m_entries.size() - 1;
+    for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *grp = m_tree->topLevelItem(g);
+        for (int c = 0; c < grp->childCount(); ++c) {
+            if (grp->child(c)->data(0, Qt::UserRole).toInt() == target) {
+                m_tree->setCurrentItem(grp->child(c));
+                showEntry(target);
+            }
+        }
+    }
+
+    QString note = I18n::tr("mex_nk_ok_head")
+                       .arg(name)
+                       .arg(int(t.points.size()))
+                       .arg(QString::number(t.minLambda_um() * 1000.0, 'f', 1),
+                            QString::number(t.maxLambda_um() * 1000.0, 'f', 1));
+    if (!unit.isEmpty())          note += I18n::tr("mex_nk_unit_user").arg(t.unit);
+    else if (t.unitFromHeader)    note += I18n::tr("mex_nk_unit_hdr").arg(t.unit);
+    else                          note += I18n::tr("mex_nk_unit_guess").arg(t.unit);
+    if (!t.hasK)          note += I18n::tr("mex_nk_nok");
+    if (t.skipped > 0)    note += I18n::tr("mex_nk_skipped").arg(t.skipped);
+    if (t.duplicates > 0) note += I18n::tr("mex_nk_dup").arg(t.duplicates);
+    m_fitStatus->setText(note);
+    m_fitStatus->setStyleSheet("font-size:11px; color:#2E7D32;");
 }
 
 // 検索フィルタ: 材料名にマッチしない項目を隠す
@@ -600,6 +747,22 @@ double MaterialExplorerTab::previewN(const Entry &e, double lambda_nm) const
 {
     if (e.glassIndex >= 0 && e.glassIndex < GlassCatalog::all().size())
         return GlassCatalog::all()[e.glassIndex].n(lambda_nm / 1000.0);
+    if (e.importIndex >= 0 && e.importIndex < m_imports.size()) {
+        // 実測点の線形補間。範囲外は端の値で留める (外挿して作らない)
+        const std::vector<optics::NkSample> &pt = m_imports[e.importIndex].points;
+        if (pt.empty()) return 0.0;
+        const double um = lambda_nm / 1000.0;
+        if (um <= pt.front().lambda_um) return pt.front().n;
+        if (um >= pt.back().lambda_um)  return pt.back().n;
+        for (std::size_t i = 1; i < pt.size(); ++i) {
+            if (um <= pt[i].lambda_um) {
+                const double d = pt[i].lambda_um - pt[i - 1].lambda_um;
+                const double f = (d > 0.0) ? (um - pt[i - 1].lambda_um) / d : 0.0;
+                return pt[i - 1].n + f * (pt[i].n - pt[i - 1].n);
+            }
+        }
+        return pt.back().n;
+    }
     if (const optics::MaterialInfo *r = realNk(e.id)) {
         const double um = qBound(r->lmin_um, lambda_nm / 1000.0, r->lmax_um);
         double n = 0.0;
@@ -622,6 +785,8 @@ void MaterialExplorerTab::showEntry(int index)
 
     // 実分散内蔵材は有効範囲のみ、その他は 400–1580 nm を 60 点で描く
     const optics::MaterialInfo *r = realNk(e.id);
+    const bool imported = (e.importIndex >= 0
+                           && e.importIndex < m_imports.size());
     double l0 = 400.0, l1 = 1580.0;
     if (r) {
         l0 = std::max(l0, r->lmin_um * 1000.0);
@@ -630,8 +795,14 @@ void MaterialExplorerTab::showEntry(int index)
             l0 = r->lmin_um * 1000.0;
             l1 = std::min(r->lmax_um, r->lmin_um * 4.0) * 1000.0;
         }
+    } else if (imported) {
+        // 取込データは測った範囲だけを描く (外挿した曲線を見せない)
+        l0 = m_imports[e.importIndex].minLambda_um() * 1000.0;
+        l1 = m_imports[e.importIndex].maxLambda_um() * 1000.0;
     }
-    const bool realCurve = (r != nullptr) || (e.glassIndex >= 0);
+    // 取り込んだ実測値は**いちばん実データ**なので、内蔵の実分散材と同じ
+    // 扱いにする (ここを落とすとフィットも追加も押せなくなる)
+    const bool realCurve = (r != nullptr) || (e.glassIndex >= 0) || imported;
     MiniSeries sn, sk;
     sn.color = QColor("#B83280");
     sk.color = QColor("#F59E0B");
@@ -643,13 +814,25 @@ void MaterialExplorerTab::showEntry(int index)
             : 1.5 + (l - 400.0) / 1600.0 * 8.0 + std::cos(l / 300.0) * 0.1;
         sk.pts.push_back({ l, k });
     }
+    if (imported && m_imports[e.importIndex].hasK) {
+        // k 列があるなら測った点をそのまま描く。**無いときは描かない**
+        // (0 の直線を引くと「吸収ゼロを測った」ことになる)
+        sk.pts.clear();
+        for (const optics::NkSample &sm : m_imports[e.importIndex].points)
+            if (sm.k >= 0.0)
+                sk.pts.push_back({ sm.lambda_um * 1000.0, sm.k });
+    } else if (imported) {
+        sk.pts.clear();
+    }
     m_refSeries = sn;              // フィット曲線の重ね描き用に保持
     m_plotN->setSeries({ sn });
     m_plotK->setSeries({ sk });
 
     // 実データの有無を明示し、無い材料は追加を無効化する (誤った εr を
     // プロジェクトへ書き込まない — 絶対規則 5/6 の流儀)
-    if (r)
+    if (imported)
+        m_previewNote->setText(I18n::tr("mex_prev_import").arg(e.range));
+    else if (r)
         m_previewNote->setText(I18n::tr("mex_prev_real").arg(e.range));
     else if (e.glassIndex >= 0)
         m_previewNote->setText(I18n::tr("mex_prev_glass"));
@@ -658,6 +841,14 @@ void MaterialExplorerTab::showEntry(int index)
     m_addBtn->setEnabled(realCurve);
     m_addBtn->setToolTip(realCurve ? QString()
                                    : I18n::tr("mex_add_na_tip"));
+    // フィット範囲も選んだ材料の有効範囲へ合わせる。**前の材料の範囲を
+    // 残すと、選び直した直後に「範囲が重ならない」で必ず失敗する**
+    // (取込データを選んだときにヘッドレス描画で見つけた)。
+    double refLo = 0.0, refHi = 0.0;
+    if (referenceRange(e, refLo, refHi)) {
+        m_fitMin->setText(QString::number(refLo, 'f', 0));
+        m_fitMax->setText(QString::number(refHi, 'f', 0));
+    }
     // 材料を変えたら前回のフィット結果は捨てる (別材料の残差を残さない)
     m_fitBtn->setEnabled(realCurve);
     m_fitBtn->setToolTip(realCurve ? QString() : I18n::tr("mex_fit_nodata"));
@@ -676,6 +867,13 @@ bool MaterialExplorerTab::referenceRange(const Entry &e, double &lo_nm,
         if (!GlassCatalog::all()[e.glassIndex].hasSellmeier()) return false;
         lo_nm = kGlassLoUm * 1000.0;
         hi_nm = kGlassHiUm * 1000.0;
+        return true;
+    }
+    if (e.importIndex >= 0 && e.importIndex < m_imports.size()) {
+        const NkTable &t = m_imports[e.importIndex];
+        if (!t.ok) return false;
+        lo_nm = t.minLambda_um() * 1000.0;
+        hi_nm = t.maxLambda_um() * 1000.0;
         return true;
     }
     if (const optics::MaterialInfo *r = realNk(e.id)) {
@@ -745,17 +943,27 @@ void MaterialExplorerTab::runFit()
         return;
     }
 
-    // 参照データ (公刊 Sellmeier) をサンプルする。k は「データ無し」(負値)
     std::vector<optics::NkSample> samples;
-    samples.reserve(kFitSamples);
-    for (int i = 0; i < kFitSamples; ++i) {
-        const double nm = clampedLo
-                        + (clampedHi - clampedLo) * i / (kFitSamples - 1);
-        optics::NkSample s;
-        s.lambda_um = nm / 1000.0;
-        s.n = previewN(e, nm);
-        s.k = -1.0;                       // 内蔵データは実部のみ
-        samples.push_back(s);
+    if (e.importIndex >= 0 && e.importIndex < m_imports.size()) {
+        // 取り込んだ実測データは**測った点そのもの**を使う。等間隔に
+        // 引き直すと補間した値を「実測」としてフィットすることになる。
+        for (const optics::NkSample &sm : m_imports[e.importIndex].points) {
+            const double nm = sm.lambda_um * 1000.0;
+            if (nm >= clampedLo - 1e-9 && nm <= clampedHi + 1e-9)
+                samples.push_back(sm);
+        }
+    } else {
+        // 参照データ (公刊 Sellmeier) をサンプルする。k は「データ無し」(負値)
+        samples.reserve(kFitSamples);
+        for (int i = 0; i < kFitSamples; ++i) {
+            const double nm = clampedLo
+                            + (clampedHi - clampedLo) * i / (kFitSamples - 1);
+            optics::NkSample s;
+            s.lambda_um = nm / 1000.0;
+            s.n = previewN(e, nm);
+            s.k = -1.0;                   // 内蔵データは実部のみ
+            samples.push_back(s);
+        }
     }
 
     optics::FitOptions o;
@@ -778,11 +986,13 @@ void MaterialExplorerTab::runFit()
     m_fitLo_nm = clampedLo;
     m_fitHi_nm = clampedHi;
 
-    QString msg = I18n::tr("mex_fit_src")
+    const bool fromImport = (e.importIndex >= 0
+                             && e.importIndex < m_imports.size());
+    QString msg = I18n::tr(fromImport ? "mex_fit_src_import" : "mex_fit_src")
                       .arg(e.name)
                       .arg(clampedLo, 0, 'f', 0)
                       .arg(clampedHi, 0, 'f', 0)
-                      .arg(kFitSamples);
+                      .arg(int(samples.size()));   // 実際に使った点数
     if (clampedLo > lo + 0.5 || clampedHi < hi - 0.5)
         msg += I18n::tr("mex_fit_clamped")
                    .arg(clampedLo, 0, 'f', 0).arg(clampedHi, 0, 'f', 0);
