@@ -131,6 +131,38 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_sec_xz", "XZ 面 (Y=固定)", "XZ plane (Y fixed)");
     ofd::I18n::reg("h5_sec_yz", "YZ 面 (X=固定)", "YZ plane (X fixed)");
     ofd::I18n::reg("h5_sec_pos", "位置", "Position");
+    ofd::I18n::reg("h5_scene_chk", "3D シーンに重ねる",
+                   "Overlay on the 3D scene");
+    ofd::I18n::reg("h5_scene_tip_on",
+                   "表示中のフレームを 3D シーンの同じ位置へ重ねます",
+                   "Overlay the frame being shown at the matching position "
+                   "in the 3D scene");
+    ofd::I18n::reg("h5_scene_tip_off",
+                   "伝搬時系列で、断面の座標 (/metadata/Xn・Yn・Zn) が "
+                   "読めるファイルのときだけ使えます",
+                   "Available only for a propagation time series whose slice "
+                   "coordinates (/metadata/Xn, Yn, Zn) can be read");
+    ofd::I18n::reg("h5_scene_note",
+                   "表示中のフレームを 3D シーンの同じ位置へ重ねます "
+                   "(再生・コマ送り・断面の変更に追従します)。"
+                   "3D 側は「結果断面を重ねる」が入っていると見えます。"
+                   "座標が読めないファイルでは位置を決められないので重ねません "
+                   "(適当な場所に置くと結果を読み違えるため)。",
+                   "The frame being shown is overlaid at the matching position "
+                   "in the 3D scene, following playback, stepping and slice "
+                   "changes. Turn on \"Overlay result slice\" in the 3D view "
+                   "to see it. If the file has no coordinates the slice is not "
+                   "placed at all, because putting it at a guessed position "
+                   "would misrepresent the result.");
+    ofd::I18n::reg("h5_scene_label", "H5アニメ |%1| %2 断面 %3 (%4 m)",
+                   "H5 animation |%1| %2 slice %3 (%4 m)");
+    ofd::I18n::reg("h5_scene_auto",
+                   "  ※ 明るさはフレームごとの最大値で正規化しています "
+                   "(2D と同じ)。フレーム間で強さを比べるには手動スケールに "
+                   "してください。",
+                   "  Note: the brightness is normalised per frame, the same "
+                   "as the 2D view. Switch to a manual scale to compare "
+                   "strength between frames.");
     ofd::I18n::reg("h5_sec_multi", "複数断面同時表示 (3面ビュー)",
                    "Show multiple sections (3-plane view)");
     ofd::I18n::reg("h5_multi_tip_on",
@@ -853,6 +885,20 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_multiChk->setEnabled(false);
     m_multiChk->setToolTip(I18n::tr("h5_multi_tip_off"));
     sx->vbox()->addWidget(m_multiChk);
+    // 3D シーンへの重ね描き — 断面の座標 (/metadata/Xn|Yn|Zn) が分かる
+    // 伝搬時系列のときだけ有効 (updateSliceControls)
+    m_sceneChk = new QCheckBox(I18n::tr("h5_scene_chk"), sx);
+    m_sceneChk->setEnabled(false);
+    m_sceneChk->setToolTip(I18n::tr("h5_scene_tip_off"));
+    sx->vbox()->addWidget(m_sceneChk);
+    connect(m_sceneChk, &QCheckBox::toggled, this, [this](bool on) {
+        if (on) pushSceneSlice();
+        else    emit sceneSliceCleared();
+    });
+    m_sceneNote = new QLabel(I18n::tr("h5_scene_note"), sx);
+    m_sceneNote->setWordWrap(true);
+    m_sceneNote->setStyleSheet("color:palette(mid); font-size:11px;");
+    sx->vbox()->addWidget(m_sceneNote);
     m_secNote = new QLabel(I18n::tr("h5_sec_note_off"), sx);
     m_secNote->setWordWrap(true);
     m_secNote->setStyleSheet("color:palette(mid); font-size:11px;");
@@ -1366,9 +1412,11 @@ void H5ViewerTab::loadCurrentFrame()
             clearStats();
             return;
         }
+        m_seriesFrameLabel = label;
         m_previewBox->setTitle(I18n::tr("h5_series_title")
             .arg(m_seriesComp, m_planeBox->currentText(), label));
         showData(d, rows, cols);
+        pushSceneSlice();       // 3D シーンへ (重ねる設定のときだけ流れる)
         return;
     }
     if (!H5Reader::readFrame(m_filePath, m_dataset, m_frame, d, rows, cols,
@@ -1408,6 +1456,25 @@ void H5ViewerTab::updateSliceControls()
     m_multiChk->setEnabled(on);
     m_multiChk->setToolTip(I18n::tr(on ? "h5_multi_tip_on"
                                        : "h5_multi_tip_off"));
+    // 3D への重ね描きは、断面の座標が読めるときだけ (位置を推測しない)。
+    // 座標は loadSliceCoords が /metadata/Xn|Yn|Zn から読む
+    const bool hasCoords = on && !m_coord[0].isEmpty()
+                        && !m_coord[1].isEmpty() && !m_coord[2].isEmpty();
+    if (m_sceneChk) {
+        m_sceneChk->setEnabled(hasCoords);
+        m_sceneChk->setToolTip(I18n::tr(hasCoords ? "h5_scene_tip_on"
+                                                  : "h5_scene_tip_off"));
+        if (!hasCoords && m_sceneChk->isChecked()) {
+            m_sceneChk->setChecked(false);   // toggled で 3D 側も消える
+        }
+    }
+    if (m_sceneNote) {
+        QString note = I18n::tr("h5_scene_note");
+        // 自動スケールだとフレームごとに正規化されることを明示する
+        if (hasCoords && m_autoScale && m_autoScale->isChecked())
+            note += I18n::tr("h5_scene_auto");
+        m_sceneNote->setText(note);
+    }
     if (!on) {
         if (m_multiChk->isChecked()) m_multiChk->setChecked(false);
         m_secNote->setText(I18n::tr("h5_sec_note_off"));
@@ -1482,6 +1549,62 @@ void H5ViewerTab::loadSliceCoords()
         if (H5Reader::readAll(m_filePath, p, v, dims) && v.size() == n[a])
             m_coord[a] = v;
     }
+}
+
+// 表示中のフレームを 3D シーンへ流す。
+//
+// **座標が分かるときだけ流す。** /metadata/Xn|Yn|Zn が無いファイル
+// (obpm の /field/Ixz など) は断面をどこへ置けばよいか決まらないので、
+// 位置を推測せず何も送らない (CenterPane::applyResultSliceTo3D と同じ規則)。
+// 行 0 = 面内 第2軸の + 側、列 = 第1軸という並びは H5Reader が返すものと
+// Viewport3D が期待するものが一致しているので、そのまま渡す。
+void H5ViewerTab::pushSceneSlice()
+{
+    if (!m_sceneChk || !m_sceneChk->isChecked()) return;
+    // 伝搬時系列 (断面の軸と位置が決まる) 以外は対象にしない
+    if (!m_seriesMode || m_data.isEmpty() || m_rows <= 0 || m_cols <= 0) {
+        emit sceneSliceCleared();
+        return;
+    }
+    const int axis = sliceAxis();
+    // 面内 2 軸の対応は H5Reader が返す行列の規約そのもの。定義を borrow して
+    // 二重管理にしない (片方だけ直すと 3D の断面が黙って転置する)
+    int uAxis = 0, vAxis = 2;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    // 3 軸ぶんの座標が要る (固定軸の位置と、面内 2 軸の範囲)
+    if (m_coord[axis].isEmpty() || m_coord[uAxis].size() < 2
+        || m_coord[vAxis].size() < 2) {
+        emit sceneSliceCleared();
+        return;
+    }
+    const int maxIdx = std::max(0, int(m_coord[axis].size()) - 1);
+    const int idx = qBound(0, (m_secPos[axis] < 0) ? maxIdx / 2
+                                                   : m_secPos[axis], maxIdx);
+
+    H5SliceForScene sl;
+    sl.cells = m_data;
+    sl.rows = m_rows;
+    sl.cols = m_cols;
+    sl.axis = axis;
+    sl.pos_m = m_coord[axis][idx];
+    sl.u0 = m_coord[uAxis].first();
+    sl.u1 = m_coord[uAxis].last();
+    sl.v0 = m_coord[vAxis].first();
+    sl.v1 = m_coord[vAxis].last();
+    // 手動スケールならその上限を渡してフレーム間で明るさを揃える。
+    // 自動スケールのときは 0 を渡し、2D と同じ「フレームごとの正規化」にする
+    // (2 つの画面で別々の正規化をすると同じデータが違う強さに見える)。
+    if (!m_autoScale->isChecked()) {
+        bool ok = false;
+        const double hi = m_scaleMax->text().trimmed().toDouble(&ok);
+        if (ok && hi > 0.0) sl.scaleMax = hi;
+    }
+    // 凡例には「何の・いつの・どこの断面か」を出す (3D 側だけ見ても分かる)
+    sl.label = I18n::tr("h5_scene_label")
+                   .arg(m_seriesComp, m_planeBox->currentText(),
+                        m_seriesFrameLabel,
+                        QString::number(sl.pos_m, 'g', 4));
+    emit sceneSliceReady(sl);
 }
 
 // 断面のキャプション: 面名 + 固定軸のノード番号 (座標があれば [m] も)

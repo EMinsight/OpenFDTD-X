@@ -5,6 +5,7 @@
 //   - 3D (frames×rows×cols) データセットのフレーム再生 (QTimer)
 //   - 伝搬時系列 (E/H) の 3 面ビュー (XY/XZ/YZ を共通カラースケールで同時表示)
 //   - 表示中フレームの min / max / 平均 の実計算表示
+//   - 表示中フレームを 3D シーンへ重ねる (座標が読めるファイルのみ)
 // を行う。1D / 4D 以上のデータセットは表示未対応 (ofd の /data*/E 等)。
 #pragma once
 #include "../io/MovieExport.h"
@@ -81,6 +82,20 @@ private:
     int m_cmap = 0;
 };
 
+// 3D シーンへ流す 1 断面 (H5アニメの現在フレーム)。座標が分かるときだけ
+// 作れる — 位置不明の断面を 3D の適当な場所へ置くと結果の読み違いになる。
+struct H5SliceForScene {
+    QVector<double> cells;
+    int    rows = 0, cols = 0;
+    int    axis = 2;              // 0=X 一定 / 1=Y 一定 / 2=Z 一定
+    double pos_m = 0.0;
+    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+    QString label;
+    // 正規化に使う最大値 (0 = このフレームの最大値)。手動スケール指定時は
+    // その値を入れて、フレーム間で明るさが比較できるようにする
+    double scaleMax = 0.0;
+};
+
 class H5ViewerTab : public QScrollArea {
     Q_OBJECT
 public:
@@ -88,6 +103,13 @@ public:
 
     // 実行完了時に MainWindow から実行出力の .h5 を渡して読み込む
     void openFile(const QString &path);
+
+signals:
+    // 「3D シーンに重ねる」が有効なあいだ、表示中のフレームを流す。
+    // 中継は MainWindow (タブ → CenterPane の直接依存を作らない)
+    void sceneSliceReady(const ofd::H5SliceForScene &slice);
+    // 重ねるのをやめた / 座標が分からず流せない
+    void sceneSliceCleared();
 
 private slots:
     void applyTimeRange();   // 時間範囲 → 再生対象フレームの絞り込み
@@ -194,6 +216,12 @@ private:
     QVector<double> m_coord[3];       // /metadata/Xn|Yn|Zn [m] (無ければ空)
 
     // 3 面ビュー (XY/XZ/YZ 同時表示)
+    // 3D シーンへの重ね描き
+    QCheckBox   *m_sceneChk = nullptr;
+    QLabel      *m_sceneNote = nullptr;
+    void pushSceneSlice();       // 表示中フレーム → 3D (条件を満たすときだけ)
+    QString      m_seriesFrameLabel;   // 読み手が返したフレームの時刻表記
+
     QCheckBox   *m_multiChk = nullptr;
     QWidget     *m_multiWrap = nullptr;
     FieldCanvas *m_multiCanvas[3] = { nullptr, nullptr, nullptr };

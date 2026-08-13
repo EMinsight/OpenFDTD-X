@@ -98,10 +98,15 @@ public:
     //   u0,u1 : 面内 第1軸の範囲 [m] (axis=0 は y, axis=1 は x, axis=2 は x)
     //   v0,v1 : 面内 第2軸の範囲 [m] (axis=0 は z, axis=1 は z, axis=2 は y)
     //   label : 凡例に出す説明 (データセット名・時刻など)
+    //   scaleMax : 正規化に使う最大値。**0 以下なら与えたデータの最大値**
+    //           (従来動作)。アニメーションのようにフレームを次々と差し替える
+    //           場合、フレームごとの最大値で正規化すると弱いフレームも強い
+    //           フレームも同じ明るさになり、時間変化が読めなくなる。呼び側が
+    //           共通の最大値を持っているならそれを渡す。
     void setResultSlice(const QVector<double> &cells, int rows, int cols,
                         int axis, double pos_m,
                         double u0, double u1, double v0, double v1,
-                        const QString &label);
+                        const QString &label, double scaleMax = 0.0);
     void clearResultSlice();
     bool hasResultSlice() const
     { return m_sliceRows > 0 && m_sliceCols > 0 && !m_sliceCells.isEmpty(); }

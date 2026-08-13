@@ -109,6 +109,10 @@ const bool s_i18n = [] {
         "解析結果 %1 (正規化 |値|)", "Result %1 (normalised |value|)");
     // 結果断面の 3D 重ね表示 (スタイルコンボの Field と同じ状態を指す)
     ofd::I18n::reg("vp_overlay", "結果断面を重ねる", "Overlay result slice");
+    ofd::I18n::reg("vp_slice3d_anim_busy",
+        "H5アニメの断面を表示中のため、中央断面は重ねませんでした",
+        "The mid-plane slice was not overlaid because the H5 animation slice "
+        "is being shown");
     ofd::I18n::reg("vp_overlay_tip",
         "3D シーンにソルバ出力の断面 (実データ) を重ねて表示する "
         "(3D スタイル「+ Field」と同じ状態)",
@@ -680,6 +684,14 @@ bool CenterPane::loadResult3DSlice(const QString &h5Path)
 // 座標不明の断面を適当な位置に置くと結果の読み違いになるため。
 bool CenterPane::applyResultSliceTo3D(const QString &h5Path, QString *why)
 {
+    // H5アニメの断面を出しているときは触らない。3D が持てる断面は 1 枚で、
+    // ここで読めなかったときに clearResultSlice() まで走ると**アニメが
+    // 置いた断面ごと消える** (「送ったのに 3D は結果未読込のまま」になる —
+    // ヘッドレス描画で実際に踏んだ)。利用者が明示的に有効にしている側を残す。
+    if (m_animSliceActive) {
+        if (why) *why = I18n::tr("vp_slice3d_anim_busy");
+        return m_viewport->hasResultSlice();
+    }
     const auto fail = [&](const QString &msg) {
         if (why) *why = msg;
         m_viewport->clearResultSlice();
@@ -732,12 +744,43 @@ bool CenterPane::hasResult3DSlice() const
 // タイトルで「前に開いていたファイルの結果」と明示する。
 void CenterPane::clearResultField()
 {
+    m_animSliceActive = false;    // 別プロジェクトへ移るので持ち主ごと解除
     m_viewport->clearResultSlice();
     updateOverlayUi();
     // 2D 断面も実データを捨ててプレースホルダへ戻す。前のプロジェクトの
     // 結果を新しいプロジェクトの結果と誤読させない (gui.md の規則)。
     m_heatmap->clearData();
     m_heatmap->setTitle(I18n::tr("vp_slice_title"));
+}
+
+// H5アニメの現在フレームを 3D シーンへ置く。
+//
+// タブ側は座標が分かるフレームしか送ってこない (H5ViewerTab::pushSceneSlice)
+// ので、ここでは位置の推測をしない。**重ねる指定にしたのに 3D の
+// 「結果断面を重ねる」が外れていると何も見えない**ので、受け取ったときに
+// トグルを入れて Field 表示へ切り替える (利用者が明示的に有効にした操作の
+// 続きなので、勝手な切替にはならない)。
+void CenterPane::showAnimationSlice(const H5SliceForScene &sl)
+{
+    if (sl.cells.isEmpty() || sl.rows <= 0 || sl.cols <= 0) {
+        clearAnimationSlice();
+        return;
+    }
+    m_animSliceActive = true;
+    m_viewport->setResultSlice(sl.cells, sl.rows, sl.cols, sl.axis, sl.pos_m,
+                               sl.u0, sl.u1, sl.v0, sl.v1, sl.label,
+                               sl.scaleMax);
+    updateOverlayUi();
+    if (m_overlayCheck->isEnabled() && !m_overlayCheck->isChecked())
+        m_overlayCheck->setChecked(true);   // 見える状態にしてから渡す
+}
+
+void CenterPane::clearAnimationSlice()
+{
+    if (!m_animSliceActive) return;   // 自分が置いたものだけ消す
+    m_animSliceActive = false;
+    m_viewport->clearResultSlice();
+    updateOverlayUi();
 }
 
 // 「結果断面を重ねる」トグルの有効条件 = 3D に載せられる実データがあること

@@ -686,6 +686,16 @@ void MainWindow::buildLeftNav(QWidget *parent)
     m_tabAnalysisGroups = new AnalysisGroupsTab(P);
     m_tabDatasets     = new DatasetsTab(P);
     m_tabH5Viewer     = new H5ViewerTab(P);
+    // H5アニメの現在フレーム → 3D シーン (タブ ↔ CenterPane の直接依存を
+    // 作らないよう MainWindow が中継する。RoomAcousticsTab と同じ流儀)
+    if (auto *h5v = qobject_cast<H5ViewerTab *>(m_tabH5Viewer)) {
+        connect(h5v, &H5ViewerTab::sceneSliceReady, this,
+                [this](const H5SliceForScene &sl) {
+                    m_center->showAnimationSlice(sl);
+                });
+        connect(h5v, &H5ViewerTab::sceneSliceCleared, this,
+                [this] { m_center->clearAnimationSlice(); });
+    }
     m_tabInterop      = new InteropTab(P);
     m_tabAntennaChar  = new AntennaCharTab(P);
     m_tabTxLine       = new TransmissionLineTab(P);
