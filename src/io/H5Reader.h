@@ -103,6 +103,17 @@ public:
     // を行列で返す (行 0 は上側 = 第 2 軸の +側)
     static bool ofdSeriesInfo(const QString &path, const QString &comp,
                               H5OfdSeriesInfo &out, QString *err = nullptr);
+    // 断面の面内 2 軸 (axis = 固定軸)。**readOfdSeriesFrame が返す行列の
+    // 列 = uAxis、行 = vAxis (行 0 = vAxis の + 側)** という規約そのもの。
+    // 3D シーンへ断面を置く側 (H5ViewerTab) も同じ対応を使う必要があるので、
+    // 定義をここ 1 箇所に置く (2 箇所に書くと片方だけ直して図が転置する)。
+    static void seriesSliceAxes(int axis, int *uAxis, int *vAxis)
+    {
+        if (axis < 0 || axis > 2) axis = 2;
+        if (uAxis) *uAxis = (axis == 0) ? 1 : 0;
+        if (vAxis) *vAxis = (axis == 2) ? 1 : 2;
+    }
+
     // 伝搬時系列の各フレームの時刻 [s] を読む (/timeseries/time、H 成分は
     // time_H)。旧 /data%06d 形式には時刻データセットが無いので false を
     // 返す — その場合、時間範囲での絞り込みはできない (推測しない)。

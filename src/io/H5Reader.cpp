@@ -644,8 +644,8 @@ bool H5Reader::readOfdSeriesFrame(const QString &path, const QString &comp,
                     }
                     // 空間軸 (0=X,1=Y,2=Z) はデータセットの次元 1..3。
                     // 断面の列軸 u / 行軸 v (行 0 = v の + 側)
-                    const int uAxis = (axis == 0) ? 1 : 0;
-                    const int vAxis = (axis == 2) ? 1 : 2;
+                    int uAxis = 0, vAxis = 2;
+                    seriesSliceAxes(axis, &uAxis, &vAxis);
                     const hsize_t nNodes[3] = { d[1], d[2], d[3] };
                     const hsize_t fixed = hsize_t(clampSliceIndex(
                         index, qlonglong(nNodes[axis])));

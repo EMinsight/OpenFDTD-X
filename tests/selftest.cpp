@@ -21044,6 +21044,35 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 伝搬時系列 断面の面内 2 軸 (H5Reader::seriesSliceAxes) ────────────────
+// この対応は「読み手が返す行列の並び」と「3D シーンへ置くときの軸」の
+// 両方が参照する。ずれると 3D の断面が黙って転置・入れ替わるので、
+// 規約そのものを固定しておく。
+static void testSeriesSliceAxes()
+{
+    g_file = "h5-sliceaxes";
+    int u = -1, v = -1;
+
+    ofd::H5Reader::seriesSliceAxes(2, &u, &v);   // XY 面 (Z 固定)
+    check(u == 0 && v == 1,
+          "sliceaxes: the XY plane runs x across the columns and y down the "
+          "rows");
+    ofd::H5Reader::seriesSliceAxes(1, &u, &v);   // XZ 面 (Y 固定)
+    check(u == 0 && v == 2, "sliceaxes: the XZ plane is x by z");
+    ofd::H5Reader::seriesSliceAxes(0, &u, &v);   // YZ 面 (X 固定)
+    check(u == 1 && v == 2, "sliceaxes: the YZ plane is y by z");
+
+    // どの面でも、面内 2 軸は固定軸と重ならず、互いにも重ならない
+    for (int a = 0; a < 3; ++a) {
+        ofd::H5Reader::seriesSliceAxes(a, &u, &v);
+        check(u != a && v != a && u != v,
+              "sliceaxes: the in-plane axes are the two that are not fixed");
+    }
+    // 範囲外は XY 面として扱う (未定義の軸を返さない)
+    ofd::H5Reader::seriesSliceAxes(7, &u, &v);
+    check(u == 0 && v == 1, "sliceaxes: an out-of-range axis falls back to XY");
+}
+
 // ── 実測 n,k テーブルの取込 (io/NkCsv) ─────────────────────────────────────
 // この読み取りで**静かに壊れる**のは 3 つ:
 //   1) 波長の単位の取り違え (nm と μm は 1000 倍違う。桁で推測している)
@@ -23927,6 +23956,7 @@ int main(int argc, char *argv[])
     testSourceDirectivity();
     testTlSlice3D();
     testBeamPatternCsv();
+    testSeriesSliceAxes();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

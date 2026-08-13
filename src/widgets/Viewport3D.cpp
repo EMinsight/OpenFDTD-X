@@ -358,7 +358,7 @@ void Viewport3D::setViewStyle(ViewStyle s)
 void Viewport3D::setResultSlice(const QVector<double> &cells, int rows,
                                 int cols, int axis, double pos_m,
                                 double u0, double u1, double v0, double v1,
-                                const QString &label)
+                                const QString &label, double scaleMax)
 {
     const qint64 need = qint64(rows) * qint64(cols);
     if (rows <= 0 || cols <= 0 || qint64(cells.size()) < need) {
@@ -373,11 +373,17 @@ void Viewport3D::setResultSlice(const QVector<double> &cells, int rows,
     m_sliceU0 = u0; m_sliceU1 = u1;
     m_sliceV0 = v0; m_sliceV1 = v1;
     m_sliceLabel = label;
-    // 正規化は「与えられた実データの最大値」で行う (勝手な下駄を履かせない)
+    // 正規化は「与えられた実データの最大値」で行う (勝手な下駄を履かせない)。
+    // scaleMax > 0 なら呼び側の指定を使う — 連続するフレームを共通の尺度で
+    // 見せたいときに要る (フレームごとの最大値で割ると時間変化が消える)。
     m_sliceMax = 0.0;
-    for (qint64 i = 0; i < need; ++i) {
-        const double v = std::fabs(m_sliceCells[int(i)]);
-        if (std::isfinite(v) && v > m_sliceMax) m_sliceMax = v;
+    if (scaleMax > 0.0 && std::isfinite(scaleMax)) {
+        m_sliceMax = scaleMax;
+    } else {
+        for (qint64 i = 0; i < need; ++i) {
+            const double v = std::fabs(m_sliceCells[int(i)]);
+            if (std::isfinite(v) && v > m_sliceMax) m_sliceMax = v;
+        }
     }
     rebuildSliceImage();
     update();

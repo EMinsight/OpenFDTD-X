@@ -11,6 +11,8 @@
 // Viewport3D の実操作 (orbit/pan/zoom) はそのまま生かす。
 #pragma once
 #include <QWidget>
+
+#include "tabs/H5ViewerTab.h"   // H5SliceForScene
 #include "core/Domain.h"
 #include "io/KernelResultReader.h"
 
@@ -78,6 +80,12 @@ public:
     // 3D シーンに結果断面が載っているか (ツールバーのトグルの有効条件)
     bool hasResult3DSlice() const;
 
+
+    // H5アニメの現在フレームを 3D シーンへ重ねる (MainWindow が中継する)。
+    // 座標が分からないフレームはタブ側が送ってこないので、ここでは
+    // 受け取ったものをそのまま置く。重ねる指定が外れたら消す。
+    void showAnimationSlice(const H5SliceForScene &slice);
+    void clearAnimationSlice();
 signals:
     // 3D シーンへの結果断面の反映結果。ok=false の detail は理由
     // (座標情報が無い等)。ログ出力は MainWindow が行う。
@@ -126,6 +134,10 @@ private:
     QWidget *m_vpToolbar;
     QComboBox *m_styleBox;
     QCheckBox *m_overlayCheck;    // 結果断面を重ねる (= スタイル Field の別表現)
+    // H5アニメの断面を表示中か。3D の断面は 1 枚しか持てないので、
+    // 静的な中央断面 (applyResultSliceTo3D) が後から上書き・消去しないよう
+    // 「今どちらが持っているか」をここで持つ
+    bool m_animSliceActive = false;
     int      m_prevStyleIndex = 1;   // トグル OFF で戻す先 (1 = Solid)
     QSlider *m_azSlider, *m_elSlider;
     QLabel  *m_azLabel,  *m_elLabel;
