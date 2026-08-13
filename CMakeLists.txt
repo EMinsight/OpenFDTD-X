@@ -227,6 +227,9 @@ set(CORE_SOURCES
     # 吸音率 α の取込 (室内音響)。NRC の定義 (ASTM C423) もここに閉じ込める
     src/io/AbsorptionCsv.cpp
     src/io/AbsorptionCsv.h
+    # ボクセル化結果の断面 (プレビュー描画の計算側 — 絵と数を一致させる)
+    src/io/VoxelSlice.cpp
+    src/io/VoxelSlice.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。

@@ -4,6 +4,7 @@
 #include "../io/MeshImporter.h"
 #include "../core/MeshRefine.h"
 #include "../io/Voxelizer.h"
+#include "../io/VoxelSlice.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/UnitNav.h"
 #include "../I18n.h"
@@ -25,6 +26,9 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QDialog>
+#include <QTimer>
+#include <QPainter>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -407,6 +411,19 @@ const Tr kTr[] = {
     { "geoc_vox_gpu", "ボクセル化をGPUで実行",
       "Run the voxelization on the GPU" },
     { "geoc_vox_preview", "プレビュー", "Preview" },
+    { "geoc_voxprev_title", "ボクセル化プレビュー", "Voxelisation preview" },
+    { "geoc_voxprev_fail", "ボクセル化できません: %1",
+      "Cannot voxelise: %1" },
+    { "geoc_voxprev_head",
+      "格子 %1×%2×%3 セル / 占有 %L4 セル。この画面は確認用で、"
+      "形状はまだ追加していません (追加するのは「ボクセル化」)。",
+      "Grid %1x%2x%3 cells, %L4 occupied. This is a preview only - nothing "
+      "has been added to the model yet (use \"Voxelise\" for that)." },
+    { "geoc_voxprev_axis", "固定する軸", "Fixed axis" },
+    { "geoc_voxprev_note",
+      "%1 = %2 m の断面 — 占有 %3 セル (横 %4 軸 / 縦 %5 軸)",
+      "Slice at %1 = %2 m - %3 occupied cells (%4 across, %5 down)" },
+    { "geoc_voxprev_close", "閉じる", "Close" },
     { "geoc_vox_badge", "27,900 セル中 4,221 セルが占有",
       "4,221 of 27,900 cells occupied" },
     { "geoc_vox_badge_fmt", "%1 セル中 %2 セルが占有",
@@ -1715,7 +1732,8 @@ QWidget *GeometryTab::buildVoxelSection()
     m_voxBtn->setEnabled(false);
     runRow->addWidget(m_voxBtn);
     auto *voxPrevBtn = new QPushButton(I18n::tr("geoc_vox_preview"), s);
-    tabhelp::markNotImplemented(voxPrevBtn, I18n::tr(tabhelp::notimpl::kPlot));
+    connect(voxPrevBtn, &QPushButton::clicked, this,
+            &GeometryTab::previewVoxelization);
     runRow->addWidget(voxPrevBtn);
     runRow->addWidget(new QLabel(I18n::tr("ge_voxel_mat"), s));
     m_voxMat = new QSpinBox(s);
@@ -2290,10 +2308,146 @@ void GeometryTab::showMeasureDialog()
     QMessageBox::information(this, I18n::tr("geoc_meas_title"), body);
 }
 
-void GeometryTab::voxelizeImported()
+namespace {
+
+// ボクセル化結果の 1 断面を塗るだけのウィジェット (プレビュー専用)。
+// 占有セルを塗り、格子線を重ねる。値の判定は io/VoxelSlice が持つ。
+class VoxelSliceView : public QWidget {
+public:
+    explicit VoxelSliceView(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(320, 260);
+    }
+    void setMask(const VoxelSliceMask &m) { m_mask = m; update(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), QColor("#0F1115"));
+        if (!m_mask.ok || m_mask.cols <= 0 || m_mask.rows <= 0) return;
+        // 縦横比はセル数ではなく実寸に合わせる (格子が非等方でも形が歪まない)
+        const double du = m_mask.colMax - m_mask.colMin;
+        const double dv = m_mask.rowMax - m_mask.rowMin;
+        const double aspect = (du > 0.0 && dv > 0.0) ? (dv / du) : 1.0;
+        int w = width() - 16, h = height() - 16;
+        if (h > int(w * aspect)) h = int(w * aspect);
+        else                     w = int(h / aspect);
+        const int x0 = (width() - w) / 2, y0 = (height() - h) / 2;
+        const double cw = double(w) / m_mask.cols;
+        const double ch = double(h) / m_mask.rows;
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#4C8DFF"));
+        for (int r = 0; r < m_mask.rows; ++r)
+            for (int c = 0; c < m_mask.cols; ++c)
+                if (m_mask.at(c, r))
+                    p.drawRect(QRectF(x0 + c * cw, y0 + r * ch, cw + 0.5,
+                                      ch + 0.5));
+        // 格子線 (セルが細かいときは省く — 塗りつぶして見えなくなるため)
+        if (cw > 3.0 && ch > 3.0) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(255, 255, 255, 40), 1));
+            for (int c = 0; c <= m_mask.cols; ++c)
+                p.drawLine(QPointF(x0 + c * cw, y0), QPointF(x0 + c * cw, y0 + h));
+            for (int r = 0; r <= m_mask.rows; ++r)
+                p.drawLine(QPointF(x0, y0 + r * ch), QPointF(x0 + w, y0 + r * ch));
+        }
+        p.setPen(QPen(QColor("#5A6270"), 1));
+        p.drawRect(QRect(x0, y0, w, h));
+    }
+
+private:
+    VoxelSliceMask m_mask;
+};
+
+} // namespace
+
+// ボクセル化の断面プレビュー。**プロジェクトへは何も足さない** — 何が入るかを
+// 先に見るための機能なので、見ただけで形状が増えると目的に反する。
+// 設定は currentVoxelOptions() で本番と共有する。
+void GeometryTab::previewVoxelization()
 {
     if (!m_hasMesh) return;
+    const VoxelOptions opt = currentVoxelOptions();
+    const VoxelResult res = Voxelizer::voxelize(
+        m_lastMesh, m_p->mesh(0), m_p->mesh(1), m_p->mesh(2),
+        m_voxMat ? m_voxMat->value() : 2, 8'000'000, opt);
+    if (!res.ok) {
+        QMessageBox::warning(this, I18n::tr("geoc_vox_preview"),
+                             I18n::tr("geoc_voxprev_fail").arg(res.error));
+        return;
+    }
 
+    QDialog dlg(this);
+    dlg.setWindowTitle(I18n::tr("geoc_voxprev_title"));
+    auto *v = new QVBoxLayout(&dlg);
+
+    auto *head = new QLabel(I18n::tr("geoc_voxprev_head")
+                                .arg(res.nx).arg(res.ny).arg(res.nz)
+                                .arg(res.occupied), &dlg);
+    head->setWordWrap(true);
+    v->addWidget(head);
+
+    auto *row = new QHBoxLayout();
+    row->addWidget(new QLabel(I18n::tr("geoc_voxprev_axis"), &dlg));
+    auto *axisBox = new QComboBox(&dlg);
+    axisBox->addItems({ QStringLiteral("X"), QStringLiteral("Y"),
+                        QStringLiteral("Z") });
+    axisBox->setCurrentIndex(2);              // 既定は Z 固定 (XY 面)
+    row->addWidget(axisBox);
+    auto *slider = new QSlider(Qt::Horizontal, &dlg);
+    row->addWidget(slider, 1);
+    auto *posLabel = new QLabel(&dlg);
+    row->addWidget(posLabel);
+    v->addLayout(row);
+
+    auto *view = new VoxelSliceView(&dlg);
+    v->addWidget(view, 1);
+    auto *note = new QLabel(&dlg);
+    note->setWordWrap(true);
+    note->setStyleSheet("font-size:11px; color:palette(mid);");
+    v->addWidget(note);
+
+    const MeshAxis &mx = m_p->mesh(0), &my = m_p->mesh(1), &mz = m_p->mesh(2);
+    auto redraw = [&, view, posLabel, note, axisBox, slider] {
+        const int axis = axisBox->currentIndex();
+        const int idx = slider->value();
+        const VoxelSliceMask m = voxelSlice(res.bricks, mx, my, mz, axis, idx);
+        view->setMask(m);
+        static const char *const kAx[3] = { "X", "Y", "Z" };
+        posLabel->setText(QStringLiteral("%1 / %2")
+                              .arg(idx)
+                              .arg(voxelSliceCount(mx, my, mz, axis) - 1));
+        note->setText(I18n::tr("geoc_voxprev_note")
+                          .arg(QString::fromLatin1(kAx[axis]))
+                          .arg(QString::number(m.sliceCoord, 'g', 4))
+                          .arg(m.occupied)
+                          .arg(QString::fromLatin1(kAx[m.uAxis]),
+                               QString::fromLatin1(kAx[m.vAxis])));
+    };
+    auto resetRange = [&, axisBox, slider] {
+        const int n = voxelSliceCount(mx, my, mz, axisBox->currentIndex());
+        slider->setRange(0, std::max(0, n - 1));
+        slider->setValue(n / 2);          // 既定は中央断面
+    };
+    QObject::connect(axisBox, &QComboBox::currentIndexChanged, &dlg,
+                     [&] { resetRange(); redraw(); });
+    QObject::connect(slider, &QSlider::valueChanged, &dlg, [&] { redraw(); });
+    resetRange();
+    redraw();
+
+    auto *btn = new QPushButton(I18n::tr("geoc_voxprev_close"), &dlg);
+    QObject::connect(btn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    v->addWidget(btn);
+    dlg.resize(560, 520);
+    dlg.exec();
+}
+
+// ボクセル化の設定を画面から集める。// ボクセル化の設定を画面から集める。**プレビューと本番で同じ関数を使う**
+// — 別々に集めると、プレビューで見た絵と実際に入る形状が食い違う。
+VoxelOptions GeometryTab::currentVoxelOptions() const
+{
     VoxelOptions opt;
     // 内外判定: 0 = レイの偶奇 / 1 = 一般化巻き数 (2 = SDF は未実装)
     const int inTest = m_voxInside ? m_voxInside->checkedId() : 0;
@@ -2304,6 +2458,14 @@ void GeometryTab::voxelizeImported()
     // 占有とする (切ると従来どおりセル中心 1 点の判定)
     opt.pvf = m_voxPvf && m_voxPvf->isChecked();
     opt.pvfSamples = 4;
+    return opt;
+}
+
+void GeometryTab::voxelizeImported()
+{
+    if (!m_hasMesh) return;
+
+    const VoxelOptions opt = currentVoxelOptions();
 
     // 巻き数は法線の向きが揃っていることが前提。揃っていないと + と − が
     // 打ち消し合って全セルが「外」になるので、黙って走らせず修復へ誘導する。

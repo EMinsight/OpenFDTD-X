@@ -35,6 +35,7 @@
 #include "optics/PhaseNoise.h"
 #include "optics/PhotonicCircuit.h"
 #include "io/AbsorptionCsv.h"
+#include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
 #include "io/NkCsv.h"
 #include "io/BellhopIO.h"
@@ -288,6 +289,110 @@ static void testVoxelizer()
     if (r.occupied != 216)
         std::fprintf(stderr, "  (got occupied=%lld bricks=%lld)\n",
                      (long long)r.occupied, (long long)r.bricks.size());
+
+    // ── 断面の復元 (io/VoxelSlice) ────────────────────────────────────
+    // プレビューが塗るセルはボクセル化結果と同じものでなければならない。
+    // **全断面の占有セル数を足すと VoxelResult::occupied にちょうど一致する**
+    // — 絵と数が同じものを指している証拠なので、そこを判定する。
+    {
+        for (int axis = 0; axis < 3; ++axis) {
+            const int ns = voxelSliceCount(ax, ax, ax, axis);
+            check(ns == 10, "voxslice: the fixed axis has one slice per cell");
+            qint64 total = 0;
+            int nonEmpty = 0;
+            for (int i = 0; i < ns; ++i) {
+                const VoxelSliceMask m = voxelSlice(r.bricks, ax, ax, ax,
+                                                    axis, i);
+                check(m.ok && m.cols == 10 && m.rows == 10,
+                      "voxslice: the in-plane grid matches the mesh");
+                // マスクを数え直した値と occupied フィールドが一致すること
+                qint64 n = 0;
+                for (int c = 0; c < m.cols; ++c)
+                    for (int rr = 0; rr < m.rows; ++rr)
+                        if (m.at(c, rr)) ++n;
+                check(n == m.occupied,
+                      "voxslice: the reported count equals the mask contents");
+                total += m.occupied;
+                if (m.occupied > 0) ++nonEmpty;
+            }
+            check(total == r.occupied,
+                  qPrintable(QString("voxslice: summing every slice gives the "
+                                     "voxelised cell count (%1 vs %2)")
+                                 .arg(total).arg(r.occupied)));
+            // 立方体は 6 セル分の厚みなので、空でない断面はちょうど 6 枚
+            check(nonEmpty == 6,
+                  "voxslice: exactly the six slices through the cube are "
+                  "occupied");
+        }
+        // 断面ごとの占有は 6x6 = 36 (立方体の断面)
+        const VoxelSliceMask mid = voxelSlice(r.bricks, ax, ax, ax, 0, 5);
+        check(mid.ok && mid.occupied == 36,
+              "voxslice: a slice through the cube shows its 6x6 cross-section");
+        // 範囲外の断面は作らない (端の断面を代わりに返さない)
+        check(!voxelSlice(r.bricks, ax, ax, ax, 0, 10).ok,
+              "voxslice: an out-of-range slice index is refused");
+        check(!voxelSlice(r.bricks, ax, ax, ax, 5, 0).ok,
+              "voxslice: an unknown axis is refused");
+        // 材質で絞れる (別材質を指定すると 1 セルも出ない)
+        const VoxelSliceMask other = voxelSlice(r.bricks, ax, ax, ax, 0, 5, 7);
+        check(other.ok && other.occupied == 0,
+              "voxslice: filtering by another material id yields nothing");
+
+        // ── 軸を取り違えていないか (非対称な格子と箱で確かめる) ────────
+        // 立方体を等分割の同じ軸 3 本で切ると、軸を入れ替えても結果が
+        // 変わらないので取り違えを見逃す (実際にこの判定を素通りした)。
+        // 軸ごとに分割数を変え、箱も各辺の長さを変えて向きを固定する。
+        {
+            MeshAxis ax4, ax6, ax8;
+            ax4.nodes = { 0.0, 4.0 }; ax4.divs = { 4 };   // 幅 1.0 のセル
+            ax6.nodes = { 0.0, 6.0 }; ax6.divs = { 6 };
+            ax8.nodes = { 0.0, 8.0 }; ax8.divs = { 8 };
+            // x に 1 セル, y に 2 セル, z に 3 セル ぶんの箱 (辺の長さが全部違う)
+            const ImportedMesh slab = boxMesh(0.05, 0.05, 0.05,
+                                              0.95, 1.95, 2.95);
+            const VoxelResult rs = Voxelizer::voxelize(slab, ax4, ax6, ax8, 2);
+            check(rs.ok && rs.occupied == 1 * 2 * 3,
+                  qPrintable(QString("voxslice: the asymmetric slab occupies "
+                                     "1x2x3 cells (got %1)").arg(rs.occupied)));
+            // 面ごとの寸法が (列, 行) = (u 軸, v 軸) の順で出ること。
+            // XY 面 → 4x6、XZ 面 → 4x8、YZ 面 → 6x8
+            // axis=2 (Z 固定) = XY 面 → 列 x(4) 行 y(6)
+            const VoxelSliceMask sxy = voxelSlice(rs.bricks, ax4, ax6, ax8, 2, 0);
+            check(sxy.ok && sxy.cols == 4 && sxy.rows == 6
+                  && sxy.uAxis == 0 && sxy.vAxis == 1,
+                  "voxslice: fixing z gives an x-by-y slice, 4 wide by 6 tall");
+            // axis=1 (Y 固定) = XZ 面 → 列 x(4) 行 z(8)
+            const VoxelSliceMask sxz = voxelSlice(rs.bricks, ax4, ax6, ax8, 1, 0);
+            check(sxz.ok && sxz.cols == 4 && sxz.rows == 8
+                  && sxz.uAxis == 0 && sxz.vAxis == 2,
+                  "voxslice: fixing y gives an x-by-z slice, 4 wide by 8 tall");
+            // axis=0 (X 固定) = YZ 面 → 列 y(6) 行 z(8)
+            const VoxelSliceMask syz = voxelSlice(rs.bricks, ax4, ax6, ax8, 0, 0);
+            check(syz.ok && syz.cols == 6 && syz.rows == 8
+                  && syz.uAxis == 1 && syz.vAxis == 2,
+                  "voxslice: fixing x gives a y-by-z slice, 6 wide by 8 tall");
+            // 各面の断面に写る箱の形も辺の長さで決まる:
+            //   XY 面 (z 固定) → x 1 セル × y 2 セル
+            //   XZ 面 (y 固定) → x 1 セル × z 3 セル
+            //   YZ 面 (x 固定) → y 2 セル × z 3 セル
+            check(voxelSlice(rs.bricks, ax4, ax6, ax8, 2, 0).occupied == 1 * 2,
+                  "voxslice: the z-fixed slice shows a 1x2 footprint");
+            check(voxelSlice(rs.bricks, ax4, ax6, ax8, 1, 0).occupied == 1 * 3,
+                  "voxslice: the y-fixed slice shows a 1x3 footprint");
+            check(voxelSlice(rs.bricks, ax4, ax6, ax8, 0, 0).occupied == 2 * 3,
+                  "voxslice: the x-fixed slice shows a 2x3 footprint");
+            // ここでも全断面の和は占有セル数に一致する
+            for (int axis2 = 0; axis2 < 3; ++axis2) {
+                qint64 tot = 0;
+                const int ns2 = voxelSliceCount(ax4, ax6, ax8, axis2);
+                for (int i = 0; i < ns2; ++i)
+                    tot += voxelSlice(rs.bricks, ax4, ax6, ax8, axis2, i).occupied;
+                check(tot == rs.occupied,
+                      "voxslice: the asymmetric case also sums to the "
+                      "voxelised cell count");
+            }
+        }
+    }
 
     bool covers = false;
     for (const Geometry &g : r.bricks)

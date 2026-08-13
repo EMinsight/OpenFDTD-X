@@ -19,6 +19,7 @@
 #pragma once
 #include <QScrollArea>
 #include "../core/Geometry.h"
+#include "../io/Voxelizer.h"   // VoxelOptions (プレビューと共用)
 #include "../io/MeshAxes.h"
 #include "../io/MeshDiagnostics.h"
 #include "../io/MeshRepair.h"
@@ -119,6 +120,9 @@ private:
     int        m_dragUnit = -1;   // ドラッグ対象 (-1 = ドラッグ中でない)
     QSpinBox     *m_voxMat = nullptr;     // material id assigned to voxels
     QPushButton  *m_voxBtn = nullptr;
+    // ボクセル化の設定 (プレビューと本番で共用 — 絵と結果を食い違わせない)
+    VoxelOptions currentVoxelOptions() const;
+    void previewVoxelization();          // 追加せずに断面だけ見る
     ImportedMesh  m_lastMesh;             // 取込 STL (配置・変換の適用後)
     ImportedMesh  m_rawMesh;              // 取込 STL (変換前 — placement の基準)
     bool          m_hasMesh = false;
