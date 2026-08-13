@@ -27,6 +27,7 @@
 #include "io/ActivationCurve.h"
 #include "core/EyeDiagram.h"
 #include "optics/CircuitImpulse.h"
+#include "optics/DampedLeastSquares.h"
 #include "optics/DistortionGrid.h"
 #include "optics/FieldCurvature.h"
 #include "optics/EncircledEnergy.h"
@@ -19042,6 +19043,159 @@ static void testSourceDirectivity()
     }
 }
 
+// ── 減衰最小二乗 (optics/DampedLeastSquares) ──────────────────────────────
+// レンズ最適化の中身。**答えが独立に分かる問題**で検める:
+//   線形最小二乗は正規方程式の解が閉形式で書けるし、単レンズの焦点距離は
+//   レンズメーカーの式で解ける。「収束した」ではなく「正解に一致した」を見る。
+static void testDampedLeastSquares()
+{
+    g_file = "dls";
+    using namespace ofd::optics;
+
+    // ① 連立一次方程式のソルバ (最適化の中で使うので単体でも検める)
+    {
+        // 2x + y = 5、x − 3y = −8  → x = 1, y = 3
+        std::vector<std::vector<double>> A = { {2.0, 1.0}, {1.0, -3.0} };
+        std::vector<double> b = { 5.0, -8.0 }, x;
+        check(solveLinear(A, b, &x), "dls: a 2x2 system solves");
+        check(std::fabs(x[0] - 1.0) < 1e-12 && std::fabs(x[1] - 3.0) < 1e-12,
+              "dls: it gives the exact solution");
+        std::vector<std::vector<double>> S = { {1.0, 2.0}, {2.0, 4.0} };
+        check(!solveLinear(S, { 1.0, 2.0 }, &x),
+              "dls: a singular system is rejected rather than guessed");
+    }
+
+    // ② 直線あてはめ — 最小二乗解は閉形式で書けるので厳密に比べられる。
+    //    データを直線ちょうどに置けば残差 0 の解がある。
+    {
+        const double aTrue = 2.5, bTrue = -1.25;
+        const int m = 7;
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            r.assign(m, 0.0);
+            for (int i = 0; i < m; ++i) {
+                const double t = 0.5 * i;
+                r[i] = v[0] * t + v[1] - (aTrue * t + bTrue);
+            }
+            return true;
+        };
+        DlsOptions o;
+        o.step = { 1e-6, 1e-6 };
+        const DlsResult r = solve(fn, { 0.0, 0.0 }, o);
+        check(r.ok, "dls: the line fit runs");
+        check(std::fabs(r.x[0] - aTrue) < 1e-9
+                  && std::fabs(r.x[1] - bTrue) < 1e-9,
+              qPrintable(QString("dls: it finds the exact line (a = %1, "
+                                 "b = %2)").arg(r.x[0], 0, 'f', 9)
+                             .arg(r.x[1], 0, 'f', 9)));
+        check(r.rms < 1e-9 && r.rms < r.rms0,
+              "dls: the residual is driven to zero and improves on the start");
+        check(r.evaluations > 0 && r.iterations >= 1,
+              "dls: it reports how much work it did");
+    }
+
+    // ③ 残差 0 にできない問題 — **正規方程式の解 (閉形式) と一致すること**。
+    //    y = a·t + b に乗らない点を混ぜ、最小二乗解を手で解いて比べる。
+    {
+        const double t[4] = { 0.0, 1.0, 2.0, 3.0 };
+        const double y[4] = { 0.1, 0.9, 2.1, 2.9 };
+        // 閉形式: a = (mΣty − ΣtΣy)/(mΣt² − (Σt)²)、b = (Σy − aΣt)/m
+        double st = 0, sy = 0, stt = 0, sty = 0;
+        for (int i = 0; i < 4; ++i) {
+            st += t[i]; sy += y[i]; stt += t[i] * t[i]; sty += t[i] * y[i];
+        }
+        const double aRef = (4 * sty - st * sy) / (4 * stt - st * st);
+        const double bRef = (sy - aRef * st) / 4.0;
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            r.assign(4, 0.0);
+            for (int i = 0; i < 4; ++i) r[i] = v[0] * t[i] + v[1] - y[i];
+            return true;
+        };
+        const DlsResult r = solve(fn, { 5.0, 5.0 });
+        check(std::fabs(r.x[0] - aRef) < 1e-8
+                  && std::fabs(r.x[1] - bRef) < 1e-8,
+              qPrintable(QString("dls: with noisy data it lands on the "
+                                 "normal-equation solution (a %1 vs %2)")
+                             .arg(r.x[0], 0, 'f', 8).arg(aRef, 0, 'f', 8)));
+        check(r.rms > 0.0,
+              "dls: and does not pretend the residual is zero");
+    }
+
+    // ④ **レンズメーカーの式**で答えが分かる問題を、リポジトリの近軸追跡を
+    //    通して解く。平凸レンズ (R2 = ∞、薄い) の焦点距離は f = R1/(n−1) なので、
+    //    目標 f を与えたときに収束すべき R1 が厳密に決まる。
+    {
+        const double nGlass = 1.5168;      // N-BK7 の d 線
+        const double targetF = 100.0;      // 目標焦点距離 [mm]
+        const double wantR1 = targetF * (nGlass - 1.0);   // レンズメーカーの式
+
+        const ResidualFn fn = [&](const std::vector<double> &v,
+                                  std::vector<double> &r) {
+            std::vector<ofd::paraxial::Surface> s(3);
+            s[0].R = v[0];                 // 第 1 面 (可変)
+            s[0].thickness = 0.05;         // 十分薄い
+            s[0].nAfter = nGlass;
+            s[1].R = 0.0;                  // 平面 (R = 0 は「平面」の約束)
+            s[1].thickness = 50.0;
+            s[1].nAfter = 1.0;
+            s[2].R = 0.0;
+            s[2].thickness = 0.0;
+            s[2].nAfter = 1.0;
+            const ofd::paraxial::SystemData d =
+                ofd::paraxial::analyze(s, -1.0, 10.0, 0.0);
+            if (!d.valid || !(std::fabs(d.efl) > 0.0)) return false;
+            r.assign(1, d.efl - targetF);
+            return true;
+        };
+        DlsOptions o;
+        o.step = { 1e-4 };
+        o.maxIterations = 80;
+        const DlsResult r = solve(fn, { 30.0 }, o);   // 出発点はわざと外す
+        check(r.ok, "dls: the lens problem runs");
+        if (r.ok && !r.x.empty()) {
+            check(std::fabs(r.x[0] - wantR1) < 1e-4,
+                  qPrintable(QString("dls: it converges to the lensmaker "
+                                     "radius R = f(n-1) (want %1, got %2 mm)")
+                                 .arg(wantR1, 0, 'f', 6)
+                                 .arg(r.x[0], 0, 'f', 6)));
+            check(r.rms < 1e-6,
+                  qPrintable(QString("dls: and hits the target focal length "
+                                     "(residual %1 mm)").arg(r.rms, 0, 'e', 2)));
+            check(r.rms < r.rms0,
+                  "dls: the starting point really was off (it improved)");
+        }
+    }
+
+    // ⑤ 箱制約 — 範囲の外へ出さない
+    {
+        const ResidualFn fn = [](const std::vector<double> &v,
+                                 std::vector<double> &r) {
+            r.assign(1, v[0] - 10.0);      // 本当は 10 が最適
+            return true;
+        };
+        DlsOptions o;
+        o.lower = { 0.0 };
+        o.upper = { 4.0 };                 // 上限で止まるはず
+        const DlsResult r = solve(fn, { 1.0 }, o);
+        check(r.ok && r.x[0] <= 4.0 + 1e-12,
+              "dls: the solution stays inside the box");
+        check(std::fabs(r.x[0] - 4.0) < 1e-6,
+              "dls: and sits on the bound closest to the optimum");
+    }
+
+    // ⑥ 残差が作れないときは成功と言わない
+    {
+        const ResidualFn bad = [](const std::vector<double> &,
+                                  std::vector<double> &) { return false; };
+        const DlsResult r = solve(bad, { 1.0 });
+        check(!r.ok && !r.note.empty(),
+              "dls: a residual that cannot be built fails with a reason");
+        const DlsResult none = solve(nullptr, { 1.0 });
+        check(!none.ok, "dls: no function at all fails too");
+    }
+}
+
 // ── 像面湾曲 (optics/FieldCurvature) ──────────────────────────────────────
 // 焦点を探索せず、像面 2 枚からの外挿で交点を閉形式で解く部分。
 // **答えが手で書ける直線**を与えて厳密に検める (追跡側の誤差と混ぜない)。
@@ -23232,6 +23386,7 @@ int main(int argc, char *argv[])
     testEncircledEnergy();
     testDistortionGrid();
     testFieldCurvature();
+    testDampedLeastSquares();
     testSeriesCsv();
     testDirectivity();
     testSeriesCompare();
