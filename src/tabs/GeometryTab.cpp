@@ -4,6 +4,7 @@
 #include "../io/MeshImporter.h"
 #include "../core/MeshRefine.h"
 #include "../io/Voxelizer.h"
+#include "../io/MeshProjection.h"
 #include "../io/VoxelSlice.h"
 #include "../widgets/SectionBox.h"
 #include "../widgets/UnitNav.h"
@@ -412,6 +413,23 @@ const Tr kTr[] = {
       "Run the voxelization on the GPU" },
     { "geoc_vox_preview", "プレビュー", "Preview" },
     { "geoc_voxprev_title", "ボクセル化プレビュー", "Voxelisation preview" },
+    { "geoc_prev3d_title", "取込メッシュの 3D プレビュー",
+      "3D preview of the imported mesh" },
+    { "geoc_prev3d_head",
+      "%1 — 三角形 %L2 枚。ボクセル化する前の読み込んだ形そのものです "
+      "(プロジェクトには何も足しません)。",
+      "%1 - %L2 triangles. This is the mesh as imported, before "
+      "voxelisation (nothing is added to the model)." },
+    { "geoc_prev3d_az", "方位角", "Azimuth" },
+    { "geoc_prev3d_el", "仰角", "Elevation" },
+    { "geoc_prev3d_note",
+      "面を奥から順に塗って重なりを表しています (厳密な隠面消去ではないので、"
+      "面どうしが交差する形状では前後が入れ替わって見えることがあります)。"
+      "遠近は付けていないので、画面上の長さの比はそのまま実寸の比です。",
+      "Faces are painted back to front to show what covers what. This is not "
+      "exact hidden-surface removal, so on shapes whose faces intersect the "
+      "front and back can swap. There is no perspective, so ratios of lengths "
+      "on screen are ratios of real lengths." },
     { "geoc_voxprev_fail", "ボクセル化できません: %1",
       "Cannot voxelise: %1" },
     { "geoc_voxprev_head",
@@ -1626,7 +1644,8 @@ QWidget *GeometryTab::buildPreviewSection()
     hr->addWidget(runImport);
     auto *prev3dBtn = new QPushButton(I18n::tr("geoc_prev_3d"), s);
     auto *measureBtn = new QPushButton(I18n::tr("geoc_prev_measure"), s);
-    tabhelp::markNotImplemented(prev3dBtn, I18n::tr(tabhelp::notimpl::kPlot));
+    connect(prev3dBtn, &QPushButton::clicked, this,
+            &GeometryTab::preview3dMesh);
     hr->addWidget(prev3dBtn);
     hr->addWidget(measureBtn);
     hr->addStretch(1);
@@ -2444,7 +2463,119 @@ void GeometryTab::previewVoxelization()
     dlg.exec();
 }
 
-// ボクセル化の設定を画面から集める。// ボクセル化の設定を画面から集める。**プレビューと本番で同じ関数を使う**
+namespace {
+
+// 取込メッシュの 3D プレビュー (画家のアルゴリズム)。どこに写るかは
+// io/MeshProjection が決め、ここは奥から順に塗るだけ。
+class MeshView3D : public QWidget {
+public:
+    explicit MeshView3D(QWidget *parent = nullptr) : QWidget(parent)
+    { setMinimumSize(360, 300); }
+
+    void setMesh(const ImportedMesh &m) { m_mesh = m; rebuild(); }
+    void setAngles(double az, double el) { m_az = az; m_el = el; rebuild(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), QColor("#0F1115"));
+        if (m_tri.isEmpty()) return;
+        // 画面いっぱいに収める (縦横比は保つ — 寸法を読む用途なので歪めない)
+        const double sx = (m_u1 > m_u0) ? (width() - 24) / (m_u1 - m_u0) : 1.0;
+        const double sy = (m_v1 > m_v0) ? (height() - 24) / (m_v1 - m_v0) : 1.0;
+        const double sc = std::min(sx, sy);
+        const double cx = width() / 2.0, cy = height() / 2.0;
+        const double mu = 0.5 * (m_u0 + m_u1), mv = 0.5 * (m_v0 + m_v1);
+        p.setPen(Qt::NoPen);
+        for (const ProjectedTri &t : m_tri) {      // 既に奥→手前の順
+            QPolygonF poly;
+            for (int k = 0; k < 3; ++k)
+                poly << QPointF(cx + (t.u[k] - mu) * sc,
+                                cy - (t.v[k] - mv) * sc);   // v は上が +
+            const int g = int(40 + 175 * t.shade);
+            p.setBrush(QColor(g, g, std::min(255, g + 30)));
+            p.drawPolygon(poly);
+        }
+    }
+
+private:
+    void rebuild()
+    {
+        m_tri = projectMesh(m_mesh, m_az, m_el);
+        std::sort(m_tri.begin(), m_tri.end(),
+                  [](const ProjectedTri &a, const ProjectedTri &b) {
+                      return a.depth < b.depth;      // 奥 → 手前
+                  });
+        m_u0 = m_v0 = 1e30; m_u1 = m_v1 = -1e30;
+        for (const ProjectedTri &t : m_tri)
+            for (int k = 0; k < 3; ++k) {
+                m_u0 = std::min(m_u0, t.u[k]); m_u1 = std::max(m_u1, t.u[k]);
+                m_v0 = std::min(m_v0, t.v[k]); m_v1 = std::max(m_v1, t.v[k]);
+            }
+        update();
+    }
+    ImportedMesh m_mesh;
+    QVector<ProjectedTri> m_tri;
+    double m_az = 30.0, m_el = 20.0;
+    double m_u0 = 0, m_u1 = 0, m_v0 = 0, m_v1 = 0;
+};
+
+} // namespace
+
+// 取込メッシュの 3D プレビュー。ボクセル化する前の「読み込んだ形そのもの」を
+// 見るためのもので、プロジェクトへは何も足さない。
+// **厳密な隠面消去ではない** (面ごとに奥から塗る画家のアルゴリズム) ので、
+// 面が交差する形状では前後が入れ替わりうる — その旨を画面に出す。
+void GeometryTab::preview3dMesh()
+{
+    if (!m_hasMesh || m_lastMesh.numTriangles <= 0) return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(I18n::tr("geoc_prev3d_title"));
+    auto *v = new QVBoxLayout(&dlg);
+    auto *head = new QLabel(I18n::tr("geoc_prev3d_head")
+                                .arg(m_lastMesh.name)
+                                .arg(m_lastMesh.numTriangles), &dlg);
+    head->setWordWrap(true);
+    v->addWidget(head);
+
+    auto *view = new MeshView3D(&dlg);
+    view->setMesh(m_lastMesh);
+    v->addWidget(view, 1);
+
+    auto *row = new QHBoxLayout();
+    row->addWidget(new QLabel(I18n::tr("geoc_prev3d_az"), &dlg));
+    auto *az = new QSlider(Qt::Horizontal, &dlg);
+    az->setRange(0, 359);
+    az->setValue(30);
+    row->addWidget(az, 1);
+    row->addWidget(new QLabel(I18n::tr("geoc_prev3d_el"), &dlg));
+    auto *el = new QSlider(Qt::Horizontal, &dlg);
+    el->setRange(-89, 89);
+    el->setValue(20);
+    row->addWidget(el, 1);
+    v->addLayout(row);
+    auto *note = new QLabel(I18n::tr("geoc_prev3d_note"), &dlg);
+    note->setWordWrap(true);
+    note->setStyleSheet("font-size:11px; color:palette(mid);");
+    v->addWidget(note);
+
+    auto apply = [view, az, el] {
+        view->setAngles(az->value(), el->value());
+    };
+    QObject::connect(az, &QSlider::valueChanged, &dlg, apply);
+    QObject::connect(el, &QSlider::valueChanged, &dlg, apply);
+    apply();
+
+    auto *close = new QPushButton(I18n::tr("geoc_voxprev_close"), &dlg);
+    QObject::connect(close, &QPushButton::clicked, &dlg, &QDialog::accept);
+    v->addWidget(close);
+    dlg.resize(560, 520);
+    dlg.exec();
+}
+
+// ボクセル化の設定を画面から集める。// ボクセル化の設定を画面から集める。// ボクセル化の設定を画面から集める。**プレビューと本番で同じ関数を使う**
 // — 別々に集めると、プレビューで見た絵と実際に入る形状が食い違う。
 VoxelOptions GeometryTab::currentVoxelOptions() const
 {

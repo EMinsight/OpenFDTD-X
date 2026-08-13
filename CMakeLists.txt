@@ -234,6 +234,9 @@ set(CORE_SOURCES
     # 断面と交わらないものは描かない判断もここに持つ
     src/io/SliceOverlay.cpp
     src/io/SliceOverlay.h
+    # 取込メッシュの 3D プレビューの投影 (どこに写るかを決める側)
+    src/io/MeshProjection.cpp
+    src/io/MeshProjection.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。
