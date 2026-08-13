@@ -233,6 +233,10 @@ private:
     void refreshOverlay();       // 形状・観測点 → 場マップの重ね描き
     QCheckBox   *m_ovGeom = nullptr;   // 形状の輪郭を重ねる
     QCheckBox   *m_ovMon = nullptr;    // 観測点を重ねる
+    QCheckBox   *m_embedBar = nullptr;   // 書出画像へ凡例を焼き込む
+    QCheckBox   *m_embedGeom = nullptr;  // 書出画像へ形状・観測点を焼き込む
+    // 書出フレームへの焼き込み (画面と同じ投影・同じ尺度を使う)
+    QImage decorateExportFrame(const QImage &src, double lo, double hi) const;
     QString      m_seriesFrameLabel;   // 読み手が返したフレームの時刻表記
 
     QCheckBox   *m_multiChk = nullptr;
