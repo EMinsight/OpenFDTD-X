@@ -24,17 +24,27 @@ RlcImpedance rlcImpedance(const RlcModel &m, double f_Hz)
     z.xC_ohm = hasC ? 1.0 / (w * m.c_F) : 0.0;
 
     if (m.topology == RlcTopology::Series) {
-        // Z = R + j(ωL − 1/ωC) — 不在の素子は短絡 (0 Ω)
+        // Z = R + j(ωL − 1/ωC) — 不在の素子は短絡 (0 Ω)。
+        // R も hasR で切る: 負値をそのまま二乗すると「絶対値ぶんの抵抗が
+        // ある」ことになり、表が「—」なのに |Z| だけ増える食い違いになる
+        const double r = hasR ? m.r_ohm : 0.0;
         const double x = z.xL_ohm - z.xC_ohm;
-        z.magnitude_ohm = std::sqrt(m.r_ohm * m.r_ohm + x * x);
+        z.resistance_ohm = r;
+        z.reactance_ohm = x;
+        z.magnitude_ohm = std::sqrt(r * r + x * x);
     } else {
         // Y = G + j(ωC − 1/ωL) — 不在の素子はアドミタンス 0 (開放)
         const double g = hasR ? 1.0 / m.r_ohm : 0.0;
         const double bC = hasC ? w * m.c_F : 0.0;
         const double bL = hasL ? 1.0 / (w * m.l_H) : 0.0;
         const double b = bC - bL;
-        const double y = std::sqrt(g * g + b * b);
-        z.magnitude_ohm = (y > 0) ? 1.0 / y : 0.0;
+        const double y2 = g * g + b * b;
+        // 無損失並列 LC の共振点は |Y| = 0 = 開放。0 Ω (短絡) と偽らない
+        if (y2 <= 0) return z;
+        // Z = 1/Y = (G − jB)/|Y|²
+        z.resistance_ohm = g / y2;
+        z.reactance_ohm = -b / y2;
+        z.magnitude_ohm = 1.0 / std::sqrt(y2);
     }
     z.valid = true;
     return z;

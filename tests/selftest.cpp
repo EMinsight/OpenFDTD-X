@@ -13803,6 +13803,196 @@ static void testLumpedRlc()
               "rlc: an empty model is not valid");
         check(!rlcImpedance(m, 0.0).valid, "rlc: f <= 0 is not valid");
     }
+
+    // ── 符号つき複素インピーダンス (Touchstone 書出に要る) ──────────────────
+    // |Z| は既存の閉形式、Re/Im は複素数の組み立てという**独立な 2 経路**なので、
+    // hypot(Re, Im) と magnitude が一致することが相互検算になる。
+    {
+        double worst = 0.0;
+        int checked = 0;
+        for (RlcTopology topo : { RlcTopology::Series, RlcTopology::Parallel }) {
+            RlcModel t = m;
+            t.topology = topo;
+            for (int i = 0; i < 121; ++i) {
+                const double f = std::pow(10.0, -2.0 + 4.0 * i / 120.0) * 1e6;
+                const RlcImpedance z = rlcImpedance(t, f);
+                if (!z.valid) continue;
+                const double h = std::hypot(z.resistance_ohm, z.reactance_ohm);
+                worst = std::max(worst, std::fabs(h - z.magnitude_ohm)
+                                            / std::max(1e-30, z.magnitude_ohm));
+                ++checked;
+            }
+        }
+        check(checked == 242 && worst < 1e-12,
+              "rlc: hypot(Re Z, Im Z) reproduces the closed-form |Z| on both "
+              "topologies");
+    }
+    // 直列は Z = R + j(wL - 1/wC) がそのまま出る
+    {
+        const RlcImpedance z = rlcImpedance(m, 1.0e6);
+        check(approx(z.resistance_ohm, m.r_ohm, 1e-12) &&
+              approx(z.reactance_ohm, z.xL_ohm - z.xC_ohm, 1e-12),
+              "rlc: the series impedance is R + j(wL - 1/wC)");
+    }
+    // 並列は Z = (G - jB)/|Y|^2。共振では Im Z = 0 かつ Re Z = R
+    {
+        RlcModel p = m;
+        p.topology = RlcTopology::Parallel;
+        const RlcImpedance z = rlcImpedance(p, f0);
+        check(approx(z.resistance_ohm, p.r_ohm, 1e-9) &&
+              std::fabs(z.reactance_ohm) < 1e-9 * p.r_ohm,
+              "rlc: the parallel impedance is purely resistive (= R) at "
+              "resonance");
+    }
+    // **リアクタンスの符号は仮定せず数値で確かめる** — 直列と並列で
+    // 共振の上下が逆になる (直列: 上が誘導性 / 並列: 上が容量性)
+    {
+        RlcModel s = m, p = m;
+        p.topology = RlcTopology::Parallel;
+        const double lo = f0 * 0.5, hi = f0 * 2.0;
+        check(rlcImpedance(s, lo).reactance_ohm < 0 &&
+              rlcImpedance(s, hi).reactance_ohm > 0,
+              "rlc: a series RLC is capacitive below f0 and inductive above");
+        check(rlcImpedance(p, lo).reactance_ohm > 0 &&
+              rlcImpedance(p, hi).reactance_ohm < 0,
+              "rlc: a parallel RLC is the other way round (inductive below f0, "
+              "capacitive above)");
+    }
+    // 負の R は「素子が無い」= 0 ohm。表が「—」なのに |Z| だけ増えないこと
+    {
+        RlcModel neg = m, zero = m;
+        neg.r_ohm = -5.0;
+        zero.r_ohm = 0.0;
+        check(rlcImpedance(neg, f0).magnitude_ohm ==
+                  rlcImpedance(zero, f0).magnitude_ohm &&
+              rlcImpedance(neg, f0).resistance_ohm == 0.0,
+              "rlc: a negative R counts as absent (0 ohm), not as |R|");
+    }
+    // 無損失並列 LC の共振点は開放 (|Z| = infinity)。0 ohm と偽らない。
+    // **打ち消しが厳密に起きる入力を作って**判定する: w = 2*pi*f が厳密に 1.0
+    // になる f = 1/(2*pi) を選び、L = C = 1 とすると wC と 1/(wL) が
+    // ビット単位で等しくなる (実測で b = 0.0)
+    {
+        RlcModel p;
+        p.topology = RlcTopology::Parallel;
+        p.l_H = 1.0;
+        p.c_F = 1.0;
+        const double f = 1.0 / (2.0 * 3.14159265358979323846);
+        check(!rlcImpedance(p, f).valid,
+              "rlc: a lossless parallel LC at exact cancellation is an open "
+              "circuit, so it is reported as invalid rather than as 0 ohm");
+        check(rlcImpedance(p, f * 1.01).valid,
+              "rlc: just off that point it is finite again");
+        // 実際の素子値では打ち消しは厳密には起きず、巨大な有限値になる
+        RlcModel q;
+        q.topology = RlcTopology::Parallel;
+        q.l_H = 50e-9;
+        q.c_F = 200e-12;
+        const RlcImpedance z = rlcImpedance(q, rlcResonanceHz(q.l_H, q.c_F));
+        check(z.valid && z.magnitude_ohm > 1e12,
+              "rlc: at a computed f0 the cancellation is inexact, so |Z| is a "
+              "huge finite number (open-like), never a short");
+    }
+
+    // ── S11 = (Z - Z0)/(Z + Z0) と Touchstone .s1p 書出 ─────────────────────
+    {
+        using ofd::Touchstone;
+        const double Z0 = 50.0;
+        auto s11of = [&](const RlcModel &mm, double f) {
+            const RlcImpedance z = rlcImpedance(mm, f);
+            return Touchstone::zToS({ z.resistance_ohm, z.reactance_ohm }, Z0);
+        };
+        // 整合 (Z = Z0) は S11 = 0
+        {
+            RlcModel r50;
+            r50.r_ohm = 50.0;
+            check(std::abs(s11of(r50, 1.0e7)) < 1e-15,
+                  "s1p: a 50 ohm resistor is matched (S11 = 0)");
+        }
+        // 直列共振では Z = R (実数) なので S11 = (R-Z0)/(R+Z0) も実数
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            const std::complex<double> v = s11of(s, rlcResonanceHz(s.l_H, s.c_F));
+            check(std::fabs(v.real() - (10.0 - Z0) / (10.0 + Z0)) < 1e-9 &&
+                  std::fabs(v.imag()) < 1e-9,
+                  "s1p: at series resonance S11 is the real (R-Z0)/(R+Z0)");
+        }
+        // 無損失 (純リアクタンス) の 1 ポートは **|S11| = 1 が厳密に成り立つ**
+        // (受け取った電力を全部返す)。極限の向きは実部で見る:
+        // 高い周波数で L は開放 (Re -> +1)、C は短絡 (Re -> -1)。
+        // ここは「近さ」ではなく厳密な等式なので許容値を緩めなくてよい
+        {
+            RlcModel l;
+            l.l_H = 1e-6;
+            RlcModel c;
+            c.c_F = 1e-9;
+            double worst = 0.0;
+            for (int i = 0; i < 41; ++i) {
+                const double f = std::pow(10.0, 4.0 + 5.0 * i / 40.0);
+                worst = std::max(worst, std::fabs(std::abs(s11of(l, f)) - 1.0));
+                worst = std::max(worst, std::fabs(std::abs(s11of(c, f)) - 1.0));
+            }
+            check(worst < 1e-15,
+                  "s1p: a lossless one-port reflects everything, |S11| = 1 "
+                  "exactly at every frequency");
+            check(s11of(l, 1.0e9).real() > 0.999,
+                  "s1p: a series inductor looks open at high frequency "
+                  "(S11 -> +1)");
+            check(s11of(c, 1.0e9).real() < -0.999,
+                  "s1p: a series capacitor looks short at high frequency "
+                  "(S11 -> -1)");
+        }
+        // 受動性 |S11| <= 1 — **仮定せず掃引で確かめる**。
+        // かつ「ほぼ 1 の点が実在する」ことも見て、判定が自明でないことを示す
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            double worst = 0.0, best = 1.0;
+            for (int i = 0; i < 121; ++i) {
+                const double f = std::pow(10.0, -2.0 + 4.0 * i / 120.0) * 1e6;
+                const double a = std::abs(s11of(s, f));
+                worst = std::max(worst, a);
+                best = std::min(best, a);
+            }
+            check(worst <= 1.0 + 1e-12,
+                  "s1p: a passive RLC never reflects more than it receives "
+                  "(|S11| <= 1 over the whole sweep)");
+            check(worst > 0.99 && best < 0.9,
+                  "s1p: the sweep really does approach total reflection "
+                  "somewhere (so the bound above is not vacuous)");
+        }
+        // 書いて読み直す (io/Touchstone は既存 — ここでは往復のみ確かめる)
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            QVector<double> f;
+            QVector<std::complex<double>> sv;
+            for (int i = 0; i < 21; ++i) {
+                const double fh = std::pow(10.0, -2.0 + 4.0 * i / 20.0) * 1e6;
+                f.push_back(fh);
+                sv.push_back(s11of(s, fh));
+            }
+            QTemporaryDir dir;
+            check(dir.isValid(), "s1p: temp dir");
+            const QString path = dir.path() + QStringLiteral("/rlc.s1p");
+            QString err;
+            check(Touchstone::writeS1p(path, f, sv, &err), "s1p: write .s1p");
+            ofd::TouchstoneData d;
+            check(Touchstone::read(path, &d, &err), "s1p: read it back");
+            check(d.ports == 1 && d.freqHz.size() == f.size() &&
+                  std::fabs(d.z0 - Z0) < 1e-12,
+                  "s1p: one port, 50 ohm reference and every frequency survive");
+            double worst = 0.0;
+            for (int i = 0; i < d.freqHz.size() && i < f.size(); ++i) {
+                worst = std::max(worst, std::fabs(d.freqHz[i] - f[i]) / f[i]);
+                worst = std::max(worst, std::abs(d.at(i, 1, 1) - sv[i]));
+            }
+            check(worst < 1e-6,
+                  "s1p: the frequencies and S11 survive the round trip to the "
+                  "written precision");
+        }
+    }
 }
 
 // ── 反射係数とスミスチャートの幾何 (em/Reflection) ──────────────────────────

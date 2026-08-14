@@ -17,6 +17,10 @@
 //   直列回路で C ≤ 0 / L ≤ 0 は「その素子が無い = 短絡 (0 Ω)」、
 //   並列回路で L ≤ 0 / C ≤ 0 は「その素子が無い = 開放 (アドミタンス 0)」。
 //   R は直列では 0 Ω (短絡)、並列では G = 0 (開放) として扱う。
+//
+// 退化する 1 点: **無損失 (R 不在) の並列 LC は共振点で |Y| = 0** になる。
+// これは開放 (|Z| = ∞) であって短絡ではないので、0 Ω を返さず valid = false に
+// する (呼び出し側は「—」を出す / その点を書き出さない)。
 #ifndef OFD_EM_LUMPEDRLC_H
 #define OFD_EM_LUMPEDRLC_H
 
@@ -36,7 +40,13 @@ struct RlcImpedance {
     double xL_ohm = 0;         // ωL  (L ≤ 0 なら 0)
     double xC_ohm = 0;         // 1/ωC (C ≤ 0 なら 0)
     double magnitude_ohm = 0;  // |Z|
+    // 符号つきの複素インピーダンス Z = R' + jX' (S パラメータ変換に要る)。
+    // X' > 0 が誘導性。**直列と並列で符号の出方が違う** (直列は
+    // X' = ωL − 1/ωC、並列は X' = −B/|Y|² なので共振の上下が逆になる)。
+    double resistance_ohm = 0; // Re Z
+    double reactance_ohm = 0;  // Im Z
     bool   valid = false;      // f > 0 かつ素子が 1 つ以上あるか
+                               // (無損失並列 LC の共振点は開放 = ∞ なので false)
 };
 
 // 周波数 f_Hz における |Z|。f_Hz ≤ 0 は valid=false。
