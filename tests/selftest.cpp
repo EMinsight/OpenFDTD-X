@@ -585,6 +585,136 @@ static void testVoxelizer()
         check(s1.boundaryCells > 0 && s1.boundaryCells < 10 * 10 * 10,
               "pvf: only the shell cells are re-sampled");
     }
+
+    // ── 空間索引 (探索の高速化) ───────────────────────────────────────────
+    // 索引は「調べる三角形を減らす」だけで、判定そのものは変えない。
+    // よって **占有セル・直方体・体積が 1 つ残らず一致**しなければならない。
+    // 速くなったことは交差判定の回数 (決定的) で確かめる。
+    {
+        // 軸ごとに分割数を変える (10/10/10 のような等寸法だと軸の取り違えが
+        // 隠れる)。節点も原点非対称にして、対称性で通ってしまう穴を塞ぐ。
+        MeshAxis axA; axA.nodes = { -1.10, 0.90 }; axA.divs = { 13 };
+        MeshAxis axB; axB.nodes = { -0.95, 1.05 }; axB.divs = { 17 };
+        MeshAxis axC; axC.nodes = { -1.05, 0.95 }; axC.divs = { 19 };
+
+        // 傾けて平行移動した箱 — 軸に平行な面が 1 つも無い形。
+        // (レイの傾き分の余裕が足りなければ、ここで境界が 1 セルずれる)
+        ImportedMesh tilted = boxMesh(-0.5, -0.4, -0.3, 0.45, 0.35, 0.5);
+        {
+            const double ca = std::cos(0.37), sa = std::sin(0.37);
+            const double cb = std::cos(0.21), sb = std::sin(0.21);
+            for (int i = 0; i + 2 < tilted.vertices.size(); i += 3) {
+                const double x = tilted.vertices[i];
+                const double y = tilted.vertices[i + 1];
+                const double z = tilted.vertices[i + 2];
+                const double x1 = ca * x - sa * y, y1 = sa * x + ca * y;
+                const double z1 = cb * z - sb * y1, y2 = sb * z + cb * y1;
+                tilted.vertices[i]     = float(x1 + 0.07);
+                tilted.vertices[i + 1] = float(y2 - 0.11);
+                tilted.vertices[i + 2] = float(z1 + 0.13);
+            }
+            for (int a = 0; a < 3; ++a) {
+                tilted.bbox[a] = tilted.vertices[a];
+                tilted.bbox[a + 3] = tilted.vertices[a];
+            }
+            for (int i = 0; i + 2 < tilted.vertices.size(); i += 3)
+                for (int a = 0; a < 3; ++a) {
+                    const double v = tilted.vertices[i + a];
+                    tilted.bbox[a] = std::min<double>(tilted.bbox[a], v);
+                    tilted.bbox[a + 3] = std::max<double>(tilted.bbox[a + 3], v);
+                }
+        }
+
+        // 穴あきも入れる — レイ版が「壊れる」ケースでも壊れ方まで一致すること
+        ImportedMesh holed2 = cube;
+        holed2.vertices.resize(holed2.vertices.size() - 9);
+        --holed2.numTriangles;
+
+        struct Case { const char *name; const ImportedMesh *m; };
+        const ImportedMesh sph = sphereMesh(0.05, -0.08, 0.03, 0.52, 48, 24);
+        const Case cases[] = {
+            { "cube",   &cube   },
+            { "tilted", &tilted },
+            { "sphere", &sph    },
+            { "holed",  &holed2 },
+        };
+
+        for (const Case &c : cases) {
+            for (const bool pvf : { false, true }) {
+                VoxelOptions off; off.spatialIndex = false; off.pvf = pvf;
+                VoxelOptions on;  on.spatialIndex  = true;  on.pvf  = pvf;
+                const VoxelResult a = Voxelizer::voxelize(*c.m, axA, axB, axC,
+                                                          2, 8'000'000, off);
+                const VoxelResult b = Voxelizer::voxelize(*c.m, axA, axB, axC,
+                                                          2, 8'000'000, on);
+                check(a.ok && b.ok, "voxidx: both runs succeed");
+                check(a.occupied == b.occupied,
+                      "voxidx: the spatial index keeps the occupied count");
+                check(a.bricks.size() == b.bricks.size(),
+                      "voxidx: the spatial index keeps the brick count");
+                check(a.stairVolume == b.stairVolume,
+                      "voxidx: the spatial index keeps the staircase volume");
+                check(a.pvfVolume == b.pvfVolume,
+                      "voxidx: the spatial index keeps the pvf volume");
+                // 直方体は 1 個ずつ座標まで一致していること
+                // (総数だけ合っていて中身が違う、を通さない)
+                bool same = (a.bricks.size() == b.bricks.size());
+                for (int i = 0; same && i < a.bricks.size(); ++i)
+                    for (int g = 0; g < 6; ++g)
+                        if (a.bricks[i].g[g] != b.bricks[i].g[g]) same = false;
+                check(same, "voxidx: every brick is identical, coordinate "
+                            "by coordinate");
+                if (!same || a.occupied != b.occupied)
+                    std::fprintf(stderr,
+                                 "  (MISMATCH %s pvf=%d: %lld/%lld cells)\n",
+                                 c.name, int(pvf), (long long)a.occupied,
+                                 (long long)b.occupied);
+                // 索引が実際に枝刈りしていること
+                if (!pvf) {
+                    std::fprintf(stderr,
+                        "  (voxidx %s: %d bins, %lld entries, tests %lld → "
+                        "%lld (x%.1f fewer))\n",
+                        c.name, b.indexBins, (long long)b.indexEntries,
+                        (long long)a.triangleTests, (long long)b.triangleTests,
+                        b.triangleTests > 0
+                            ? double(a.triangleTests) / double(b.triangleTests)
+                            : 0.0);
+                    check(b.indexBins > 0, "voxidx: the index was built");
+                    check(b.triangleTests < a.triangleTests,
+                          "voxidx: the index really reduces the work");
+                }
+            }
+        }
+
+        // 三角形が増えるほど得になること (これが導入の理由そのもの)。
+        // 総当たりは 三角形数 に比例、索引ありはほぼ横ばいになる。
+        {
+            const ImportedMesh lo = sphereMesh(0, 0, 0, 0.5, 24, 12);
+            const ImportedMesh hi = sphereMesh(0, 0, 0, 0.5, 96, 48);
+            VoxelOptions off; off.spatialIndex = false;
+            VoxelOptions on;  on.spatialIndex  = true;
+            const VoxelResult lf = Voxelizer::voxelize(lo, axA, axB, axC, 2,
+                                                       8'000'000, off);
+            const VoxelResult hf = Voxelizer::voxelize(hi, axA, axB, axC, 2,
+                                                       8'000'000, off);
+            const VoxelResult li = Voxelizer::voxelize(lo, axA, axB, axC, 2,
+                                                       8'000'000, on);
+            const VoxelResult hi2 = Voxelizer::voxelize(hi, axA, axB, axC, 2,
+                                                        8'000'000, on);
+            const double growF = double(hf.triangleTests)
+                               / double(lf.triangleTests);
+            const double growI = double(hi2.triangleTests)
+                               / double(li.triangleTests);
+            std::fprintf(stderr,
+                "  (voxidx scaling: %d→%d tris; brute force x%.1f, "
+                "indexed x%.1f)\n",
+                lo.numTriangles, hi.numTriangles, growF, growI);
+            // 三角形は 16 倍。総当たりはそのまま 16 倍近く増える
+            check(growF > 10.0, "voxidx: brute force grows with the mesh");
+            check(growI < growF / 3.0,
+                  "voxidx: the index breaks the linear growth");
+        }
+    }
 }
 
 static void compareProjects(const Project &a, const Project &b)

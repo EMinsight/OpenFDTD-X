@@ -185,8 +185,7 @@ private:
     QButtonGroup   *m_voxSurface = nullptr;
     QCheckBox      *m_voxPvf = nullptr;
     QCheckBox      *m_voxMerge = nullptr;
-    QCheckBox      *m_voxOctree = nullptr;
-    QSpinBox       *m_voxOctLevel = nullptr;
+    QCheckBox      *m_voxOctree = nullptr;   // 空間索引 (旧 八分木)
     QCheckBox      *m_voxGpu = nullptr;
     QLabel         *m_voxBadge = nullptr;
     // ボクセル統計
