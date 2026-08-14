@@ -316,21 +316,22 @@ void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
     }
 }
 
-void saveTextFile(QWidget *parent, const QString &caption,
-                  const QString &suggested, const QString &filter,
-                  const QString &content)
+QString saveTextFile(QWidget *parent, const QString &caption,
+                     const QString &suggested, const QString &filter,
+                     const QString &content)
 {
     const QString path = QFileDialog::getSaveFileName(parent, caption,
                                                       suggested, filter);
-    if (path.isEmpty()) return;
+    if (path.isEmpty()) return QString();      // 取り消し
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(parent, caption, f.errorString());
-        return;
+        return QString();
     }
     QTextStream out(&f);
     out.setEncoding(QStringConverter::Utf8);
     out << content;
+    return path;
 }
 
 } // namespace tabhelp

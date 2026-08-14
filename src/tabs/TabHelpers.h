@@ -65,9 +65,12 @@ void envelopeSeries(const std::vector<double> &x, double fs, int maxBins,
 
 // 保存先をユーザーに選ばせて UTF-8 テキストを書き出す (CSV / JSON 出力)。
 // キャンセル時は何もしない。書き込み失敗は QMessageBox で通知する。
-void saveTextFile(QWidget *parent, const QString &caption,
-                  const QString &suggested, const QString &filter,
-                  const QString &content);
+// 書けたファイルのパスを返す。**取り消し・失敗では空文字列**を返すので、
+// 「書き出しました」と言う前に必ず確かめること (取り消したのに成功を
+// 名乗るのは嘘になる)。
+QString saveTextFile(QWidget *parent, const QString &caption,
+                     const QString &suggested, const QString &filter,
+                     const QString &content);
 
 // ── 可聴化の RIR サンプルレート注記 ────────────────────────────────────────
 // 畳み込み結果に必ず添える注記を作る (可聴化タブの単発/一括、音響解析タブの

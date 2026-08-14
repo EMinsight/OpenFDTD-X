@@ -16,6 +16,9 @@
 // 音響ドメイン選択時のみ表示。
 #pragma once
 #include <QScrollArea>
+#include <QVector>
+
+#include "../io/BandSpectrumCsv.h"
 
 class QButtonGroup;
 class QStackedWidget;
@@ -38,6 +41,9 @@ private slots:
 private:
     // .dxf から仕切壁面積 S を読む (io/DxfOutline)。単位と輪郭は利用者が選ぶ
     void importDxfArea(QLineEdit *areaEdit, QLabel *status);
+    // 表示中のシナリオの帯域スペクトルを CSV で書き出す。**画面に出ている
+    // 曲線そのもの**を書く (再計算しないので図と必ず一致する)
+    void exportSpectrumCsv();
 
     QWidget *buildPartitionPage();
     QWidget *buildFacadePage();
@@ -53,6 +59,10 @@ private:
     int             m_scenario = 0;   // mock: useState("partition") のローカル state
     QButtonGroup   *m_scenarioGroup;
     QStackedWidget *m_stack;
+    // シナリオ毎の最新の帯域スペクトル (添字は m_stack のページ番号)。
+    // 曲線を描くたびに更新し、書出はここから読む。曲線が引けない入力では
+    // isValid() が false になり、書出は「まだ計算されていない」と言う
+    QVector<io::BandSpectrum> m_spectra;
 };
 
 } // namespace ofd

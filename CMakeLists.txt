@@ -407,6 +407,9 @@ set(CORE_SOURCES
     # 参照データの (x, y) CSV — 検証タブと tidy3d タブで共有
     src/io/SeriesCsv.cpp
     src/io/SeriesCsv.h
+    # 1/3 オクターブ帯域スペクトルの CSV 書出 (上の読み手で読み戻せる形式)
+    src/io/BandSpectrumCsv.cpp
+    src/io/BandSpectrumCsv.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

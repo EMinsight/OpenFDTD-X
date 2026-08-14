@@ -23,6 +23,7 @@
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMenu>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -671,7 +672,31 @@ const bool s_i18n = [] {
     I18n::reg("sp_export_section", "出力", "Export");
     I18n::reg("sp_exp_report", "📄 遮音設計レポート (PDF)",
               "📄 Soundproofing report (PDF)");
-    I18n::reg("sp_exp_csv", "📊 R(f) スペクトル (CSV)", "📊 R(f) spectrum (CSV)");
+    // シナリオによって出る量が違う (間仕切壁は R、機器囲いは IL) ので
+    // 「R(f)」と言い切らない
+    I18n::reg("sp_exp_csv", "📊 帯域スペクトル (CSV)", "📊 Band spectrum (CSV)");
+    I18n::reg("sp_exp_csv_tip",
+              "表示中のシナリオの帯域スペクトル (図と同じ値) を CSV で"
+              "書き出します。間仕切壁は R(f)、設備機器囲いは IL(f)。",
+              "Writes the band spectrum of the current scenario (the same "
+              "values as the plot) as CSV. Partition gives R(f), machinery "
+              "enclosure gives IL(f).");
+    I18n::reg("sp_exp_csv_none",
+              "このシナリオには帯域スペクトルがありません。R(f) は「間仕切壁」、"
+              "IL(f) は「設備機器囲い」で計算されます。",
+              "This scenario has no band spectrum. R(f) comes from “Partition” "
+              "and IL(f) from “Machinery enclosure”.");
+    I18n::reg("sp_exp_csv_empty",
+              "まだ計算されていません。入力を埋めて曲線が出てから書き出して"
+              "ください。",
+              "Nothing has been computed yet. Fill in the inputs until the "
+              "curve appears, then export.");
+    I18n::reg("sp_exp_csv_title", "帯域スペクトルの書出", "Export band spectrum");
+    I18n::reg("sp_exp_csv_ok",
+              "書き出しました: %1\n%2 の %3(f) を %4 帯域 (%5 〜 %6 Hz)。"
+              "図に出ている値そのものです。",
+              "Written: %1\n%3(f) of %2 over %4 bands (%5 to %6 Hz). "
+              "These are exactly the values shown in the plot.");
     I18n::reg("sp_exp_aural", "🎧 可聴化 (受音側で試聴)",
               "🎧 Auralization (listen at receiver)");
     I18n::reg("sp_exp_std", "📑 規格対応書式 (ISO/ASTM)",
@@ -1048,6 +1073,8 @@ SoundproofTab::SoundproofTab(Project *project, QWidget *parent)
 
     // シナリオ別ページ
     m_stack = new QStackedWidget(body);
+    // シナリオ毎の控え (ページ数と同じ長さ。ページを足したらここも足す)
+    m_spectra.resize(8);
     m_stack->addWidget(buildPartitionPage());   // 0 partition
     m_stack->addWidget(buildFacadePage());      // 1 facade
     m_stack->addWidget(buildFloorPage());       // 2 floor
@@ -1058,15 +1085,27 @@ SoundproofTab::SoundproofTab(Project *project, QWidget *parent)
     m_stack->addWidget(buildSpeechPage());      // 7 speech
     v->addWidget(m_stack);
 
-    // 出力 (全シナリオ共通) — いずれも出力処理は未実装なので無効化する
+    // 出力 (全シナリオ共通)。**押せない理由は 3 つとも別**なので、まとめて
+    // 同じ理由にしない (「同梱データが無い」で括ると、実際には帯域スペクトル
+    // という出せるものがあることが見えなくなる)
     auto *se = new SectionBox(I18n::tr("sp_export_section"), body);
     auto *he = new QHBoxLayout();
-    for (const char *key : { "sp_exp_report", "sp_exp_csv",
-                             "sp_exp_aural", "sp_exp_std" }) {
-        auto *b = new QPushButton(I18n::tr(key), se);
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kData));
+    auto *repBtn   = new QPushButton(I18n::tr("sp_exp_report"), se);
+    auto *csvBtn   = new QPushButton(I18n::tr("sp_exp_csv"), se);
+    auto *auralBtn = new QPushButton(I18n::tr("sp_exp_aural"), se);
+    auto *stdBtn   = new QPushButton(I18n::tr("sp_exp_std"), se);
+    // PDF の作図には Qt PrintSupport が要る (依存を増やさない方針) うえ、
+    // 設計レポートの様式そのものも決まっていない
+    tabhelp::markNotImplemented(repBtn, I18n::tr(tabhelp::notimpl::kReport));
+    // 試聴は音声出力を持たない方針 (QtMultimedia 不使用)
+    tabhelp::markNotImplemented(auralBtn, I18n::tr(tabhelp::notimpl::kAudio));
+    // ISO/ASTM の報告書式は有償規格の書式そのもので、参照できる公開仕様が無い
+    tabhelp::markNotImplemented(stdBtn, I18n::tr(tabhelp::notimpl::kFormat));
+    csvBtn->setToolTip(I18n::tr("sp_exp_csv_tip"));
+    connect(csvBtn, &QPushButton::clicked, this,
+            &SoundproofTab::exportSpectrumCsv);
+    for (QPushButton *b : { repBtn, csvBtn, auralBtn, stdBtn })
         he->addWidget(b);
-    }
     he->addStretch(1);
     se->vbox()->addLayout(he);
     v->addWidget(se);
@@ -1102,6 +1141,42 @@ void SoundproofTab::refresh()
 // 読み取りは io/DxfOutline (ENTITIES の LINE / LWPOLYLINE だけ)。ここは
 // 単位と輪郭の選択を利用者に決めてもらい、結果と**読まなかったもの**を
 // 画面に出すだけにする。図面を全部理解したように見せない。
+// 表示中のシナリオの帯域スペクトルを CSV で書き出す。
+// **図を描いたときに控えた値をそのまま書く** (書出のために計算し直さないので、
+// 図と CSV が食い違うことがない)。
+void SoundproofTab::exportSpectrumCsv()
+{
+    const int page = m_stack ? m_stack->currentIndex() : -1;
+    const bool hasSpectrum = (page == 0 || page == 5);   // 間仕切壁 / 機器囲い
+    if (!hasSpectrum) {
+        // どのシナリオなら出せるのかまで書く (押せない理由を残さない)
+        QMessageBox::information(this, I18n::tr("sp_exp_csv_title"),
+                                 I18n::tr("sp_exp_csv_none"));
+        return;
+    }
+    const io::BandSpectrum spec =
+        (page >= 0 && page < m_spectra.size()) ? m_spectra[page]
+                                               : io::BandSpectrum();
+    const QString csv = io::buildBandSpectrumCsv(spec);
+    if (csv.isEmpty()) {
+        // 曲線が出ていない = 入力が足りない。空のファイルを作らない
+        QMessageBox::information(this, I18n::tr("sp_exp_csv_title"),
+                                 I18n::tr("sp_exp_csv_empty"));
+        return;
+    }
+    const QString path = tabhelp::saveTextFile(
+        this, I18n::tr("sp_exp_csv_title"), QStringLiteral("spectrum.csv"),
+        QStringLiteral("CSV (*.csv);;All files (*)"), csv);
+    if (path.isEmpty()) return;      // 取り消し / 失敗 — 成功を名乗らない
+    QMessageBox::information(
+        this, I18n::tr("sp_exp_csv_title"),
+        I18n::tr("sp_exp_csv_ok")
+            .arg(QFileInfo(path).fileName(), spec.scenario, spec.quantity,
+                 QString::number(spec.freqHz.size()),
+                 QString::number(spec.freqHz.first(), 'g', 4),
+                 QString::number(spec.freqHz.last(), 'g', 4)));
+}
+
 void SoundproofTab::importDxfArea(QLineEdit *areaEdit, QLabel *status)
 {
     if (!areaEdit || !status) return;
@@ -1325,7 +1400,7 @@ QWidget *SoundproofTab::buildPartitionPage()
     v->addWidget(sg);
 
     // ── 再計算 (層構成 → R(f) → Rw/STC/C/Ctr/DnT,w) ──────────────────────
-    auto recompute = [t, doubleChk, plot, modelLbl, warnLbl, rwBadge, stcBadge,
+    auto recompute = [this, t, doubleChk, plot, modelLbl, warnLbl, rwBadge, stcBadge,
                       rt, srcEdit, srcVol, rcvEdit, rcvVol, areaEdit]() {
         // 室容積 (寸法テキストの先頭 3 数値を L×W×H [m] とみなす)
         const double vSrc = parseVolume(srcEdit->text());
@@ -1343,6 +1418,7 @@ QWidget *SoundproofTab::buildPartitionPage()
 
         auto clearAll = [&]() {
             plot->setSeries({});
+            if (m_spectra.size() > 0) m_spectra[0] = io::BandSpectrum();
             modelLbl->setText(I18n::tr("sp_tl_none"));
             warnLbl->clear();
             rwBadge->setText("Rw = —");
@@ -1354,9 +1430,17 @@ QWidget *SoundproofTab::buildPartitionPage()
 
         MiniSeries s;
         s.color = QColor(kAccAcoustic);
-        for (int i = 0; i < ins::kNumBands; ++i)
+        io::BandSpectrum spec;
+        spec.scenario = I18n::tr("sp_sc_partition");
+        spec.quantity = QStringLiteral("R");
+        for (int i = 0; i < ins::kNumBands; ++i) {
             s.pts.push_back({ std::log10(ins::kThirdOctaveHz[i]), tl.R[i] });
+            // 図と同じ値をそのまま控える (書出のために計算し直さない)
+            spec.freqHz.push_back(ins::kThirdOctaveHz[i]);
+            spec.value.push_back(tl.R[i]);
+        }
         plot->setSeries({ s });
+        if (m_spectra.size() > 0) m_spectra[0] = spec;
 
         if (tl.model == ins::ModelDoubleLeaf) {
             modelLbl->setText(
@@ -2069,7 +2153,7 @@ QWidget *SoundproofTab::buildMachinePage()
     si->vbox()->addWidget(makeHint(I18n::tr("sp_il_note"), si));
     v->addWidget(si);
 
-    auto recompute = [sizeEdit, wall, alphaEdit, nOpen, aOpen, srcEdit,
+    auto recompute = [this, sizeEdit, wall, alphaEdit, nOpen, aOpen, srcEdit,
                       plot, ilBadge, geomLbl, srcLbl]() {
         double d[3] = { 0, 0, 0 };
         const bool okDim = parseNumbers(sizeEdit->text(), d, 3) == 3
@@ -2097,6 +2181,7 @@ QWidget *SoundproofTab::buildMachinePage()
 
         if (!okDim || Swall <= 0 || !okAl || alpha <= 0 || !tl.valid) {
             plot->setSeries({});
+            if (m_spectra.size() > 5) m_spectra[5] = io::BandSpectrum();
             ilBadge->setText(I18n::tr("sp_il_none"));
             geomLbl->clear();
             srcLbl->clear();
@@ -2104,14 +2189,20 @@ QWidget *SoundproofTab::buildMachinePage()
         }
         MiniSeries s;
         s.color = QColor(kAccAcoustic);
+        io::BandSpectrum spec;
+        spec.scenario = I18n::tr("sp_sc_machine");
+        spec.quantity = QStringLiteral("IL");
         double il500 = 0;
         for (int i = 0; i < ins::kNumBands; ++i) {
             const double il = ins::enclosureInsertionLoss(tl.R[i], Swall,
                                                           Sopen, alpha);
             s.pts.push_back({ std::log10(ins::kThirdOctaveHz[i]), il });
             if (ins::kThirdOctaveHz[i] == 500) il500 = il;
+            spec.freqHz.push_back(ins::kThirdOctaveHz[i]);
+            spec.value.push_back(il);
         }
         plot->setSeries({ s });
+        if (m_spectra.size() > 5) m_spectra[5] = spec;
         ilBadge->setText(I18n::tr("sp_il_badge_fmt")
                              .arg(QString::number(il500, 'f', 1)));
         geomLbl->setText(I18n::tr("sp_il_geom_fmt")

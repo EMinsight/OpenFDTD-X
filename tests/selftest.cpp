@@ -109,6 +109,7 @@
 #include "em/Directivity.h"
 #include "io/RcwaEfficiency.h"
 #include "io/SeriesCsv.h"
+#include "io/BandSpectrumCsv.h"
 #include "optics/DispersionModels.h"
 #include "optics/GaussianBeam.h"
 #include "optics/PlasmaDispersion.h"
@@ -18244,6 +18245,79 @@ static void testPhotometricIO()
     }
 }
 
+// ── 帯域スペクトルの CSV (io/BandSpectrumCsv) ──────────────────────────────
+// 肝は「**自分が書いたものを自分の参照系列リーダで読み戻せる**」こと。
+// 遮音タブが書いた CSV は、検証タブが実測値を読むのと同じ `parseSeriesCsv`
+// が読む — ここが食い違うと「書けるが自分でも読めない」ファイルになる。
+static void testBandSpectrumCsv()
+{
+    g_file = "band-csv";
+    using ofd::io::BandSpectrum;
+
+    BandSpectrum s;
+    s.scenario = QStringLiteral("間仕切壁 (二重壁)");
+    s.quantity = QStringLiteral("R");
+    s.unit = QStringLiteral("dB");
+    s.notes << QStringLiteral("mass law + coincidence");
+    const double f[5] = { 50.0, 125.0, 500.0, 2000.0, 5000.0 };
+    const double v[5] = { 12.5, 24.25, 41.125, 55.0625, -3.5 };
+    for (int i = 0; i < 5; ++i) { s.freqHz.push_back(f[i]); s.value.push_back(v[i]); }
+
+    const QString csv = ofd::io::buildBandSpectrumCsv(s);
+    check(!csv.isEmpty(), "bandcsv: a valid spectrum produces a file");
+    {
+        const QStringList lines = csv.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        // `#` 4 行 (見出し + scenario + quantity + note) + 列見出し + 5 行
+        check(lines.size() == 4 + 1 + 5,
+              "bandcsv: the file has the comment block, a header row and one "
+              "row per band");
+        check(lines[0].startsWith(QLatin1Char('#')) &&
+              lines[2].contains(QStringLiteral("R [dB]")),
+              "bandcsv: the quantity and its unit are recorded in the header");
+        check(lines[4] == QStringLiteral("freq_Hz,R_dB"),
+              "bandcsv: the column header names the quantity");
+        check(lines[5] == QStringLiteral("50,12.5"),
+              "bandcsv: the first data row is the first band");
+    }
+    // **自分の参照系列リーダで読み戻せる** (`#` 行と見出し行が落ちる)
+    {
+        const ofd::cmp::Series ser = ofd::io::parseSeriesCsv(csv);
+        check(ser.valid() && ser.x.size() == 5,
+              "bandcsv: parseSeriesCsv reads it back as a reference series");
+        double worst = 0.0;
+        for (int i = 0; i < 5 && i < int(ser.x.size()); ++i) {
+            worst = std::max(worst, std::fabs(ser.x[i] - f[i]));
+            worst = std::max(worst, std::fabs(ser.y[i] - v[i]));
+        }
+        check(worst == 0.0,
+              "bandcsv: every frequency and value survives exactly (the "
+              "written precision is enough for a round trip)");
+    }
+    // 負の値・小数が壊れないこと (ロケール依存の変換を使っていないこと)
+    check(csv.contains(QStringLiteral("5000,-3.5")),
+          "bandcsv: a negative value keeps its sign and decimal point");
+    // 注記や見出しに改行・カンマを入れられても行がずれない
+    {
+        BandSpectrum t = s;
+        t.scenario = QStringLiteral("line1\nline2");
+        const QStringList lines =
+            ofd::io::buildBandSpectrumCsv(t).split(QLatin1Char('\n'),
+                                                   Qt::SkipEmptyParts);
+        check(lines.size() == 4 + 1 + 5,
+              "bandcsv: a newline inside a label does not add a line");
+    }
+    // 中身の無いスペクトルは書かない (0 バイトのファイルを作らせない)
+    {
+        BandSpectrum bad;
+        check(ofd::io::buildBandSpectrumCsv(bad).isEmpty(),
+              "bandcsv: an empty spectrum produces no file");
+        bad.freqHz = { 100.0, 200.0 };
+        bad.value = { 1.0 };            // 長さ違い
+        check(ofd::io::buildBandSpectrumCsv(bad).isEmpty(),
+              "bandcsv: mismatched column lengths produce no file");
+    }
+}
+
 // ── 配光ファイル EULUMDAT (.ldt) ───────────────────────────────────────────
 // 判定は (a) 部分光束が**解析的に分かっている値**と一致すること (境界をまたぐ
 // ビンの切り方がここで効く)、(b) cd/1000lm への正規化が基準光束で往復すること、
@@ -25985,6 +26059,7 @@ int main(int argc, char *argv[])
     testIlluminationTrace();
     testPhotometricIO();
     testEulumdat();
+    testBandSpectrumCsv();
     testOptimizer();
     testFlankingTransmission();
     testTransmissionLine();
