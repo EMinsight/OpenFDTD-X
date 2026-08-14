@@ -138,6 +138,8 @@ private:
     void refreshIrPage();        // IR解析: 帯域別指標 / 減衰曲線 / 検証表
     void refreshSpatialPage();   // 空間印象: LF/LFC (幾何) / G_late / 未計算欄
     void refreshReinforcePage(); // 電気音響: 配置 / ディレイ / STI / GBF
+    // notch 候補の表示更新 (チェックの ON/OFF)
+    void refreshNotchSuggestions(bool on);
     void runMeasuredIr();        // 実測 IR (WAV) を解析して m_measIr を更新
     QVector<PaSpeaker> speakerLayout() const;   // 室寸法からの自動配置
     void applyNoiseSources();     // 騒音源内訳: widgets → model
@@ -204,6 +206,9 @@ private:
     StiMapWidget *m_stiMap;
     QLabel       *m_stiBadge, *m_stiUniBadge, *m_splNote;
     QLabel       *m_gbfBadge, *m_micPos, *m_spNote, *m_delayNote, *m_gbfNote;
+    // notch 候補 (室のモードから求める。鳴く周波数の予測ではない)
+    QTableWidget *m_notchTable = nullptr;
+    QLabel       *m_notchNote = nullptr;
 
     // ステージ/可変音響
     QLabel *m_stageRtBadge;

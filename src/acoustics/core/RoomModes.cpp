@@ -103,6 +103,54 @@ std::vector<Mode> rectangularModes(double lengthM, double widthM,
     return out;
 }
 
+
+double schroederFrequency(double rt60S, double volumeM3)
+{
+    if (!isFinitePositive(rt60S) || !isFinitePositive(volumeM3)) return 0.0;
+    return 2000.0 * std::sqrt(rt60S / volumeM3);
+}
+
+std::vector<NotchCandidate> notchCandidates(double lengthM, double widthM,
+                                            double heightM,
+                                            double soundSpeedMs,
+                                            double rt60S, int maxCount)
+{
+    std::vector<NotchCandidate> out;
+    if (!isFinitePositive(lengthM) || !isFinitePositive(widthM)
+        || !isFinitePositive(heightM) || !isFinitePositive(soundSpeedMs)
+        || !isFinitePositive(rt60S))
+        return out;
+
+    const double volume = lengthM * widthM * heightM;
+    const double fs = schroederFrequency(rt60S, volume);
+    if (!(fs > 0.0)) return out;
+
+    // モードの半値幅 (これより近いモードは互いに重なって 1 つの山になる)
+    const double bw = 2.2 / rt60S;
+
+    const std::vector<Mode> modes =
+        rectangularModes(lengthM, widthM, heightM, soundSpeedMs, fs, 0);
+    if (modes.empty()) return out;
+
+    // 半値幅の中で重なるものをまとめる。代表は最も低い次数のもの
+    // (rectangularModes が周波数昇順・次数の辞書順で返すので先頭が代表)
+    for (std::size_t i = 0; i < modes.size();) {
+        std::size_t j = i + 1;
+        while (j < modes.size() && (modes[j].freqHz - modes[i].freqHz) < bw)
+            ++j;
+        NotchCandidate c;
+        c.mode = modes[i];
+        c.freqHz = modes[i].freqHz;
+        c.bandwidthHz = bw;
+        c.q = (bw > 0.0) ? (modes[i].freqHz / bw) : 0.0;
+        c.coincident = static_cast<int>(j - i);
+        out.push_back(c);
+        i = j;
+        if (maxCount > 0 && static_cast<int>(out.size()) >= maxCount) break;
+    }
+    return out;
+}
+
 } // namespace roommodes
 } // namespace acoustics
 } // namespace ofd

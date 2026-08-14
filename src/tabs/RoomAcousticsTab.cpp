@@ -11,6 +11,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../acoustics/core/RoomModes.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -453,8 +454,35 @@ const bool s_i18n = [] {
     I18n::reg("rah_mic_pos", "マイク位置", "Mic position");
     I18n::reg("rah_gbf_hint", "(推奨 >6dB) — リンギング前の余裕",
               "(recommend >6 dB) — margin before ringing");
-    I18n::reg("rah_notch", "notchフィルタ自動提案 (自動提案は未実装)",
-              "Auto-suggest notch filters (auto-suggestion not implemented)");
+    I18n::reg("rah_notch", "notch フィルタの候補を出す",
+              "Suggest notch filter candidates");
+    // **鳴く周波数の予測ではない**ことを必ず併記する
+    I18n::reg("rah_notch_note",
+        "▸ 室のモード (剛壁・直方体の閉形式) のうち、シュレーダー周波数 %1 Hz "
+        "以下のものを候補として出しています。「どの周波数で鳴くかはマイクと "
+        "スピーカの位置・指向性を含むループ応答で決まり、ここでは予測して "
+        "いません」。提案 Q はモードの半値幅 Δf = 2.2/T60 = %2 Hz から "
+        "Q = f/Δf として出した値です (T60(mid) = %3 s を使用)。"
+        "面 2 つで往復する軸モードが最も強く、接線 (4 面)・斜め (6 面) の順に "
+        "弱くなります。「重なり」は半値幅の中に重なるモードの数です",
+        "▸ Listed are the room modes (rigid-wall shoebox closed form) below "
+        "the Schroeder frequency %1 Hz. The frequency at which the system "
+        "actually rings depends on the loop response including microphone and "
+        "loudspeaker placement and directivity, which is not predicted here. "
+        "The suggested Q comes from the modal bandwidth "
+        "df = 2.2/T60 = %2 Hz as Q = f/df (using T60(mid) = %3 s). "
+        "Axial modes (2 surfaces) are the strongest, then tangential (4) and "
+        "oblique (6). Coincident counts modes within one bandwidth");
+    I18n::reg("rah_notch_none",
+        "候補がありません (室の寸法か T60 が読めません)",
+        "No candidates (the room dimensions or T60 cannot be read)");
+    I18n::reg("rah_notch_col_f", "周波数 [Hz]", "frequency [Hz]");
+    I18n::reg("rah_notch_col_kind", "モード", "mode");
+    I18n::reg("rah_notch_col_q", "提案 Q", "suggested Q");
+    I18n::reg("rah_notch_col_n", "重なり", "coincident");
+    I18n::reg("rah_notch_axial", "軸", "axial");
+    I18n::reg("rah_notch_tang", "接線", "tangential");
+    I18n::reg("rah_notch_obl", "斜め", "oblique");
     // 出力 (追加ボタン)
     I18n::reg("rah_export_aural", "🎧 各席の可聴化", "🎧 Per-seat auralization");
     I18n::reg("rah_export_ease", "📐 ODEON/EASE 形式エクスポート",
@@ -2152,14 +2180,76 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     m_gbfNote = makeHint(QString(), sg);
     sg->vbox()->addWidget(m_gbfNote);
     auto *notch = makeCheck(I18n::tr("rah_notch"), false, sg);
-    tabhelp::markNotImplemented(notch, I18n::tr(tabhelp::notimpl::kEngine));   // notch 自動提案は未実装
     sg->vbox()->addWidget(notch);
+    m_notchTable = makeStaticTable(sg,
+        { I18n::tr("rah_notch_col_f"), I18n::tr("rah_notch_col_kind"),
+          I18n::tr("rah_notch_col_q"), I18n::tr("rah_notch_col_n") }, 1);
+    m_notchTable->setVisible(false);
+    sg->vbox()->addWidget(m_notchTable);
+    m_notchNote = makeHint(QString(), sg);
+    m_notchNote->setVisible(false);
+    sg->vbox()->addWidget(m_notchNote);
+    connect(notch, &QCheckBox::toggled, this,
+            [this](bool on) { refreshNotchSuggestions(on); });
     v->addWidget(sg);
     v->addStretch(1);
 
     connect(m_haasCheck, &QCheckBox::toggled, this,
             [this] { refreshReinforcePage(); });
     return page;
+}
+
+
+// ── notch フィルタの候補 ──────────────────────────────────────────────────
+// 室のモード (剛壁・直方体の閉形式) のうち、シュレーダー周波数以下のものを
+// 候補として出す。**どの周波数で鳴くかはループ応答で決まるのでここでは
+// 予測しない** — その区別を注記に必ず書く (絶対規則 5 と同じ趣旨)。
+void RoomAcousticsTab::refreshNotchSuggestions(bool on)
+{
+    if (!m_notchTable || !m_notchNote) return;
+    if (!on) {
+        m_notchTable->setVisible(false);
+        m_notchNote->setVisible(false);
+        return;
+    }
+    namespace rm = ofd::acoustics::roommodes;
+    const AcousticOpts &a = m_p->acoustic();
+    // T60 は中音域 (500 Hz / 1 kHz の平均) — 画面の他の指標と同じ取り方
+    const double T = (rt60(a, 2) + rt60(a, 3)) / 2.0;
+    const double c = rm::soundSpeed(20.0);       // 20 ℃ の乾燥空気
+    const std::vector<rm::NotchCandidate> cs =
+        rm::notchCandidates(a.roomL, a.roomW, a.roomH, c, T, 24);
+
+    m_notchNote->setVisible(true);
+    if (cs.empty()) {
+        m_notchTable->setVisible(false);
+        m_notchNote->setText(I18n::tr("rah_notch_none"));
+        return;
+    }
+    const double fs = rm::schroederFrequency(T, a.roomL * a.roomW * a.roomH);
+    const double bw = 2.2 / T;
+
+    // 行数が変わるので高さも合わせる (makeStaticTable は生成時の行数で
+    // 最小高さを決めるため、増やしただけでは表示領域が足りない)
+    m_notchTable->setRowCount(int(cs.size()));
+    m_notchTable->setMinimumHeight(int(cs.size()) * 30 + 42);
+    for (int i = 0; i < int(cs.size()); ++i) {
+        const rm::NotchCandidate &n = cs[std::size_t(i)];
+        const char *kindKey = (n.mode.kind == rm::ModeAxial) ? "rah_notch_axial"
+                            : (n.mode.kind == rm::ModeTangential)
+                                  ? "rah_notch_tang" : "rah_notch_obl";
+        m_notchTable->setItem(i, 0, numItem(QString::number(n.freqHz, 'f', 1)));
+        m_notchTable->setItem(i, 1, new QTableWidgetItem(
+            QStringLiteral("%1 (%2,%3,%4)").arg(I18n::tr(kindKey))
+                .arg(n.mode.nx).arg(n.mode.ny).arg(n.mode.nz)));
+        m_notchTable->setItem(i, 2, numItem(QString::number(n.q, 'f', 1)));
+        m_notchTable->setItem(i, 3, numItem(QString::number(n.coincident)));
+    }
+    m_notchTable->setVisible(true);
+    m_notchNote->setText(I18n::tr("rah_notch_note")
+        .arg(QString::number(fs, 'f', 1),
+             QString::number(bw, 'f', 2),
+             QString::number(T, 'f', 2)));
 }
 
 QWidget *RoomAcousticsTab::buildNoisePage()

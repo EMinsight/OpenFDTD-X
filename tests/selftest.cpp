@@ -9918,6 +9918,90 @@ static void testFdeModeSolver()
 
 // ── 直方体室の音響モード (src/acoustics/core/RoomModes) ─────────────────────
 // 期待値は実装から読まず、1 次元極限・既知の閉形式・単調性から独立に立てる。
+// ── 帰還対策の notch 候補 (acoustics/core/RoomModes) ─────────────────────
+// 「鳴く周波数の予測」ではなく「室のモードのうち候補になるもの」を返す関数。
+// 軸モードの周波数・シュレーダー周波数・提案 Q はすべて閉形式なので直接検算する。
+static void testNotchCandidates()
+{
+    g_file = "notch";
+    using namespace ofd::acoustics::roommodes;
+
+    // シュレーダー周波数 f_s = 2000·√(T60/V)
+    check(std::fabs(schroederFrequency(1.0, 4000.0) - 2000.0 * std::sqrt(1.0 / 4000.0))
+              < 1e-9,
+          "notch: the Schroeder frequency follows 2000 sqrt(T/V)");
+    check(schroederFrequency(0.0, 100.0) == 0.0
+          && schroederFrequency(1.0, 0.0) == 0.0,
+          "notch: non-positive inputs have no Schroeder frequency");
+
+    // **3 辺をすべて違う長さにする** (立方体や 2 辺が同じ室では軸モードが
+    // 縮退して、軸の取り違えが検出できない)
+    const double L = 7.3, W = 5.1, H = 3.2;
+    const double c = 343.0, T = 0.8;
+    const std::vector<NotchCandidate> cs = notchCandidates(L, W, H, c, T, 0);
+    check(!cs.empty(), "notch: a normal room yields candidates");
+
+    // 最も低いモードは最長辺の 1 次軸モード f = c/(2L)
+    const double f100 = c / (2.0 * L);
+    check(!cs.empty() && std::fabs(cs[0].freqHz - f100) < 1e-9,
+          "notch: the lowest candidate is the first axial mode of the "
+          "longest side");
+    check(!cs.empty() && cs[0].mode.kind == ModeAxial,
+          "notch: that lowest mode is an axial one");
+    check(!cs.empty() && cs[0].mode.nx == 1 && cs[0].mode.ny == 0
+          && cs[0].mode.nz == 0,
+          "notch: its order is (1,0,0)");
+
+    // 提案 Q = f·T60/2.2、帯域幅 Δf = 2.2/T60
+    const double bw = 2.2 / T;
+    check(!cs.empty() && std::fabs(cs[0].bandwidthHz - bw) < 1e-12,
+          "notch: the modal bandwidth is 2.2 / T60");
+    check(!cs.empty() && std::fabs(cs[0].q - f100 / bw) < 1e-9,
+          "notch: the suggested Q is f / bandwidth");
+
+    // **シュレーダー周波数より上は返さない** (そこから上は統計的な領域)
+    const double fs = schroederFrequency(T, L * W * H);
+    bool above = false;
+    for (std::size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].freqHz > fs) above = true;
+    check(!above, "notch: nothing above the Schroeder frequency is listed");
+
+    // 周波数の昇順で、重なり数は 1 以上
+    bool ordered = true, positive = true;
+    for (std::size_t i = 1; i < cs.size(); ++i)
+        if (cs[i].freqHz < cs[i - 1].freqHz) ordered = false;
+    for (std::size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].coincident < 1) positive = false;
+    check(ordered, "notch: candidates come back in ascending frequency");
+    check(positive, "notch: every candidate covers at least one mode");
+
+    // 半値幅より近いモードはまとめられている (代表どうしは必ず bw 以上離れる)
+    bool separated = true;
+    for (std::size_t i = 1; i < cs.size(); ++i)
+        if (cs[i].freqHz - cs[i - 1].freqHz < bw) separated = false;
+    check(separated,
+          "notch: candidates closer than one bandwidth are merged into one");
+
+    // まとめた数の合計 = シュレーダー周波数以下のモード数 (取りこぼさない)
+    const std::vector<Mode> all = rectangularModes(L, W, H, c, fs, 0);
+    int total = 0;
+    for (std::size_t i = 0; i < cs.size(); ++i) total += cs[i].coincident;
+    check(total == static_cast<int>(all.size()),
+          "notch: every mode below the Schroeder frequency is accounted for");
+
+    // 個数制限
+    const std::vector<NotchCandidate> few = notchCandidates(L, W, H, c, T, 3);
+    check(few.size() == 3, "notch: maxCount truncates the list");
+    check(few.size() == 3 && std::fabs(few[0].freqHz - cs[0].freqHz) < 1e-12,
+          "notch: truncation keeps the lowest candidates");
+
+    // 不正入力は空
+    check(notchCandidates(0.0, W, H, c, T, 0).empty()
+          && notchCandidates(L, W, H, c, 0.0, 0).empty()
+          && notchCandidates(L, W, H, 0.0, T, 0).empty(),
+          "notch: non-positive inputs yield no candidates");
+}
+
 static void testRoomModes()
 {
     namespace rm = ofd::acoustics::roommodes;
@@ -24710,6 +24794,7 @@ int main(int argc, char *argv[])
     testFdeModeSolver();
     testSoundInsulation();
     testRoomModes();
+    testNotchCandidates();
     testEnvironmentalNoise();
     testFdtdVerification();
     testToleranceStats();
