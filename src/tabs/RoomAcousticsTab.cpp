@@ -473,6 +473,27 @@ const bool s_i18n = [] {
         "df = 2.2/T60 = %2 Hz as Q = f/df (using T60(mid) = %3 s). "
         "Axial modes (2 surfaces) are the strongest, then tangential (4) and "
         "oblique (6). Coincident counts modes within one bandwidth");
+    I18n::reg("rah_lf_caption", "客席面の LF (側方エネルギー比)",
+              "LF over the seating area");
+    I18n::reg("rah_lf_map_note",
+        "▸ 舞台前中央の想定音源から、客席面 (x 0.10L〜0.95L, y 0.08W〜0.92W, "
+        "z = 1.2 m) の各点で LF を計算しています。「1 次鏡像法のエコーグラム "
+        "だけを使った幾何推定」で、2 次以上の反射・拡散反射は含みません。"
+        "色は ISO 3382-1 の望ましい範囲 0.10〜0.35 を赤 (下端) 〜 緑 (上端) に "
+        "割り当てたものです。平均 %1 · 範囲 %2 〜 %3",
+        "▸ LF is computed at each point of the seating area "
+        "(x 0.10L to 0.95L, y 0.08W to 0.92W, z = 1.2 m) from a source at "
+        "the front centre of the stage. It is a geometric estimate from the "
+        "first-order image-source echogram only; second and higher order and "
+        "diffuse reflections are not included. Colour maps the ISO 3382-1 "
+        "preferred range 0.10 to 0.35 from red (low) to green (high). "
+        "mean %1, range %2 to %3");
+    I18n::reg("rah_bqi_map_why",
+        "BQI は室ごとの公表値を引いているだけで、客席面の分布を求める模型を "
+        "持っていません。分布を描くと持っていない情報を見せることになるため "
+        "出していません",
+        "BQI here is a published per-hall figure; there is no model for its "
+        "variation over the seating area, so no map is drawn");
     I18n::reg("rah_notch_none",
         "候補がありません (室の寸法か T60 が読めません)",
         "No candidates (the room dimensions or T60 cannot be read)");
@@ -1128,6 +1149,82 @@ void StiMapWidget::paintEvent(QPaintEvent *)
     p.restore();
 }
 
+// ── LfMapWidget ─────────────────────────────────────────────────────────────
+// STI マップと同じ客席面の格子で、各点の LF を lateralEnergy で実計算する。
+// 音源は舞台上の想定音源 (sourcePos と同じ位置) 1 点。
+LfMapWidget::LfMapWidget(Project *project, QWidget *parent)
+    : QWidget(parent), m_p(project)
+{
+    setMinimumSize(300, 160);
+    setMaximumWidth(360);
+    recompute();
+}
+
+void LfMapWidget::recompute()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    // 音源は舞台前中央 (RoomAcousticsTab::sourcePos と同じ定義)
+    const double src[3] = { 0.05 * a.roomL, 0.50 * a.roomW, 1.5 };
+
+    m_values.clear();
+    double sum = 0.0;
+    int n = 0;
+    m_lo = 1e300; m_hi = -1e300;
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            const double t = (r + 0.5) / kStiRows;
+            const double u = (c + 0.5) / kStiCols;
+            const double pos[3] = { (0.10 + 0.85 * t) * a.roomL,
+                                    (0.08 + 0.84 * u) * a.roomW, 1.2 };
+            const LateralEnergy le = lateralEnergy(a, src, pos);
+            if (!le.valid) { m_values.push_back(NAN); continue; }
+            m_values.push_back(le.LF);
+            sum += le.LF; ++n;
+            m_lo = std::min(m_lo, le.LF);
+            m_hi = std::max(m_hi, le.LF);
+        }
+    }
+    m_valid = (n > 0);
+    m_mean = m_valid ? sum / n : 0.0;
+    if (!m_valid) { m_lo = m_hi = 0.0; }
+    update();
+}
+
+void LfMapWidget::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    p.save();
+    p.scale(width() / 300.0, height() / 160.0);
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+    if (!m_valid) {
+        p.setPen(palette().text().color());
+        p.drawText(QRectF(0, 60, 300, 20), Qt::AlignCenter,
+                   ofd::I18n::tr("rah_notcomputed"));
+        p.restore();
+        return;
+    }
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            const double lf = m_values.value(r * kStiCols + c, NAN);
+            if (std::isnan(lf)) continue;
+            // ISO 3382-1 の望ましい範囲 0.10〜0.35 を赤→緑で表示する
+            // (STI マップと同じ「範囲の下端が赤・上端が緑」の読み方)
+            const double g = qBound(0.0, (lf - 0.10) / 0.25, 1.0);
+            p.fillRect(QRectF(10 + c * 17, 10 + r * 11, 16, 10),
+                       QColor(int(220 - g * 180), int(60 + g * 150), 40));
+        }
+    }
+    p.setPen(palette().text().color());
+    p.drawText(QRectF(0, 144, 300, 14), Qt::AlignCenter,
+               ofd::I18n::tr("rah_lf_caption"));
+    p.restore();
+}
+
 // ── RoomAcousticsTab ────────────────────────────────────────────────────────
 RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
@@ -1746,12 +1843,21 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
     // LF/BQI マップ表示は未配線 (絶対規則 5)
     auto *lfMapBtn  = new QPushButton(I18n::tr("rah_lf_map_btn"), sm);
     auto *bqiMapBtn = new QPushButton(I18n::tr("rah_bqi_map_btn"), sm);
-    tabhelp::markNotImplemented(lfMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
-    tabhelp::markNotImplemented(bqiMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
+    connect(lfMapBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::showLfMap);
+    // BQI は室ごとの公表値で、客席面の分布を求める模型が無い。
+    // 分布を描くと持っていない情報を見せることになるので出さない
+    tabhelp::markNotImplemented(bqiMapBtn, I18n::tr("rah_bqi_map_why"));
     maps->addWidget(lfMapBtn);
     maps->addWidget(bqiMapBtn);
     maps->addStretch(1);
     sm->vbox()->addLayout(maps);
+    m_lfMap = new LfMapWidget(m_p, sm);
+    m_lfMap->setVisible(false);
+    sm->vbox()->addWidget(m_lfMap);
+    m_lfMapNote = makeHint(QString(), sm);
+    m_lfMapNote->setVisible(false);
+    sm->vbox()->addWidget(m_lfMapNote);
     v->addWidget(sm);
     v->addStretch(1);
     return page;
@@ -2199,6 +2305,23 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     return page;
 }
 
+
+
+// ── LF マップ (客席面) ────────────────────────────────────────────────────
+// 押されたときだけ計算して出す (常時計算しない — 格子 × 1 次鏡像法なので
+// 室が大きいと重い)。何をどう出したかは注記に必ず書く。
+void RoomAcousticsTab::showLfMap()
+{
+    if (!m_lfMap || !m_lfMapNote) return;
+    m_lfMap->recompute();
+    m_lfMap->setVisible(true);
+    m_lfMapNote->setVisible(true);
+    const QString dash = QString::fromUtf8("—");
+    m_lfMapNote->setText(I18n::tr("rah_lf_map_note")
+        .arg(m_lfMap->valid() ? QString::number(m_lfMap->mean(), 'f', 2) : dash,
+             m_lfMap->valid() ? QString::number(m_lfMap->lo(), 'f', 2) : dash,
+             m_lfMap->valid() ? QString::number(m_lfMap->hi(), 'f', 2) : dash));
+}
 
 // ── notch フィルタの候補 ──────────────────────────────────────────────────
 // 室のモード (剛壁・直方体の閉形式) のうち、シュレーダー周波数以下のものを
