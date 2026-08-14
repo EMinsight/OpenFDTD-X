@@ -6,6 +6,7 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
+#include "../widgets/MiniPlot.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -263,6 +264,24 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_stat_series", "📈 全体時系列 (max/RMS)",
                    "📈 Overall time series (max/RMS)");
     ofd::I18n::reg("h5_stat_schroeder", "📈 Schroeder減衰", "📈 Schroeder decay");
+    // 全体時系列 — 表示中の断面について、フレームごとの max と RMS
+    ofd::I18n::reg("h5_ts_title",
+        "表示中の断面 (%1) のフレームごとの値 — max = |値| の最大、"
+        "RMS = √(平均(値²))。断面 %2 枚ぶんの %3 セルから求めています",
+        "Per-frame values of the slice on screen (%1) — max = largest |value|, "
+        "RMS = sqrt(mean(value^2)), over %3 cells of %2 frames");
+    ofd::I18n::reg("h5_ts_need",
+        "伝搬時系列を選ぶと、フレームごとの max / RMS を出せます",
+        "Select a propagation time series to plot per-frame max / RMS");
+    ofd::I18n::reg("h5_ts_fail", "読めませんでした: %1", "Cannot read: %1");
+    ofd::I18n::reg("h5_ts_x_frame", "コマ", "frame");
+    ofd::I18n::reg("h5_ts_x_time", "時刻 [s]", "time [s]");
+    ofd::I18n::reg("h5_ts_sub",
+        " · %1 コマ毎に間引いて読んでいます (全 %2 コマ)",
+        " · read every %1 frames (of %2)");
+    ofd::I18n::reg("h5_ts_peak",
+        "max の最大は コマ %1 で %2、そのときの RMS は %3",
+        "max peaks at frame %1 with %2; RMS there is %3");
     ofd::I18n::reg("h5_stat_fft", "📈 FFT スペクトログラム", "📈 FFT spectrogram");
     ofd::I18n::reg("h5_stat_lineint", "📈 線積分", "📈 Line integral");
     ofd::I18n::reg("h5_integration", "連携", "Integration");
@@ -276,16 +295,19 @@ const bool s_i18n = [] {
         "Open an .h5 file first (the script is generated from the actual "
         "schema of the open file)");
     ofd::I18n::reg("h5_int_hint",
-        "▸ Python / Jupyter は開いている .h5 の実スキーマに合わせた h5py "
+        "▸ Python / Jupyter / MATLAB は開いている .h5 の実スキーマに合わせた "
         "読み込みコード (|E| プロットまで) をファイルへ生成します"
         " (外部ツールの起動は行いません)",
-        "▸ Python / Jupyter generate h5py loading code (through an |E| plot) "
-        "matched to the actual schema of the open .h5 file "
+        "▸ Python / Jupyter / MATLAB generate loading code (through an |E| "
+        "plot) matched to the actual schema of the open .h5 file "
         "(no external tool is launched)");
     ofd::I18n::reg("h5_int_paraview", "🌐 ParaView ファイル出力 (.vtk)",
                    "🌐 ParaView file export (.vtk)");
-    ofd::I18n::reg("h5_int_matlab", "📦 Matlab .mat 変換",
-                   "📦 Convert to Matlab .mat");
+    // **文言は実際の動作と一致させること。** 以前は「.mat 変換」だったが、
+    // 生成するのは h5read の読み込みスクリプト (.m) であって .mat ファイル
+    // ではない (MATLAB は .h5 をそのまま読めるので変換は要らない)
+    ofd::I18n::reg("h5_int_matlab", "📐 MATLAB (h5read) で開く",
+                   "📐 Open in MATLAB (h5read)");
     return true;
 }();
 
@@ -1178,7 +1200,14 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     for (const char *key : { "h5_stat_series", "h5_stat_schroeder",
                              "h5_stat_fft", "h5_stat_lineint" }) {
         auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
-        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
+        if (qstrcmp(key, "h5_stat_series") == 0) {
+            // 全体時系列は表示中の断面から GUI 層だけで求まる (下に描く)
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showWholeSeries);
+        } else {
+            ofd::tabhelp::markNotImplemented(
+                b, I18n::tr(tabhelp::notimpl::kExternal));
+        }
         // Schroeder 減衰は室内音響の指標 — ドメイン別に表示を切り替える
         if (qstrcmp(key, "h5_stat_schroeder") == 0)
             m_schroederBtn = b;
@@ -1186,6 +1215,17 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     }
     srow->addStretch(1);
     ss->vbox()->addLayout(srow);
+    // 全体時系列のプロット (押されるまで隠しておく)。**ダイアログにしない** —
+    // 自動実行でモーダルを開けないうえ、断面の統計バッジと並べて見たい
+    m_tsNote = new QLabel(ss);
+    m_tsNote->setWordWrap(true);
+    m_tsNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_tsNote->setVisible(false);
+    ss->vbox()->addWidget(m_tsNote);
+    m_tsPlot = new MiniPlot(ss);
+    m_tsPlot->setMinimumHeight(150);
+    m_tsPlot->setVisible(false);
+    ss->vbox()->addWidget(m_tsPlot);
     v->addWidget(ss);
 
     // 連携 / Integration
@@ -2134,6 +2174,102 @@ void H5ViewerTab::exportCsvCurrent()
 // 開いている .h5 の実スキーマ (列挙結果) から h5py 読み込みコードを生成し、
 // .py スクリプト / .ipynb ノートブック (JSON 直書き) として保存する。
 // 外部ツール (python / jupyter) の起動は行わない — 生成のみ
+
+// ── 全体時系列 (フレームごとの max / RMS) ─────────────────────────────────
+// 表示中の断面を全フレームぶん読み直して、コマごとに |値| の最大と
+// RMS = √(平均(値²)) を出す。**統計バッジ (現在コマの min/max/平均) とは
+// 別の前提の数字**なので、どの断面の何を出しているかを注記に必ず書く。
+//
+// ダイアログにはしない (自動実行でモーダルを開けない規約。それに断面の
+// 統計と並べて見たい)。重くならないよう読むコマ数に上限を設け、間引いた
+// ときはその旨を出す (黙って間引くと「全コマを見た結果」に見える)。
+void H5ViewerTab::showWholeSeries()
+{
+    if (!m_tsPlot || !m_tsNote) return;
+    if (!m_seriesMode || m_nframes <= 1) {
+        m_tsNote->setVisible(true);
+        m_tsPlot->setVisible(false);
+        m_tsNote->setText(I18n::tr("h5_ts_need"));
+        return;
+    }
+
+    const int axis = sliceAxis();
+    const int idx = m_secPos[axis];
+    // 読むコマ数の上限。GUI スレッドで回すので青天井にしない
+    const int kMaxRead = 400;
+    int step = 1;
+    while ((m_nframes + step - 1) / step > kMaxRead) ++step;
+
+    // 時刻が読めるなら横軸を秒にする (読めなければコマ番号)
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+
+    QVector<QPointF> maxPts, rmsPts;
+    QString err;
+    int cells = 0;
+    for (int f = 0; f < m_nframes; f += step) {
+        QVector<double> d;
+        int rows = 0, cols = 0;
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f, axis,
+                                          idx, d, rows, cols, nullptr, &err)) {
+            m_tsNote->setVisible(true);
+            m_tsPlot->setVisible(false);
+            m_tsNote->setText(I18n::tr("h5_ts_fail").arg(err));
+            return;
+        }
+        cells = rows * cols;
+        double mx = 0.0, sum2 = 0.0;
+        int n = 0;
+        for (const double v : d) {
+            if (!std::isfinite(v)) continue;
+            const double a = std::fabs(v);
+            if (a > mx) mx = a;
+            sum2 += v * v;
+            ++n;
+        }
+        const double rms = (n > 0) ? std::sqrt(sum2 / double(n)) : 0.0;
+        const double x = hasTime ? times[f] : double(f);
+        maxPts.push_back(QPointF(x, mx));
+        rmsPts.push_back(QPointF(x, rms));
+    }
+    if (maxPts.isEmpty()) return;
+
+    MiniSeries sMax;
+    sMax.pts = maxPts;
+    sMax.color = QColor("#dc2626");
+    sMax.label = QStringLiteral("max");
+    MiniSeries sRms;
+    sRms.pts = rmsPts;
+    sRms.color = QColor("#0078D4");
+    sRms.label = QStringLiteral("RMS");
+    m_tsPlot->setSeries({ sMax, sRms });
+    m_tsPlot->setLabels(hasTime ? I18n::tr("h5_ts_x_time")
+                                : I18n::tr("h5_ts_x_frame"),
+                        m_seriesComp);
+    m_tsPlot->clearYRange();
+    m_tsPlot->setVisible(true);
+
+    // 何をどう出したか。読んだコマ数・セル数まで書く
+    QString note = I18n::tr("h5_ts_title")
+                       .arg(sliceCaption(axis))
+                       .arg(maxPts.size())
+                       .arg(cells);
+    if (step > 1)
+        note += I18n::tr("h5_ts_sub").arg(step).arg(m_nframes);
+    // 山がどこかは図から読み取りにくいので数値でも書く
+    int best = 0;
+    for (int i = 1; i < maxPts.size(); ++i)
+        if (maxPts[i].y() > maxPts[best].y()) best = i;
+    note += QStringLiteral("  ") + I18n::tr("h5_ts_peak")
+                .arg(best * step)
+                .arg(QString::number(maxPts[best].y(), 'g', 4),
+                     QString::number(rmsPts[best].y(), 'g', 4));
+    m_tsNote->setVisible(true);
+    m_tsNote->setText(note);
+}
+
 // MATLAB / Octave 読み込みスクリプト (.m)。Python 版と同じく **ファイルを
 // 生成するだけ** で外部ツールの起動はしない。
 void H5ViewerTab::exportMatlabScript()

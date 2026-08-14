@@ -29,6 +29,8 @@ class QTreeWidgetItem;
 
 namespace ofd {
 
+class MiniPlot;
+
 class Project;
 class SectionBox;
 
@@ -163,6 +165,8 @@ private:
     // (notebook=false: .py スクリプト / true: .ipynb ノートブック)
     void exportPythonScript(bool notebook);
     void exportMatlabScript();   // MATLAB / Octave 読み込みスクリプト (.m)
+    // 表示中の断面について、全フレームの max / RMS を求めて下に描く
+    void showWholeSeries();
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);
@@ -200,6 +204,9 @@ private:
     // 統計 (実計算)
     QLabel      *m_statMin, *m_statMax, *m_statMean;
     QPushButton *m_schroederBtn = nullptr;    // Schroeder 減衰 (室内音響のみ表示)
+    // 全体時系列 (フレームごとの max / RMS)。押されるまで隠れている
+    QLabel   *m_tsNote = nullptr;
+    MiniPlot *m_tsPlot = nullptr;
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
