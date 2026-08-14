@@ -50,11 +50,16 @@ const bool s_i18n = [] {
     I18n::reg("oe_loc_hint",
               "緯度・経度から代表海域プロファイル (同梱の WOA 気候値近似) を"
               "選択し、Mackenzie 式で SSP を自動生成します。\n"
+              "代表プロファイルは海域ごとに 1 本で、季節変化を持ちません "
+              "(月別気候値を同梱していないため、月の選択は無効です)。\n"
               "配置済みローカルデータセット (実ファイル) の照会は未実装です "
               "(下の一覧は配置状態の表示のみ)。",
               "Selects a representative sea-area profile (built-in WOA "
               "climatology approximation) for the latitude/longitude and "
               "generates the SSP with the Mackenzie formula.\n"
+              "There is one representative profile per sea area and it has no "
+              "seasonal variation (no monthly climatology is bundled, so the "
+              "month selector is disabled).\n"
               "Querying the staged local dataset files is not implemented "
               "(the list below only shows staging state).");
     I18n::reg("oe_lat", "緯度", "Latitude");
@@ -124,8 +129,9 @@ const bool s_i18n = [] {
     // query result
     I18n::reg("oe_result", "照会結果", "Query result");
     I18n::reg("oe_b_depth", "水深 %1 m", "Depth %1 m");
-    I18n::reg("oe_b_sst", "表層水温 %1°C (%2月)",
-              "Surface temperature %1°C (month %2)");
+    // 月に依らない代表値なので「(N月)」を付けない (付けると月別の値に見える)
+    I18n::reg("oe_b_sst", "表層水温 %1°C (代表値)",
+              "Surface temperature %1°C (representative)");
     I18n::reg("oe_b_sss", "表層塩分 %1 psu", "Surface salinity %1 psu");
     I18n::reg("oe_b_bottom", "底質: %1", "Sediment: %1");
     I18n::reg("oe_bottom_shelf", "砂泥 (大陸棚)", "Sandy mud (shelf)");
@@ -1103,6 +1109,11 @@ OceanEnvironmentTab::OceanEnvironmentTab(Project *project, QWidget *parent)
     for (int i = 1; i <= 12; ++i)
         m_month->addItem(I18n::tr("oe_month_fmt").arg(i));
     m_month->setCurrentIndex(6);          // 既定 7月
+    // 月そのものが SSP に効かない — `computeSsp()` は海域定数 (sst/sss/type)
+    // だけでプロファイルを作るので、月を変えても水温も音速も 1 桁も動かない
+    // (実測: 1月と7月で表層 24.0°C・105 m 22.6°C が完全一致)。月別気候値を
+    // 同梱していない以上、選べる形にしておくと「月別の値」に見えてしまう
+    tabhelp::markNotImplemented(m_month, I18n::tr(tabhelp::notimpl::kData));
     monthRow->addWidget(m_month);
     auto *annualCk = new QCheckBox(I18n::tr("oe_annual"), sl);
     tabhelp::markNotImplemented(annualCk, I18n::tr(tabhelp::notimpl::kData));   // 年平均の併記は未実装 (どこにも読まれない)
@@ -1368,7 +1379,6 @@ void OceanEnvironmentTab::requery()
     const OeRegion &r = *m_region;
     const QString name = QString::fromUtf8(r.name);
     const bool shelf = (QString::fromUtf8(r.type) == QLatin1String("shelf"));
-    const int month = m_month->currentIndex() + 1;
 
     m_queryBadge->setText(I18n::tr("oe_query_ok").arg(name));
     m_resultSection->setTitle(I18n::tr("oe_result") + QStringLiteral(" — ")
@@ -1377,7 +1387,7 @@ void OceanEnvironmentTab::requery()
     m_bDepth->setText(I18n::tr("oe_b_depth")
         .arg(QLocale(QLocale::English).toString(qlonglong(r.depth))));
     m_bSst->setText(I18n::tr("oe_b_sst")
-        .arg(QString::number(r.sst, 'g', 4)).arg(month));
+        .arg(QString::number(r.sst, 'g', 4)));
     m_bSss->setText(I18n::tr("oe_b_sss").arg(QString::number(r.sss, 'g', 4)));
     m_bBottom->setText(I18n::tr("oe_b_bottom")
         .arg(I18n::tr(shelf ? "oe_bottom_shelf" : "oe_bottom_deep")));

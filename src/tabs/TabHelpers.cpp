@@ -172,12 +172,12 @@ QStringList rirSampleRateNotes(double rirFsHz, double outFsHz,
     return notes;
 }
 
-void markNotImplemented(QAbstractButton *b, const QString &why)
+void markNotImplemented(QWidget *w, const QString &why)
 {
-    if (!b) return;
-    b->setEnabled(false);
+    if (!w) return;
+    w->setEnabled(false);
     // 「未実装」だけで終わらせず、何が足りないのかを必ず添える
-    b->setToolTip(why.isEmpty() ? I18n::tr("th_notimpl")
+    w->setToolTip(why.isEmpty() ? I18n::tr("th_notimpl")
                                 : I18n::tr("th_notimpl_why").arg(why));
 }
 // 項目を消さずに無効化する (理由をツールチップに残す)。

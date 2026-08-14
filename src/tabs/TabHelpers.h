@@ -98,7 +98,9 @@ double rirBandWarnThresholdHz();
 // 書く。よく使う分類は下の `notimpl::` に用意してある (個別の事情があるときは
 // タブ固有の I18n キーを渡す)。
 // selftest の `notimpl-reason` が、理由なしの呼び出しを検出する。
-void markNotImplemented(QAbstractButton *b, const QString &why);
+// 対象はボタンに限らない (無効化とツールチップは QWidget の機能なので、
+// 何も動かさないコンボボックスや入力欄にもそのまま使える)。
+void markNotImplemented(QWidget *w, const QString &why);
 
 // 使い回せる「できない理由」。I18n キーなので `I18n::tr()` を通して渡す。
 namespace notimpl {
