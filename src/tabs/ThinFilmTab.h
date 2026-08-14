@@ -117,6 +117,11 @@ private:
     QPushButton  *m_rtaBtn = nullptr;
     QLabel       *m_rtaNote = nullptr;
     bool          m_showA = false;
+    // 角度-波長マップ (上の曲線と同じ計算を角度ごとに並べたもの)
+    QPushButton  *m_mapBtn = nullptr;
+    class AngleLambdaMap *m_map = nullptr;
+    QLabel       *m_mapNote = nullptr;
+    bool          m_showMap = false;
     QTableWidget *m_specTable;
     QLabel       *m_specNote;           // 評価波長域・除外点数
 

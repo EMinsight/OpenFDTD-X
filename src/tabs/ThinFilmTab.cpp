@@ -7,6 +7,8 @@
 #include "../optics/MaterialDispersion.h"
 #include "../optics/ThinFilmStack.h"
 #include "../widgets/MiniPlot.h"
+#include "../widgets/FieldHeatmap.h"
+#include <QPainter>
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -200,6 +202,26 @@ const bool s_i18n = [] {
         "for s and %2 % for p. A stays at zero when every material has k = 0 "
         "(a transparent stack)");
     I18n::reg("tfc_btn_map",   "🌈 角度-波長マップ", "🌈 Angle-wavelength map");
+    I18n::reg("tfc_map_on",    "🌈 角度-波長マップ (閉じる)",
+                               "🌈 Angle-wavelength map (close)");
+    I18n::reg("tfc_map_note",
+        "▸ 上の図と同じ特性行列法で、波長 %1〜%2 nm × 入射角 0〜%3° を "
+        "%4 × %5 点で解いた %6 のマップです (偏光は %7)。色は 0 % (青) 〜 "
+        "この範囲の最大 %9 % (赤) — 反射率の低い設計でも起伏が見えるよう "
+        "最大値で正規化しています (0 の意味は固定)。「横の白線が分光特性の "
+        "入射角 %8°」で、その線上の値は上の曲線と同じものです",
+        "▸ Map of %6 over %1 to %2 nm and 0 to %3 degrees on a %4 x %5 grid, "
+        "solved with the same characteristic-matrix method as the plot above "
+        "(polarisation: %7). Colour runs 0 % (blue) to 100 % (red). The "
+        "white line marks the angle of incidence %8 deg used by the plot "
+        "above; values along it are the same numbers. Colour is normalised to "
+        "the maximum over this range, %9 %, so that low-reflectance designs "
+        "still show structure; zero stays fixed at blue");
+    I18n::reg("tfc_map_r", "反射率 R", "reflectance R");
+    I18n::reg("tfc_map_pol_avg", "平均", "average");
+    I18n::reg("tfc_map_pol_s", "s", "s");
+    I18n::reg("tfc_map_fail", "マップを計算できません (層構成か波長範囲を確認)",
+              "Cannot compute the map (check the stack and wavelength range)");
     I18n::reg("tfc_btn_field", "📐 電界分布 (層内)",
               "📐 Field distribution (inside the stack)");
     I18n::reg("tfc_btn_fdtd",  "🔍 FDTDで検証", "🔍 Verify with FDTD");
@@ -701,6 +723,137 @@ QString fmtPct(double v, int prec = 3)
 }
 } // namespace
 
+namespace ofd {
+
+// ── 角度-波長マップ ─────────────────────────────────────────────────────────
+// 上の R/T 曲線とまったく同じ特性行列法 (optics::spectrum) を入射角ごとに
+// 呼んで 2 次元に並べるだけ。**別の計算を書かない** ので、マップ上の
+// 入射角 = 分光特性の入射角 の線は上の曲線と同じ数字になる。
+class AngleLambdaMap : public QWidget {
+public:
+    explicit AngleLambdaMap(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(360, 200);
+    }
+
+    // fn: λ → 層構成、[lamMin, lamMax] nm、入射角 0..aoiMax
+    void compute(const optics::StackAtLambda &fn, double lamMin, double lamMax,
+                 double aoiMax, bool splitSP, double markAoi)
+    {
+        m_lamMin = lamMin; m_lamMax = lamMax; m_aoiMax = aoiMax;
+        m_markAoi = markAoi;
+        m_vals.clear();
+        m_rows = 0; m_cols = 0;
+        m_worstSum = 0.0;
+        m_vmax = 0.0;
+        if (!(lamMax > lamMin) || !(aoiMax > 0.0)) { update(); return; }
+        // GUI スレッドで回すので格子は固定 (規約: 重い処理に上限を設ける)
+        m_rows = 41;    // 入射角
+        m_cols = 81;    // 波長
+        m_vals.reserve(m_rows * m_cols);
+        for (int r = 0; r < m_rows; ++r) {
+            const double aoi = aoiMax * double(r) / double(m_rows - 1);
+            const std::vector<optics::SpectrumPoint> sp =
+                optics::spectrum(fn, lamMin, lamMax, m_cols, aoi, false);
+            if (int(sp.size()) != m_cols) {   // 一部の λ が作れない構成
+                m_vals.clear(); m_rows = m_cols = 0;
+                update();
+                return;
+            }
+            for (const optics::SpectrumPoint &p : sp) {
+                const double v = splitSP ? p.Rs : 0.5 * (p.Rs + p.Rp);
+                m_vals.push_back(v);
+                m_vmax = std::max(m_vmax, v);
+                // エネルギー保存の最悪値も拾っておく (画面には出さないが
+                // 検証で使う。ここが崩れたら図の意味が無い)
+                m_worstSum = std::max(m_worstSum,
+                    std::fabs(p.Rs + p.Ts + p.As - 1.0));
+                m_worstSum = std::max(m_worstSum,
+                    std::fabs(p.Rp + p.Tp + p.Ap - 1.0));
+            }
+        }
+        update();
+    }
+
+    bool valid() const { return m_rows > 0 && m_cols > 0; }
+    double vmax() const { return m_vmax; }
+    int rows() const { return m_rows; }
+    int cols() const { return m_cols; }
+    double worstEnergySum() const { return m_worstSum; }
+    // r 行 c 列の値 (検証用)
+    double at(int r, int c) const
+    { return m_vals.value(r * m_cols + c, 0.0); }
+    double aoiAt(int r) const
+    { return (m_rows > 1) ? m_aoiMax * double(r) / double(m_rows - 1) : 0.0; }
+    double lambdaAt(int c) const
+    { return (m_cols > 1)
+             ? m_lamMin + (m_lamMax - m_lamMin) * double(c) / double(m_cols - 1)
+             : m_lamMin; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), palette().base());
+        const QRectF box = QRectF(rect()).adjusted(34, 6, -8, -22);
+        if (!valid() || box.width() <= 0 || box.height() <= 0) {
+            p.setPen(palette().text().color());
+            p.drawText(rect(), Qt::AlignCenter, I18n::tr("tfc_map_fail"));
+            return;
+        }
+        p.setRenderHint(QPainter::Antialiasing, false);
+        const double m_vmaxSafe = (m_vmax > 1e-12) ? m_vmax : 1.0;
+        const double cw = box.width() / m_cols;
+        const double ch = box.height() / m_rows;
+        for (int r = 0; r < m_rows; ++r) {
+            // 行 0 = 入射角 0° を下に置く (角度が上へ増える)
+            const double y = box.bottom() - (r + 1) * ch;
+            for (int c = 0; c < m_cols; ++c) {
+                // **0 を青に固定したまま最大値で正規化する。** 反射率の
+                // 低い設計 (AR コート等) を 0〜100 % 固定で塗ると一面が青に
+                // なり、上の曲線には出ている起伏が見えなくなる。0 の意味は
+                // 変えないので「青 = 反射なし」は保たれる。上限は注記に出す
+                const double t = qBound(0.0, at(r, c) / m_vmaxSafe, 1.0);
+                p.fillRect(QRectF(box.left() + c * cw, y, cw + 0.5, ch + 0.5),
+                           FieldHeatmap::jet(t));
+            }
+        }
+        // 分光特性で使っている入射角の線 (上の曲線と同じ値が読める位置)
+        if (m_markAoi >= 0.0 && m_markAoi <= m_aoiMax) {
+            const double y = box.bottom()
+                           - box.height() * (m_markAoi / m_aoiMax);
+            p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+            p.drawLine(QPointF(box.left(), y), QPointF(box.right(), y));
+        }
+        p.setPen(palette().mid().color());
+        p.drawRect(box);
+        QFont f = p.font();
+        f.setPointSizeF(std::max(6.0, f.pointSizeF() - 2.0));
+        p.setFont(f);
+        p.setPen(palette().text().color());
+        p.drawText(QRectF(0, box.bottom() - 8, 32, 14),
+                   Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("0°"));
+        p.drawText(QRectF(0, box.top() - 4, 32, 14),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(m_aoiMax, 'f', 0) + QStringLiteral("°"));
+        p.drawText(QRectF(box.left(), box.bottom() + 4, 60, 14),
+                   Qt::AlignLeft, QString::number(m_lamMin, 'f', 0));
+        p.drawText(QRectF(box.right() - 60, box.bottom() + 4, 60, 14),
+                   Qt::AlignRight, QString::number(m_lamMax, 'f', 0)
+                       + QStringLiteral(" nm"));
+    }
+
+private:
+    QVector<double> m_vals;
+    int m_rows = 0, m_cols = 0;
+    double m_lamMin = 400, m_lamMax = 700, m_aoiMax = 60, m_markAoi = 0;
+    double m_worstSum = 0.0;
+    double m_vmax = 0.0;
+};
+
+} // namespace ofd
+
+
 // ── ThinFilmTab ─────────────────────────────────────────────────────────────
 ThinFilmTab::ThinFilmTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project), m_updating(false),
@@ -984,6 +1137,16 @@ QWidget *ThinFilmTab::buildSpecPage()
     m_specPlot->setMinimumSize(360, 140);
     s->vbox()->addWidget(m_specPlot);
 
+    // 角度-波長マップ (押されるまで隠しておく)
+    m_map = new AngleLambdaMap(s);
+    m_map->setVisible(false);
+    s->vbox()->addWidget(m_map);
+    m_mapNote = new QLabel(s);
+    m_mapNote->setWordWrap(true);
+    m_mapNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_mapNote->setVisible(false);
+    s->vbox()->addWidget(m_mapNote);
+
     // R/T/A 表示中の注記 (A の出所と最大値)
     m_rtaNote = new QLabel(s);
     m_rtaNote->setWordWrap(true);
@@ -1029,7 +1192,15 @@ QWidget *ThinFilmTab::buildSpecPage()
         recompute();
     });
     btnRow->addWidget(rtaBtn);
-    for (QPushButton *b : { mapBtn, fieldBtn, fdtdBtn }) {
+    // 角度-波長マップは上の曲線と同じ optics::spectrum を角度ごとに呼ぶだけ
+    m_mapBtn = mapBtn;
+    connect(mapBtn, &QPushButton::clicked, this, [this] {
+        m_showMap = !m_showMap;
+        m_mapBtn->setText(I18n::tr(m_showMap ? "tfc_map_on" : "tfc_btn_map"));
+        recompute();
+    });
+    btnRow->addWidget(mapBtn);
+    for (QPushButton *b : { fieldBtn, fdtdBtn }) {
         tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         btnRow->addWidget(b);
     }
@@ -1513,6 +1684,24 @@ void ThinFilmTab::recompute()
                           I18n::tr(m_showA ? "tfc_y_rta"
                                            : (rOnly ? "tfc_y_r" : "tfc_y_rt")));
     m_specPlot->setSeries(series);
+    // 角度-波長マップ (押されているときだけ計算する)
+    if (m_map && m_mapNote) {
+        m_map->setVisible(m_showMap);
+        m_mapNote->setVisible(m_showMap);
+        if (m_showMap) {
+            const double aoiMax = 60.0;
+            m_map->compute(fn, lo, hi, aoiMax, split, aoiDeg());
+            m_mapNote->setText(I18n::tr("tfc_map_note")
+                .arg(QString::number(lo, 'f', 0),
+                     QString::number(hi, 'f', 0),
+                     QString::number(aoiMax, 'f', 0))
+                .arg(m_map->cols()).arg(m_map->rows())
+                .arg(I18n::tr("tfc_map_r"),
+                     I18n::tr(split ? "tfc_map_pol_s" : "tfc_map_pol_avg"),
+                     QString::number(aoiDeg(), 'f', 0))
+                .arg(QString::number(m_map->vmax() * 100.0, 'f', 2)));
+        }
+    }
     if (m_rtaNote) {
         m_rtaNote->setVisible(m_showA);
         m_rtaNote->setText(I18n::tr("tfc_rta_note")
