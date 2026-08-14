@@ -8,6 +8,7 @@
 #include "TabHelpers.h"
 #include "../widgets/MiniPlot.h"
 #include "../io/SliceLineIntegral.h"
+#include "../acoustics/core/SchroederDecay.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -305,6 +306,31 @@ const bool s_i18n = [] {
         "∫f dl = %1 (value x m) · length %2 m · mean %3 · max |f| %4 · "
         "trapezoid over %5 samples · current frame of slice %6");
     ofd::I18n::reg("h5_li_x", "始点からの距離 [m]", "distance from start [m]");
+    // Schroeder 減衰 — 断面のエネルギーの後方積分
+    ofd::I18n::reg("h5_sc_need",
+        "伝搬時系列を選び、時刻 (/timeseries/time) が読めるファイルにして "
+        "ください (減衰の時間軸を決められません)",
+        "Select a propagation time series whose times (/timeseries/time) can "
+        "be read (the decay has no time axis otherwise)");
+    ofd::I18n::reg("h5_sc_x", "時刻 [s]", "time [s]");
+    ofd::I18n::reg("h5_sc_y", "減衰 [dB]", "decay [dB]");
+    ofd::I18n::reg("h5_sc_note",
+        "▸ 表示中の断面 (%1) のエネルギーを Schroeder 後方積分した減衰曲線です "
+        "(1 コマあたり %2 セルの平均、%3 コマ、Δt = %4 s)。"
+        "「点の受音応答ではなく断面全体のエネルギー」であり、"
+        "音源がインパルス的で減衰し切るまで計算されている場合にのみ "
+        "減衰曲線として読めます。使える動的レンジは %5 dB です",
+        "▸ Schroeder backward integration of the energy of the slice on "
+        "screen (%1): mean over %2 cells per frame, %3 frames, dt = %4 s. "
+        "This is the energy of the whole slice, not the response at a point; "
+        "it reads as a decay curve only if the source was impulsive and the "
+        "run covers the decay. Usable dynamic range: %5 dB");
+    ofd::I18n::reg("h5_sc_nort",
+        " · T20 / T30 はここでは出しません (動的レンジと当てはめ区間の判定が "
+        "要るため。実測 RIR 解析タブが ISO 3382-1 の手順で求めます)",
+        " · T20 / T30 are not derived here (that needs a dynamic-range and "
+        "fit-range judgement; the measured-RIR tab does it per ISO 3382-1)");
+    ofd::I18n::reg("h5_sc_warn", " · 警告: %1", " · warning: %1");
     ofd::I18n::reg("h5_integration", "連携", "Integration");
     ofd::I18n::reg("h5_int_python", "🐍 Python (h5py) で開く",
                    "🐍 Open in Python (h5py)");
@@ -1225,6 +1251,10 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             // 全体時系列は表示中の断面から GUI 層だけで求まる (下に描く)
             connect(b, &QPushButton::clicked, this,
                     &H5ViewerTab::showWholeSeries);
+        } else if (qstrcmp(key, "h5_stat_schroeder") == 0) {
+            // 断面エネルギーの後方積分 (acoustics/core/SchroederDecay)
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showSchroeder);
         } else if (qstrcmp(key, "h5_stat_lineint") == 0) {
             // 線積分も断面のデータと節点座標だけで求まる
             connect(b, &QPushButton::clicked, this,
@@ -1284,6 +1314,17 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_liPlot->setMinimumHeight(150);
     m_liPlot->setVisible(false);
     ss->vbox()->addWidget(m_liPlot);
+
+    // Schroeder 減衰 (押されるまで隠しておく)
+    m_scNote = new QLabel(ss);
+    m_scNote->setWordWrap(true);
+    m_scNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_scNote->setVisible(false);
+    ss->vbox()->addWidget(m_scNote);
+    m_scPlot = new MiniPlot(ss);
+    m_scPlot->setMinimumHeight(150);
+    m_scPlot->setVisible(false);
+    ss->vbox()->addWidget(m_scPlot);
     v->addWidget(ss);
 
     // 連携 / Integration
@@ -2235,6 +2276,95 @@ void H5ViewerTab::exportCsvCurrent()
 
 
 
+
+
+// ── Schroeder 減衰 (断面エネルギーの後方積分) ─────────────────────────────
+// 後方積分そのものは acoustics/core/SchroederDecay (Chu のノイズ補正込み) を
+// そのまま使う。ここが渡すのは**コマごとの RMS** で、computeSchroederDecay が
+// 内部で 2 乗するので E(n) = Σ_{k≥n} 平均(値²) になる。
+//
+// **点の受音応答ではなく断面全体のエネルギー**である点、および音源が
+// インパルス的でないと減衰曲線として読めない点を注記に必ず書く。
+// **T20 / T30 は出さない** — 動的レンジと当てはめ区間の判定が要り、
+// それは実測 RIR 解析タブが ISO 3382-1 の手順で行っている (絶対規則 6)。
+void H5ViewerTab::showSchroeder()
+{
+    if (!m_scPlot || !m_scNote) return;
+    QVector<double> mx, rms, tm;
+    int step = 1, cells = 0;
+    QString err;
+    // 時刻が読めないと時間軸が決まらない (コマ番号では減衰時間にならない)
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+    if (!m_seriesMode || m_nframes <= 1 || !hasTime
+        || !readSliceSeries(mx, rms, tm, step, cells, &err)
+        || rms.size() < 4) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+    // 読んだコマの間隔 (間引いていれば step 倍になっている)
+    const double dt = (tm.size() >= 2) ? (tm[1] - tm[0]) : 0.0;
+    if (!(dt > 0.0)) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+
+    std::vector<double> sig(rms.begin(), rms.end());
+    ofd::acoustics::SchroederOptions opt;
+    opt.noiseCompensation = true;
+    // 既定はオーディオの RIR (数万サンプル) 向けの値なので、コマ数の少ない
+    // 場の時系列にそのまま使うと**末尾ノイズ推定が信号全体を掴んでしまう**
+    // (minTailSamples 256 > コマ数)。補正で全エネルギーが 0 になり
+    // 「signal has no energy」で失敗する。コマ数に合わせて縮める。
+    opt.minTailSamples = std::max<std::size_t>(4, sig.size() / 20);
+    // 平滑化窓も同様 (5 ms 固定ではコマ間隔より短くなり得る)
+    opt.smoothingWindowSeconds = std::max(5.0 * dt, 0.005);
+    const ofd::acoustics::SchroederResult res =
+        ofd::acoustics::computeSchroederDecay(
+            ofd::acoustics::ArrayView<const double>(sig.data(), sig.size()),
+            1.0 / dt, opt);
+    if (!res.valid || res.decayDb.empty()) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+
+    MiniSeries ser;
+    ser.pts.reserve(int(res.decayDb.size()));
+    for (std::size_t i = 0; i < res.decayDb.size(); ++i)
+        ser.pts.push_back(QPointF(tm[int(i)], res.decayDb[i]));
+    ser.color = QColor("#0078D4");
+    ser.label = QStringLiteral("Schroeder");
+    m_scPlot->setSeries({ ser });
+    m_scPlot->setLabels(I18n::tr("h5_sc_x"), I18n::tr("h5_sc_y"));
+    m_scPlot->clearYRange();
+    m_scPlot->setVisible(true);
+
+    // 使える動的レンジ = 分析終了点までにどれだけ落ちたか
+    const std::size_t endIdx =
+        std::min(res.analysisEndIndex, res.decayDb.size() - 1);
+    const double usable = -res.decayDb[endIdx];
+    QString note = I18n::tr("h5_sc_note")
+                       .arg(sliceCaption(sliceAxis()))
+                       .arg(cells)
+                       .arg(int(res.decayDb.size()))
+                       .arg(QString::number(dt, 'g', 4),
+                            QString::number(usable, 'f', 1));
+    note += I18n::tr("h5_sc_nort");
+    if (!res.warning.empty())
+        note += I18n::tr("h5_sc_warn")
+                    .arg(QString::fromStdString(res.warning));
+    m_scNote->setVisible(true);
+    m_scNote->setText(note);
+}
+
 // ── 線積分 (断面上の線分に沿った ∫f dl) ───────────────────────────────────
 // 入力欄を出すだけ。既定の線分は断面の中央を横切る線にしておく
 // (何を入れればよいか分からない空欄から始めない)。
@@ -2327,6 +2457,52 @@ void H5ViewerTab::runLineIntegral()
         .arg(sliceCaption(axis)));
 }
 
+
+// ── 表示中の断面を全フレームぶん読む (全体時系列と Schroeder 減衰で共用) ──
+// コマごとの max と RMS = √(平均(値²)) を返す。GUI スレッドで回すので読む
+// コマ数に上限を設け、間引いた歩幅を step へ返す (呼び側が画面に出す)。
+bool H5ViewerTab::readSliceSeries(QVector<double> &maxOut,
+                                  QVector<double> &rmsOut,
+                                  QVector<double> &timeOut,
+                                  int &step, int &cells, QString *err)
+{
+    maxOut.clear(); rmsOut.clear(); timeOut.clear();
+    step = 1; cells = 0;
+    if (!m_seriesMode || m_nframes <= 1) return false;
+
+    const int axis = sliceAxis();
+    const int idx = m_secPos[axis];
+    const int kMaxRead = 400;
+    while ((m_nframes + step - 1) / step > kMaxRead) ++step;
+
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+
+    for (int f = 0; f < m_nframes; f += step) {
+        QVector<double> d;
+        int rows = 0, cols = 0;
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f, axis,
+                                          idx, d, rows, cols, nullptr, err))
+            return false;
+        cells = rows * cols;
+        double mx = 0.0, sum2 = 0.0;
+        int n = 0;
+        for (const double v : d) {
+            if (!std::isfinite(v)) continue;
+            const double a = std::fabs(v);
+            if (a > mx) mx = a;
+            sum2 += v * v;
+            ++n;
+        }
+        maxOut.push_back(mx);
+        rmsOut.push_back((n > 0) ? std::sqrt(sum2 / double(n)) : 0.0);
+        timeOut.push_back(hasTime ? times[f] : double(f));
+    }
+    return !rmsOut.isEmpty();
+}
+
 // ── 全体時系列 (フレームごとの max / RMS) ─────────────────────────────────
 // 表示中の断面を全フレームぶん読み直して、コマごとに |値| の最大と
 // RMS = √(平均(値²)) を出す。**統計バッジ (現在コマの min/max/平均) とは
@@ -2344,47 +2520,24 @@ void H5ViewerTab::showWholeSeries()
         m_tsNote->setText(I18n::tr("h5_ts_need"));
         return;
     }
-
-    const int axis = sliceAxis();
-    const int idx = m_secPos[axis];
-    // 読むコマ数の上限。GUI スレッドで回すので青天井にしない
-    const int kMaxRead = 400;
-    int step = 1;
-    while ((m_nframes + step - 1) / step > kMaxRead) ++step;
-
-    // 時刻が読めるなら横軸を秒にする (読めなければコマ番号)
+    QVector<double> mx, rms, tm;
+    int step = 1, cells = 0;
+    QString err;
+    if (!readSliceSeries(mx, rms, tm, step, cells, &err)) {
+        m_tsNote->setVisible(true);
+        m_tsPlot->setVisible(false);
+        m_tsNote->setText(I18n::tr("h5_ts_fail").arg(err));
+        return;
+    }
+    // 時刻が読めなければ横軸はコマ番号 (readSliceSeries が入れ替える)
     QVector<double> times;
     const bool hasTime =
         H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
         && times.size() >= m_nframes;
-
     QVector<QPointF> maxPts, rmsPts;
-    QString err;
-    int cells = 0;
-    for (int f = 0; f < m_nframes; f += step) {
-        QVector<double> d;
-        int rows = 0, cols = 0;
-        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f, axis,
-                                          idx, d, rows, cols, nullptr, &err)) {
-            m_tsNote->setVisible(true);
-            m_tsPlot->setVisible(false);
-            m_tsNote->setText(I18n::tr("h5_ts_fail").arg(err));
-            return;
-        }
-        cells = rows * cols;
-        double mx = 0.0, sum2 = 0.0;
-        int n = 0;
-        for (const double v : d) {
-            if (!std::isfinite(v)) continue;
-            const double a = std::fabs(v);
-            if (a > mx) mx = a;
-            sum2 += v * v;
-            ++n;
-        }
-        const double rms = (n > 0) ? std::sqrt(sum2 / double(n)) : 0.0;
-        const double x = hasTime ? times[f] : double(f);
-        maxPts.push_back(QPointF(x, mx));
-        rmsPts.push_back(QPointF(x, rms));
+    for (int i = 0; i < mx.size(); ++i) {
+        maxPts.push_back(QPointF(tm[i], mx[i]));
+        rmsPts.push_back(QPointF(tm[i], rms[i]));
     }
     if (maxPts.isEmpty()) return;
 
@@ -2405,7 +2558,7 @@ void H5ViewerTab::showWholeSeries()
 
     // 何をどう出したか。読んだコマ数・セル数まで書く
     QString note = I18n::tr("h5_ts_title")
-                       .arg(sliceCaption(axis))
+                       .arg(sliceCaption(sliceAxis()))
                        .arg(maxPts.size())
                        .arg(cells);
     if (step > 1)

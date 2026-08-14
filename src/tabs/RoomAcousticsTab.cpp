@@ -441,6 +441,21 @@ const bool s_i18n = [] {
     I18n::reg("rah_auto_aim", "🎯 自動エイミング最適化",
               "🎯 Auto-aim optimisation");
     I18n::reg("rah_gll_lib", "GLLライブラリ", "GLL library");
+    // 無効化の理由は「なぜできないのか」を書く (汎用の「未実装」にしない)
+    I18n::reg("rah_aim_why",
+        "指向性モデルを持たないため、エイミングを変えても計算に影響しません "
+        "(seatMetrics は距離とゲインだけの無指向近似)。最適化しても差が出ない "
+        "ので出していません。表のエイミング欄は設計受音点への方向です",
+        "There is no directivity model, so aiming cannot change any computed "
+        "figure (seatMetrics is omnidirectional, distance and gain only). "
+        "Optimising it would produce no difference. The aiming column shows "
+        "the direction to the design receiver");
+    I18n::reg("rah_gll_why",
+        "スピーカーの指向性データ (GLL) を同梱していません。無指向近似のまま "
+        "機種名だけ並べると、選んだ機種で結果が変わるように見えてしまいます",
+        "No loudspeaker directivity data (GLL) is bundled. Listing model names "
+        "while the model stays omnidirectional would suggest the choice "
+        "changes the result");
     I18n::reg("rah_delay_section", "遅延・ディレイタワー", "Delay");
     I18n::reg("rah_delay_row", "ディレイ設定", "Delay settings");
     I18n::reg("rah_haas", "距離補正を自動適用 (Haas効果)",
@@ -2233,8 +2248,8 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     auto *aimBtn = new QPushButton(I18n::tr("rah_auto_aim"), sl);
     auto *gllBtn = new QPushButton(I18n::tr("rah_gll_lib"), sl);
     tabhelp::markNotImplemented(addSpBtn, I18n::tr(tabhelp::notimpl::kData));
-    tabhelp::markNotImplemented(aimBtn, I18n::tr(tabhelp::notimpl::kEngine));
-    tabhelp::markNotImplemented(gllBtn, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(aimBtn, I18n::tr("rah_aim_why"));
+    tabhelp::markNotImplemented(gllBtn, I18n::tr("rah_gll_why"));
     lsBtns->addWidget(addSpBtn);
     lsBtns->addWidget(aimBtn);
     lsBtns->addWidget(gllBtn);

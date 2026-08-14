@@ -167,9 +167,15 @@ private:
     void exportMatlabScript();   // MATLAB / Octave 読み込みスクリプト (.m)
     // 表示中の断面について、全フレームの max / RMS を求めて下に描く
     void showWholeSeries();
+    // 表示中の断面を全フレームぶん読む (全体時系列と Schroeder で共用)
+    bool readSliceSeries(QVector<double> &maxOut, QVector<double> &rmsOut,
+                         QVector<double> &timeOut, int &step, int &cells,
+                         QString *err);
     // 線積分 — 入力欄を出す / 実際に積分して描く
     void showLineIntegral();
     void runLineIntegral();
+    // Schroeder 減衰 (断面エネルギーの後方積分)
+    void showSchroeder();
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);
@@ -216,6 +222,9 @@ private:
     QLineEdit *m_liU1 = nullptr, *m_liV1 = nullptr;
     QLabel   *m_liNote = nullptr;
     MiniPlot *m_liPlot = nullptr;
+    // Schroeder 減衰 (断面エネルギーの後方積分)
+    QLabel   *m_scNote = nullptr;
+    MiniPlot *m_scPlot = nullptr;
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
