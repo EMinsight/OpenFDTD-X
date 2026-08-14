@@ -6,6 +6,9 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "TabHelpers.h"
+#include "../widgets/MiniPlot.h"
+#include "../io/SliceLineIntegral.h"
+#include "../acoustics/core/SchroederDecay.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -263,8 +266,83 @@ const bool s_i18n = [] {
     ofd::I18n::reg("h5_stat_series", "📈 全体時系列 (max/RMS)",
                    "📈 Overall time series (max/RMS)");
     ofd::I18n::reg("h5_stat_schroeder", "📈 Schroeder減衰", "📈 Schroeder decay");
+    // 全体時系列 — 表示中の断面について、フレームごとの max と RMS
+    ofd::I18n::reg("h5_ts_title",
+        "表示中の断面 (%1) のフレームごとの値 — max = |値| の最大、"
+        "RMS = √(平均(値²))。断面 %2 枚ぶんの %3 セルから求めています",
+        "Per-frame values of the slice on screen (%1) — max = largest |value|, "
+        "RMS = sqrt(mean(value^2)), over %3 cells of %2 frames");
+    ofd::I18n::reg("h5_ts_need",
+        "伝搬時系列を選ぶと、フレームごとの max / RMS を出せます",
+        "Select a propagation time series to plot per-frame max / RMS");
+    ofd::I18n::reg("h5_ts_fail", "読めませんでした: %1", "Cannot read: %1");
+    ofd::I18n::reg("h5_ts_x_frame", "コマ", "frame");
+    ofd::I18n::reg("h5_ts_x_time", "時刻 [s]", "time [s]");
+    ofd::I18n::reg("h5_ts_sub",
+        " · %1 コマ毎に間引いて読んでいます (全 %2 コマ)",
+        " · read every %1 frames (of %2)");
+    ofd::I18n::reg("h5_ts_peak",
+        "max の最大は コマ %1 で %2、そのときの RMS は %3",
+        "max peaks at frame %1 with %2; RMS there is %3");
     ofd::I18n::reg("h5_stat_fft", "📈 FFT スペクトログラム", "📈 FFT spectrogram");
+    // 無効化の理由は「なぜできないのか」を書く
+    ofd::I18n::reg("h5_fft_why",
+        "この経路の断面データは |E| (成分の二乗和の平方根) で、既に整流されて "
+        "います。整流された量の FFT は場の周波数成分になりません — 正弦波 "
+        "sin(2πft) を |·| にすると f は消えて 2f・4f… だけが残ります。"
+        "正しいスペクトルには符号付きの時刻歴が要りますが、この読み出しは "
+        "持っていません",
+        "The slice data on this path is |E| (root of the sum of squared "
+        "components), already rectified. The FFT of a rectified quantity is "
+        "not the field spectrum: rectifying sin(2 pi f t) removes f and "
+        "leaves 2f, 4f and so on. A correct spectrum needs the signed time "
+        "history, which this reader does not provide");
     ofd::I18n::reg("h5_stat_lineint", "📈 線積分", "📈 Line integral");
+    // 線積分 — 断面上の線分に沿った ∫f dl
+    ofd::I18n::reg("h5_li_need",
+        "伝搬時系列を選び、断面の座標が読めるファイルにしてください "
+        "(線分の位置を決められません)",
+        "Select a propagation time series in a file whose slice coordinates "
+        "can be read (the segment cannot be placed otherwise)");
+    ofd::I18n::reg("h5_li_from", "始点", "from");
+    ofd::I18n::reg("h5_li_to", "終点", "to");
+    ofd::I18n::reg("h5_li_run", "線積分を計算", "Integrate");
+    ofd::I18n::reg("h5_li_bad",
+        "線分が断面の外にはみ出しているか、長さが 0 です "
+        "(%1 は %2 〜 %3 m、%4 は %5 〜 %6 m)",
+        "The segment leaves the slice or has zero length "
+        "(%1 spans %2 to %3 m, %4 spans %5 to %6 m)");
+    ofd::I18n::reg("h5_li_res",
+        "∫f dl = %1 (値 × m) · 線分長 %2 m · 平均 %3 · |f| の最大 %4 · "
+        "%5 点で台形則 · 断面 %6 の現在コマ",
+        "∫f dl = %1 (value x m) · length %2 m · mean %3 · max |f| %4 · "
+        "trapezoid over %5 samples · current frame of slice %6");
+    ofd::I18n::reg("h5_li_x", "始点からの距離 [m]", "distance from start [m]");
+    // Schroeder 減衰 — 断面のエネルギーの後方積分
+    ofd::I18n::reg("h5_sc_need",
+        "伝搬時系列を選び、時刻 (/timeseries/time) が読めるファイルにして "
+        "ください (減衰の時間軸を決められません)",
+        "Select a propagation time series whose times (/timeseries/time) can "
+        "be read (the decay has no time axis otherwise)");
+    ofd::I18n::reg("h5_sc_x", "時刻 [s]", "time [s]");
+    ofd::I18n::reg("h5_sc_y", "減衰 [dB]", "decay [dB]");
+    ofd::I18n::reg("h5_sc_note",
+        "▸ 表示中の断面 (%1) のエネルギーを Schroeder 後方積分した減衰曲線です "
+        "(1 コマあたり %2 セルの平均、%3 コマ、Δt = %4 s)。"
+        "「点の受音応答ではなく断面全体のエネルギー」であり、"
+        "音源がインパルス的で減衰し切るまで計算されている場合にのみ "
+        "減衰曲線として読めます。使える動的レンジは %5 dB です",
+        "▸ Schroeder backward integration of the energy of the slice on "
+        "screen (%1): mean over %2 cells per frame, %3 frames, dt = %4 s. "
+        "This is the energy of the whole slice, not the response at a point; "
+        "it reads as a decay curve only if the source was impulsive and the "
+        "run covers the decay. Usable dynamic range: %5 dB");
+    ofd::I18n::reg("h5_sc_nort",
+        " · T20 / T30 はここでは出しません (動的レンジと当てはめ区間の判定が "
+        "要るため。実測 RIR 解析タブが ISO 3382-1 の手順で求めます)",
+        " · T20 / T30 are not derived here (that needs a dynamic-range and "
+        "fit-range judgement; the measured-RIR tab does it per ISO 3382-1)");
+    ofd::I18n::reg("h5_sc_warn", " · 警告: %1", " · warning: %1");
     ofd::I18n::reg("h5_integration", "連携", "Integration");
     ofd::I18n::reg("h5_int_python", "🐍 Python (h5py) で開く",
                    "🐍 Open in Python (h5py)");
@@ -276,16 +354,19 @@ const bool s_i18n = [] {
         "Open an .h5 file first (the script is generated from the actual "
         "schema of the open file)");
     ofd::I18n::reg("h5_int_hint",
-        "▸ Python / Jupyter は開いている .h5 の実スキーマに合わせた h5py "
+        "▸ Python / Jupyter / MATLAB は開いている .h5 の実スキーマに合わせた "
         "読み込みコード (|E| プロットまで) をファイルへ生成します"
         " (外部ツールの起動は行いません)",
-        "▸ Python / Jupyter generate h5py loading code (through an |E| plot) "
-        "matched to the actual schema of the open .h5 file "
+        "▸ Python / Jupyter / MATLAB generate loading code (through an |E| "
+        "plot) matched to the actual schema of the open .h5 file "
         "(no external tool is launched)");
     ofd::I18n::reg("h5_int_paraview", "🌐 ParaView ファイル出力 (.vtk)",
                    "🌐 ParaView file export (.vtk)");
-    ofd::I18n::reg("h5_int_matlab", "📦 Matlab .mat 変換",
-                   "📦 Convert to Matlab .mat");
+    // **文言は実際の動作と一致させること。** 以前は「.mat 変換」だったが、
+    // 生成するのは h5read の読み込みスクリプト (.m) であって .mat ファイル
+    // ではない (MATLAB は .h5 をそのまま読めるので変換は要らない)
+    ofd::I18n::reg("h5_int_matlab", "📐 MATLAB (h5read) で開く",
+                   "📐 Open in MATLAB (h5read)");
     return true;
 }();
 
@@ -332,6 +413,152 @@ QString pyQuote(const QString &s)
     t.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
     t.replace(QLatin1Char('"'), QLatin1String("\\\""));
     return QLatin1Char('"') + t + QLatin1Char('"');
+}
+
+// MATLAB の文字列リテラル (シングルクォート内はクォートを 2 重にして escape)
+QString mlQuote(const QString &s)
+{
+    QString t = s;
+    t.replace(QLatin1Char('\''), QLatin1String("''"));
+    return QLatin1Char('\'') + t + QLatin1Char('\'');
+}
+
+// ── MATLAB / Octave 読み込みスクリプト ────────────────────────────────────
+// 選ぶデータセットの規則は buildH5PyCode と同じ (新レイアウトの時系列 →
+// 旧レイアウト /data%06d → 最初の 2D)。
+//
+// **MATLAB の h5read は次元を逆順に返す。** HDF5 側で (Nt, Nx+1, Ny+1,
+// Nz+1, 3) と宣言されている配列は、MATLAB では (3, Nz+1, Ny+1, Nx+1, Nt)
+// になる (いちばん速く変わる軸が先頭に来るため)。ここを取り違えると
+// 転置した絵が出るので、生成するコードもコメントもこの向きで書く。
+QStringList buildMatlabCode(const QString &filePath,
+                            const QVector<ofd::H5DatasetInfo> &dsets)
+{
+    QStringList c;
+    c << QStringLiteral("path = %1;").arg(mlQuote(filePath))
+      << QString()
+      << QStringLiteral("% 全データセットの確認 (パス・形状・型)")
+      << QStringLiteral("info = h5info(path);")
+      << QStringLiteral("disp(info);")
+      << QString()
+      << QStringLiteral("% 注意: h5read は HDF5 の宣言と **逆順** の次元で"
+                        "返す")
+      << QStringLiteral("%       (HDF5 で (a, b, c) なら MATLAB では "
+                        "(c, b, a))。");
+
+    // (a) 新レイアウトの伝搬時系列 (E 優先)
+    QString seriesPath;
+    for (const char *p : { "/timeseries/E", "/timeseries/H" }) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.path == QLatin1String(p)) { seriesPath = ds.path; break; }
+        if (!seriesPath.isEmpty()) break;
+    }
+    // (b) 旧レイアウト /data%06d/E|H — 最大 (最終) グループ番号を選ぶ
+    QString dataPath;
+    if (seriesPath.isEmpty()) {
+        static const QRegularExpression dataRe(
+            QStringLiteral("^/data(\\d+)/(E|H)$"));
+        for (const char *comp : { "E", "H" }) {
+            qlonglong best = -1;
+            for (const ofd::H5DatasetInfo &ds : dsets) {
+                const QRegularExpressionMatch m = dataRe.match(ds.path);
+                if (!m.hasMatch()
+                        || m.captured(2) != QLatin1String(comp)) continue;
+                const qlonglong num = m.captured(1).toLongLong();
+                if (num > best) { best = num; dataPath = ds.path; }
+            }
+            if (best >= 0) break;
+        }
+    }
+    // (c) 最初の 2D データセット
+    QString flatPath;
+    if (seriesPath.isEmpty() && dataPath.isEmpty()) {
+        for (const ofd::H5DatasetInfo &ds : dsets)
+            if (ds.dims.size() == 2) { flatPath = ds.path; break; }
+    }
+
+    bool hasPlot = true;
+    QString xlab = QStringLiteral("x index"), ylab = QStringLiteral("y index");
+    if (!seriesPath.isEmpty()) {
+        const QString comp = seriesPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("% 伝搬時系列 (瞬時値)。HDF5: "
+                            "(Nt, Nx+1, Ny+1, Nz+1, 3)")
+          << QStringLiteral("%                    MATLAB: "
+                            "(3, Nz+1, Ny+1, Nx+1, Nt)")
+          << QStringLiteral("E = h5read(path, %1);").arg(mlQuote(seriesPath))
+          << QStringLiteral("sz = size(E);")
+          << QStringLiteral("nz1 = sz(2); nt = sz(5);")
+          << QStringLiteral("frame = E(:, :, :, :, nt);"
+                            "        % 最終フレーム: (3, Nz+1, Ny+1, Nx+1)")
+          << QStringLiteral("amp = squeeze(sqrt(sum(frame .^ 2, 1)));"
+                            "  % |%1|: (Nz+1, Ny+1, Nx+1)").arg(comp)
+          << QStringLiteral("kz = floor(nz1 / 2) + 1;"
+                            "               % z 中央断面 (1 起点)")
+          << QStringLiteral("img = squeeze(amp(kz, :, :));"
+                            "          % (Ny+1, Nx+1) — 行 = y")
+          << QStringLiteral("titleStr = sprintf(%1, nt - 1, kz - 1);")
+                 .arg(mlQuote(seriesPath + QStringLiteral("  |") + comp
+                              + QStringLiteral("|  frame %d  z index %d")));
+    } else if (!dataPath.isEmpty()) {
+        const QString comp = dataPath.section(QLatin1Char('/'), -1);
+        c << QString()
+          << QStringLiteral("% 旧レイアウト %1: HDF5 (1, NFreq2, NN, 6) →")
+                 .arg(dataPath)
+          << QStringLiteral("% MATLAB (6, NN, NFreq2, 1)。/metadata の"
+                            "格子定数でノード番号を空間へ展開する")
+          << QStringLiteral("% n = Ni*i + Nj*j + Nk*k + N0 (0 起点)")
+          << QStringLiteral("Nx = double(h5read(path, '/metadata/Nx'));")
+          << QStringLiteral("Ny = double(h5read(path, '/metadata/Ny'));")
+          << QStringLiteral("Nz = double(h5read(path, '/metadata/Nz'));")
+          << QStringLiteral("Ni = double(h5read(path, '/metadata/Ni'));")
+          << QStringLiteral("Nj = double(h5read(path, '/metadata/Nj'));")
+          << QStringLiteral("Nk = double(h5read(path, '/metadata/Nk'));")
+          << QStringLiteral("N0 = double(h5read(path, '/metadata/N0'));")
+          << QStringLiteral("D = h5read(path, %1);").arg(mlQuote(dataPath))
+          << QStringLiteral("e = squeeze(D(:, :, 1, 1));"
+                            "     % 周波数 0: (6, NN)")
+          << QStringLiteral("amp = sqrt(sum(double(e) .^ 2, 1));"
+                            "  % |%1| (実部 3 + 虚部 3 の RSS): (1, NN)")
+                 .arg(comp)
+          << QStringLiteral("kz = floor(Nz / 2);"
+                            "                % z 中央断面 (0 起点)")
+          << QStringLiteral("ii = 0:Nx;  jj = (0:Ny)';")
+          << QStringLiteral("idx = Ni * ii + Nj * jj + Nk * kz + N0;"
+                            "  % (Ny+1, Nx+1)")
+          << QStringLiteral("img = reshape(amp(idx + 1), size(idx));"
+                            "  % +1 = MATLAB の 1 起点")
+          << QStringLiteral("titleStr = sprintf(%1, kz);")
+                 .arg(mlQuote(dataPath + QStringLiteral("  |") + comp
+                              + QStringLiteral("|  z index %d")));
+    } else if (!flatPath.isEmpty()) {
+        xlab = QStringLiteral("col");
+        ylab = QStringLiteral("row");
+        c << QString()
+          << QStringLiteral("% 2D データセットをそのまま表示 "
+                            "(h5read は転置して返すので .' で戻す)")
+          << QStringLiteral("img = double(h5read(path, %1)).';")
+                 .arg(mlQuote(flatPath))
+          << QStringLiteral("titleStr = %1;").arg(mlQuote(flatPath));
+    } else {
+        hasPlot = false;
+        c << QString()
+          << QStringLiteral("% 表示に適した 2D / 時系列データセットが"
+                            "見つからないため列挙のみ");
+    }
+
+    if (hasPlot) {
+        c << QString()
+          << QStringLiteral("figure;")
+          << QStringLiteral("imagesc(img);")
+          << QStringLiteral("axis xy; axis image;"
+                            "   % xy = 行 0 を下に (imshow の既定と逆)")
+          << QStringLiteral("colormap(jet); colorbar;")
+          << QStringLiteral("title(titleStr, 'Interpreter', 'none');")
+          << QStringLiteral("xlabel(%1); ylabel(%2);")
+                 .arg(mlQuote(xlab), mlQuote(ylab));
+    }
+    return c;
 }
 
 // 列挙結果の 1 行表記 "  /timeseries/E  float32 (100 × 41 × 41 × 41 × 3)"
@@ -1032,7 +1259,24 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     for (const char *key : { "h5_stat_series", "h5_stat_schroeder",
                              "h5_stat_fft", "h5_stat_lineint" }) {
         auto *b = new QPushButton(I18n::tr(QLatin1String(key)), ss);
-        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
+        if (qstrcmp(key, "h5_stat_series") == 0) {
+            // 全体時系列は表示中の断面から GUI 層だけで求まる (下に描く)
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showWholeSeries);
+        } else if (qstrcmp(key, "h5_stat_schroeder") == 0) {
+            // 断面エネルギーの後方積分 (acoustics/core/SchroederDecay)
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showSchroeder);
+        } else if (qstrcmp(key, "h5_stat_lineint") == 0) {
+            // 線積分も断面のデータと節点座標だけで求まる
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showLineIntegral);
+        } else if (qstrcmp(key, "h5_stat_fft") == 0) {
+            ofd::tabhelp::markNotImplemented(b, I18n::tr("h5_fft_why"));
+        } else {
+            ofd::tabhelp::markNotImplemented(
+                b, I18n::tr(tabhelp::notimpl::kExternal));
+        }
         // Schroeder 減衰は室内音響の指標 — ドメイン別に表示を切り替える
         if (qstrcmp(key, "h5_stat_schroeder") == 0)
             m_schroederBtn = b;
@@ -1040,6 +1284,61 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     }
     srow->addStretch(1);
     ss->vbox()->addLayout(srow);
+    // 全体時系列のプロット (押されるまで隠しておく)。**ダイアログにしない** —
+    // 自動実行でモーダルを開けないうえ、断面の統計バッジと並べて見たい
+    m_tsNote = new QLabel(ss);
+    m_tsNote->setWordWrap(true);
+    m_tsNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_tsNote->setVisible(false);
+    ss->vbox()->addWidget(m_tsNote);
+    m_tsPlot = new MiniPlot(ss);
+    m_tsPlot->setMinimumHeight(150);
+    m_tsPlot->setVisible(false);
+    ss->vbox()->addWidget(m_tsPlot);
+
+    // 線積分の線分 (面内座標 [m])。押されるまで隠しておく
+    m_liBox = new QWidget(ss);
+    auto *lirow = new QHBoxLayout(m_liBox);
+    lirow->setContentsMargins(0, 0, 0, 0);
+    lirow->addWidget(new QLabel(I18n::tr("h5_li_from"), m_liBox));
+    m_liU0 = new QLineEdit(m_liBox);
+    m_liV0 = new QLineEdit(m_liBox);
+    lirow->addWidget(m_liU0);
+    lirow->addWidget(m_liV0);
+    lirow->addWidget(new QLabel(I18n::tr("h5_li_to"), m_liBox));
+    m_liU1 = new QLineEdit(m_liBox);
+    m_liV1 = new QLineEdit(m_liBox);
+    lirow->addWidget(m_liU1);
+    lirow->addWidget(m_liV1);
+    for (QLineEdit *e : { m_liU0, m_liV0, m_liU1, m_liV1 })
+        e->setMaximumWidth(90);
+    auto *liRun = new QPushButton(I18n::tr("h5_li_run"), m_liBox);
+    connect(liRun, &QPushButton::clicked, this,
+            &H5ViewerTab::runLineIntegral);
+    lirow->addWidget(liRun);
+    lirow->addStretch(1);
+    m_liBox->setVisible(false);
+    ss->vbox()->addWidget(m_liBox);
+    m_liNote = new QLabel(ss);
+    m_liNote->setWordWrap(true);
+    m_liNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_liNote->setVisible(false);
+    ss->vbox()->addWidget(m_liNote);
+    m_liPlot = new MiniPlot(ss);
+    m_liPlot->setMinimumHeight(150);
+    m_liPlot->setVisible(false);
+    ss->vbox()->addWidget(m_liPlot);
+
+    // Schroeder 減衰 (押されるまで隠しておく)
+    m_scNote = new QLabel(ss);
+    m_scNote->setWordWrap(true);
+    m_scNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_scNote->setVisible(false);
+    ss->vbox()->addWidget(m_scNote);
+    m_scPlot = new MiniPlot(ss);
+    m_scPlot->setMinimumHeight(150);
+    m_scPlot->setVisible(false);
+    ss->vbox()->addWidget(m_scPlot);
     v->addWidget(ss);
 
     // 連携 / Integration
@@ -1052,8 +1351,13 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     auto *jupBtn = new QPushButton(I18n::tr("h5_int_jupyter"), sg);
     auto *pvBtn  = new QPushButton(I18n::tr("h5_int_paraview"), sg);
     auto *mlBtn  = new QPushButton(I18n::tr("h5_int_matlab"), sg);
-    for (QPushButton *b : { pvBtn, mlBtn })
-        ofd::tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kExternal));
+    // ParaView (XDMF) は未実装のまま → 無効化。理由は
+    // docs/unwired-inventory.md に記録してある (配列の軸順が XDMF の
+    // 3DRectMesh の規約と逆で、XDMF には転置が無いため、そのまま書くと
+    // x と z が入れ替わった絵が出る)
+    ofd::tabhelp::markNotImplemented(pvBtn, I18n::tr(tabhelp::notimpl::kExternal));
+    connect(mlBtn, &QPushButton::clicked, this,
+            [this] { exportMatlabScript(); });
     connect(pyBtn, &QPushButton::clicked, this,
             [this] { exportPythonScript(false); });
     connect(jupBtn, &QPushButton::clicked, this,
@@ -1093,6 +1397,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
                 // 念のため (末尾到達時に停止済みのはずだが二重に守る)
                 m_timer->stop();
                 m_playBtn->setText(I18n::tr("h5_play"));
+                pushSceneSlice();     // 3D の「再生中/停止中」を合わせる
                 return;
             }
             next = first;                             // ループ再生
@@ -1102,12 +1407,14 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             // ループ OFF: 末尾フレーム到達で停止 (ボタン表示も再生へ戻す)
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         }
     });
     connect(m_playBtn, &QPushButton::clicked, this, [this] {
         if (m_timer->isActive()) {
             m_timer->stop();
             m_playBtn->setText(I18n::tr("h5_play"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         } else if (m_nframes > 1) {
             const int first = qBound(0, m_playFirst, m_nframes - 1);
             const int last = (m_playLast < 0) ? m_nframes - 1
@@ -1118,6 +1425,7 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             else if (m_frame < first) setFrame(first);
             m_timer->start();
             m_playBtn->setText(I18n::tr("h5_pause"));
+            pushSceneSlice();         // 3D の「再生中/停止中」を合わせる
         }
     });
     connect(m_firstBtn, &QPushButton::clicked, this, [this] { setFrame(0); });
@@ -1765,53 +2073,84 @@ void H5ViewerTab::refreshOverlay()
 // 位置を推測せず何も送らない (CenterPane::applyResultSliceTo3D と同じ規則)。
 // 行 0 = 面内 第2軸の + 側、列 = 第1軸という並びは H5Reader が返すものと
 // Viewport3D が期待するものが一致しているので、そのまま渡す。
-void H5ViewerTab::pushSceneSlice()
+// 断面 1 枚ぶんを組み立てる。座標が足りず位置が決められないときは false
+// (位置不明の断面を 3D の適当な場所へ置くと結果の読み違いになる)。
+bool H5ViewerTab::buildSceneSlice(int axis, const QVector<double> &cells,
+                                  int rows, int cols,
+                                  const QString &planeName,
+                                  H5SliceForScene *out) const
 {
-    if (!m_sceneChk || !m_sceneChk->isChecked()) return;
-    // 伝搬時系列 (断面の軸と位置が決まる) 以外は対象にしない
-    if (!m_seriesMode || m_data.isEmpty() || m_rows <= 0 || m_cols <= 0) {
-        emit sceneSliceCleared();
-        return;
-    }
-    const int axis = sliceAxis();
+    if (!out || cells.isEmpty() || rows <= 0 || cols <= 0) return false;
+    axis = qBound(0, axis, 2);
     // 面内 2 軸の対応は H5Reader が返す行列の規約そのもの。定義を borrow して
     // 二重管理にしない (片方だけ直すと 3D の断面が黙って転置する)
     int uAxis = 0, vAxis = 2;
     H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
     // 3 軸ぶんの座標が要る (固定軸の位置と、面内 2 軸の範囲)
     if (m_coord[axis].isEmpty() || m_coord[uAxis].size() < 2
-        || m_coord[vAxis].size() < 2) {
-        emit sceneSliceCleared();
-        return;
-    }
+        || m_coord[vAxis].size() < 2)
+        return false;
+
     const int maxIdx = std::max(0, int(m_coord[axis].size()) - 1);
     const int idx = qBound(0, (m_secPos[axis] < 0) ? maxIdx / 2
                                                    : m_secPos[axis], maxIdx);
-
-    H5SliceForScene sl;
-    sl.cells = m_data;
-    sl.rows = m_rows;
-    sl.cols = m_cols;
-    sl.axis = axis;
-    sl.pos_m = m_coord[axis][idx];
-    sl.u0 = m_coord[uAxis].first();
-    sl.u1 = m_coord[uAxis].last();
-    sl.v0 = m_coord[vAxis].first();
-    sl.v1 = m_coord[vAxis].last();
+    out->cells = cells;
+    out->rows = rows;
+    out->cols = cols;
+    out->axis = axis;
+    out->pos_m = m_coord[axis][idx];
+    out->u0 = m_coord[uAxis].first();
+    out->u1 = m_coord[uAxis].last();
+    out->v0 = m_coord[vAxis].first();
+    out->v1 = m_coord[vAxis].last();
     // 手動スケールならその上限を渡してフレーム間で明るさを揃える。
     // 自動スケールのときは 0 を渡し、2D と同じ「フレームごとの正規化」にする
     // (2 つの画面で別々の正規化をすると同じデータが違う強さに見える)。
+    // 3 面ビューでは 3 枚とも 0 になり、3D 側が 3 面共通の最大値で揃える —
+    // 2D の 3 面ビューが合成 min/max を使うのと同じ扱いになる。
+    out->scaleMax = 0.0;
     if (!m_autoScale->isChecked()) {
         bool ok = false;
         const double hi = m_scaleMax->text().trimmed().toDouble(&ok);
-        if (ok && hi > 0.0) sl.scaleMax = hi;
+        if (ok && hi > 0.0) out->scaleMax = hi;
     }
+    // 再生コントロールの状況をそのまま渡す
+    out->frame = m_frame;
+    out->frameCount = m_nframes;
+    out->playing = (m_timer && m_timer->isActive());
     // 凡例には「何の・いつの・どこの断面か」を出す (3D 側だけ見ても分かる)
-    sl.label = I18n::tr("h5_scene_label")
-                   .arg(m_seriesComp, m_planeBox->currentText(),
-                        m_seriesFrameLabel,
-                        QString::number(sl.pos_m, 'g', 4));
-    emit sceneSliceReady(sl);
+    out->label = I18n::tr("h5_scene_label")
+                     .arg(m_seriesComp, planeName, m_seriesFrameLabel,
+                          QString::number(out->pos_m, 'g', 4));
+    return true;
+}
+
+void H5ViewerTab::pushSceneSlice()
+{
+    if (!m_sceneChk || !m_sceneChk->isChecked()) return;
+    // 伝搬時系列 (断面の軸と位置が決まる) 以外は対象にしない
+    if (!m_seriesMode) { emit sceneSliceCleared(); return; }
+
+    QVector<H5SliceForScene> out;
+    if (multiActive()) {
+        // 3 面ビュー: XY / XZ / YZ を 3 枚とも流す。2D で 3 面見えている
+        // のに 3D では 1 枚だけ、という食い違いを作らない
+        for (int p = 0; p < 3; ++p) {
+            H5SliceForScene sl;
+            if (buildSceneSlice(kPlaneAxis[p], m_multiData[p], m_multiRows[p],
+                                m_multiCols[p],
+                                I18n::tr(QLatin1String(kPlaneKey[kPlaneAxis[p]])),
+                                &sl))
+                out.push_back(sl);
+        }
+    } else {
+        H5SliceForScene sl;
+        if (buildSceneSlice(sliceAxis(), m_data, m_rows, m_cols,
+                            m_planeBox->currentText(), &sl))
+            out.push_back(sl);
+    }
+    if (out.isEmpty()) { emit sceneSliceCleared(); return; }
+    emit sceneSlicesReady(out);
 }
 
 // 断面のキャプション: 面名 + 固定軸のノード番号 (座標があれば [m] も)
@@ -1893,6 +2232,13 @@ void H5ViewerTab::loadMultiFrames()
     m_data = d[prim];
     m_rows = rows[prim];
     m_cols = cols[prim];
+    // 3D シーンへ 3 面とも流せるように保持する
+    for (int p = 0; p < 3; ++p) {
+        m_multiData[p] = d[p];
+        m_multiRows[p] = rows[p];
+        m_multiCols[p] = cols[p];
+    }
+    pushSceneSlice();
 
     m_previewBox->setTitle(I18n::tr("h5_multi_title").arg(m_seriesComp, label));
 }
@@ -1941,6 +2287,334 @@ void H5ViewerTab::exportCsvCurrent()
 // 開いている .h5 の実スキーマ (列挙結果) から h5py 読み込みコードを生成し、
 // .py スクリプト / .ipynb ノートブック (JSON 直書き) として保存する。
 // 外部ツール (python / jupyter) の起動は行わない — 生成のみ
+
+
+
+
+
+// ── Schroeder 減衰 (断面エネルギーの後方積分) ─────────────────────────────
+// 後方積分そのものは acoustics/core/SchroederDecay (Chu のノイズ補正込み) を
+// そのまま使う。ここが渡すのは**コマごとの RMS** で、computeSchroederDecay が
+// 内部で 2 乗するので E(n) = Σ_{k≥n} 平均(値²) になる。
+//
+// **点の受音応答ではなく断面全体のエネルギー**である点、および音源が
+// インパルス的でないと減衰曲線として読めない点を注記に必ず書く。
+// **T20 / T30 は出さない** — 動的レンジと当てはめ区間の判定が要り、
+// それは実測 RIR 解析タブが ISO 3382-1 の手順で行っている (絶対規則 6)。
+void H5ViewerTab::showSchroeder()
+{
+    if (!m_scPlot || !m_scNote) return;
+    QVector<double> mx, rms, tm;
+    int step = 1, cells = 0;
+    QString err;
+    // 時刻が読めないと時間軸が決まらない (コマ番号では減衰時間にならない)
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+    if (!m_seriesMode || m_nframes <= 1 || !hasTime
+        || !readSliceSeries(mx, rms, tm, step, cells, &err)
+        || rms.size() < 4) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+    // 読んだコマの間隔 (間引いていれば step 倍になっている)
+    const double dt = (tm.size() >= 2) ? (tm[1] - tm[0]) : 0.0;
+    if (!(dt > 0.0)) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+
+    std::vector<double> sig(rms.begin(), rms.end());
+    ofd::acoustics::SchroederOptions opt;
+    opt.noiseCompensation = true;
+    // 既定はオーディオの RIR (数万サンプル) 向けの値なので、コマ数の少ない
+    // 場の時系列にそのまま使うと**末尾ノイズ推定が信号全体を掴んでしまう**
+    // (minTailSamples 256 > コマ数)。補正で全エネルギーが 0 になり
+    // 「signal has no energy」で失敗する。コマ数に合わせて縮める。
+    opt.minTailSamples = std::max<std::size_t>(4, sig.size() / 20);
+    // 平滑化窓も同様 (5 ms 固定ではコマ間隔より短くなり得る)
+    opt.smoothingWindowSeconds = std::max(5.0 * dt, 0.005);
+    const ofd::acoustics::SchroederResult res =
+        ofd::acoustics::computeSchroederDecay(
+            ofd::acoustics::ArrayView<const double>(sig.data(), sig.size()),
+            1.0 / dt, opt);
+    if (!res.valid || res.decayDb.empty()) {
+        m_scNote->setVisible(true);
+        m_scPlot->setVisible(false);
+        m_scNote->setText(I18n::tr("h5_sc_need"));
+        return;
+    }
+
+    MiniSeries ser;
+    ser.pts.reserve(int(res.decayDb.size()));
+    for (std::size_t i = 0; i < res.decayDb.size(); ++i)
+        ser.pts.push_back(QPointF(tm[int(i)], res.decayDb[i]));
+    ser.color = QColor("#0078D4");
+    ser.label = QStringLiteral("Schroeder");
+    m_scPlot->setSeries({ ser });
+    m_scPlot->setLabels(I18n::tr("h5_sc_x"), I18n::tr("h5_sc_y"));
+    m_scPlot->clearYRange();
+    m_scPlot->setVisible(true);
+
+    // 使える動的レンジ = 分析終了点までにどれだけ落ちたか
+    const std::size_t endIdx =
+        std::min(res.analysisEndIndex, res.decayDb.size() - 1);
+    const double usable = -res.decayDb[endIdx];
+    QString note = I18n::tr("h5_sc_note")
+                       .arg(sliceCaption(sliceAxis()))
+                       .arg(cells)
+                       .arg(int(res.decayDb.size()))
+                       .arg(QString::number(dt, 'g', 4),
+                            QString::number(usable, 'f', 1));
+    note += I18n::tr("h5_sc_nort");
+    if (!res.warning.empty())
+        note += I18n::tr("h5_sc_warn")
+                    .arg(QString::fromStdString(res.warning));
+    m_scNote->setVisible(true);
+    m_scNote->setText(note);
+}
+
+// ── 線積分 (断面上の線分に沿った ∫f dl) ───────────────────────────────────
+// 入力欄を出すだけ。既定の線分は断面の中央を横切る線にしておく
+// (何を入れればよいか分からない空欄から始めない)。
+void H5ViewerTab::showLineIntegral()
+{
+    if (!m_liBox || !m_liNote) return;
+    const int axis = sliceAxis();
+    int uAxis = 0, vAxis = 2;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    // 座標が読めないと線分の位置を決められない (推測で置かない)
+    if (!m_seriesMode || m_coord[uAxis].size() < 2
+        || m_coord[vAxis].size() < 2) {
+        m_liBox->setVisible(false);
+        m_liPlot->setVisible(false);
+        m_liNote->setVisible(true);
+        m_liNote->setText(I18n::tr("h5_li_need"));
+        return;
+    }
+    if (m_liU0->text().trimmed().isEmpty()) {
+        const double ulo = m_coord[uAxis].first(), uhi = m_coord[uAxis].last();
+        const double vmid = (m_coord[vAxis].first() + m_coord[vAxis].last())
+                            / 2.0;
+        m_liU0->setText(QString::number(ulo, 'g', 6));
+        m_liV0->setText(QString::number(vmid, 'g', 6));
+        m_liU1->setText(QString::number(uhi, 'g', 6));
+        m_liV1->setText(QString::number(vmid, 'g', 6));
+    }
+    m_liBox->setVisible(true);
+    m_liNote->setVisible(false);
+    m_liPlot->setVisible(false);
+}
+
+void H5ViewerTab::runLineIntegral()
+{
+    if (!m_liNote || !m_liPlot) return;
+    const int axis = sliceAxis();
+    int uAxis = 0, vAxis = 2;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    if (!m_seriesMode || m_data.isEmpty() || m_rows <= 0 || m_cols <= 0
+        || m_coord[uAxis].size() < 2 || m_coord[vAxis].size() < 2) {
+        m_liNote->setVisible(true);
+        m_liPlot->setVisible(false);
+        m_liNote->setText(I18n::tr("h5_li_need"));
+        return;
+    }
+    const double u0 = m_liU0->text().toDouble();
+    const double v0 = m_liV0->text().toDouble();
+    const double u1 = m_liU1->text().toDouble();
+    const double v1 = m_liV1->text().toDouble();
+
+    // 台形則の分点数。断面の解像度より細かくしても意味が増えないので、
+    // 行列の対角線ぶん程度で頭打ちにする
+    const int nSamp = qBound(33, 2 * (m_rows + m_cols), 1025);
+    ofd::LineIntegralResult res;
+    if (!ofd::sliceLineIntegral(m_data, m_rows, m_cols,
+                                m_coord[uAxis], m_coord[vAxis],
+                                u0, v0, u1, v1, nSamp, &res)) {
+        // **どこまでなら引けるのかを出す** (ただ失敗と言わない)
+        static const char *const kAx[3] = { "X", "Y", "Z" };
+        m_liNote->setVisible(true);
+        m_liPlot->setVisible(false);
+        m_liNote->setText(I18n::tr("h5_li_bad")
+            .arg(QLatin1String(kAx[uAxis]),
+                 QString::number(m_coord[uAxis].first(), 'g', 4),
+                 QString::number(m_coord[uAxis].last(), 'g', 4),
+                 QLatin1String(kAx[vAxis]),
+                 QString::number(m_coord[vAxis].first(), 'g', 4),
+                 QString::number(m_coord[vAxis].last(), 'g', 4)));
+        return;
+    }
+
+    MiniSeries ser;
+    ser.pts.reserve(res.samples.size());
+    for (const ofd::LineSample &sm : res.samples)
+        ser.pts.push_back(QPointF(sm.s, sm.value));
+    ser.color = QColor("#0078D4");
+    ser.label = m_seriesComp;
+    m_liPlot->setSeries({ ser });
+    m_liPlot->setLabels(I18n::tr("h5_li_x"), m_seriesComp);
+    m_liPlot->clearYRange();
+    m_liPlot->setVisible(true);
+
+    m_liNote->setVisible(true);
+    m_liNote->setText(I18n::tr("h5_li_res")
+        .arg(QString::number(res.integral, 'g', 6),
+             QString::number(res.length, 'g', 6),
+             QString::number(res.mean, 'g', 6),
+             QString::number(res.maxAbs, 'g', 6))
+        .arg(res.samples.size())
+        .arg(sliceCaption(axis)));
+}
+
+
+// ── 表示中の断面を全フレームぶん読む (全体時系列と Schroeder 減衰で共用) ──
+// コマごとの max と RMS = √(平均(値²)) を返す。GUI スレッドで回すので読む
+// コマ数に上限を設け、間引いた歩幅を step へ返す (呼び側が画面に出す)。
+bool H5ViewerTab::readSliceSeries(QVector<double> &maxOut,
+                                  QVector<double> &rmsOut,
+                                  QVector<double> &timeOut,
+                                  int &step, int &cells, QString *err)
+{
+    maxOut.clear(); rmsOut.clear(); timeOut.clear();
+    step = 1; cells = 0;
+    if (!m_seriesMode || m_nframes <= 1) return false;
+
+    const int axis = sliceAxis();
+    const int idx = m_secPos[axis];
+    const int kMaxRead = 400;
+    while ((m_nframes + step - 1) / step > kMaxRead) ++step;
+
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+
+    for (int f = 0; f < m_nframes; f += step) {
+        QVector<double> d;
+        int rows = 0, cols = 0;
+        if (!H5Reader::readOfdSeriesFrame(m_filePath, m_seriesComp, f, axis,
+                                          idx, d, rows, cols, nullptr, err))
+            return false;
+        cells = rows * cols;
+        double mx = 0.0, sum2 = 0.0;
+        int n = 0;
+        for (const double v : d) {
+            if (!std::isfinite(v)) continue;
+            const double a = std::fabs(v);
+            if (a > mx) mx = a;
+            sum2 += v * v;
+            ++n;
+        }
+        maxOut.push_back(mx);
+        rmsOut.push_back((n > 0) ? std::sqrt(sum2 / double(n)) : 0.0);
+        timeOut.push_back(hasTime ? times[f] : double(f));
+    }
+    return !rmsOut.isEmpty();
+}
+
+// ── 全体時系列 (フレームごとの max / RMS) ─────────────────────────────────
+// 表示中の断面を全フレームぶん読み直して、コマごとに |値| の最大と
+// RMS = √(平均(値²)) を出す。**統計バッジ (現在コマの min/max/平均) とは
+// 別の前提の数字**なので、どの断面の何を出しているかを注記に必ず書く。
+//
+// ダイアログにはしない (自動実行でモーダルを開けない規約。それに断面の
+// 統計と並べて見たい)。重くならないよう読むコマ数に上限を設け、間引いた
+// ときはその旨を出す (黙って間引くと「全コマを見た結果」に見える)。
+void H5ViewerTab::showWholeSeries()
+{
+    if (!m_tsPlot || !m_tsNote) return;
+    if (!m_seriesMode || m_nframes <= 1) {
+        m_tsNote->setVisible(true);
+        m_tsPlot->setVisible(false);
+        m_tsNote->setText(I18n::tr("h5_ts_need"));
+        return;
+    }
+    QVector<double> mx, rms, tm;
+    int step = 1, cells = 0;
+    QString err;
+    if (!readSliceSeries(mx, rms, tm, step, cells, &err)) {
+        m_tsNote->setVisible(true);
+        m_tsPlot->setVisible(false);
+        m_tsNote->setText(I18n::tr("h5_ts_fail").arg(err));
+        return;
+    }
+    // 時刻が読めなければ横軸はコマ番号 (readSliceSeries が入れ替える)
+    QVector<double> times;
+    const bool hasTime =
+        H5Reader::readOfdSeriesTimes(m_filePath, m_seriesComp, times)
+        && times.size() >= m_nframes;
+    QVector<QPointF> maxPts, rmsPts;
+    for (int i = 0; i < mx.size(); ++i) {
+        maxPts.push_back(QPointF(tm[i], mx[i]));
+        rmsPts.push_back(QPointF(tm[i], rms[i]));
+    }
+    if (maxPts.isEmpty()) return;
+
+    MiniSeries sMax;
+    sMax.pts = maxPts;
+    sMax.color = QColor("#dc2626");
+    sMax.label = QStringLiteral("max");
+    MiniSeries sRms;
+    sRms.pts = rmsPts;
+    sRms.color = QColor("#0078D4");
+    sRms.label = QStringLiteral("RMS");
+    m_tsPlot->setSeries({ sMax, sRms });
+    m_tsPlot->setLabels(hasTime ? I18n::tr("h5_ts_x_time")
+                                : I18n::tr("h5_ts_x_frame"),
+                        m_seriesComp);
+    m_tsPlot->clearYRange();
+    m_tsPlot->setVisible(true);
+
+    // 何をどう出したか。読んだコマ数・セル数まで書く
+    QString note = I18n::tr("h5_ts_title")
+                       .arg(sliceCaption(sliceAxis()))
+                       .arg(maxPts.size())
+                       .arg(cells);
+    if (step > 1)
+        note += I18n::tr("h5_ts_sub").arg(step).arg(m_nframes);
+    // 山がどこかは図から読み取りにくいので数値でも書く
+    int best = 0;
+    for (int i = 1; i < maxPts.size(); ++i)
+        if (maxPts[i].y() > maxPts[best].y()) best = i;
+    note += QStringLiteral("  ") + I18n::tr("h5_ts_peak")
+                .arg(best * step)
+                .arg(QString::number(maxPts[best].y(), 'g', 4),
+                     QString::number(rmsPts[best].y(), 'g', 4));
+    m_tsNote->setVisible(true);
+    m_tsNote->setText(note);
+}
+
+// MATLAB / Octave 読み込みスクリプト (.m)。Python 版と同じく **ファイルを
+// 生成するだけ** で外部ツールの起動はしない。
+void H5ViewerTab::exportMatlabScript()
+{
+    if (m_filePath.isEmpty() || m_dsets.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("h5_integration"),
+                                 I18n::tr("h5_int_need_file"));
+        return;
+    }
+    const QFileInfo fi(m_filePath);
+    QStringList lines;
+    lines << QStringLiteral("% OpenFDTD-X (H5 アニメタブ) が生成した "
+                            "MATLAB / Octave 読み込みスクリプト")
+          << QStringLiteral("% 対象: %1").arg(m_filePath)
+          << QStringLiteral("% 生成時点のデータセット (実スキーマ):");
+    for (const QString &l : schemaLines(m_dsets))
+        lines << QStringLiteral("%") + l;
+    lines << QString();
+    lines += buildMatlabCode(m_filePath, m_dsets);
+    tabhelp::saveTextFile(this, I18n::tr("h5_int_matlab"),
+                          fi.completeBaseName() + QStringLiteral("_h5.m"),
+                          QStringLiteral("MATLAB script (*.m)"),
+                          lines.join(QLatin1Char('\n'))
+                              + QLatin1Char('\n'));
+}
+
 void H5ViewerTab::exportPythonScript(bool notebook)
 {
     if (m_filePath.isEmpty() || m_dsets.isEmpty()) {

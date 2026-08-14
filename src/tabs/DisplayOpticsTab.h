@@ -21,10 +21,13 @@ class QLineEdit;
 class QStackedWidget;
 class QTableWidget;
 
+#include "../optics/DisplayMetrics.h"
+
 namespace ofd {
 
 class Project;
 class SectionBox;
+class MiniPlot;
 
 class DisplayOpticsTab : public QScrollArea {
     Q_OBJECT
@@ -45,6 +48,8 @@ private:
     QWidget *buildLcdPage();            // LCD/偏光系 解析 (共有セクションの中身)
 
     void recomputeArwg();               // 導波路コンバイナの評価表
+    // 評価表と同じ帯域・同じ閉形式で 2 つの図を作る (別計算にしない)
+    void refreshArwgPlots(const ofd::displayoptics::WaveguideFov &fov);
     void recomputeOled();
     void recomputeMicroLed();
     void recomputeLcd();
@@ -79,6 +84,13 @@ private:
     QCheckBox      *m_threeGratings;
     QCheckBox      *m_rcwaOptimize;
     QTableWidget   *m_metricTable;
+    // 押されるまでは隠す 2 つの図 (アイボックス幅 / FOV トレードオフ)
+    MiniPlot       *m_eyeboxPlot = nullptr;
+    QLabel         *m_eyeboxNote = nullptr;
+    MiniPlot       *m_tradeoffPlot = nullptr;
+    QLabel         *m_tradeoffNote = nullptr;
+    bool            m_showEyebox = false;
+    bool            m_showTradeoff = false;
 
     // OLED
     QCheckBox      *m_bottomEmission;

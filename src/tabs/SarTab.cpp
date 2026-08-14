@@ -496,12 +496,15 @@ SarTab::SarTab(Project *project, QWidget *parent)
     // ── 出力 / Output ───────────────────────────────────────────────────────
     auto *so = new SectionBox(I18n::tr("sar_out_section"), body);
     auto *ob = new QHBoxLayout();
-    // 出力 3 ボタンは未配線 — 押せる形で放置しない (絶対規則 5)
+    // 出力 3 ボタンは未配線 — 押せる形で放置しない (絶対規則 5)。
+    // 理由は「作図が未実装」ではない: **SAR 分布そのものを計算していない**ので
+    // 描く元データが無い (上の指標表も「未評価」)。理由文を取り違えると
+    // 「絵さえ描けば出せる」と読めてしまうので kEngine にする
     auto *distBtn   = new QPushButton(I18n::tr("sar_btn_dist"), so);
     auto *animBtn   = new QPushButton(I18n::tr("sar_btn_anim"), so);
     auto *reportBtn = new QPushButton(I18n::tr("sar_btn_report"), so);
     for (auto *b : { distBtn, animBtn, reportBtn })
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     ob->addWidget(distBtn);
     ob->addWidget(animBtn);
     ob->addWidget(reportBtn);

@@ -409,12 +409,14 @@ UltrasoundTab::UltrasoundTab(Project *project, QWidget *parent)
     m_outStack->addWidget(buildSonarOut());     // 3 sonar
     so->vbox()->addWidget(m_outStack);
     auto *hb = new QHBoxLayout();
-    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ
+    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ。
+    // 理由は「作図が未実装」ではない: **power-law 吸収を含む波動計算が無い**ので
+    // 音場そのものが無く、ビームプロファイルも時間発展も持っていない
     auto *beamBtn   = new QPushButton(I18n::tr("us_btn_beam"), so);
     auto *animBtn   = new QPushButton(I18n::tr("us_btn_anim"), so);
     auto *reportBtn = new QPushButton(I18n::tr("us_btn_report"), so);
     for (QPushButton *b : { beamBtn, animBtn, reportBtn }) {
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         hb->addWidget(b);
     }
     hb->addStretch(1);

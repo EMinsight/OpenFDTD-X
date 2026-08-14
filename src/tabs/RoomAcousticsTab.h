@@ -101,6 +101,27 @@ private:
     bool   m_valid = false;
 };
 
+// 客席面の LF (側方エネルギー比) マップ。StiMapWidget と同じ格子で、
+// 各点の LF を core/RoomAcoustics の lateralEnergy で実計算する。
+// **1 次鏡像法の幾何推定**なので、その旨を画面に明示すること。
+class LfMapWidget : public QWidget {
+    Q_OBJECT
+public:
+    explicit LfMapWidget(Project *project, QWidget *parent = nullptr);
+    void recompute();
+    double mean() const { return m_mean; }
+    double lo() const   { return m_lo; }
+    double hi() const   { return m_hi; }
+    bool   valid() const { return m_valid; }
+protected:
+    void paintEvent(QPaintEvent *) override;
+private:
+    Project *m_p;
+    QVector<double> m_values;
+    double m_mean = 0, m_lo = 0, m_hi = 0;
+    bool   m_valid = false;
+};
+
 class RoomAcousticsTab : public QScrollArea {
     Q_OBJECT
 public:
@@ -138,6 +159,10 @@ private:
     void refreshIrPage();        // IR解析: 帯域別指標 / 減衰曲線 / 検証表
     void refreshSpatialPage();   // 空間印象: LF/LFC (幾何) / G_late / 未計算欄
     void refreshReinforcePage(); // 電気音響: 配置 / ディレイ / STI / GBF
+    // notch 候補の表示更新 (チェックの ON/OFF)
+    void refreshNotchSuggestions(bool on);
+    // LF マップの表示 (ボタン起動)
+    void showLfMap();
     void runMeasuredIr();        // 実測 IR (WAV) を解析して m_measIr を更新
     QVector<PaSpeaker> speakerLayout() const;   // 室寸法からの自動配置
     void applyNoiseSources();     // 騒音源内訳: widgets → model
@@ -204,6 +229,12 @@ private:
     StiMapWidget *m_stiMap;
     QLabel       *m_stiBadge, *m_stiUniBadge, *m_splNote;
     QLabel       *m_gbfBadge, *m_micPos, *m_spNote, *m_delayNote, *m_gbfNote;
+    // notch 候補 (室のモードから求める。鳴く周波数の予測ではない)
+    QTableWidget *m_notchTable = nullptr;
+    QLabel       *m_notchNote = nullptr;
+    // LF マップ (客席面。押されるまで隠しておく)
+    LfMapWidget  *m_lfMap = nullptr;
+    QLabel       *m_lfMapNote = nullptr;
 
     // ステージ/可変音響
     QLabel *m_stageRtBadge;

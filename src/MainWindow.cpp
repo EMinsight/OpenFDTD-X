@@ -690,8 +690,8 @@ void MainWindow::buildLeftNav(QWidget *parent)
     // H5アニメの現在フレーム → 3D シーン (タブ ↔ CenterPane の直接依存を
     // 作らないよう MainWindow が中継する。RoomAcousticsTab と同じ流儀)
     if (auto *h5v = qobject_cast<H5ViewerTab *>(m_tabH5Viewer)) {
-        connect(h5v, &H5ViewerTab::sceneSliceReady, this,
-                [this](const H5SliceForScene &sl) {
+        connect(h5v, &H5ViewerTab::sceneSlicesReady, this,
+                [this](const QVector<H5SliceForScene> &sl) {
                     m_center->showAnimationSlice(sl);
                 });
         connect(h5v, &H5ViewerTab::sceneSliceCleared, this,

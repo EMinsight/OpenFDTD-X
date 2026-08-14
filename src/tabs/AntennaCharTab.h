@@ -7,6 +7,8 @@
 #include <QScrollArea>
 #include <QVector>
 
+#include "../io/KernelResultReader.h"
+
 class QCheckBox;
 
 class QLabel;
@@ -23,8 +25,14 @@ public:
     explicit AntennaCharTab(Project *project, QWidget *parent = nullptr);
 
 private:
+    // CSV / HDF5 の共通の読み取り (単一の出所)
+    bool readExportSource(QString *dir, QString *base,
+                          QVector<FeedSweep> *feeds,
+                          QVector<FarPattern> *cuts) const;
+
     // 直近の計算結果 (給電点表 + 遠方界パターン) を CSV へ書き出す
     void exportCsv();
+    void exportH5();
     QLabel *m_exportNote = nullptr;
     // far1d.log から求めたパターン指標 (面ごと 1 行)
     QTableWidget *m_metrics = nullptr;

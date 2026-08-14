@@ -85,6 +85,9 @@ std::vector<SpectrumPoint> spectrum(const StackAtLambda &stack,
 struct AnglePoint {
     double aoi_deg = 0;
     double Rs = 0, Rp = 0, Ts = 0, Tp = 0;
+    // 吸収率。**SpectrumPoint と同じ FilmResponse::A をそのまま運ぶ**
+    // (呼び出し側で 1 − R − T を組み直すと定義が二重になる)
+    double As = 0, Ap = 0;
 };
 
 // 入射角掃引 (λ 固定)。stack が false を返す λ では空を返す。

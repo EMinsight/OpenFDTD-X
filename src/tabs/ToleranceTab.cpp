@@ -421,12 +421,14 @@ ToleranceTab::ToleranceTab(Project *project, QWidget *parent)
     sRes->vbox()->addWidget(noteLabel(I18n::tr("tol_res_note"), sRes));
 
     auto *btnRow = new QHBoxLayout();
-    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ
+    // 3 ボタンとも未配線 → 無効化 + 「未実装」ツールチップ。
+    // 理由は「作図が未実装」ではない: **モンテカルロ試行を回していない**ので
+    // 感度も歩留まりも元になる標本が無い (上の歩留まりバッジも「未計算」)
     auto *reportBtn = new QPushButton(I18n::tr("tol_report"), sRes);
     auto *sensBtn   = new QPushButton(I18n::tr("tol_sensitivity"), sRes);
     auto *robustBtn = new QPushButton(I18n::tr("tol_robust"), sRes);
     for (QPushButton *b : { reportBtn, sensBtn, robustBtn }) {
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kPlot));
+        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         btnRow->addWidget(b);
     }
     btnRow->addStretch(1);

@@ -107,9 +107,29 @@ public:
                         int axis, double pos_m,
                         double u0, double u1, double v0, double v1,
                         const QString &label, double scaleMax = 0.0);
+
+    // ── 複数断面 (直交する断面を同時に載せる) ─────────────────────────────
+    // H5アニメの「3 面ビュー」を 3D にもそのまま出すための入口。1 枚ぶんの
+    // 指定を並べて渡す。**正規化は全断面で共通の最大値**に揃える (面ごとに
+    // 割ると、同じ色が面によって違う強さを意味することになり、カラーバーが
+    // 嘘になる)。共通値は指定 scaleMax の最大、無指定なら全データの最大。
+    struct SliceSpec {
+        QVector<double> cells;
+        int    rows = 0, cols = 0;
+        int    axis = 2;              // 0=X 一定 / 1=Y 一定 / 2=Z 一定
+        double pos_m = 0.0;
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        QString label;
+        double scaleMax = 0.0;
+    };
+    void setResultSlices(const QVector<SliceSpec> &specs);
+
+    // 再生コントロールの状況を凡例へ出す (H5アニメ再生中のコマ位置)。
+    // frameCount <= 0 なら表示しない (静止画の断面では出さない)。
+    void setSlicePlayback(int frame, int frameCount, bool playing);
+
     void clearResultSlice();
-    bool hasResultSlice() const
-    { return m_sliceRows > 0 && m_sliceCols > 0 && !m_sliceCells.isEmpty(); }
+    bool hasResultSlice() const { return !m_slices.isEmpty(); }
 
 public slots:
     void fitView();
@@ -136,8 +156,10 @@ protected:
 
 private:
     QPointF projectPoint(double x, double y, double z) const;
-    // 面内座標 (u, v) [m] → 画面座標 (m_sliceAxis の平面上)
-    QPointF projectSlicePoint(double u, double v) const;
+    // 正射影の奥行き (**大きいほど手前**)。projectPoint と同じ基底の第 3 軸
+    // e3 = (−sinA·sinE, cosA·sinE, cosE) との内積。画家のアルゴリズムで
+    // 断面片を並べ替えるのに使う (io/MeshProjection と同じ向きの規約)。
+    double sceneDepth(double x, double y, double z) const;
 
     // ── シーンの範囲と投影変換 (paintEvent とドロップ処理で共用) ───────────
     // メッシュ領域 [lo, hi]。1 軸も広がりが無ければ既定の箱を入れて false。
@@ -177,7 +199,23 @@ private:
     void drawResultSlice(QPainter &p);   // 実データ断面 (無ければ未読込の明示)
     void drawSliceLegend(QPainter &p, int decim);
     void drawRayOverlay(QPainter &p);
-    void rebuildSliceImage();            // 断面データ → 色画像 (jet)
+
+    // 3D シーンに載っている断面 1 枚。色画像は共通スケール m_sliceMax で作る
+    struct Slice {
+        QVector<double> cells;
+        int    rows = 0, cols = 0;
+        int    axis = 2;
+        double pos = 0.0;
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        QString label;
+        QImage img;
+        int    decim = 1;
+    };
+    // 面内座標 (u, v) [m] → シーン座標 / 画面座標
+    void    sliceScenePoint(const Slice &s, double u, double v,
+                            double out[3]) const;
+    QPointF projectSlicePoint(const Slice &s, double u, double v) const;
+    void rebuildSliceImages();           // 断面データ → 色画像 (jet)
 
     Project *m_project;
     Domain   m_domain = Domain::EM;
@@ -187,17 +225,15 @@ private:
     bool     m_dark = false;
     ViewStyle m_viewStyle = ViewStyle::Solid;
 
-    // 結果断面 (実データ)。空 = 未読込
-    QVector<double> m_sliceCells;
-    int      m_sliceRows = 0, m_sliceCols = 0;
-    int      m_sliceAxis = 2;
-    double   m_slicePos = 0.0;
-    double   m_sliceU0 = 0.0, m_sliceU1 = 0.0;
-    double   m_sliceV0 = 0.0, m_sliceV1 = 0.0;
-    double   m_sliceMax = 0.0;       // 正規化に使う最大値 (実データの絶対値)
-    QString  m_sliceLabel;
-    QImage   m_sliceImg;             // 断面の色画像 (setResultSlice で作る)
+    // 結果断面 (実データ)。空 = 未読込。複数あるときは直交する断面同士
+    QVector<Slice> m_slices;
+    double   m_sliceMax = 0.0;       // 全断面で共通の正規化最大値 (絶対値)
+    QString  m_sliceLabel;           // 凡例の説明 (複数なら " / " で連結)
     int      m_sliceDecim = 1;       // 画像化で束ねたセル数 (1 = 等倍)
+    // 再生コントロールの状況 (凡例のコマ表示。frameCount <= 0 で非表示)
+    int      m_sliceFrame = 0;
+    int      m_sliceFrameCount = 0;
+    bool     m_slicePlaying = false;
     double   m_vScale = 1.0;         // 深度方向の表示倍率 (水中音響のみ)
 
     // ── ドラッグ&ドロップ配置の状態 ──

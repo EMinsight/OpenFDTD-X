@@ -11,6 +11,7 @@
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
+#include "../acoustics/core/RoomModes.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -440,6 +441,21 @@ const bool s_i18n = [] {
     I18n::reg("rah_auto_aim", "🎯 自動エイミング最適化",
               "🎯 Auto-aim optimisation");
     I18n::reg("rah_gll_lib", "GLLライブラリ", "GLL library");
+    // 無効化の理由は「なぜできないのか」を書く (汎用の「未実装」にしない)
+    I18n::reg("rah_aim_why",
+        "指向性モデルを持たないため、エイミングを変えても計算に影響しません "
+        "(seatMetrics は距離とゲインだけの無指向近似)。最適化しても差が出ない "
+        "ので出していません。表のエイミング欄は設計受音点への方向です",
+        "There is no directivity model, so aiming cannot change any computed "
+        "figure (seatMetrics is omnidirectional, distance and gain only). "
+        "Optimising it would produce no difference. The aiming column shows "
+        "the direction to the design receiver");
+    I18n::reg("rah_gll_why",
+        "スピーカーの指向性データ (GLL) を同梱していません。無指向近似のまま "
+        "機種名だけ並べると、選んだ機種で結果が変わるように見えてしまいます",
+        "No loudspeaker directivity data (GLL) is bundled. Listing model names "
+        "while the model stays omnidirectional would suggest the choice "
+        "changes the result");
     I18n::reg("rah_delay_section", "遅延・ディレイタワー", "Delay");
     I18n::reg("rah_delay_row", "ディレイ設定", "Delay settings");
     I18n::reg("rah_haas", "距離補正を自動適用 (Haas効果)",
@@ -453,8 +469,56 @@ const bool s_i18n = [] {
     I18n::reg("rah_mic_pos", "マイク位置", "Mic position");
     I18n::reg("rah_gbf_hint", "(推奨 >6dB) — リンギング前の余裕",
               "(recommend >6 dB) — margin before ringing");
-    I18n::reg("rah_notch", "notchフィルタ自動提案 (自動提案は未実装)",
-              "Auto-suggest notch filters (auto-suggestion not implemented)");
+    I18n::reg("rah_notch", "notch フィルタの候補を出す",
+              "Suggest notch filter candidates");
+    // **鳴く周波数の予測ではない**ことを必ず併記する
+    I18n::reg("rah_notch_note",
+        "▸ 室のモード (剛壁・直方体の閉形式) のうち、シュレーダー周波数 %1 Hz "
+        "以下のものを候補として出しています。「どの周波数で鳴くかはマイクと "
+        "スピーカの位置・指向性を含むループ応答で決まり、ここでは予測して "
+        "いません」。提案 Q はモードの半値幅 Δf = 2.2/T60 = %2 Hz から "
+        "Q = f/Δf として出した値です (T60(mid) = %3 s を使用)。"
+        "面 2 つで往復する軸モードが最も強く、接線 (4 面)・斜め (6 面) の順に "
+        "弱くなります。「重なり」は半値幅の中に重なるモードの数です",
+        "▸ Listed are the room modes (rigid-wall shoebox closed form) below "
+        "the Schroeder frequency %1 Hz. The frequency at which the system "
+        "actually rings depends on the loop response including microphone and "
+        "loudspeaker placement and directivity, which is not predicted here. "
+        "The suggested Q comes from the modal bandwidth "
+        "df = 2.2/T60 = %2 Hz as Q = f/df (using T60(mid) = %3 s). "
+        "Axial modes (2 surfaces) are the strongest, then tangential (4) and "
+        "oblique (6). Coincident counts modes within one bandwidth");
+    I18n::reg("rah_lf_caption", "客席面の LF (側方エネルギー比)",
+              "LF over the seating area");
+    I18n::reg("rah_lf_map_note",
+        "▸ 舞台前中央の想定音源から、客席面 (x 0.10L〜0.95L, y 0.08W〜0.92W, "
+        "z = 1.2 m) の各点で LF を計算しています。「1 次鏡像法のエコーグラム "
+        "だけを使った幾何推定」で、2 次以上の反射・拡散反射は含みません。"
+        "色は ISO 3382-1 の望ましい範囲 0.10〜0.35 を赤 (下端) 〜 緑 (上端) に "
+        "割り当てたものです。平均 %1 · 範囲 %2 〜 %3",
+        "▸ LF is computed at each point of the seating area "
+        "(x 0.10L to 0.95L, y 0.08W to 0.92W, z = 1.2 m) from a source at "
+        "the front centre of the stage. It is a geometric estimate from the "
+        "first-order image-source echogram only; second and higher order and "
+        "diffuse reflections are not included. Colour maps the ISO 3382-1 "
+        "preferred range 0.10 to 0.35 from red (low) to green (high). "
+        "mean %1, range %2 to %3");
+    I18n::reg("rah_bqi_map_why",
+        "BQI は室ごとの公表値を引いているだけで、客席面の分布を求める模型を "
+        "持っていません。分布を描くと持っていない情報を見せることになるため "
+        "出していません",
+        "BQI here is a published per-hall figure; there is no model for its "
+        "variation over the seating area, so no map is drawn");
+    I18n::reg("rah_notch_none",
+        "候補がありません (室の寸法か T60 が読めません)",
+        "No candidates (the room dimensions or T60 cannot be read)");
+    I18n::reg("rah_notch_col_f", "周波数 [Hz]", "frequency [Hz]");
+    I18n::reg("rah_notch_col_kind", "モード", "mode");
+    I18n::reg("rah_notch_col_q", "提案 Q", "suggested Q");
+    I18n::reg("rah_notch_col_n", "重なり", "coincident");
+    I18n::reg("rah_notch_axial", "軸", "axial");
+    I18n::reg("rah_notch_tang", "接線", "tangential");
+    I18n::reg("rah_notch_obl", "斜め", "oblique");
     // 出力 (追加ボタン)
     I18n::reg("rah_export_aural", "🎧 各席の可聴化", "🎧 Per-seat auralization");
     I18n::reg("rah_export_ease", "📐 ODEON/EASE 形式エクスポート",
@@ -1100,6 +1164,82 @@ void StiMapWidget::paintEvent(QPaintEvent *)
     p.restore();
 }
 
+// ── LfMapWidget ─────────────────────────────────────────────────────────────
+// STI マップと同じ客席面の格子で、各点の LF を lateralEnergy で実計算する。
+// 音源は舞台上の想定音源 (sourcePos と同じ位置) 1 点。
+LfMapWidget::LfMapWidget(Project *project, QWidget *parent)
+    : QWidget(parent), m_p(project)
+{
+    setMinimumSize(300, 160);
+    setMaximumWidth(360);
+    recompute();
+}
+
+void LfMapWidget::recompute()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    // 音源は舞台前中央 (RoomAcousticsTab::sourcePos と同じ定義)
+    const double src[3] = { 0.05 * a.roomL, 0.50 * a.roomW, 1.5 };
+
+    m_values.clear();
+    double sum = 0.0;
+    int n = 0;
+    m_lo = 1e300; m_hi = -1e300;
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            const double t = (r + 0.5) / kStiRows;
+            const double u = (c + 0.5) / kStiCols;
+            const double pos[3] = { (0.10 + 0.85 * t) * a.roomL,
+                                    (0.08 + 0.84 * u) * a.roomW, 1.2 };
+            const LateralEnergy le = lateralEnergy(a, src, pos);
+            if (!le.valid) { m_values.push_back(NAN); continue; }
+            m_values.push_back(le.LF);
+            sum += le.LF; ++n;
+            m_lo = std::min(m_lo, le.LF);
+            m_hi = std::max(m_hi, le.LF);
+        }
+    }
+    m_valid = (n > 0);
+    m_mean = m_valid ? sum / n : 0.0;
+    if (!m_valid) { m_lo = m_hi = 0.0; }
+    update();
+}
+
+void LfMapWidget::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    p.save();
+    p.scale(width() / 300.0, height() / 160.0);
+    QFont f = p.font();
+    f.setPointSizeF(7.5);
+    p.setFont(f);
+    if (!m_valid) {
+        p.setPen(palette().text().color());
+        p.drawText(QRectF(0, 60, 300, 20), Qt::AlignCenter,
+                   ofd::I18n::tr("rah_notcomputed"));
+        p.restore();
+        return;
+    }
+    for (int r = 0; r < kStiRows; ++r) {
+        for (int c = 0; c < kStiCols; ++c) {
+            const double lf = m_values.value(r * kStiCols + c, NAN);
+            if (std::isnan(lf)) continue;
+            // ISO 3382-1 の望ましい範囲 0.10〜0.35 を赤→緑で表示する
+            // (STI マップと同じ「範囲の下端が赤・上端が緑」の読み方)
+            const double g = qBound(0.0, (lf - 0.10) / 0.25, 1.0);
+            p.fillRect(QRectF(10 + c * 17, 10 + r * 11, 16, 10),
+                       QColor(int(220 - g * 180), int(60 + g * 150), 40));
+        }
+    }
+    p.setPen(palette().text().color());
+    p.drawText(QRectF(0, 144, 300, 14), Qt::AlignCenter,
+               ofd::I18n::tr("rah_lf_caption"));
+    p.restore();
+}
+
 // ── RoomAcousticsTab ────────────────────────────────────────────────────────
 RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
@@ -1718,12 +1858,21 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
     // LF/BQI マップ表示は未配線 (絶対規則 5)
     auto *lfMapBtn  = new QPushButton(I18n::tr("rah_lf_map_btn"), sm);
     auto *bqiMapBtn = new QPushButton(I18n::tr("rah_bqi_map_btn"), sm);
-    tabhelp::markNotImplemented(lfMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
-    tabhelp::markNotImplemented(bqiMapBtn, I18n::tr(tabhelp::notimpl::kPlot));
+    connect(lfMapBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::showLfMap);
+    // BQI は室ごとの公表値で、客席面の分布を求める模型が無い。
+    // 分布を描くと持っていない情報を見せることになるので出さない
+    tabhelp::markNotImplemented(bqiMapBtn, I18n::tr("rah_bqi_map_why"));
     maps->addWidget(lfMapBtn);
     maps->addWidget(bqiMapBtn);
     maps->addStretch(1);
     sm->vbox()->addLayout(maps);
+    m_lfMap = new LfMapWidget(m_p, sm);
+    m_lfMap->setVisible(false);
+    sm->vbox()->addWidget(m_lfMap);
+    m_lfMapNote = makeHint(QString(), sm);
+    m_lfMapNote->setVisible(false);
+    sm->vbox()->addWidget(m_lfMapNote);
     v->addWidget(sm);
     v->addStretch(1);
     return page;
@@ -2099,8 +2248,8 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     auto *aimBtn = new QPushButton(I18n::tr("rah_auto_aim"), sl);
     auto *gllBtn = new QPushButton(I18n::tr("rah_gll_lib"), sl);
     tabhelp::markNotImplemented(addSpBtn, I18n::tr(tabhelp::notimpl::kData));
-    tabhelp::markNotImplemented(aimBtn, I18n::tr(tabhelp::notimpl::kEngine));
-    tabhelp::markNotImplemented(gllBtn, I18n::tr(tabhelp::notimpl::kData));
+    tabhelp::markNotImplemented(aimBtn, I18n::tr("rah_aim_why"));
+    tabhelp::markNotImplemented(gllBtn, I18n::tr("rah_gll_why"));
     lsBtns->addWidget(addSpBtn);
     lsBtns->addWidget(aimBtn);
     lsBtns->addWidget(gllBtn);
@@ -2152,14 +2301,93 @@ QWidget *RoomAcousticsTab::buildReinforcePage()
     m_gbfNote = makeHint(QString(), sg);
     sg->vbox()->addWidget(m_gbfNote);
     auto *notch = makeCheck(I18n::tr("rah_notch"), false, sg);
-    tabhelp::markNotImplemented(notch, I18n::tr(tabhelp::notimpl::kEngine));   // notch 自動提案は未実装
     sg->vbox()->addWidget(notch);
+    m_notchTable = makeStaticTable(sg,
+        { I18n::tr("rah_notch_col_f"), I18n::tr("rah_notch_col_kind"),
+          I18n::tr("rah_notch_col_q"), I18n::tr("rah_notch_col_n") }, 1);
+    m_notchTable->setVisible(false);
+    sg->vbox()->addWidget(m_notchTable);
+    m_notchNote = makeHint(QString(), sg);
+    m_notchNote->setVisible(false);
+    sg->vbox()->addWidget(m_notchNote);
+    connect(notch, &QCheckBox::toggled, this,
+            [this](bool on) { refreshNotchSuggestions(on); });
     v->addWidget(sg);
     v->addStretch(1);
 
     connect(m_haasCheck, &QCheckBox::toggled, this,
             [this] { refreshReinforcePage(); });
     return page;
+}
+
+
+
+// ── LF マップ (客席面) ────────────────────────────────────────────────────
+// 押されたときだけ計算して出す (常時計算しない — 格子 × 1 次鏡像法なので
+// 室が大きいと重い)。何をどう出したかは注記に必ず書く。
+void RoomAcousticsTab::showLfMap()
+{
+    if (!m_lfMap || !m_lfMapNote) return;
+    m_lfMap->recompute();
+    m_lfMap->setVisible(true);
+    m_lfMapNote->setVisible(true);
+    const QString dash = QString::fromUtf8("—");
+    m_lfMapNote->setText(I18n::tr("rah_lf_map_note")
+        .arg(m_lfMap->valid() ? QString::number(m_lfMap->mean(), 'f', 2) : dash,
+             m_lfMap->valid() ? QString::number(m_lfMap->lo(), 'f', 2) : dash,
+             m_lfMap->valid() ? QString::number(m_lfMap->hi(), 'f', 2) : dash));
+}
+
+// ── notch フィルタの候補 ──────────────────────────────────────────────────
+// 室のモード (剛壁・直方体の閉形式) のうち、シュレーダー周波数以下のものを
+// 候補として出す。**どの周波数で鳴くかはループ応答で決まるのでここでは
+// 予測しない** — その区別を注記に必ず書く (絶対規則 5 と同じ趣旨)。
+void RoomAcousticsTab::refreshNotchSuggestions(bool on)
+{
+    if (!m_notchTable || !m_notchNote) return;
+    if (!on) {
+        m_notchTable->setVisible(false);
+        m_notchNote->setVisible(false);
+        return;
+    }
+    namespace rm = ofd::acoustics::roommodes;
+    const AcousticOpts &a = m_p->acoustic();
+    // T60 は中音域 (500 Hz / 1 kHz の平均) — 画面の他の指標と同じ取り方
+    const double T = (rt60(a, 2) + rt60(a, 3)) / 2.0;
+    const double c = rm::soundSpeed(20.0);       // 20 ℃ の乾燥空気
+    const std::vector<rm::NotchCandidate> cs =
+        rm::notchCandidates(a.roomL, a.roomW, a.roomH, c, T, 24);
+
+    m_notchNote->setVisible(true);
+    if (cs.empty()) {
+        m_notchTable->setVisible(false);
+        m_notchNote->setText(I18n::tr("rah_notch_none"));
+        return;
+    }
+    const double fs = rm::schroederFrequency(T, a.roomL * a.roomW * a.roomH);
+    const double bw = 2.2 / T;
+
+    // 行数が変わるので高さも合わせる (makeStaticTable は生成時の行数で
+    // 最小高さを決めるため、増やしただけでは表示領域が足りない)
+    m_notchTable->setRowCount(int(cs.size()));
+    m_notchTable->setMinimumHeight(int(cs.size()) * 30 + 42);
+    for (int i = 0; i < int(cs.size()); ++i) {
+        const rm::NotchCandidate &n = cs[std::size_t(i)];
+        const char *kindKey = (n.mode.kind == rm::ModeAxial) ? "rah_notch_axial"
+                            : (n.mode.kind == rm::ModeTangential)
+                                  ? "rah_notch_tang" : "rah_notch_obl";
+        m_notchTable->setItem(i, 0, numItem(QString::number(n.freqHz, 'f', 1)));
+        m_notchTable->setItem(i, 1, new QTableWidgetItem(
+            QStringLiteral("%1 (%2,%3,%4)").arg(I18n::tr(kindKey))
+                .arg(n.mode.nx).arg(n.mode.ny).arg(n.mode.nz)));
+        m_notchTable->setItem(i, 2, numItem(QString::number(n.q, 'f', 1)));
+        m_notchTable->setItem(i, 3, numItem(QString::number(n.coincident)));
+    }
+    m_notchTable->setVisible(true);
+    m_notchNote->setText(I18n::tr("rah_notch_note")
+        .arg(QString::number(fs, 'f', 1),
+             QString::number(bw, 'f', 2),
+             QString::number(T, 'f', 2)));
 }
 
 QWidget *RoomAcousticsTab::buildNoisePage()

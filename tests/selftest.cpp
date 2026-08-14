@@ -36,6 +36,9 @@
 #include "optics/PhotonicCircuit.h"
 #include "io/AbsorptionCsv.h"
 #include "io/MeshProjection.h"
+#include "io/SlicePieces.h"
+#include "io/DxfOutline.h"
+#include "io/SliceLineIntegral.h"
 #include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
@@ -67,6 +70,7 @@
 #include "io/MeshImporter.h"
 #include "io/Touchstone.h"
 #include "io/Voxelizer.h"
+#include "io/H5Writer.h"
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
 #include "optics/FilmNotation.h"
@@ -105,6 +109,7 @@
 #include "em/Directivity.h"
 #include "io/RcwaEfficiency.h"
 #include "io/SeriesCsv.h"
+#include "io/BandSpectrumCsv.h"
 #include "optics/DispersionModels.h"
 #include "optics/GaussianBeam.h"
 #include "optics/PlasmaDispersion.h"
@@ -581,6 +586,136 @@ static void testVoxelizer()
         // 球の表面が通るのは殻のセルだけ (全セルの一部)
         check(s1.boundaryCells > 0 && s1.boundaryCells < 10 * 10 * 10,
               "pvf: only the shell cells are re-sampled");
+    }
+
+    // ── 空間索引 (探索の高速化) ───────────────────────────────────────────
+    // 索引は「調べる三角形を減らす」だけで、判定そのものは変えない。
+    // よって **占有セル・直方体・体積が 1 つ残らず一致**しなければならない。
+    // 速くなったことは交差判定の回数 (決定的) で確かめる。
+    {
+        // 軸ごとに分割数を変える (10/10/10 のような等寸法だと軸の取り違えが
+        // 隠れる)。節点も原点非対称にして、対称性で通ってしまう穴を塞ぐ。
+        MeshAxis axA; axA.nodes = { -1.10, 0.90 }; axA.divs = { 13 };
+        MeshAxis axB; axB.nodes = { -0.95, 1.05 }; axB.divs = { 17 };
+        MeshAxis axC; axC.nodes = { -1.05, 0.95 }; axC.divs = { 19 };
+
+        // 傾けて平行移動した箱 — 軸に平行な面が 1 つも無い形。
+        // (レイの傾き分の余裕が足りなければ、ここで境界が 1 セルずれる)
+        ImportedMesh tilted = boxMesh(-0.5, -0.4, -0.3, 0.45, 0.35, 0.5);
+        {
+            const double ca = std::cos(0.37), sa = std::sin(0.37);
+            const double cb = std::cos(0.21), sb = std::sin(0.21);
+            for (int i = 0; i + 2 < tilted.vertices.size(); i += 3) {
+                const double x = tilted.vertices[i];
+                const double y = tilted.vertices[i + 1];
+                const double z = tilted.vertices[i + 2];
+                const double x1 = ca * x - sa * y, y1 = sa * x + ca * y;
+                const double z1 = cb * z - sb * y1, y2 = sb * z + cb * y1;
+                tilted.vertices[i]     = float(x1 + 0.07);
+                tilted.vertices[i + 1] = float(y2 - 0.11);
+                tilted.vertices[i + 2] = float(z1 + 0.13);
+            }
+            for (int a = 0; a < 3; ++a) {
+                tilted.bbox[a] = tilted.vertices[a];
+                tilted.bbox[a + 3] = tilted.vertices[a];
+            }
+            for (int i = 0; i + 2 < tilted.vertices.size(); i += 3)
+                for (int a = 0; a < 3; ++a) {
+                    const double v = tilted.vertices[i + a];
+                    tilted.bbox[a] = std::min<double>(tilted.bbox[a], v);
+                    tilted.bbox[a + 3] = std::max<double>(tilted.bbox[a + 3], v);
+                }
+        }
+
+        // 穴あきも入れる — レイ版が「壊れる」ケースでも壊れ方まで一致すること
+        ImportedMesh holed2 = cube;
+        holed2.vertices.resize(holed2.vertices.size() - 9);
+        --holed2.numTriangles;
+
+        struct Case { const char *name; const ImportedMesh *m; };
+        const ImportedMesh sph = sphereMesh(0.05, -0.08, 0.03, 0.52, 48, 24);
+        const Case cases[] = {
+            { "cube",   &cube   },
+            { "tilted", &tilted },
+            { "sphere", &sph    },
+            { "holed",  &holed2 },
+        };
+
+        for (const Case &c : cases) {
+            for (const bool pvf : { false, true }) {
+                VoxelOptions off; off.spatialIndex = false; off.pvf = pvf;
+                VoxelOptions on;  on.spatialIndex  = true;  on.pvf  = pvf;
+                const VoxelResult a = Voxelizer::voxelize(*c.m, axA, axB, axC,
+                                                          2, 8'000'000, off);
+                const VoxelResult b = Voxelizer::voxelize(*c.m, axA, axB, axC,
+                                                          2, 8'000'000, on);
+                check(a.ok && b.ok, "voxidx: both runs succeed");
+                check(a.occupied == b.occupied,
+                      "voxidx: the spatial index keeps the occupied count");
+                check(a.bricks.size() == b.bricks.size(),
+                      "voxidx: the spatial index keeps the brick count");
+                check(a.stairVolume == b.stairVolume,
+                      "voxidx: the spatial index keeps the staircase volume");
+                check(a.pvfVolume == b.pvfVolume,
+                      "voxidx: the spatial index keeps the pvf volume");
+                // 直方体は 1 個ずつ座標まで一致していること
+                // (総数だけ合っていて中身が違う、を通さない)
+                bool same = (a.bricks.size() == b.bricks.size());
+                for (int i = 0; same && i < a.bricks.size(); ++i)
+                    for (int g = 0; g < 6; ++g)
+                        if (a.bricks[i].g[g] != b.bricks[i].g[g]) same = false;
+                check(same, "voxidx: every brick is identical, coordinate "
+                            "by coordinate");
+                if (!same || a.occupied != b.occupied)
+                    std::fprintf(stderr,
+                                 "  (MISMATCH %s pvf=%d: %lld/%lld cells)\n",
+                                 c.name, int(pvf), (long long)a.occupied,
+                                 (long long)b.occupied);
+                // 索引が実際に枝刈りしていること
+                if (!pvf) {
+                    std::fprintf(stderr,
+                        "  (voxidx %s: %d bins, %lld entries, tests %lld → "
+                        "%lld (x%.1f fewer))\n",
+                        c.name, b.indexBins, (long long)b.indexEntries,
+                        (long long)a.triangleTests, (long long)b.triangleTests,
+                        b.triangleTests > 0
+                            ? double(a.triangleTests) / double(b.triangleTests)
+                            : 0.0);
+                    check(b.indexBins > 0, "voxidx: the index was built");
+                    check(b.triangleTests < a.triangleTests,
+                          "voxidx: the index really reduces the work");
+                }
+            }
+        }
+
+        // 三角形が増えるほど得になること (これが導入の理由そのもの)。
+        // 総当たりは 三角形数 に比例、索引ありはほぼ横ばいになる。
+        {
+            const ImportedMesh lo = sphereMesh(0, 0, 0, 0.5, 24, 12);
+            const ImportedMesh hi = sphereMesh(0, 0, 0, 0.5, 96, 48);
+            VoxelOptions off; off.spatialIndex = false;
+            VoxelOptions on;  on.spatialIndex  = true;
+            const VoxelResult lf = Voxelizer::voxelize(lo, axA, axB, axC, 2,
+                                                       8'000'000, off);
+            const VoxelResult hf = Voxelizer::voxelize(hi, axA, axB, axC, 2,
+                                                       8'000'000, off);
+            const VoxelResult li = Voxelizer::voxelize(lo, axA, axB, axC, 2,
+                                                       8'000'000, on);
+            const VoxelResult hi2 = Voxelizer::voxelize(hi, axA, axB, axC, 2,
+                                                        8'000'000, on);
+            const double growF = double(hf.triangleTests)
+                               / double(lf.triangleTests);
+            const double growI = double(hi2.triangleTests)
+                               / double(li.triangleTests);
+            std::fprintf(stderr,
+                "  (voxidx scaling: %d→%d tris; brute force x%.1f, "
+                "indexed x%.1f)\n",
+                lo.numTriangles, hi.numTriangles, growF, growI);
+            // 三角形は 16 倍。総当たりはそのまま 16 倍近く増える
+            check(growF > 10.0, "voxidx: brute force grows with the mesh");
+            check(growI < growF / 3.0,
+                  "voxidx: the index breaks the linear growth");
+        }
     }
 }
 
@@ -5560,7 +5695,47 @@ static void testThinFilmStack()
                   "tmm: angle sweep matches filmResponse");
             check(ap.back().Rs > ap.front().Rs,
                   "tmm: s-reflectance grows with angle");
+            // 吸収も filmResponse の値そのものであること (定義を二重に
+            // 持たない — 呼び出し側で 1−R−T を組み直さないための判定)
+            check(std::fabs(ap[30].As - r0.A) < 1e-12,
+                  "tmm: angle sweep carries the same A as filmResponse");
         }
+        // **無損失なら R + T + A = 1** (A は 0)。角度掃引の全点で成り立つ
+        bool sums = true, aZero = true;
+        for (std::size_t i = 0; i < ap.size(); ++i) {
+            if (std::fabs(ap[i].Rs + ap[i].Ts + ap[i].As - 1.0) > 1e-12)
+                sums = false;
+            if (std::fabs(ap[i].Rp + ap[i].Tp + ap[i].Ap - 1.0) > 1e-12)
+                sums = false;
+            // 1 − R − T の丸め残差があるので厳密 0 では判定しない
+            if (std::fabs(ap[i].As) > 1e-12 || std::fabs(ap[i].Ap) > 1e-12)
+                aZero = false;
+        }
+        check(sums, "tmm: R + T + A = 1 at every swept angle");
+        check(aZero, "tmm: a lossless stack absorbs nothing");
+    }
+
+    // ── (11b) 吸収のある層では A > 0 で、やはり R + T + A = 1 ────────────
+    {
+        // k > 0 の層を 1 枚入れる (**厚みと n を非対称な値にする** — 対称な
+        // 構成では偏波の取り違えが打ち消し合って検出できない)
+        const StackAtLambda lossy = [](double lam, StackSample &s) {
+            (void)lam;
+            s.n0 = 1.0; s.nsub = 1.52;
+            FilmLayer L; L.n = 2.35; L.k = 0.08; L.d_nm = 137.0;
+            s.layers.push_back(L);
+            return true;
+        };
+        const std::vector<AnglePoint> ap = angleSweep(lossy, 550.0, 0.0, 60.0, 25);
+        bool sums = true, someAbs = false;
+        for (std::size_t i = 0; i < ap.size(); ++i) {
+            if (std::fabs(ap[i].Rs + ap[i].Ts + ap[i].As - 1.0) > 1e-9)
+                sums = false;
+            if (ap[i].As > 0.01) someAbs = true;
+        }
+        check(!ap.empty() && sums,
+              "tmm: R + T + A = 1 also for an absorbing stack");
+        check(someAbs, "tmm: an absorbing layer actually absorbs");
     }
 
     // ── (12) メリット関数 ────────────────────────────────────────────────
@@ -8585,6 +8760,269 @@ static void testH5Reader()
 #endif
 }
 
+// ── アンテナ特性の HDF5 書き出し (io/H5Writer::writeAntennaPattern) ────────
+// AntennaCharTab の CSV と同じ読み取り結果 (KernelResultReader) を .h5 へ入れる
+// 経路。**カーネルのログ本文から実際に解析させてから書く**ので、タブが通る道
+// そのものを検証する。読み戻して 1 個ずつ突き合わせる。
+static void testAntennaH5()
+{
+    g_file = "antenna_h5";
+#ifndef OFD_USE_HDF5
+    check(!H5Writer::available(), "anth5: writer reports unavailable");
+    {
+        QTemporaryDir dir;
+        const QVector<FeedSweep> f(1);
+        QString err;
+        // HDF5 無しビルドでは「未実装」ではなく理由を返して false になること
+        check(!H5Writer::writeAntennaPattern(dir.filePath("x.h5"), f, {},
+                                             QStringLiteral("p.ofd"), &err),
+              "anth5: refuses without HDF5");
+        check(err.contains(QStringLiteral("USE_HDF5")),
+              "anth5: the reason names the build option");
+    }
+    std::printf("  (antenna h5 tests skipped: built without USE_HDF5)\n");
+#else
+    check(H5Writer::available(), "anth5: writer available");
+    QTemporaryDir dir;
+    check(dir.isValid(), "anth5: temp dir");
+
+    // 給電点 2 個 — **番号も z0 も点数も別々**にする (同じ値だと取り違えが
+    // 隠れる)。切断面も 5 点 / 7 点で長さを変え、**偏波成分の列は片方だけ**
+    // にする (実際の far1d.log も面によって列数が違う)。
+    const QString feedLog = QStringLiteral(
+        "Iterations = 1000, Convergence = 1.000e-03\n"
+        "\n"
+        "feed #2 (Z0[ohm] = 50.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  1.13000e+09     47.310     -3.790     21.024      1.684"
+        "    -21.470      1.187\n"
+        "  1.27000e+09     52.090      6.410     18.882     -2.323"
+        "    -18.020      1.288\n"
+        "  1.41000e+09     61.730     13.070     15.564     -3.296"
+        "    -12.940      1.611\n"
+        "\n"
+        "feed #7 (Z0[ohm] = 75.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  1.13000e+09     71.550     -9.130     13.755      1.755"
+        "    -19.880      1.229\n"
+        "  1.27000e+09     79.020      4.270     12.643     -0.683"
+        "    -24.360      1.128\n"
+        "\n"
+        "=== output files ===\n");
+    const QString farLog = QStringLiteral(
+        "#1 : X-plane, frequency[Hz] = 1.13000e+09\n"
+        "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+        "   E-phi[deg]\n"
+        "   0    0.0      -3.1700      -3.2900     -14.6233    -240.0000"
+        "     131.3390\n"
+        "   1   45.0      -7.4100      -7.5300     136.8919    -240.0000"
+        "      -5.4757\n"
+        "   2   90.0     -21.8300     -22.0100     136.8768    -240.0000"
+        "    -159.8874\n"
+        "   3  135.0      -9.0200      -9.1900      12.4411    -240.0000"
+        "      88.2130\n"
+        "   4  180.0      -4.5500      -4.6100     -73.5502    -240.0000"
+        "     -31.7745\n"
+        "#2 : Y-plane, frequency[Hz] = 1.27000e+09\n"
+        "  No.   deg    E-abs[dB]\n"
+        "   0    0.0      -2.0900\n"
+        "   1   30.0      -5.6300\n"
+        "   2   60.0     -11.2700\n"
+        "   3   90.0     -28.4100\n"
+        "   4  120.0     -13.0600\n"
+        "   5  150.0      -6.7200\n"
+        "   6  180.0      -3.8800\n");
+    auto writeText = [&dir](const char *name, const QString &text) {
+        QFile f(dir.filePath(QString::fromLatin1(name)));
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write(text.toUtf8());
+        f.close();
+        return f.fileName();
+    };
+    const QVector<FeedSweep> feeds =
+        KernelResultReader::readFeedSweeps(writeText("case.log", feedLog));
+    const QVector<FarPattern> cuts =
+        KernelResultReader::readFar1d(writeText("far1d.log", farLog));
+    check(feeds.size() == 2 && cuts.size() == 2, "anth5: fixture parsed");
+    if (feeds.size() != 2 || cuts.size() != 2) return;
+    check(feeds[0].points.size() == 3 && feeds[1].points.size() == 2,
+          "anth5: feeds have different lengths");
+    check(cuts[0].deg.size() == 5 && cuts[1].deg.size() == 7,
+          "anth5: cuts have different lengths");
+    check(!cuts[0].eThetaDb.isEmpty() && cuts[1].eThetaDb.isEmpty(),
+          "anth5: only the first cut has polarisation columns");
+
+    const QString path = dir.filePath("antenna_pattern.h5");
+    QString err;
+    check(H5Writer::writeAntennaPattern(path, feeds, cuts,
+                                        QStringLiteral("dipole.ofd"), &err),
+          "anth5: written");
+    check(QFileInfo(path).size() > 0, "anth5: file is not empty");
+    check(H5Reader::isHdf5(path), "anth5: the result really is HDF5");
+
+    // ── データセットの構成 ────────────────────────────────────────────────
+    QVector<H5DatasetInfo> sets;
+    check(H5Reader::listDatasets(path, sets), "anth5: datasets listed");
+    QStringList names;
+    for (const H5DatasetInfo &d : sets) names << d.path;
+    names.sort();
+    QStringList want = {
+        "/feed/feed1/frequency", "/feed/feed1/ref_db", "/feed/feed1/rin",
+        "/feed/feed1/vswr", "/feed/feed1/xin",
+        "/feed/feed2/frequency", "/feed/feed2/ref_db", "/feed/feed2/rin",
+        "/feed/feed2/vswr", "/feed/feed2/xin",
+        "/pattern/cut1/angle_deg", "/pattern/cut1/e_abs_db",
+        "/pattern/cut1/e_phi_db", "/pattern/cut1/e_theta_db",
+        "/pattern/cut2/angle_deg", "/pattern/cut2/e_abs_db" };
+    want.sort();
+    check(names == want, "anth5: exactly the expected datasets");
+    if (names != want)
+        std::fprintf(stderr, "  (got: %s)\n",
+                     names.join(QStringLiteral(", ")).toUtf8().constData());
+    // 列を持たない面には**作らない** (空の配列を置くと「測ったが 0」と読める)
+    check(!names.contains(QStringLiteral("/pattern/cut2/e_theta_db")),
+          "anth5: no polarisation arrays on the cut that has no such columns");
+
+    // ── 数値が 1 個ずつ元と一致すること (double なので厳密に一致する) ─────
+    auto readCol = [&path](const QByteArray &ds) {
+        QVector<double> v;
+        QVector<qlonglong> dims;
+        H5Reader::readAll(path, QString::fromLatin1(ds), v, dims);
+        return v;
+    };
+    bool same = true;
+    for (int i = 0; i < feeds.size(); ++i) {
+        const QByteArray g = "/feed/feed" + QByteArray::number(i + 1) + "/";
+        QVector<double> f, rin, xin, ref, vswr;
+        for (const FeedSweepPoint &p : feeds[i].points) {
+            f << p.freqHz; rin << p.rin; xin << p.xin;
+            ref << p.refDb; vswr << p.vswr;
+        }
+        same = same && readCol(g + "frequency") == f
+                    && readCol(g + "rin") == rin
+                    && readCol(g + "xin") == xin
+                    && readCol(g + "ref_db") == ref
+                    && readCol(g + "vswr") == vswr;
+    }
+    check(same, "anth5: every feed column round-trips exactly");
+    bool sameCut = true;
+    for (int i = 0; i < cuts.size(); ++i) {
+        const QByteArray g = "/pattern/cut" + QByteArray::number(i + 1) + "/";
+        sameCut = sameCut && readCol(g + "angle_deg") == cuts[i].deg
+                          && readCol(g + "e_abs_db") == cuts[i].eAbsDb;
+    }
+    check(sameCut, "anth5: every pattern column round-trips exactly");
+    check(readCol("/pattern/cut1/e_theta_db") == cuts[0].eThetaDb
+          && readCol("/pattern/cut1/e_phi_db") == cuts[0].ePhiDb,
+          "anth5: the polarisation columns round-trip too");
+    // 列を取り違えていないこと — E-abs と E-theta は近い値なので、
+    // 「両方 E-abs を書いた」実装でも上の判定だけなら通りうる
+    check(readCol("/pattern/cut1/e_abs_db")
+              != readCol("/pattern/cut1/e_theta_db"),
+          "anth5: E-abs and E-theta are not the same array");
+    check(readCol("/pattern/cut1/e_abs_db")
+              != readCol("/pattern/cut2/e_abs_db"),
+          "anth5: the two cuts really carry different data");
+    check(readCol("/feed/feed1/rin") != readCol("/feed/feed1/xin"),
+          "anth5: Rin and Xin are not the same array");
+
+    // ── 属性 (単位・面名・基準インピーダンス) ─────────────────────────────
+    {
+        const hid_t f = H5Fopen(path.toLocal8Bit().constData(),
+                                H5F_ACC_RDONLY, H5P_DEFAULT);
+        check(f >= 0, "anth5: reopened for attributes");
+        auto attrD = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            double v = -1e300;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) { H5Aread(a, H5T_NATIVE_DOUBLE, &v); H5Aclose(a); }
+                H5Oclose(o);
+            }
+            return v;
+        };
+        auto attrI = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            int v = -1;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &v); H5Aclose(a); }
+                H5Oclose(o);
+            }
+            return v;
+        };
+        auto attrS = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            QByteArray out;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) {
+                    const hid_t t = H5Aget_type(a);
+                    out.fill('\0', int(H5Tget_size(t)) + 1);
+                    H5Aread(a, t, out.data());
+                    H5Tclose(t);
+                    H5Aclose(a);
+                }
+                H5Oclose(o);
+            }
+            return QString::fromUtf8(out.constData());
+        };
+        // 番号は 1,2 ではなく元の 2,7。z0 も面名も入れ替わっていないこと
+        check(attrI(f, "/feed/feed1", "feed_index") == 2
+              && attrI(f, "/feed/feed2", "feed_index") == 7,
+              "anth5: the original feed numbers survive as attributes");
+        check(attrD(f, "/feed/feed1", "z0") == 50.0
+              && attrD(f, "/feed/feed2", "z0") == 75.0,
+              "anth5: the reference impedance is per feed");
+        check(attrS(f, "/pattern/cut1", "plane") == cuts[0].plane
+              && attrS(f, "/pattern/cut2", "plane") == cuts[1].plane,
+              "anth5: the plane name is kept per cut");
+        check(attrD(f, "/pattern/cut1", "frequency_hz") == cuts[0].freqHz
+              && attrD(f, "/pattern/cut2", "frequency_hz") == cuts[1].freqHz,
+              "anth5: the frequency is kept per cut");
+        // 単位が無いと外部では列の意味が分からない
+        check(attrS(f, "/feed/feed1/rin", "units") == QStringLiteral("ohm")
+              && attrS(f, "/feed/feed1/frequency", "units") == QStringLiteral("Hz")
+              && attrS(f, "/pattern/cut1/angle_deg", "units") == QStringLiteral("deg")
+              && attrS(f, "/pattern/cut1/e_abs_db", "units") == QStringLiteral("dB"),
+              "anth5: every column carries its unit");
+        check(attrS(f, "/", "format").startsWith(QStringLiteral("OpenFDTD-X")),
+              "anth5: the file says what it is");
+        check(attrI(f, "/", "version") == 1, "anth5: schema version");
+        if (f >= 0) H5Fclose(f);
+    }
+
+    // ── 中身が無いときは書かない ──────────────────────────────────────────
+    // 0 バイトの .h5 を残して「書き出しました」と言わないこと (絶対規則 5)
+    {
+        const QString none = dir.filePath("empty.h5");
+        QString e2;
+        check(!H5Writer::writeAntennaPattern(none, {}, {},
+                                             QStringLiteral("p.ofd"), &e2),
+              "anth5: refuses when there is nothing to write");
+        check(!QFileInfo::exists(none), "anth5: and leaves no file behind");
+        check(!e2.isEmpty(), "anth5: with a reason");
+    }
+
+    // ── 片方だけのときに空の群を作らないこと ──────────────────────────────
+    {
+        const QString p2 = dir.filePath("cutsonly.h5");
+        check(H5Writer::writeAntennaPattern(p2, {}, cuts,
+                                            QStringLiteral("p.ofd")),
+              "anth5: pattern-only file written");
+        QVector<H5DatasetInfo> s2;
+        H5Reader::listDatasets(p2, s2);
+        bool anyFeed = false;
+        for (const H5DatasetInfo &d : s2)
+            if (d.path.startsWith(QStringLiteral("/feed"))) anyFeed = true;
+        check(!anyFeed, "anth5: no feed datasets when there are no feeds");
+        check(s2.size() == 6, "anth5: pattern-only keeps every pattern column");
+    }
+#endif
+}
+
 // ── OpenFDTD (基幹カーネル) 統合 ────────────────────────────────────────────
 // 環境変数 OFDX_OFD_BIN が指す実カーネルがあれば、同梱サンプル dipole.ofd を
 // 実行して正常終了 (ofd.log の "normal end") まで検証する。GUI → subprocess
@@ -9915,6 +10353,90 @@ static void testFdeModeSolver()
 
 // ── 直方体室の音響モード (src/acoustics/core/RoomModes) ─────────────────────
 // 期待値は実装から読まず、1 次元極限・既知の閉形式・単調性から独立に立てる。
+// ── 帰還対策の notch 候補 (acoustics/core/RoomModes) ─────────────────────
+// 「鳴く周波数の予測」ではなく「室のモードのうち候補になるもの」を返す関数。
+// 軸モードの周波数・シュレーダー周波数・提案 Q はすべて閉形式なので直接検算する。
+static void testNotchCandidates()
+{
+    g_file = "notch";
+    using namespace ofd::acoustics::roommodes;
+
+    // シュレーダー周波数 f_s = 2000·√(T60/V)
+    check(std::fabs(schroederFrequency(1.0, 4000.0) - 2000.0 * std::sqrt(1.0 / 4000.0))
+              < 1e-9,
+          "notch: the Schroeder frequency follows 2000 sqrt(T/V)");
+    check(schroederFrequency(0.0, 100.0) == 0.0
+          && schroederFrequency(1.0, 0.0) == 0.0,
+          "notch: non-positive inputs have no Schroeder frequency");
+
+    // **3 辺をすべて違う長さにする** (立方体や 2 辺が同じ室では軸モードが
+    // 縮退して、軸の取り違えが検出できない)
+    const double L = 7.3, W = 5.1, H = 3.2;
+    const double c = 343.0, T = 0.8;
+    const std::vector<NotchCandidate> cs = notchCandidates(L, W, H, c, T, 0);
+    check(!cs.empty(), "notch: a normal room yields candidates");
+
+    // 最も低いモードは最長辺の 1 次軸モード f = c/(2L)
+    const double f100 = c / (2.0 * L);
+    check(!cs.empty() && std::fabs(cs[0].freqHz - f100) < 1e-9,
+          "notch: the lowest candidate is the first axial mode of the "
+          "longest side");
+    check(!cs.empty() && cs[0].mode.kind == ModeAxial,
+          "notch: that lowest mode is an axial one");
+    check(!cs.empty() && cs[0].mode.nx == 1 && cs[0].mode.ny == 0
+          && cs[0].mode.nz == 0,
+          "notch: its order is (1,0,0)");
+
+    // 提案 Q = f·T60/2.2、帯域幅 Δf = 2.2/T60
+    const double bw = 2.2 / T;
+    check(!cs.empty() && std::fabs(cs[0].bandwidthHz - bw) < 1e-12,
+          "notch: the modal bandwidth is 2.2 / T60");
+    check(!cs.empty() && std::fabs(cs[0].q - f100 / bw) < 1e-9,
+          "notch: the suggested Q is f / bandwidth");
+
+    // **シュレーダー周波数より上は返さない** (そこから上は統計的な領域)
+    const double fs = schroederFrequency(T, L * W * H);
+    bool above = false;
+    for (std::size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].freqHz > fs) above = true;
+    check(!above, "notch: nothing above the Schroeder frequency is listed");
+
+    // 周波数の昇順で、重なり数は 1 以上
+    bool ordered = true, positive = true;
+    for (std::size_t i = 1; i < cs.size(); ++i)
+        if (cs[i].freqHz < cs[i - 1].freqHz) ordered = false;
+    for (std::size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].coincident < 1) positive = false;
+    check(ordered, "notch: candidates come back in ascending frequency");
+    check(positive, "notch: every candidate covers at least one mode");
+
+    // 半値幅より近いモードはまとめられている (代表どうしは必ず bw 以上離れる)
+    bool separated = true;
+    for (std::size_t i = 1; i < cs.size(); ++i)
+        if (cs[i].freqHz - cs[i - 1].freqHz < bw) separated = false;
+    check(separated,
+          "notch: candidates closer than one bandwidth are merged into one");
+
+    // まとめた数の合計 = シュレーダー周波数以下のモード数 (取りこぼさない)
+    const std::vector<Mode> all = rectangularModes(L, W, H, c, fs, 0);
+    int total = 0;
+    for (std::size_t i = 0; i < cs.size(); ++i) total += cs[i].coincident;
+    check(total == static_cast<int>(all.size()),
+          "notch: every mode below the Schroeder frequency is accounted for");
+
+    // 個数制限
+    const std::vector<NotchCandidate> few = notchCandidates(L, W, H, c, T, 3);
+    check(few.size() == 3, "notch: maxCount truncates the list");
+    check(few.size() == 3 && std::fabs(few[0].freqHz - cs[0].freqHz) < 1e-12,
+          "notch: truncation keeps the lowest candidates");
+
+    // 不正入力は空
+    check(notchCandidates(0.0, W, H, c, T, 0).empty()
+          && notchCandidates(L, W, H, c, 0.0, 0).empty()
+          && notchCandidates(L, W, H, 0.0, T, 0).empty(),
+          "notch: non-positive inputs yield no candidates");
+}
+
 static void testRoomModes()
 {
     namespace rm = ofd::acoustics::roommodes;
@@ -13282,6 +13804,196 @@ static void testLumpedRlc()
               "rlc: an empty model is not valid");
         check(!rlcImpedance(m, 0.0).valid, "rlc: f <= 0 is not valid");
     }
+
+    // ── 符号つき複素インピーダンス (Touchstone 書出に要る) ──────────────────
+    // |Z| は既存の閉形式、Re/Im は複素数の組み立てという**独立な 2 経路**なので、
+    // hypot(Re, Im) と magnitude が一致することが相互検算になる。
+    {
+        double worst = 0.0;
+        int checked = 0;
+        for (RlcTopology topo : { RlcTopology::Series, RlcTopology::Parallel }) {
+            RlcModel t = m;
+            t.topology = topo;
+            for (int i = 0; i < 121; ++i) {
+                const double f = std::pow(10.0, -2.0 + 4.0 * i / 120.0) * 1e6;
+                const RlcImpedance z = rlcImpedance(t, f);
+                if (!z.valid) continue;
+                const double h = std::hypot(z.resistance_ohm, z.reactance_ohm);
+                worst = std::max(worst, std::fabs(h - z.magnitude_ohm)
+                                            / std::max(1e-30, z.magnitude_ohm));
+                ++checked;
+            }
+        }
+        check(checked == 242 && worst < 1e-12,
+              "rlc: hypot(Re Z, Im Z) reproduces the closed-form |Z| on both "
+              "topologies");
+    }
+    // 直列は Z = R + j(wL - 1/wC) がそのまま出る
+    {
+        const RlcImpedance z = rlcImpedance(m, 1.0e6);
+        check(approx(z.resistance_ohm, m.r_ohm, 1e-12) &&
+              approx(z.reactance_ohm, z.xL_ohm - z.xC_ohm, 1e-12),
+              "rlc: the series impedance is R + j(wL - 1/wC)");
+    }
+    // 並列は Z = (G - jB)/|Y|^2。共振では Im Z = 0 かつ Re Z = R
+    {
+        RlcModel p = m;
+        p.topology = RlcTopology::Parallel;
+        const RlcImpedance z = rlcImpedance(p, f0);
+        check(approx(z.resistance_ohm, p.r_ohm, 1e-9) &&
+              std::fabs(z.reactance_ohm) < 1e-9 * p.r_ohm,
+              "rlc: the parallel impedance is purely resistive (= R) at "
+              "resonance");
+    }
+    // **リアクタンスの符号は仮定せず数値で確かめる** — 直列と並列で
+    // 共振の上下が逆になる (直列: 上が誘導性 / 並列: 上が容量性)
+    {
+        RlcModel s = m, p = m;
+        p.topology = RlcTopology::Parallel;
+        const double lo = f0 * 0.5, hi = f0 * 2.0;
+        check(rlcImpedance(s, lo).reactance_ohm < 0 &&
+              rlcImpedance(s, hi).reactance_ohm > 0,
+              "rlc: a series RLC is capacitive below f0 and inductive above");
+        check(rlcImpedance(p, lo).reactance_ohm > 0 &&
+              rlcImpedance(p, hi).reactance_ohm < 0,
+              "rlc: a parallel RLC is the other way round (inductive below f0, "
+              "capacitive above)");
+    }
+    // 負の R は「素子が無い」= 0 ohm。表が「—」なのに |Z| だけ増えないこと
+    {
+        RlcModel neg = m, zero = m;
+        neg.r_ohm = -5.0;
+        zero.r_ohm = 0.0;
+        check(rlcImpedance(neg, f0).magnitude_ohm ==
+                  rlcImpedance(zero, f0).magnitude_ohm &&
+              rlcImpedance(neg, f0).resistance_ohm == 0.0,
+              "rlc: a negative R counts as absent (0 ohm), not as |R|");
+    }
+    // 無損失並列 LC の共振点は開放 (|Z| = infinity)。0 ohm と偽らない。
+    // **打ち消しが厳密に起きる入力を作って**判定する: w = 2*pi*f が厳密に 1.0
+    // になる f = 1/(2*pi) を選び、L = C = 1 とすると wC と 1/(wL) が
+    // ビット単位で等しくなる (実測で b = 0.0)
+    {
+        RlcModel p;
+        p.topology = RlcTopology::Parallel;
+        p.l_H = 1.0;
+        p.c_F = 1.0;
+        const double f = 1.0 / (2.0 * 3.14159265358979323846);
+        check(!rlcImpedance(p, f).valid,
+              "rlc: a lossless parallel LC at exact cancellation is an open "
+              "circuit, so it is reported as invalid rather than as 0 ohm");
+        check(rlcImpedance(p, f * 1.01).valid,
+              "rlc: just off that point it is finite again");
+        // 実際の素子値では打ち消しは厳密には起きず、巨大な有限値になる
+        RlcModel q;
+        q.topology = RlcTopology::Parallel;
+        q.l_H = 50e-9;
+        q.c_F = 200e-12;
+        const RlcImpedance z = rlcImpedance(q, rlcResonanceHz(q.l_H, q.c_F));
+        check(z.valid && z.magnitude_ohm > 1e12,
+              "rlc: at a computed f0 the cancellation is inexact, so |Z| is a "
+              "huge finite number (open-like), never a short");
+    }
+
+    // ── S11 = (Z - Z0)/(Z + Z0) と Touchstone .s1p 書出 ─────────────────────
+    {
+        using ofd::Touchstone;
+        const double Z0 = 50.0;
+        auto s11of = [&](const RlcModel &mm, double f) {
+            const RlcImpedance z = rlcImpedance(mm, f);
+            return Touchstone::zToS({ z.resistance_ohm, z.reactance_ohm }, Z0);
+        };
+        // 整合 (Z = Z0) は S11 = 0
+        {
+            RlcModel r50;
+            r50.r_ohm = 50.0;
+            check(std::abs(s11of(r50, 1.0e7)) < 1e-15,
+                  "s1p: a 50 ohm resistor is matched (S11 = 0)");
+        }
+        // 直列共振では Z = R (実数) なので S11 = (R-Z0)/(R+Z0) も実数
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            const std::complex<double> v = s11of(s, rlcResonanceHz(s.l_H, s.c_F));
+            check(std::fabs(v.real() - (10.0 - Z0) / (10.0 + Z0)) < 1e-9 &&
+                  std::fabs(v.imag()) < 1e-9,
+                  "s1p: at series resonance S11 is the real (R-Z0)/(R+Z0)");
+        }
+        // 無損失 (純リアクタンス) の 1 ポートは **|S11| = 1 が厳密に成り立つ**
+        // (受け取った電力を全部返す)。極限の向きは実部で見る:
+        // 高い周波数で L は開放 (Re -> +1)、C は短絡 (Re -> -1)。
+        // ここは「近さ」ではなく厳密な等式なので許容値を緩めなくてよい
+        {
+            RlcModel l;
+            l.l_H = 1e-6;
+            RlcModel c;
+            c.c_F = 1e-9;
+            double worst = 0.0;
+            for (int i = 0; i < 41; ++i) {
+                const double f = std::pow(10.0, 4.0 + 5.0 * i / 40.0);
+                worst = std::max(worst, std::fabs(std::abs(s11of(l, f)) - 1.0));
+                worst = std::max(worst, std::fabs(std::abs(s11of(c, f)) - 1.0));
+            }
+            check(worst < 1e-15,
+                  "s1p: a lossless one-port reflects everything, |S11| = 1 "
+                  "exactly at every frequency");
+            check(s11of(l, 1.0e9).real() > 0.999,
+                  "s1p: a series inductor looks open at high frequency "
+                  "(S11 -> +1)");
+            check(s11of(c, 1.0e9).real() < -0.999,
+                  "s1p: a series capacitor looks short at high frequency "
+                  "(S11 -> -1)");
+        }
+        // 受動性 |S11| <= 1 — **仮定せず掃引で確かめる**。
+        // かつ「ほぼ 1 の点が実在する」ことも見て、判定が自明でないことを示す
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            double worst = 0.0, best = 1.0;
+            for (int i = 0; i < 121; ++i) {
+                const double f = std::pow(10.0, -2.0 + 4.0 * i / 120.0) * 1e6;
+                const double a = std::abs(s11of(s, f));
+                worst = std::max(worst, a);
+                best = std::min(best, a);
+            }
+            check(worst <= 1.0 + 1e-12,
+                  "s1p: a passive RLC never reflects more than it receives "
+                  "(|S11| <= 1 over the whole sweep)");
+            check(worst > 0.99 && best < 0.9,
+                  "s1p: the sweep really does approach total reflection "
+                  "somewhere (so the bound above is not vacuous)");
+        }
+        // 書いて読み直す (io/Touchstone は既存 — ここでは往復のみ確かめる)
+        {
+            RlcModel s = m;
+            s.r_ohm = 10.0;
+            QVector<double> f;
+            QVector<std::complex<double>> sv;
+            for (int i = 0; i < 21; ++i) {
+                const double fh = std::pow(10.0, -2.0 + 4.0 * i / 20.0) * 1e6;
+                f.push_back(fh);
+                sv.push_back(s11of(s, fh));
+            }
+            QTemporaryDir dir;
+            check(dir.isValid(), "s1p: temp dir");
+            const QString path = dir.path() + QStringLiteral("/rlc.s1p");
+            QString err;
+            check(Touchstone::writeS1p(path, f, sv, &err), "s1p: write .s1p");
+            ofd::TouchstoneData d;
+            check(Touchstone::read(path, &d, &err), "s1p: read it back");
+            check(d.ports == 1 && d.freqHz.size() == f.size() &&
+                  std::fabs(d.z0 - Z0) < 1e-12,
+                  "s1p: one port, 50 ohm reference and every frequency survive");
+            double worst = 0.0;
+            for (int i = 0; i < d.freqHz.size() && i < f.size(); ++i) {
+                worst = std::max(worst, std::fabs(d.freqHz[i] - f[i]) / f[i]);
+                worst = std::max(worst, std::abs(d.at(i, 1, 1) - sv[i]));
+            }
+            check(worst < 1e-6,
+                  "s1p: the frequencies and S11 survive the round trip to the "
+                  "written precision");
+        }
+    }
 }
 
 // ── 反射係数とスミスチャートの幾何 (em/Reflection) ──────────────────────────
@@ -14746,6 +15458,124 @@ static void testDisplayMetrics()
         check(std::fabs(w - ref) < 1e-9, "dispmetrics: eyebox formula");
         check(dm::eyeboxWidth_mm(5.0, 50.0, 60.0) == 0.0,
               "dispmetrics: eyebox is clamped at zero");
+    }
+
+    // 3b) アイボックス掃引 (作図用) — W(ER) は **ER に対して厳密に直線**
+    {
+        const double L = 27.5, fovDeg = 43.0;   // 丸い数字を避ける
+        const int n = 41;
+        double er[41], w[41];
+        const dm::EyeboxSweep sw =
+            dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, n, er, w);
+        check(sw.valid, "dispsweep: eyebox sweep computed");
+        const double t = std::tan(0.5 * fovDeg * M_PI / 180.0);
+        check(std::fabs(sw.slope_mm_per_mm - (-2.0 * t)) < 1e-12,
+              "dispsweep: the slope is -2 tan(FOV/2)");
+        check(std::fabs(sw.zeroEyeRelief_mm - L / (2.0 * t)) < 1e-12,
+              "dispsweep: the eyebox vanishes at ER = L / (2 tan(FOV/2))");
+        // 掃引の各点が閉形式と一致すること (表と同じ関数を呼んでいる証拠)
+        bool exact = true, straight = true, clamped = true;
+        for (int i = 0; i < n; ++i) {
+            if (w[i] != dm::eyeboxWidth_mm(L, er[i], fovDeg)) exact = false;
+            // 0 で打ち切られる前は厳密に直線 (差分が一定)
+            const double lin = L + sw.slope_mm_per_mm * er[i];
+            if (lin > 0.0 && std::fabs(w[i] - lin) > 1e-12) straight = false;
+            if (lin <= 0.0 && w[i] != 0.0) clamped = false;
+        }
+        check(exact, "dispsweep: every sample equals the closed form");
+        check(straight, "dispsweep: the curve is exactly linear before it hits 0");
+        check(clamped, "dispsweep: and is clamped at 0 after that");
+        check(er[0] == 0.0 && std::fabs(er[n - 1] - 40.0) < 1e-12,
+              "dispsweep: the sweep spans the requested range");
+        check(w[0] == L, "dispsweep: at ER = 0 the eyebox is the outcoupler");
+        // ER0 は掃引の範囲内にあるので、最後の点は 0 に落ちている
+        check(sw.zeroEyeRelief_mm < 40.0 && w[n - 1] == 0.0,
+              "dispsweep: the far end is past the zero crossing");
+        // 不正な入力は valid=false (推測で描かない)
+        double e2[4], w2[4];
+        check(!dm::eyeboxVsEyeRelief(0.0, fovDeg, 40.0, 4, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, 0.0, 40.0, 4, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, 1, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, 4, nullptr, w2).valid,
+              "dispsweep: bad inputs are refused");
+    }
+
+    // 3c) FOV とアイボックスのトレードオフ (作図用)
+    {
+        const double lam = 532.0, n = 1.7, gmax = 78.0;
+        const double L = 27.5, er = 17.0;
+        const int n2 = 61;
+        double per[61], fov[61], eb[61];
+        bool ok[61];
+        const int good = dm::fovEyeboxTradeoff(380.0, 620.0, n2, lam, n, gmax,
+                                               L, er, per, fov, eb, ok);
+        check(good > 0 && good <= n2, "disptrade: some periods give a band");
+        // 各点が既存の閉形式と一致すること (表と同じ値になる)
+        bool same = true, mono = true;
+        double prevFov = -1e300, prevEb = 1e300;
+        for (int i = 0; i < n2; ++i) {
+            const dm::WaveguideFov f =
+                dm::waveguideFov(per[i], lam, n, gmax);
+            if (ok[i] != f.valid) same = false;
+            if (f.valid) {
+                if (fov[i] != f.fov_deg) same = false;
+                if (eb[i] != dm::eyeboxWidth_mm(L, er, f.fov_deg)) same = false;
+                (void)prevFov; (void)prevEb;
+            } else {
+                if (fov[i] != 0.0 || eb[i] != 0.0) same = false;
+            }
+        }
+        check(same, "disptrade: every sample equals the closed form");
+        // **FOV は周期に対して単調ではない** — 最初に単調と決めつけて判定を
+        // 書いたら落ちた。実際は Λ = 2λ/(1 + n·sinθg,max) に極小がある
+        // (下で閉形式と突き合わせる)。したがってトレードオフは「周期の順」
+        // ではなく **FOV の関数として** 成り立つ: アイボックスは FOV だけで
+        // 決まる (W = L − 2·ER·tan(FOV/2)) ので、FOV が大きい点ほど必ず狭い。
+        for (int i = 0; i < n2 && mono; ++i)
+            for (int j = 0; j < n2; ++j) {
+                if (!ok[i] || !ok[j]) continue;
+                if (fov[i] > fov[j] && eb[i] > eb[j]) { mono = false; break; }
+            }
+        check(mono, "disptrade: a wider FOV always costs eyebox");
+        // 単調でないこと自体を明示的に確かめる (「単調だ」と思い込まない)
+        bool rose = false, fell = false;
+        for (int i = 1; i < n2; ++i) {
+            if (!ok[i] || !ok[i - 1]) continue;
+            if (fov[i] > fov[i - 1]) rose = true;
+            if (fov[i] < fov[i - 1]) fell = true;
+        }
+        check(rose && fell,
+              "disptrade: FOV is NOT monotone in period (it has a minimum)");
+        // 極小の位置は閉形式 Λ = 2λ/(1 + n·sinθg,max) と一致すること
+        {
+            const double pm = dm::minFovPeriod_nm(lam, n, gmax);
+            check(std::fabs(pm - 2.0 * lam
+                            / (1.0 + n * std::sin(gmax * M_PI / 180.0))) < 1e-12,
+                  "disptrade: the min-FOV period matches its closed form");
+            // 走査して求めた極小と一致する (刻み 0.01 nm ぶんの差まで)
+            double best = 1e300, bp = 0.0;
+            for (double q = 0.5 * pm; q < 2.0 * pm; q += 0.01) {
+                const dm::WaveguideFov f = dm::waveguideFov(q, lam, n, gmax);
+                if (f.valid && f.fov_deg < best) { best = f.fov_deg; bp = q; }
+            }
+            std::fprintf(stderr, "  (min-FOV period: closed form %.4f nm, "
+                                 "scan %.4f nm)\n", pm, bp);
+            check(std::fabs(bp - pm) < 0.02,
+                  "disptrade: and matches a numerical scan of the FOV");
+        }
+        check(per[0] == 380.0 && std::fabs(per[n2 - 1] - 620.0) < 1e-9,
+              "disptrade: the sweep spans the requested periods");
+        // 帯域が成立しない周期を「0」として描かないための旗が立つこと
+        double p2[3], f2[3], b2[3];
+        bool o2[3];
+        // λ より短い周期では λ/Λ > 1 になり帯域が成立しない
+        check(dm::fovEyeboxTradeoff(200.0, 260.0, 3, lam, n, gmax, L, er,
+                                    p2, f2, b2, o2) == 0
+              && !o2[0] && !o2[1] && !o2[2],
+              "disptrade: periods with no guided band are flagged, not zeroed");
+        check(dm::fovEyeboxTradeoff(620.0, 380.0, 3, lam, n, gmax, L, er,
+                                    p2, f2, b2, o2) == 0,
+              "disptrade: a reversed range is refused");
     }
 
     // 4) シースルー透過率: n=1 で 1、n=1.8 で 84.9%
@@ -17412,6 +18242,489 @@ static void testPhotometricIO()
         il::Result none;
         check(PhotometricIO::fromTrace(none, 1000.0).isEmpty(),
               "photom: an invalid trace produces no distribution");
+    }
+}
+
+// ── 帯域スペクトルの CSV (io/BandSpectrumCsv) ──────────────────────────────
+// 肝は「**自分が書いたものを自分の参照系列リーダで読み戻せる**」こと。
+// 遮音タブが書いた CSV は、検証タブが実測値を読むのと同じ `parseSeriesCsv`
+// が読む — ここが食い違うと「書けるが自分でも読めない」ファイルになる。
+static void testBandSpectrumCsv()
+{
+    g_file = "band-csv";
+    using ofd::io::BandSpectrum;
+
+    BandSpectrum s;
+    s.scenario = QStringLiteral("間仕切壁 (二重壁)");
+    s.quantity = QStringLiteral("R");
+    s.unit = QStringLiteral("dB");
+    s.notes << QStringLiteral("mass law + coincidence");
+    const double f[5] = { 50.0, 125.0, 500.0, 2000.0, 5000.0 };
+    const double v[5] = { 12.5, 24.25, 41.125, 55.0625, -3.5 };
+    for (int i = 0; i < 5; ++i) { s.freqHz.push_back(f[i]); s.value.push_back(v[i]); }
+
+    const QString csv = ofd::io::buildBandSpectrumCsv(s);
+    check(!csv.isEmpty(), "bandcsv: a valid spectrum produces a file");
+    {
+        const QStringList lines = csv.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        // `#` 4 行 (見出し + scenario + quantity + note) + 列見出し + 5 行
+        check(lines.size() == 4 + 1 + 5,
+              "bandcsv: the file has the comment block, a header row and one "
+              "row per band");
+        check(lines[0].startsWith(QLatin1Char('#')) &&
+              lines[2].contains(QStringLiteral("R [dB]")),
+              "bandcsv: the quantity and its unit are recorded in the header");
+        check(lines[4] == QStringLiteral("freq_Hz,R_dB"),
+              "bandcsv: the column header names the quantity");
+        check(lines[5] == QStringLiteral("50,12.5"),
+              "bandcsv: the first data row is the first band");
+    }
+    // **自分の参照系列リーダで読み戻せる** (`#` 行と見出し行が落ちる)
+    {
+        const ofd::cmp::Series ser = ofd::io::parseSeriesCsv(csv);
+        check(ser.valid() && ser.x.size() == 5,
+              "bandcsv: parseSeriesCsv reads it back as a reference series");
+        double worst = 0.0;
+        for (int i = 0; i < 5 && i < int(ser.x.size()); ++i) {
+            worst = std::max(worst, std::fabs(ser.x[i] - f[i]));
+            worst = std::max(worst, std::fabs(ser.y[i] - v[i]));
+        }
+        check(worst == 0.0,
+              "bandcsv: every frequency and value survives exactly (the "
+              "written precision is enough for a round trip)");
+    }
+    // 負の値・小数が壊れないこと (ロケール依存の変換を使っていないこと)
+    check(csv.contains(QStringLiteral("5000,-3.5")),
+          "bandcsv: a negative value keeps its sign and decimal point");
+    // 注記や見出しに改行・カンマを入れられても行がずれない
+    {
+        BandSpectrum t = s;
+        t.scenario = QStringLiteral("line1\nline2");
+        const QStringList lines =
+            ofd::io::buildBandSpectrumCsv(t).split(QLatin1Char('\n'),
+                                                   Qt::SkipEmptyParts);
+        check(lines.size() == 4 + 1 + 5,
+              "bandcsv: a newline inside a label does not add a line");
+    }
+    // 中身の無いスペクトルは書かない (0 バイトのファイルを作らせない)
+    {
+        BandSpectrum bad;
+        check(ofd::io::buildBandSpectrumCsv(bad).isEmpty(),
+              "bandcsv: an empty spectrum produces no file");
+        bad.freqHz = { 100.0, 200.0 };
+        bad.value = { 1.0 };            // 長さ違い
+        check(ofd::io::buildBandSpectrumCsv(bad).isEmpty(),
+              "bandcsv: mismatched column lengths produce no file");
+    }
+}
+
+// ── 配光ファイル EULUMDAT (.ldt) ───────────────────────────────────────────
+// 判定は (a) 部分光束が**解析的に分かっている値**と一致すること (境界をまたぐ
+// ビンの切り方がここで効く)、(b) cd/1000lm への正規化が基準光束で往復すること、
+// (c) 対称指定を推測しないこと、の 3 本立て。
+static void testEulumdat()
+{
+    g_file = "eulumdat";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    QTemporaryDir dir;
+    check(dir.isValid(), "ldt: temp dir");
+    QString err;
+
+    // ファイルを行ごとの数値/文字列として読み直すための道具
+    // 行が足りないファイルでも落ちずに「違う」と言えるようにする
+    auto pick = [](const QStringList &s, int i) {
+        return (i >= 0 && i < s.size()) ? s[i] : QString();
+    };
+    auto cd = [](const PhotometricData &x, int h, int k) {
+        return (h < x.candela.size() && k < x.candela[h].size())
+                   ? x.candela[h][k] : std::numeric_limits<double>::quiet_NaN();
+    };
+    auto lines = [](const QString &p) {
+        QStringList out;
+        QFile f(p);
+        if (!f.open(QIODevice::ReadOnly)) return out;
+        const QByteArray raw = f.readAll();
+        for (const QByteArray &b : raw.split('\n'))
+            out.push_back(QString::fromUtf8(b).trimmed());
+        if (!out.isEmpty() && out.last().isEmpty()) out.removeLast();
+        return out;
+    };
+
+    // ── 1) 部分光束: 境界をまたぐビンは境界で切る ─────────────────────────
+    {
+        // 一様な光度 I なら [g0,g1] の光束は I·2π(cos g0 − cos g1) — 刻み方に
+        // よらない。**わざと 90° をまたぐビンを作る** (境界 0/22.5/72.5/140/180)
+        PhotometricData st;
+        st.horizAngles_deg = { 0.0 };
+        st.vertAngles_deg = { 0.0, 45.0, 100.0, 180.0 };
+        st.candela = { { 7.0, 7.0, 7.0, 7.0 } };
+        const double total = PhotometricIO::integratedFlux(st);
+        check(rel(total, 7.0 * 4.0 * PI) < 1e-12,
+              "ldt: a uniform distribution integrates to 4 pi I");
+        check(rel(PhotometricIO::partialFlux(st, 0.0, 90.0), 7.0 * 2.0 * PI) < 1e-12,
+              "ldt: the flux below 90 deg is 2 pi I even when a bin straddles "
+              "90 deg (the bin is cut at the boundary, not counted whole)");
+        check(rel(PhotometricIO::partialFlux(st, 0.0, 90.0) +
+                  PhotometricIO::partialFlux(st, 90.0, 180.0), total) < 1e-12,
+              "ldt: the two hemispheres add up to the whole");
+        check(PhotometricIO::partialFlux(st, 0.0, 180.0) ==
+                  PhotometricIO::integratedFlux(st),
+              "ldt: partialFlux over the full range is exactly integratedFlux");
+        check(PhotometricIO::partialFlux(st, 30.0, 30.0) == 0.0,
+              "ldt: an empty range carries no flux");
+    }
+
+    // ── 2) 追跡した配光を書いて読み直す ───────────────────────────────────
+    const double PHI = 1000.0;
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    const il::Result rBare = il::trace(bare, 200000);
+    check(rBare.valid, "ldt: the reference trace is valid");
+
+    PhotometricData d = PhotometricIO::fromTrace(rBare, PHI);
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = QStringLiteral("test luminaire");
+    d.lamp = QStringLiteral("white LED");
+    d.inputWatts = 12.5;
+    const int nv = d.vertAngles_deg.size();
+    const double flux = PhotometricIO::integratedFlux(d);
+
+    // ランバート面は下半球にしか出さない → 下向き光束比はちょうど 100%
+    check(rel(PhotometricIO::partialFlux(d, 0.0, 90.0), flux) < 1e-12,
+          "ldt: a Lambertian emitter puts all of its flux below 90 deg "
+          "(DFF = 100%)");
+
+    const QString path = dir.path() + QStringLiteral("/lum.ldt");
+    check(PhotometricIO::writeLdt(path, d, &err), "ldt: write EULUMDAT");
+    {
+        QFile f(path);
+        check(f.open(QIODevice::ReadOnly), "ldt: the file opens");
+        const QByteArray raw = f.readAll();
+        check(raw.count("\r\n") == raw.count('\n') && raw.count('\n') > 0,
+              "ldt: every line ends with CRLF as the format requires");
+    }
+    const QStringList L = lines(path);
+    // 26 (ヘッダ) + 6 (ランプ組 1 組) + 10 (直射比) + 24 (C 角) + Ng (γ 角)
+    // + Ng (光度、Isym=1 なので 1 面だけ)
+    check(L.size() == 26 + 6 + 10 + 24 + 2 * nv,
+          "ldt: the file has exactly the number of lines the layout implies");
+    check(pick(L, 1) == QStringLiteral("1") && pick(L, 2) == QStringLiteral("1") &&
+          pick(L, 3) == QStringLiteral("24"),
+          "ldt: an axially symmetric distribution is written as Ityp=1, "
+          "Isym=1 with 24 C-planes");
+    check(pick(L, 5).toInt() == nv,
+          "ldt: Ng is the number of vertical angles");
+    check(rel(pick(L, 21).toDouble(), 100.0) < 1e-9,
+          "ldt: the downward flux fraction written in item 22 is 100% here");
+    check(rel(pick(L, 22).toDouble(), 100.0 * flux / PHI) < 1e-5,
+          "ldt: item 23 (LORL) is the ratio of the distribution's flux to the "
+          "lamp flux");
+    check(rel(pick(L, 26 + 2).toDouble(), PHI) < 1e-9,
+          "ldt: item 26c is the total lamp flux, the reference for cd/1000lm");
+    {
+        // 27 の直射比は 0 (利用率法は未実装) — 「計算した値」に見せない
+        bool zeros = true;
+        for (int i = 0; i < 10; ++i) zeros = zeros && (pick(L, 32 + i).toDouble() == 0.0);
+        check(zeros, "ldt: the direct ratios of item 27 are written as zero");
+    }
+    {
+        const int c0 = 26 + 6 + 10;              // C 角の先頭
+        check(rel(pick(L, c0).toDouble(), 0.0) < 1e-12 &&
+              rel(pick(L, c0 + 23).toDouble(), 345.0) < 1e-9,
+              "ldt: the 24 C-plane angles run 0..345 deg");
+        const int i0 = c0 + 24 + nv;             // 光度の先頭
+        check(rel(pick(L, i0).toDouble(), d.candela[0][0] / (PHI / 1000.0)) < 1e-5,
+              "ldt: the intensities are written in cd/1000lm, not absolute "
+              "candela");
+    }
+
+    PhotometricData q;
+    check(PhotometricIO::readLdt(path, &q, &err), "ldt: read EULUMDAT back");
+    check(q.vertAngles_deg.size() == nv && q.horizAngles_deg.size() == 1 &&
+          q.candela.size() == 1,
+          "ldt: Isym=1 is folded back to a single C-plane on read");
+    check(q.lamps == 1 && rel(q.lumensPerLamp, PHI) < 1e-5 &&
+          rel(q.inputWatts, 12.5) < 1e-5,
+          "ldt: the lamp data survives the round trip");
+    check(q.manufacturer == QStringLiteral("OpenFDTD-X") &&
+          q.luminaire == QStringLiteral("test luminaire") &&
+          q.lamp == QStringLiteral("white LED"),
+          "ldt: the text fields survive the round trip");
+    check(q.test.startsWith(QStringLiteral("Computed by OpenFDTD-X")),
+          "ldt: the provenance note goes into the measurement-report field "
+          "(the format has no comment lines)");
+    {
+        bool fits = true;
+        for (int i = 0; i < 12 && i < L.size(); ++i) fits = fits && (L[i].size() <= 78);
+        check(fits && pick(L, 10).size() <= 8,
+              "ldt: the text fields are cut to the 78 characters the format "
+              "allows (the file-name field to 8)");
+    }
+    {
+        // 面数・角度数は直前の判定で見ている。ここは中身だけを見る
+        double worst = 0.0;
+        const int n = std::min(q.vertAngles_deg.size(), d.vertAngles_deg.size());
+        for (int k = 0; k < n && !q.candela.isEmpty(); ++k) {
+            worst = std::max(worst, rel(q.vertAngles_deg[k], d.vertAngles_deg[k]));
+            worst = std::max(worst, rel(cd(q, 0, k), d.candela[0][k]));
+        }
+        check(n == nv && !q.candela.isEmpty() && worst < 1e-5,
+              "ldt: angles and absolute candela survive the round trip to the "
+              "written precision");
+    }
+    check(rel(PhotometricIO::integratedFlux(q), rBare.fluxOut_lm) < 1e-5,
+          "ldt: the re-read distribution still carries the traced flux");
+
+    // 器具寸法は m → mm。長さと幅を取り違えると器具の向きが変わる
+    {
+        PhotometricData s = d;
+        s.length = 1.2; s.width = 0.3; s.height = 0.075;
+        const QString p = dir.path() + QStringLiteral("/dim.ldt");
+        check(PhotometricIO::writeLdt(p, s, &err), "ldt: write with dimensions");
+        const QStringList D = lines(p);
+        check(rel(pick(D, 12).toDouble(), 1200.0) < 1e-9 &&
+              rel(pick(D, 13).toDouble(), 300.0) < 1e-9 &&
+              rel(pick(D, 14).toDouble(), 75.0) < 1e-9,
+              "ldt: items 13/14/15 are length/width/height in mm, in that order");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read the dimensions back");
+        check(rel(b.length, 1.2) < 1e-9 && rel(b.width, 0.3) < 1e-9 &&
+              rel(b.height, 0.075) < 1e-9,
+              "ldt: the dimensions come back in metres, not swapped");
+    }
+
+    // ── 2b) 全方位に等しく出す光源なら下向き光束比はちょうど 50% ──────────
+    // (ランバートの 100% だけで見ていると「全域で積分する」誤りを見逃す)
+    {
+        PhotometricData iso;
+        iso.lamps = 1;
+        iso.lumensPerLamp = 1000.0;
+        iso.horizAngles_deg = { 0.0 };
+        for (int k = 0; k < 180; ++k) iso.vertAngles_deg.push_back(k + 0.5);
+        iso.candela = { QVector<double>(180, 10.0) };
+        check(rel(PhotometricIO::integratedFlux(iso), 10.0 * 4.0 * PI) < 1e-9,
+              "ldt: an isotropic 10 cd source carries 4 pi x 10 lm");
+        const QString p = dir.path() + QStringLiteral("/iso.ldt");
+        check(PhotometricIO::writeLdt(p, iso, &err), "ldt: write an isotropic "
+              "distribution");
+        const QStringList I = lines(p);
+        check(rel(pick(I, 21).toDouble(), 50.0) < 1e-6,
+              "ldt: item 22 (DFF) is 50% for an isotropic source — the "
+              "downward flux really is only the lower hemisphere");
+        check(rel(pick(I, 22).toDouble(), 100.0 * 10.0 * 4.0 * PI / 1000.0) < 1e-5,
+              "ldt: item 23 (LORL) may exceed 100% when the candela outrun the "
+              "nominal lamp flux");
+    }
+
+    // ── 3) 正規化の基準は「ランプ 1 本」ではなく「総光束」─────────────────
+    {
+        PhotometricData m;
+        m.lamps = 2;                      // 2 本 × 2000 lm = 4000 lm が基準
+        m.lumensPerLamp = 2000.0;
+        m.horizAngles_deg = { 0.0 };
+        m.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        m.candela = { { 400.0, 0.0, 0.0 } };
+        const QString p = dir.path() + QStringLiteral("/two.ldt");
+        check(PhotometricIO::writeLdt(p, m, &err), "ldt: write a two-lamp set");
+        const QStringList M = lines(p);
+        check(rel(pick(M, 26 + 2).toDouble(), 4000.0) < 1e-9,
+              "ldt: item 26c is lamps x lumens-per-lamp, not one lamp");
+        check(rel(pick(M, 26 + 6 + 10 + 24 + 3).toDouble(), 100.0) < 1e-9,
+              "ldt: 400 cd at a 4000 lm reference is written as 100 cd/1000lm");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read it back");
+        check(rel(cd(b, 0, 0), 400.0) < 1e-9,
+              "ldt: multiplying by the reference restores the absolute candela");
+        check(b.lamps == 2 && rel(b.lumensPerLamp, 2000.0) < 1e-9,
+              "ldt: the lamp count and per-lamp flux come back apart again");
+    }
+
+    // ── 4) 絶対測光 (ランプ光束が無い) ────────────────────────────────────
+    {
+        PhotometricData a;
+        a.lamps = 1;
+        a.lumensPerLamp = -1.0;           // IES の絶対測光
+        a.horizAngles_deg = { 0.0 };
+        a.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        a.candela = { { 250.0, 100.0, 0.0 } };
+        const double self = PhotometricIO::integratedFlux(a);
+        const QString p = dir.path() + QStringLiteral("/abs.ldt");
+        check(PhotometricIO::writeLdt(p, a, &err),
+              "ldt: absolute photometry is written using its own flux");
+        const QStringList A = lines(p);
+        check(rel(pick(A, 22).toDouble(), 100.0) < 1e-9,
+              "ldt: LORL is 100% when the distribution is its own reference");
+        check(rel(pick(A, 26 + 2).toDouble(), self) < 1e-5,
+              "ldt: the reference written is the integrated flux");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read the absolute file");
+        check(rel(cd(b, 0, 0), 250.0) < 1e-5 &&
+              rel(cd(b, 0, 1), 100.0) < 1e-5,
+              "ldt: the absolute candela come back unchanged");
+    }
+
+    // ── 5) 対称性なし (Isym=0) の全周配光 ─────────────────────────────────
+    {
+        PhotometricData f;
+        f.lamps = 1;
+        f.lumensPerLamp = 1000.0;
+        f.horizAngles_deg = { 0.0, 90.0, 180.0, 270.0 };
+        f.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        f.candela = { { 100.0, 10.0, 0.0 }, { 200.0, 20.0, 0.0 },
+                      { 300.0, 30.0, 0.0 }, { 400.0, 40.0, 0.0 } };
+        const QString p = dir.path() + QStringLiteral("/quad.ldt");
+        check(PhotometricIO::writeLdt(p, f, &err), "ldt: write four C-planes");
+        const QStringList F = lines(p);
+        check(pick(F, 1) == QStringLiteral("3") && pick(F, 2) == QStringLiteral("0") &&
+              pick(F, 3) == QStringLiteral("4") && rel(pick(F, 4).toDouble(), 90.0) < 1e-9,
+              "ldt: four differing C-planes are written as Ityp=3, Isym=0, "
+              "Mc=4, Dc=90");
+        check(F.size() == 26 + 6 + 10 + 4 + 3 + 4 * 3,
+              "ldt: all four planes are written, not just one");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read four C-planes back");
+        check(b.horizAngles_deg.size() == 4 && b.candela.size() == 4,
+              "ldt: the four planes come back as four planes");
+        double worst = 0.0;
+        for (int h = 0; h < 4; ++h) {
+            worst = std::max(worst, rel(b.horizAngles_deg[h], f.horizAngles_deg[h]));
+            for (int k = 0; k < 3; ++k)
+                worst = std::max(worst, rel(cd(b, h, k), cd(f, h, k)));
+        }
+        check(worst < 1e-5,
+              "ldt: every plane keeps its own values (the planes are not mixed "
+              "up or mirrored)");
+        check(rel(PhotometricIO::integratedFlux(b),
+                  PhotometricIO::integratedFlux(f)) < 1e-5,
+              "ldt: the flux of the asymmetric distribution survives");
+    }
+
+    // ── 6) 書けないものは書かない ─────────────────────────────────────────
+    {
+        const QString p = dir.path() + QStringLiteral("/bad.ldt");
+        PhotometricData bad;
+        check(!PhotometricIO::writeLdt(p, bad, &err),
+              "ldt: an empty distribution is not written");
+        bad.vertAngles_deg = { 0.0, 90.0 };
+        bad.horizAngles_deg = { 0.0 };
+        bad.candela = { { 1.0 } };
+        check(!PhotometricIO::writeLdt(p, bad, &err),
+              "ldt: a distribution whose counts disagree is not written");
+        // C 平面が全周をおおっていない → 鏡映の解釈を推測しない
+        PhotometricData part;
+        part.lamps = 1;
+        part.lumensPerLamp = 1000.0;
+        part.horizAngles_deg = { 0.0, 45.0, 90.0 };
+        part.vertAngles_deg = { 0.0, 180.0 };
+        part.candela = { { 1.0, 0.0 }, { 2.0, 0.0 }, { 3.0, 0.0 } };
+        check(!PhotometricIO::writeLdt(p, part, &err),
+              "ldt: C-planes that do not cover the full circle are refused "
+              "rather than guessed at");
+        // 基準にできる光束がまったく無い
+        PhotometricData dark;
+        dark.lamps = 1;
+        dark.lumensPerLamp = 0.0;
+        dark.horizAngles_deg = { 0.0 };
+        dark.vertAngles_deg = { 0.0, 180.0 };
+        dark.candela = { { 0.0, 0.0 } };
+        check(!PhotometricIO::writeLdt(p, dark, &err),
+              "ldt: without a reference flux the file is not written");
+    }
+
+    // ── 7) 読んではいけないファイル ───────────────────────────────────────
+    {
+        auto raw = [&dir](const char *name, const QByteArray &body) {
+            const QString p = dir.path() + QStringLiteral("/") + name;
+            QFile f(p);
+            if (!f.open(QIODevice::WriteOnly)) return QString();
+            f.write(body);
+            f.close();
+            return p;
+        };
+        // Isym=2 (C0-C180 面対称) — 鏡映の向きを推測すると配光が裏返る
+        QByteArray sym = "co\r\n1\r\n2\r\n24\r\n15\r\n2\r\n90\r\n";
+        for (int i = 0; i < 5; ++i) sym += "x\r\n";
+        check(!PhotometricIO::readLdt(raw("sym2.ldt", sym), &q, &err),
+              "ldt: Isym=2 is refused rather than silently mirrored");
+        check(err.contains(QStringLiteral("Isym")),
+              "ldt: the refusal says which symmetry it was");
+
+        // 途中で切れているファイル
+        check(!PhotometricIO::readLdt(raw("short.ldt", "co\r\n1\r\n1\r\n"), &q, &err),
+              "ldt: a truncated file is rejected");
+        // 数値であるべき欄が文字
+        check(!PhotometricIO::readLdt(raw("nan.ldt", "co\r\nx\r\n1\r\n24\r\n"), &q, &err),
+              "ldt: a non-numeric field is rejected");
+        // 角度の数が 0
+        QByteArray zero = "co\r\n1\r\n1\r\n0\r\n15\r\n0\r\n0\r\n";
+        check(!PhotometricIO::readLdt(raw("zero.ldt", zero), &q, &err),
+              "ldt: zero angles is rejected");
+
+        // ランプ組が 0 組 / ランプ光束 0 — 実光度に戻せない
+        auto header = [](const char *sets, const char *flux) {
+            QByteArray b = "co\r\n1\r\n1\r\n1\r\n0\r\n2\r\n90\r\n";
+            for (int i = 0; i < 5; ++i) b += "t\r\n";        // 8..12
+            for (int i = 0; i < 11; ++i) b += "0\r\n";       // 13..23
+            b += "1\r\n0\r\n";                               // 24 換算係数 / 25 傾き
+            b += sets; b += "\r\n";                          // 26
+            b += "1\r\nlamp\r\n"; b += flux; b += "\r\nn/a\r\nn/a\r\n0\r\n";
+            for (int i = 0; i < 10; ++i) b += "0\r\n";       // 27
+            b += "0\r\n";                                    // 28 (Mc=1)
+            b += "0\r\n180\r\n";                             // 29 (Ng=2)
+            b += "1000\r\n0\r\n";                            // 30
+            return b;
+        };
+        check(!PhotometricIO::readLdt(raw("nosets.ldt", header("0", "1000")), &q, &err),
+              "ldt: a file with no lamp set is rejected");
+        check(!PhotometricIO::readLdt(raw("noflux.ldt", header("1", "0")), &q, &err),
+              "ldt: a zero lamp flux is rejected (cd/1000lm cannot be undone)");
+        // 同じ骨格で光束があれば読める — 上の 2 件が「骨格が悪い」ではないこと
+        check(PhotometricIO::readLdt(raw("ok.ldt", header("1", "2000")), &q, &err),
+              "ldt: the same skeleton with a real lamp flux does read");
+        check(rel(cd(q, 0, 0), 2000.0) < 1e-9,
+              "ldt: 1000 cd/1000lm at 2000 lm is 2000 cd");
+        // 換算係数 0 は配光を丸ごと消す — 全 0 を黙って返さない
+        QByteArray z = header("1", "2000");
+        z.replace("\r\n1\r\n0\r\n1\r\n", "\r\n0\r\n0\r\n1\r\n");
+        check(z != header("1", "2000"), "ldt: the conversion factor was edited");
+        check(!PhotometricIO::readLdt(raw("conv0.ldt", z), &q, &err),
+              "ldt: a zero conversion factor is rejected (it would silently "
+              "zero the whole distribution)");
+        check(!PhotometricIO::readLdt(dir.path() + QStringLiteral("/none.ldt"),
+                                      &q, &err),
+              "ldt: a missing file is rejected");
+    }
+
+    // ── 8) 換算係数 (項目 24) を読みで適用する ────────────────────────────
+    {
+        QByteArray b = "co\r\n1\r\n1\r\n1\r\n0\r\n2\r\n90\r\n";
+        for (int i = 0; i < 5; ++i) b += "t\r\n";
+        for (int i = 0; i < 9; ++i) b += "0\r\n";     // 13..21
+        b += "50\r\n80\r\n2.5\r\n0\r\n";              // 22 DFF / 23 LORL / 24 換算 / 25 傾き
+        b += "1\r\n1\r\nlamp\r\n1000\r\nn/a\r\nn/a\r\n10\r\n";
+        for (int i = 0; i < 10; ++i) b += "0\r\n";
+        b += "0\r\n0\r\n180\r\n40\r\n0\r\n";
+        const QString p = dir.path() + QStringLiteral("/conv.ldt");
+        QFile f(p);
+        check(f.open(QIODevice::WriteOnly), "ldt: write the conversion sample");
+        f.write(b);
+        f.close();
+        PhotometricData m;
+        check(PhotometricIO::readLdt(p, &m, &err), "ldt: read a file with a "
+              "conversion factor");
+        check(rel(cd(m, 0, 0), 40.0 * 2.5) < 1e-9,
+              "ldt: the conversion factor of item 24 is applied on read");
+        check(rel(m.lumensPerLamp, 1000.0) < 1e-9 && m.lamps == 1,
+              "ldt: the lamp flux is read from the lamp set");
     }
 }
 
@@ -21151,6 +22464,493 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 断面上の線積分 (io/SliceLineIntegral) ─────────────────────────────────
+// 双一次補間は 1 次多項式を厳密に再現するので、f = a·u + b·v + c なら
+// **∫f dl = 長さ × f(中点)** が解析解になる。これを基準に固定する。
+// 格子は**非一様・行数と列数を変え・原点から離す** (等間隔や対称な配置では
+// 添字計算の誤りが打ち消し合って検出できない)。
+static void testSliceLineIntegral()
+{
+    g_file = "lineint";
+    using ofd::LineIntegralResult;
+    using ofd::sliceLineIntegral;
+
+    // 列 = u (7 点)、行 = v (5 点)。どちらも**不等間隔**
+    const QVector<double> uc{ 1.0, 1.5, 2.5, 4.0, 4.25, 6.0, 9.0 };
+    const QVector<double> vc{ -2.0, -1.5, 0.5, 3.0, 3.5 };
+    const int cols = uc.size(), rows = vc.size();
+
+    // f = a·u + b·v + c。行 0 は vc の **+ 側** (末尾) に対応する
+    const double a = 0.75, b = -1.25, c = 3.5;
+    auto fAt = [&](double u, double v) { return a * u + b * v + c; };
+    QVector<double> cells(rows * cols, 0.0);
+    for (int r = 0; r < rows; ++r)
+        for (int cIdx = 0; cIdx < cols; ++cIdx)
+            cells[r * cols + cIdx] = fAt(uc[cIdx], vc[rows - 1 - r]);
+
+    auto expect = [&](double u0, double v0, double u1, double v1) {
+        const double L = std::hypot(u1 - u0, v1 - v0);
+        return L * fAt((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+    };
+
+    // (1) 斜めの線分 (軸に平行でない)
+    {
+        LineIntegralResult r;
+        const double u0 = 1.5, v0 = -1.5, u1 = 6.0, v1 = 3.0;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                u0, v0, u1, v1, 257, &r),
+              "lineint: a diagonal segment integrates");
+        const double want = expect(u0, v0, u1, v1);
+        check(r.ok && std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: the integral of a linear field matches length x f(mid)");
+        check(std::fabs(r.length - std::hypot(u1 - u0, v1 - v0)) < 1e-12,
+              "lineint: the reported length is the segment length");
+        check(std::fabs(r.mean - fAt((u0 + u1) / 2, (v0 + v1) / 2)) < 1e-9,
+              "lineint: the mean is the value at the midpoint");
+        check(r.samples.size() == 257, "lineint: every sample is returned");
+        check(std::fabs(r.samples.first().value - fAt(u0, v0)) < 1e-9
+              && std::fabs(r.samples.last().value - fAt(u1, v1)) < 1e-9,
+              "lineint: the first and last samples sit on the end points");
+        check(std::fabs(r.samples.first().s) < 1e-12
+              && std::fabs(r.samples.last().s - r.length) < 1e-12,
+              "lineint: arc length runs from 0 to the segment length");
+    }
+
+    // (2) v 方向だけの線分 — **行の向き**を取り違えると符号が変わる。
+    // b < 0 なので v が増えると f は減る。始点の値 > 終点の値になるはず
+    {
+        LineIntegralResult r;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                2.5, -2.0, 2.5, 3.5, 129, &r),
+              "lineint: a segment along v integrates");
+        const double want = expect(2.5, -2.0, 2.5, 3.5);
+        check(std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: the integral along v matches the analytic value");
+        check(r.samples.first().value > r.samples.last().value,
+              "lineint: row 0 is the + side of v (the field falls as v rises)");
+    }
+
+    // (3) u 方向だけの線分 (非一様な列間隔をまたぐ)
+    {
+        LineIntegralResult r;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                1.0, 0.5, 9.0, 0.5, 193, &r),
+              "lineint: a segment along u integrates");
+        const double want = expect(1.0, 0.5, 9.0, 0.5);
+        check(std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: a non-uniform column spacing is handled");
+    }
+
+    // (4) 向きを逆にしても積分値は同じ (弧長で積分しているため)
+    {
+        LineIntegralResult fwd, rev;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.5, -1.5, 6.0, 3.0, 129,
+                          &fwd);
+        sliceLineIntegral(cells, rows, cols, uc, vc, 6.0, 3.0, 1.5, -1.5, 129,
+                          &rev);
+        check(std::fabs(fwd.integral - rev.integral) < 1e-9,
+              "lineint: reversing the segment does not change the integral");
+    }
+
+    // (5) |f| の最大 — 端点のどちらかになる (線形なので)
+    {
+        LineIntegralResult r;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.0, 3.5, 9.0, -2.0, 129,
+                          &r);
+        const double e0 = std::fabs(fAt(1.0, 3.5)), e1 = std::fabs(fAt(9.0, -2.0));
+        check(std::fabs(r.maxAbs - std::max(e0, e1)) < 1e-9,
+              "lineint: maxAbs is the larger end value for a linear field");
+    }
+
+    // (6) 断りなく外挿しない — 範囲外・長さ 0・座標数の食い違いは false
+    {
+        LineIntegralResult r;
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 0.5, 0.0, 5.0, 0.0, 65, &r),
+              "lineint: a segment reaching outside the slice is refused");
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 2.0, 0.0, 2.0, 0.0, 65, &r),
+              "lineint: a zero-length segment is refused");
+        QVector<double> shortU = uc;
+        shortU.removeLast();
+        check(!sliceLineIntegral(cells, rows, cols, shortU, vc,
+                                 1.5, 0.0, 6.0, 0.0, 65, &r),
+              "lineint: coordinate counts that disagree with the matrix are refused");
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 1.5, 0.0, 6.0, 0.0, 1, &r),
+              "lineint: fewer than two samples is refused");
+    }
+
+    // (7) 非一様格子であることが効いているかを直接見る。
+    // 中点の位置は「実座標の中点」であって「添字の中点」ではない。
+    // uc の添字中点は uc[3] = 4.0 だが実座標の中点は (1+9)/2 = 5.0 で、
+    // f が違う値になる — 等間隔と誤って扱うとこの判定が落ちる
+    {
+        LineIntegralResult r;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.0, 0.5, 9.0, 0.5, 3, &r);
+        check(r.samples.size() == 3
+              && std::fabs(r.samples[1].value - fAt(5.0, 0.5)) < 1e-9,
+              "lineint: the middle sample sits at the coordinate midpoint, "
+              "not the index midpoint");
+    }
+}
+
+// ── ASCII DXF の輪郭読み取り (io/DxfOutline) ──────────────────────────────
+// 面積を図面から入れるための読み取り。**閉じた LWPOLYLINE の囲む面積**が
+// 唯一の出力なので、閉じ判定・靴紐公式・単位・読めなかった実体の数を固定する。
+static QString dxfWrap(const QString &header, const QString &entities)
+{
+    // ASCII DXF は「グループコード行」と「値行」の対の繰り返し
+    QString s;
+    if (!header.isEmpty())
+        s += "0\nSECTION\n2\nHEADER\n" + header + "0\nENDSEC\n";
+    s += "0\nSECTION\n2\nENTITIES\n" + entities + "0\nENDSEC\n0\nEOF\n";
+    return s;
+}
+
+// 閉じた LWPOLYLINE 1 本 (頂点は x,y の並び)
+static QString dxfPoly(const QVector<QPointF> &pts, bool closed)
+{
+    QString s = "0\nLWPOLYLINE\n90\n" + QString::number(pts.size())
+              + "\n70\n" + QString::number(closed ? 1 : 0) + "\n";
+    for (const QPointF &p : pts)
+        s += "10\n" + QString::number(p.x(), 'g', 12)
+           + "\n20\n" + QString::number(p.y(), 'g', 12) + "\n";
+    return s;
+}
+
+static void testDxfOutline()
+{
+    g_file = "dxf";
+    using ofd::DxfOutline;
+    using ofd::DxfUnit;
+    using ofd::parseDxfOutline;
+
+    // 単位の換算は 1 箇所から (取り違えると面積が 10^6 倍ずれる)
+    check(std::fabs(ofd::dxfUnitToMeter(DxfUnit::Millimeter) - 1e-3) < 1e-15,
+          "dxf: mm converts to metres");
+    check(std::fabs(ofd::dxfUnitToMeter(DxfUnit::Foot) - 0.3048) < 1e-15,
+          "dxf: feet convert to metres");
+    check(ofd::dxfUnitToMeter(DxfUnit::Unknown) == 0.0,
+          "dxf: an unknown unit has no conversion factor");
+
+    // **辺の長さが違う長方形**にする (正方形だと x と y を取り違えても
+    // 面積が合ってしまい、取り違えを検出できない)
+    const QVector<QPointF> rect{ { 0, 0 }, { 3000, 0 }, { 3000, 2000 },
+                                 { 0, 2000 } };
+    {
+        DxfOutline o; QString err;
+        check(parseDxfOutline(dxfWrap("9\n$INSUNITS\n70\n4\n",
+                                      dxfPoly(rect, true)), &o, &err),
+              "dxf: a closed polyline parses");
+        check(o.unit == DxfUnit::Millimeter,
+              "dxf: $INSUNITS = 4 means millimetres");
+        check(o.loops.size() == 1, "dxf: one closed loop is found");
+        if (o.loops.size() == 1) {
+            // 3000 x 2000 = 6e6 (図面単位の 2 乗)
+            check(std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+                  "dxf: the shoelace area of a 3000 x 2000 rectangle");
+            check(std::fabs(o.loops[0].perimeter - 10000.0) < 1e-6,
+                  "dxf: the perimeter of the same rectangle");
+            check(o.loops[0].arcVertices == 0,
+                  "dxf: a rectangle has no arc vertices");
+            check(!o.loops[0].selfIntersecting,
+                  "dxf: a rectangle does not self-intersect");
+        }
+        // mm² → m²: 6e6 mm² = 6 m²
+        const double k = ofd::dxfUnitToMeter(o.unit);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area * k * k - 6.0) < 1e-9,
+              "dxf: 6e6 square millimetres is 6 square metres");
+        check(o.hasBBox && std::fabs(o.bbox[2] - 3000.0) < 1e-9
+              && std::fabs(o.bbox[3] - 2000.0) < 1e-9,
+              "dxf: the bounding box spans the rectangle");
+    }
+
+    // **原点に角のある軸平行な長方形だけでは靴紐公式の検算にならない。**
+    // その配置では交差項が消えるため、第 2 項の符号を反転させても答えが
+    // 変わらない (変異検査で実際に素通りした)。原点から離した長方形と、
+    // 軸に平行でない三角形を必ず入れる。
+    {
+        // 平行移動した 3000 x 2000 (面積は同じ 6e6 だが交差項が消えない)
+        const QVector<QPointF> moved{ { 1000, 500 }, { 4000, 500 },
+                                      { 4000, 2500 }, { 1000, 2500 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(moved, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+              "dxf: translating the rectangle does not change its area");
+    }
+    {
+        // 任意の三角形。面積は |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)| / 2
+        //   = |100(120-560) + 700(560-50) + 300(50-120)| / 2 = 146000
+        const QVector<QPointF> tri{ { 100, 50 }, { 700, 120 }, { 300, 560 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(tri, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 146000.0) < 1e-6,
+              "dxf: the area of a triangle that is not axis-aligned");
+    }
+
+    // 頂点の並びが逆でも面積は同じ (符号付き面積の絶対値を採っている)
+    {
+        QVector<QPointF> rev = rect;
+        std::reverse(rev.begin(), rev.end());
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rev, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+              "dxf: winding direction does not change the area");
+    }
+
+    // 閉じていない LWPOLYLINE は輪郭にしない (面積を出さない)
+    {
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rect, false)), &o, &err);
+        check(o.loops.isEmpty() && o.openPolylines == 1,
+              "dxf: an open polyline yields no area");
+    }
+
+    // $INSUNITS が無い / unitless なら Unknown (勝手に m とみなさない)
+    {
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rect, true)), &o, &err);
+        check(o.unit == DxfUnit::Unknown,
+              "dxf: a drawing without $INSUNITS has no known unit");
+        DxfOutline o2;
+        parseDxfOutline(dxfWrap("9\n$INSUNITS\n70\n0\n",
+                                dxfPoly(rect, true)), &o2, &err);
+        check(o2.unit == DxfUnit::Unknown,
+              "dxf: $INSUNITS = 0 (unitless) is not a unit");
+    }
+
+    // 自己交差する多角形 (蝶ネクタイ) は面積を出さない。
+    // 靴紐公式は符号が打ち消し合って小さい値を返すので、そのまま出すと
+    // 「小さいが妥当に見える面積」になってしまう
+    {
+        const QVector<QPointF> bow{ { 0, 0 }, { 3000, 2000 },
+                                    { 3000, 0 }, { 0, 2000 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(bow, true)), &o, &err);
+        check(o.loops.size() == 1 && o.loops[0].selfIntersecting,
+              "dxf: a bow-tie polygon is reported as self-intersecting");
+        check(o.loops.size() == 1 && o.loops[0].area == 0.0,
+              "dxf: a self-intersecting polygon yields no area");
+    }
+
+    // 円弧 (bulge) を持つ頂点は数える — 弦で近似した面積である旨を
+    // 呼び出し側が出せるように
+    {
+        QString ent = "0\nLWPOLYLINE\n90\n4\n70\n1\n";
+        ent += "10\n0\n20\n0\n42\n0.5\n";
+        ent += "10\n3000\n20\n0\n";
+        ent += "10\n3000\n20\n2000\n42\n-0.25\n";
+        ent += "10\n0\n20\n2000\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), ent), &o, &err);
+        check(o.loops.size() == 1 && o.loops[0].arcVertices == 2,
+              "dxf: vertices carrying a bulge are counted as arcs");
+    }
+
+    // LINE は本数を数えるだけで輪郭には組み立てない。読まない実体も数える
+    {
+        QString ent = "0\nLINE\n10\n0\n20\n0\n11\n3000\n21\n0\n";
+        ent += "0\nLINE\n10\n3000\n20\n0\n11\n3000\n21\n2000\n";
+        ent += "0\nCIRCLE\n10\n100\n20\n100\n40\n50\n";
+        ent += "0\nSPLINE\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), ent), &o, &err);
+        check(o.lineSegments == 2, "dxf: LINE entities are counted");
+        check(o.loops.isEmpty(),
+              "dxf: line segments are not assembled into loops");
+        check(o.skippedEntities == 2,
+              "dxf: entity types that are not read are counted");
+        check(o.hasBBox && std::fabs(o.bbox[2] - 3000.0) < 1e-9,
+              "dxf: LINE endpoints still extend the bounding box");
+    }
+
+    // ENTITIES の外にある LWPOLYLINE は読まない (BLOCKS の定義など)
+    {
+        const QString s = "0\nSECTION\n2\nBLOCKS\n" + dxfPoly(rect, true)
+                        + "0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n"
+                          "0\nEOF\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(s, &o, &err);
+        check(o.loops.isEmpty(),
+              "dxf: geometry outside ENTITIES is not read");
+    }
+
+    // 複数の輪郭 — 面積の違うものを 2 つ (どちらを使うかは呼び出し側が選ぶ)
+    {
+        const QVector<QPointF> small{ { 0, 0 }, { 1000, 0 }, { 1000, 500 },
+                                      { 0, 500 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(),
+                                dxfPoly(rect, true) + dxfPoly(small, true)),
+                        &o, &err);
+        check(o.loops.size() == 2, "dxf: several closed loops are all kept");
+        check(o.loops.size() == 2
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3
+              && std::fabs(o.loops[1].area - 5.0e5) < 1e-3,
+              "dxf: each loop keeps its own area");
+    }
+
+    // 壊れた入力 / バイナリ DXF は false (空の結果を成功として返さない)
+    {
+        DxfOutline o; QString err;
+        check(!parseDxfOutline(QStringLiteral("AutoCAD Binary DXF\x1a"),
+                               &o, &err),
+              "dxf: binary DXF is refused");
+        check(!parseDxfOutline(QStringLiteral("not\na\ndxf\nfile\n"),
+                               &o, &err),
+              "dxf: a file whose group codes are not integers is refused");
+        check(!parseDxfOutline(QString(), &o, &err),
+              "dxf: empty input is refused");
+    }
+}
+
+// ── 直交断面の切り分け (io/SlicePieces) ───────────────────────────────────
+// 3D シーンに断面を複数重ねるとき、面どうしが貫通するので四角形のままでは
+// 前後が決まらない。互いの位置で切ると貫通が無くなる — その「切れているか」
+// と「切り過ぎていないか」を固定する。
+static void testSlicePieces()
+{
+    g_file = "slicepieces";
+    using ofd::SlicePlane;
+    using ofd::SlicePiece;
+    using ofd::cutSlices;
+
+    // 1 枚だけなら切らない
+    {
+        SlicePlane a; a.axis = 2; a.pos = 0.0;
+        a.u0 = 0; a.u1 = 10; a.v0 = 0; a.v1 = 20;
+        QVector<SlicePlane> in; in.push_back(a);
+        const QVector<SlicePiece> out = cutSlices(in);
+        check(out.size() == 1, "slicepieces: a lone slice is not cut");
+        if (out.size() == 1)
+            check(out[0].ua == 0 && out[0].ub == 10
+                  && out[0].va == 0 && out[0].vb == 20,
+                  "slicepieces: the lone piece keeps the whole extent");
+    }
+
+    // 直交 3 面 (XY / XZ / YZ) — 各面が 4 分割されて計 12 片
+    // わざと非対称にする (辺の長さ・切る位置とも別々の値)。対称な箱だと
+    // u と v を取り違えても通ってしまう
+    QVector<SlicePlane> three;
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 3.0;    // Z 一定 : u=x, v=y
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane xz; xz.axis = 1; xz.pos = 7.0;    // Y 一定 : u=x, v=z
+        xz.u0 = 0; xz.u1 = 10; xz.v0 = 0; xz.v1 = 5;
+        SlicePlane yz; yz.axis = 0; yz.pos = 4.0;    // X 一定 : u=y, v=z
+        yz.u0 = 0; yz.u1 = 20; yz.v0 = 0; yz.v1 = 5;
+        three << xy << xz << yz;
+    }
+    const QVector<SlicePiece> cut = cutSlices(three);
+    check(cut.size() == 12,
+          "slicepieces: three orthogonal slices cut each other into 12 pieces");
+
+    // 面ごとに 4 片、かつ面積の合計が元の面積と一致する (隙間も重なりも無い)
+    for (int i = 0; i < 3; ++i) {
+        int n = 0;
+        double area = 0.0;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != i) continue;
+            ++n;
+            check(pc.ub > pc.ua && pc.vb > pc.va,
+                  "slicepieces: every piece has a positive extent");
+            area += (pc.ub - pc.ua) * (pc.vb - pc.va);
+        }
+        check(n == 4, "slicepieces: each slice is split into four pieces");
+        const double want = (three[i].u1 - three[i].u0)
+                          * (three[i].v1 - three[i].v0);
+        check(std::fabs(area - want) < 1e-9,
+              "slicepieces: the pieces tile the original slice exactly");
+    }
+
+    // 切れ目の位置が「他の面の位置」であること。XY 面 (u=x, v=y) は
+    // YZ 面 (X=4) で u=4 に、XZ 面 (Y=7) で v=7 に切られる。**この 2 つを
+    // 取り違えると転置**するので、両方を別々に判定する
+    {
+        bool cutAtU4 = false, cutAtV7 = false;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != 0) continue;
+            if (std::fabs(pc.ub - 4.0) < 1e-12) cutAtU4 = true;
+            if (std::fabs(pc.vb - 7.0) < 1e-12) cutAtV7 = true;
+        }
+        check(cutAtU4, "slicepieces: the XY slice is cut in u by the YZ plane");
+        check(cutAtV7, "slicepieces: the XY slice is cut in v by the XZ plane");
+    }
+    // XZ 面 (u=x, v=z) は YZ 面 (X=4) で u=4 に切られる。XY 面 (Z=3) は
+    // v=3 に切る。XY 面の位置 3 が u 側に現れてはいけない
+    {
+        bool u4 = false, v3 = false, wrong = false;
+        for (const SlicePiece &pc : cut) {
+            if (pc.plane != 1) continue;
+            if (std::fabs(pc.ub - 4.0) < 1e-12) u4 = true;
+            if (std::fabs(pc.vb - 3.0) < 1e-12) v3 = true;
+            if (std::fabs(pc.ub - 3.0) < 1e-12) wrong = true;
+        }
+        check(u4 && v3, "slicepieces: the XZ slice is cut by both other planes");
+        check(!wrong, "slicepieces: a plane never cuts along the wrong in-plane axis");
+    }
+
+    // 平行な面は切らない (同じ軸の 2 枚)
+    {
+        SlicePlane a; a.axis = 2; a.pos = 1.0;
+        a.u0 = 0; a.u1 = 10; a.v0 = 0; a.v1 = 20;
+        SlicePlane b = a; b.pos = 2.0;
+        QVector<SlicePlane> in; in << a << b;
+        check(cutSlices(in).size() == 2,
+              "slicepieces: parallel slices do not cut each other");
+    }
+
+    // 範囲の外 / ちょうど端の位置では切らない (0 幅の小片を作らない)
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 0.0;
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane yz; yz.axis = 0; yz.pos = 50.0;   // u = 50 は範囲外
+        yz.u0 = 0; yz.u1 = 20; yz.v0 = 0; yz.v1 = 5;
+        QVector<SlicePlane> in; in << xy << yz;
+        int n = 0;
+        for (const SlicePiece &pc : cutSlices(in)) if (pc.plane == 0) ++n;
+        check(n == 1, "slicepieces: a plane outside the extent does not cut");
+
+        QVector<SlicePlane> in2; yz.pos = 10.0;      // ちょうど端 (u1)
+        in2 << xy << yz;
+        n = 0;
+        for (const SlicePiece &pc : cutSlices(in2)) if (pc.plane == 0) ++n;
+        check(n == 1, "slicepieces: a plane exactly at the edge does not cut");
+    }
+
+    // 面積を持たない指定・壊れた軸は捨てる (0 幅の小片を出さない)
+    {
+        SlicePlane bad; bad.axis = 2; bad.pos = 0.0;
+        bad.u0 = 5; bad.u1 = 5; bad.v0 = 0; bad.v1 = 1;    // u 幅 0
+        QVector<SlicePlane> in; in.push_back(bad);
+        check(cutSlices(in).isEmpty(),
+              "slicepieces: a degenerate slice yields no pieces");
+        SlicePlane oob; oob.axis = 7; oob.pos = 0.0;
+        oob.u0 = 0; oob.u1 = 1; oob.v0 = 0; oob.v1 = 1;
+        QVector<SlicePlane> in2; in2.push_back(oob);
+        check(cutSlices(in2).isEmpty(),
+              "slicepieces: an out-of-range axis yields no pieces");
+    }
+
+    // 同じ位置に複数の面があっても切れ目は 1 本 (0 幅の小片を作らない)
+    {
+        SlicePlane xy; xy.axis = 2; xy.pos = 0.0;
+        xy.u0 = 0; xy.u1 = 10; xy.v0 = 0; xy.v1 = 20;
+        SlicePlane a; a.axis = 0; a.pos = 4.0;
+        a.u0 = 0; a.u1 = 20; a.v0 = 0; a.v1 = 5;
+        SlicePlane b = a;                              // 同じ X = 4
+        QVector<SlicePlane> in; in << xy << a << b;
+        int n = 0;
+        for (const SlicePiece &pc : cutSlices(in)) if (pc.plane == 0) ++n;
+        check(n == 2, "slicepieces: duplicate planes make only one cut");
+    }
+}
+
 // ── 3D プレビューの投影 (io/MeshProjection) ───────────────────────────────
 // 正射影なので、既知の角度では手で書ける値になる。**軸の取り違えと符号の
 // 反転**がいちばん起きやすいので、そこを角度ごとに固定する。
@@ -24213,6 +26013,7 @@ int main(int argc, char *argv[])
     testGdsIO();
     testAimDirection();
     testH5Reader();
+    testAntennaH5();
     testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();
@@ -24220,6 +26021,7 @@ int main(int argc, char *argv[])
     testFdeModeSolver();
     testSoundInsulation();
     testRoomModes();
+    testNotchCandidates();
     testEnvironmentalNoise();
     testFdtdVerification();
     testToleranceStats();
@@ -24256,6 +26058,8 @@ int main(int argc, char *argv[])
     testRayTrace();
     testIlluminationTrace();
     testPhotometricIO();
+    testEulumdat();
+    testBandSpectrumCsv();
     testOptimizer();
     testFlankingTransmission();
     testTransmissionLine();
@@ -24280,6 +26084,9 @@ int main(int argc, char *argv[])
     testSeriesSliceAxes();
     testSliceOverlay();
     testMeshProjection();
+    testSlicePieces();
+    testDxfOutline();
+    testSliceLineIntegral();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

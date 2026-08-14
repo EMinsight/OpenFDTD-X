@@ -6,6 +6,7 @@
 #include "../widgets/SectionBox.h"
 #include "../em/LumpedRlc.h"
 #include "../io/CircuitIO.h"
+#include "../io/Touchstone.h"
 #include "../kernel/Runner.h"
 #include <QProcess>
 #include <QPlainTextEdit>
@@ -319,7 +320,28 @@ const bool s_i18n = [] {
               "(値は自由に編集できます)。",
               "The project has no load lines, so default values are shown "
               "(they can be edited freely).");
-    I18n::reg("cir_exp_snp", "📁 Touchstone .s3p 書出", "📁 Export Touchstone .s3p");
+    // モックの文言は .s3p だったが、集中定数 RLC は 2 端子 = 1 ポートで
+    // 3 ポートの S 行列は存在しない。出せるもの (.s1p) に文言を合わせる
+    I18n::reg("cir_exp_snp", "📁 Touchstone .s1p 書出", "📁 Export Touchstone .s1p");
+    I18n::reg("cir_exp_snp_tip",
+              "集中定数モデルの Z(f) から S11 = (Z−Z0)/(Z+Z0) を求めて "
+              "Touchstone 1.1 (.s1p) で書き出します。基準は Z0 = 50 Ω。",
+              "Writes S11 = (Z−Z0)/(Z+Z0) from the lumped model's Z(f) as "
+              "Touchstone 1.1 (.s1p), referenced to Z0 = 50 Ω.");
+    I18n::reg("cir_exp_snp_bad",
+              "R・L・C がすべて空です。集中定数モデルを入れてください。",
+              "R, L and C are all empty. Enter a lumped model first.");
+    I18n::reg("cir_exp_snp_ok",
+              "書き出しました: %1\n%2 点 (%3 〜 %4 MHz)、基準 Z0 = %5 Ω。\n"
+              "これは抽出結果ではなく、上で入力した集中定数モデル (%6) の "
+              "S11 です。|S11| の最大は %7。",
+              "Written: %1\n%2 points (%3 to %4 MHz), reference Z0 = %5 Ω.\n"
+              "This is S11 of the lumped model you entered (%6), not an "
+              "extraction result. Maximum |S11| is %7.");
+    I18n::reg("cir_exp_snp_skip",
+              "\n共振点 %1 点は無損失並列 LC の開放 (|Z| = ∞) なので書いて"
+              "いません。", "\n%1 point(s) at the lossless parallel-LC "
+              "resonance are open circuits (|Z| = ∞) and were not written.");
     I18n::reg("cir_exp_spice", "📁 SPICE サブサーキット書出", "📁 Export SPICE subcircuit");
     I18n::reg("cir_exp_spice_tip",
               "上の集中定数モデル (直列 / 並列と R・L・C) を 2 端子の "
@@ -369,6 +391,7 @@ const double kEvalFreqHz[3] = { 1.0e6, 1.0e7, 1.0e8 };
 
 // |Z(f)| 曲線の描画範囲 (log10 f[MHz] = -2 … 2 → 0.01 MHz 〜 100 MHz)
 const double kZPlotLogMin = -2.0, kZPlotLogMax = 2.0;
+const double kSnpZ0 = 50.0;          // Touchstone の基準インピーダンス [Ω]
 const int    kZPlotPoints = 121;
 
 QLabel *hintLabel(const QString &text, QWidget *parent)
@@ -1044,6 +1067,69 @@ void CircuitSolversTab::exportSpiceSubckt()
                             : I18n::tr("cir_exp_spice_parallel")));
 }
 
+// 集中定数モデル → Touchstone .s1p (S11)。
+// **|Z| 曲線とまったく同じ掃引・同じ `em::rlcImpedance()`** を使うので、
+// 書き出した値は画面の曲線と必ず一致する (数値を別に組み直さない)。
+void CircuitSolversTab::exportTouchstone1p()
+{
+    const em::RlcModel m = rlcModelFromUi();
+    if (!(m.r_ohm > 0) && !(m.l_H > 0) && !(m.c_F > 0)) {
+        QMessageBox::information(this, I18n::tr("cir_exp_snp"),
+                                 I18n::tr("cir_exp_snp_bad"));
+        return;
+    }
+
+    QVector<double> freqHz;
+    QVector<std::complex<double>> s11;
+    int skipped = 0;
+    double worst = 0.0;
+    for (int i = 0; i < kZPlotPoints; ++i) {
+        const double lg = kZPlotLogMin
+                        + (kZPlotLogMax - kZPlotLogMin) * i / (kZPlotPoints - 1);
+        const double f_Hz = std::pow(10.0, lg) * 1e6;
+        const em::RlcImpedance z = em::rlcImpedance(m, f_Hz);
+        if (!z.valid) { ++skipped; continue; }   // 開放点は書かない (.h 参照)
+        const std::complex<double> s =
+            Touchstone::zToS({ z.resistance_ohm, z.reactance_ohm }, kSnpZ0);
+        freqHz.push_back(f_Hz);
+        s11.push_back(s);
+        worst = std::max(worst, std::abs(s));
+    }
+    if (freqHz.isEmpty()) {
+        QMessageBox::information(this, I18n::tr("cir_exp_snp"),
+                                 I18n::tr("cir_exp_snp_bad"));
+        return;
+    }
+
+    QString base = m_p->filePath();
+    base = base.isEmpty() ? QStringLiteral("circuit.s1p")
+                          : QFileInfo(base).absolutePath()
+                                + QStringLiteral("/circuit.s1p");
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("cir_exp_snp"), base,
+        QStringLiteral("Touchstone (*.s1p);;All files (*)"));
+    if (path.isEmpty()) return;
+    QString err;
+    if (!Touchstone::writeS1p(path, freqHz, s11, &err)) {
+        QMessageBox::warning(this, I18n::tr("cir_exp_snp"), err);
+        return;
+    }
+    // 「入力したモデルの S11 であって抽出結果ではない」ことを必ず書く
+    QString msg = I18n::tr("cir_exp_snp_ok")
+        .arg(QFileInfo(path).fileName(),
+             QString::number(freqHz.size()),
+             QString::number(freqHz.first() * 1e-6, 'g', 3),
+             QString::number(freqHz.last() * 1e-6, 'g', 3),
+             QString::number(kSnpZ0, 'g', 4),
+             m.topology == em::RlcTopology::Series
+                 ? I18n::tr("cir_exp_spice_series")
+                 : I18n::tr("cir_exp_spice_parallel"),
+             QString::number(worst, 'f', 4));
+    if (skipped > 0)
+        msg += I18n::tr("cir_exp_snp_skip").arg(skipped);
+    QMessageBox::information(this, I18n::tr("cir_exp_snp"), msg);
+}
+
 void CircuitSolversTab::browseNetlist()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -1230,7 +1316,7 @@ QWidget *CircuitSolversTab::buildResultsPage()
     connect(m_rlcTopology, &QComboBox::currentIndexChanged,
             this, &CircuitSolversTab::updateResults);
 
-    // 書出/適用ボタンはいずれも未配線 (絶対規則 5)
+    // .s1p と SPICE は集中定数モデルから出せる。残り 2 つは未配線
     auto *btnRow = new QHBoxLayout();
     auto *expSnp   = new QPushButton(I18n::tr("cir_exp_snp"), s);
     auto *expSpice = new QPushButton(I18n::tr("cir_exp_spice"), s);
@@ -1238,9 +1324,13 @@ QWidget *CircuitSolversTab::buildResultsPage()
     auto *expFdtd  = new QPushButton(I18n::tr("cir_exp_fdtd"), s);
     // SPICE サブサーキットの書出だけは実装済み (io/SpiceNetlist)
     expSpice->setToolTip(I18n::tr("cir_exp_spice_tip"));
+    expSnp->setToolTip(I18n::tr("cir_exp_snp_tip"));
     connect(expSpice, &QPushButton::clicked, this,
             &CircuitSolversTab::exportSpiceSubckt);
-    for (QPushButton *b : { expSnp, expH5, expFdtd }) {
+    connect(expSnp, &QPushButton::clicked, this,
+            &CircuitSolversTab::exportTouchstone1p);
+    // .h5 と FDTD 連携は依然として未配線 — 集中定数モデルからは出せない
+    for (QPushButton *b : { expH5, expFdtd }) {
         tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
     }
     for (QPushButton *b : { expSnp, expSpice, expH5, expFdtd })
@@ -1285,14 +1375,22 @@ void CircuitSolversTab::refresh()
 }
 
 // ── 集中定数モデル → 表 + |Z(f)| 曲線 (解析式、em/LumpedRlc) ────────────────
-void CircuitSolversTab::updateResults()
+// UI の 3 欄 + トポロジ → 集中定数モデル。表・曲線・書出が同じ入力を見るよう
+// 1 箇所にまとめる (別々に組み立てると画面と書き出しがずれる)
+em::RlcModel CircuitSolversTab::rlcModelFromUi() const
 {
     em::RlcModel m;
-    m.r_ohm = m_rlcR->text().toDouble();          // [Ω]
-    m.l_H   = m_rlcL->text().toDouble() * 1e-9;   // nH → H
-    m.c_F   = m_rlcC->text().toDouble() * 1e-12;  // pF → F
-    m.topology = (m_rlcTopology->currentIndex() == 1) ? em::RlcTopology::Parallel
-                                                      : em::RlcTopology::Series;
+    m.r_ohm = m_rlcR ? m_rlcR->text().toDouble() : 0.0;             // [Ω]
+    m.l_H   = m_rlcL ? m_rlcL->text().toDouble() * 1e-9 : 0.0;      // nH → H
+    m.c_F   = m_rlcC ? m_rlcC->text().toDouble() * 1e-12 : 0.0;     // pF → F
+    m.topology = (m_rlcTopology && m_rlcTopology->currentIndex() == 1)
+                     ? em::RlcTopology::Parallel : em::RlcTopology::Series;
+    return m;
+}
+
+void CircuitSolversTab::updateResults()
+{
+    const em::RlcModel m = rlcModelFromUi();
 
     auto cell = [](double v) {
         return (v > 0) ? QString::number(v, 'g', 4) : QStringLiteral("—");

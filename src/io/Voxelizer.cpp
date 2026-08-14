@@ -127,7 +127,101 @@ VoxelResult Voxelizer::voxelize(const ImportedMesh &mesh,
     }
 
     const float *V = mesh.vertices.constData();
-    const int T = mesh.numTriangles;
+    // numTriangles が頂点配列より大きい壊れた入力でも読み越さない
+    const int T = qMin(mesh.numTriangles, int(mesh.vertices.size() / 9));
+
+    // ── 空間索引 (Y-Z 平面の一様格子 → 三角形リスト、CSR) ──────────────────
+    // レイは RAY_DIR ≈ +X なので、始点 (py,pz) を含む格子の三角形だけを見れば
+    // よい。ただし RAY_DIR は Y/Z にわずかに傾いているので、レイは X 方向に
+    // 進む間に最大 D = |RAY_DIR[a]| × (bbox の X 幅) だけ横へずれる。
+    // 交差する三角形の a 座標範囲を [lo, hi] とすると、始点は必ず
+    // [lo - D, hi] に入る (レイは + 方向へしかずれない) ので、**三角形側の
+    // 範囲を - 方向へ D だけ広げて登録**すれば、始点 1 点の検索で漏れがない。
+    // = 得られる集合は必ず超集合 → 交差回数は索引なしと完全に一致する。
+    bool useIndex = opt.spatialIndex
+                 && (opt.inside == InsideTest::RayParity) && T > 0;
+    std::vector<int> binStart, binTri;
+    int    nb = 0;
+    double gy0 = 0.0, gz0 = 0.0, invGy = 0.0, invGz = 0.0;
+    if (useIndex) {
+        const double xspan = std::max(0.0, double(mesh.bbox[3]) - mesh.bbox[0]);
+        // 傾きの分の余裕。方向ベクトルは正規化していない (長さ ≈ 1.0000003)
+        // ので少し多めに取る。丸めの分の絶対量も足す。
+        const double dY = RAY_DIR[1] * xspan * 1.001 + 1e-9;
+        const double dZ = RAY_DIR[2] * xspan * 1.001 + 1e-9;
+        gy0 = double(mesh.bbox[1]) - dY;
+        gz0 = double(mesh.bbox[2]) - dZ;
+        const double gy1 = double(mesh.bbox[4]), gz1 = double(mesh.bbox[5]);
+        const double spanY = std::max(gy1 - gy0, 1e-300);
+        const double spanZ = std::max(gz1 - gz0, 1e-300);
+
+        // 1 格子あたり平均 2 三角形を狙う。登録数が膨らむ (巨大な三角形が
+        // 多い) 場合は分割を半分にして作り直す。nb = 1 まで下がれば索引は
+        // 全三角形リストと同じになる — 遅くなるだけで結果は変わらない。
+        const qint64 kEntryCap = 20'000'000;      // 約 80 MB
+        nb = int(std::sqrt(double(T) / 2.0));
+        nb = qBound(1, nb, 256);
+        for (;;) {
+            binStart.assign(std::size_t(nb) * nb + 1, 0);
+            invGy = nb / spanY;
+            invGz = nb / spanZ;
+            qint64 total = 0;
+            bool over = false;
+            // 1 パス目: 各格子に入る三角形の数を数える
+            for (int t = 0; t < T && !over; ++t) {
+                const float *q = V + 9 * t;
+                double ylo = q[1], yhi = q[1], zlo = q[2], zhi = q[2];
+                for (int c = 1; c < 3; ++c) {
+                    ylo = std::min(ylo, double(q[3 * c + 1]));
+                    yhi = std::max(yhi, double(q[3 * c + 1]));
+                    zlo = std::min(zlo, double(q[3 * c + 2]));
+                    zhi = std::max(zhi, double(q[3 * c + 2]));
+                }
+                const int j0 = qBound(0, int((ylo - dY - gy0) * invGy), nb - 1);
+                const int j1 = qBound(0, int((yhi - gy0) * invGy), nb - 1);
+                const int k0 = qBound(0, int((zlo - dZ - gz0) * invGz), nb - 1);
+                const int k1 = qBound(0, int((zhi - gz0) * invGz), nb - 1);
+                for (int k = k0; k <= k1; ++k)
+                    for (int j = j0; j <= j1; ++j)
+                        ++binStart[std::size_t(k) * nb + j + 1];
+                total += qint64(j1 - j0 + 1) * (k1 - k0 + 1);
+                if (total > kEntryCap) over = true;
+            }
+            if (over) {
+                // 数え上げを途中で打ち切っているので、この binStart は使えない
+                if (nb > 1) { nb /= 2; continue; }
+                useIndex = false;       // 索引を諦めて総当たりへ (結果は同じ)
+                binStart.clear();
+                nb = 0;
+                break;
+            }
+            for (std::size_t i = 1; i < binStart.size(); ++i)
+                binStart[i] += binStart[i - 1];
+            binTri.assign(std::size_t(binStart.back()), 0);
+            std::vector<int> fill(binStart.begin(), binStart.end() - 1);
+            // 2 パス目: 実際に詰める (t の昇順で入るので走査順も元と同じ)
+            for (int t = 0; t < T; ++t) {
+                const float *q = V + 9 * t;
+                double ylo = q[1], yhi = q[1], zlo = q[2], zhi = q[2];
+                for (int c = 1; c < 3; ++c) {
+                    ylo = std::min(ylo, double(q[3 * c + 1]));
+                    yhi = std::max(yhi, double(q[3 * c + 1]));
+                    zlo = std::min(zlo, double(q[3 * c + 2]));
+                    zhi = std::max(zhi, double(q[3 * c + 2]));
+                }
+                const int j0 = qBound(0, int((ylo - dY - gy0) * invGy), nb - 1);
+                const int j1 = qBound(0, int((yhi - gy0) * invGy), nb - 1);
+                const int k0 = qBound(0, int((zlo - dZ - gz0) * invGz), nb - 1);
+                const int k1 = qBound(0, int((zhi - gz0) * invGz), nb - 1);
+                for (int k = k0; k <= k1; ++k)
+                    for (int j = j0; j <= j1; ++j)
+                        binTri[std::size_t(fill[std::size_t(k) * nb + j]++)] = t;
+            }
+            r.indexBins = nb;
+            r.indexEntries = qint64(binTri.size());
+            break;
+        }
+    }
 
     // 1 点の内外判定。メッシュ bbox の外は自明に外 (高速棄却)。
     auto insideAt = [&](double px, double py, double pz) -> bool {
@@ -137,8 +231,19 @@ VoxelResult Voxelizer::voxelize(const ImportedMesh &mesh,
         if (opt.inside == InsideTest::WindingNumber)
             return windingNumber(mesh, px, py, pz) > 0.5;
         int crossings = 0;
-        for (int t = 0; t < T; ++t)
-            if (rayHitsForward(px, py, pz, V + 9 * t)) ++crossings;
+        if (useIndex) {
+            const int j = qBound(0, int((py - gy0) * invGy), nb - 1);
+            const int k = qBound(0, int((pz - gz0) * invGz), nb - 1);
+            const std::size_t b = std::size_t(k) * nb + j;
+            r.triangleTests += binStart[b + 1] - binStart[b];
+            for (int e = binStart[b]; e < binStart[b + 1]; ++e)
+                if (rayHitsForward(px, py, pz, V + 9 * binTri[std::size_t(e)]))
+                    ++crossings;
+        } else {
+            r.triangleTests += T;
+            for (int t = 0; t < T; ++t)
+                if (rayHitsForward(px, py, pz, V + 9 * t)) ++crossings;
+        }
         return (crossings & 1) != 0;
     };
 

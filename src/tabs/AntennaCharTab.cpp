@@ -5,6 +5,7 @@
 #include "../em/Directivity.h"
 #include "../em/PatternMetrics.h"
 #include "../io/KernelResultReader.h"
+#include "../io/H5Writer.h"
 #include <QFileDialog>
 #include <QFile>
 #include <QFileInfo>
@@ -75,12 +76,34 @@ const bool s_i18n = [] {
 
     I18n::reg("ant_output", "出力先", "Outputs");
     I18n::reg("ant_csv_hint",
-              "CSV は直近の計算結果 (<ケース名>.log の給電点表と far1d.log の"
-              "遠方界パターン) から書き出します。HDF5 / NEC・FFE の書き出しは"
-              "未実装です。",
-              "The CSV is written from the latest run (<case>.log feed table and "
-              "the far1d.log patterns). HDF5 and NEC/FFE export are not "
-              "implemented.");
+              "CSV と HDF5 は直近の計算結果 (<ケース名>.log の給電点表と "
+              "far1d.log の遠方界パターン) から書き出します。「同じ読み取り"
+              "結果」を使うので、両方に出る列の数値は必ず一致します。"
+              "NEC・FFE の書き出しは未実装です。",
+              "The CSV and the HDF5 are written from the latest run (<case>.log "
+              "feed table and the far1d.log patterns). Both come from the same "
+              "read, so the columns they share always agree. NEC/FFE export is "
+              "not implemented.");
+    I18n::reg("ant_h5_hint",
+              "HDF5 は /feed/feed<N>/ (frequency, rin, xin, ref_db, vswr) と "
+              "/pattern/cut<N>/ (angle_deg, e_abs_db) に入れ、単位・面名・"
+              "基準インピーダンスは属性で添えます。far1d.log に偏波成分の列が"
+              "あるときだけ e_theta_db / e_phi_db も入ります。",
+              "The HDF5 holds /feed/feed<N>/ (frequency, rin, xin, ref_db, vswr) "
+              "and /pattern/cut<N>/ (angle_deg, e_abs_db); the units, the plane "
+              "name and the reference impedance come along as attributes. "
+              "e_theta_db / e_phi_db are added only when far1d.log has the "
+              "polarisation columns.");
+    I18n::reg("ant_h5_ok",
+              "書き出しました: %1 — 給電点 %2 個 (%3 周波数)、遠方界 %4 面 "
+              "(HDF5)",
+              "Exported %1 \u2014 %2 feed(s) over %3 frequencies, %4 pattern "
+              "cut(s) (HDF5)");
+    I18n::reg("ant_h5_nolib",
+              "未実装 — この実行ファイルは HDF5 を無効にしてビルドされています "
+              "(-DUSE_HDF5=ON で有効になります)。",
+              "Not implemented \u2014 this build has HDF5 disabled (reconfigure "
+              "with -DUSE_HDF5=ON to enable it).");
     I18n::reg("ant_csv_none",
               "書き出せる結果がありません。先に「計算」と「ポスト処理」を"
               "実行してください (%1 に .log が見つかりません)。",
@@ -239,7 +262,14 @@ AntennaCharTab::AntennaCharTab(Project *project, QWidget *parent)
     auto *necBtn = new QPushButton("📐 .nec / .ffe", sOut);
     // CSV は実装済み (ofd の実行結果を読んで書く)。HDF5 / NEC は未実装。
     connect(csvBtn, &QPushButton::clicked, this, &AntennaCharTab::exportCsv);
-    tabhelp::markNotImplemented(h5Btn, I18n::tr(tabhelp::notimpl::kFormat));
+    // HDF5 は任意依存 (USE_HDF5)。無効ビルドでは「書式の仕様が無い」のでは
+    // なく「このビルドに HDF5 が入っていない」ので、理由もそう書き分ける。
+    if (H5Writer::available()) {
+        connect(h5Btn, &QPushButton::clicked, this, &AntennaCharTab::exportH5);
+        h5Btn->setToolTip(I18n::tr("ant_h5_hint"));
+    } else {
+        tabhelp::markNotImplemented(h5Btn, I18n::tr("ant_h5_nolib"));
+    }
     tabhelp::markNotImplemented(necBtn, I18n::tr(tabhelp::notimpl::kFormat));
     row->addWidget(csvBtn);
     row->addWidget(h5Btn);
@@ -280,25 +310,75 @@ SectionBox *AntennaCharTab::checkSection(QWidget *parent, const char *titleKey,
     return s;
 }
 
+// 書き出しの元データを 1 箇所で読む。CSV と HDF5 で別々に読むと、
+// 「同じボタン群なのに数字が違う」事故になりうる (単一の出所)。
+// 結果が無ければ false を返し、理由は呼び出し側が出す。
+bool AntennaCharTab::readExportSource(QString *dir, QString *base,
+                                      QVector<FeedSweep> *feeds,
+                                      QVector<FarPattern> *cuts) const
+{
+    if (m_p->filePath().isEmpty()) return false;
+    *dir = QFileInfo(m_p->filePath()).path();
+    *base = QFileInfo(m_p->filePath()).completeBaseName();
+    *feeds = KernelResultReader::readFeedSweeps(*dir + QLatin1Char('/')
+                                                + *base + ".log");
+    *cuts = KernelResultReader::readFar1d(*dir + QStringLiteral("/far1d.log"));
+    return !(feeds->isEmpty() && cuts->isEmpty());
+}
+
+// アンテナ特性 (HDF5) — CSV とまったく同じ読み取り結果を .h5 へ入れる。
+// 数値を作り直さないので、両方に出る列は必ず一致する。
+void AntennaCharTab::exportH5()
+{
+    QString dir, base;
+    QVector<FeedSweep> feeds;
+    QVector<FarPattern> cuts;
+    if (m_p->filePath().isEmpty()) {
+        m_exportNote->setText(I18n::tr("ant_csv_none")
+                                  .arg(QStringLiteral("(未保存のプロジェクト)")));
+        return;
+    }
+    if (!readExportSource(&dir, &base, &feeds, &cuts)) {
+        m_exportNote->setText(
+            I18n::tr("ant_csv_none").arg(QDir::toNativeSeparators(dir)));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ant_output"),
+        dir + QStringLiteral("/antenna_pattern.h5"),
+        QStringLiteral("HDF5 (*.h5)"));
+    if (path.isEmpty()) return;
+
+    QString err;
+    if (!H5Writer::writeAntennaPattern(path, feeds, cuts,
+                                       QFileInfo(m_p->filePath()).fileName(),
+                                       &err)) {
+        m_exportNote->setText(I18n::tr("ant_csv_fail").arg(err));
+        return;
+    }
+    int freqCount = 0;
+    for (const FeedSweep &fs : feeds) freqCount += int(fs.points.size());
+    m_exportNote->setText(I18n::tr("ant_h5_ok")
+                              .arg(QFileInfo(path).fileName())
+                              .arg(feeds.size()).arg(freqCount).arg(cuts.size()));
+}
+
 // アンテナ特性レポート (CSV) — 直近の計算結果から書き出す。
 // 給電点表 (<ケース名>.log) と遠方界パターン (far1d.log) を 1 ファイルに
 // まとめる。結果が無ければ **書かずに理由を出す** (絶対規則 5)。
 void AntennaCharTab::exportCsv()
 {
-    const QString dir = m_p->filePath().isEmpty()
-                            ? QString()
-                            : QFileInfo(m_p->filePath()).path();
-    if (dir.isEmpty()) {
+    if (m_p->filePath().isEmpty()) {
         m_exportNote->setText(I18n::tr("ant_csv_none")
                                   .arg(QStringLiteral("(未保存のプロジェクト)")));
         return;
     }
-    const QString base = QFileInfo(m_p->filePath()).completeBaseName();
-    const QVector<FeedSweep> feeds =
-        KernelResultReader::readFeedSweeps(dir + QLatin1Char('/') + base + ".log");
-    const QVector<FarPattern> cuts =
-        KernelResultReader::readFar1d(dir + QStringLiteral("/far1d.log"));
-    if (feeds.isEmpty() && cuts.isEmpty()) {
+    // HDF5 書出と**同じ関数**で読む (別々に読むと数字が食い違いうる)
+    QString dir, base;
+    QVector<FeedSweep> feeds;
+    QVector<FarPattern> cuts;
+    if (!readExportSource(&dir, &base, &feeds, &cuts)) {
         m_exportNote->setText(
             I18n::tr("ant_csv_none").arg(QDir::toNativeSeparators(dir)));
         return;

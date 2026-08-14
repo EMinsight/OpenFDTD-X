@@ -20,6 +20,8 @@
 #include <QVBoxLayout>
 #include <QVector>
 #include <cmath>
+#include <algorithm>
+#include "../widgets/MiniPlot.h"
 
 using namespace ofd;
 
@@ -131,10 +133,56 @@ const bool s_i18n = [] {
               "この周期・波長・屈折率では 1 次回折の導波帯域が存在しない",
               "No first-order guided band exists for this period, wavelength and "
               "index");
-    I18n::reg("dpo_btn_eyebox", "🗺 アイボックス輝度マップ",
-              "🗺 Eyebox luminance map");
-    I18n::reg("dpo_btn_tradeoff", "📊 FOV-効率トレードオフ",
-              "📊 FOV / efficiency trade-off");
+    // モックの文言は「アイボックス輝度マップ」「FOV-効率トレードオフ」だったが、
+    // **輝度分布はレイトレース、回折効率は RCWA が要る** (どちらもこの表で
+    // 「—」にしている量)。閉形式で出せるのはアイボックスの「幅」なので、
+    // 動作に合わせて文言を変えた。出せない方は下の注記で明示する。
+    I18n::reg("dpo_btn_eyebox", "📐 アイボックス幅 vs アイレリーフ",
+              "📐 Eyebox width vs eye relief");
+    I18n::reg("dpo_btn_tradeoff", "📊 FOV-アイボックス トレードオフ",
+              "📊 FOV / eyebox trade-off");
+    I18n::reg("dpo_plot_eyebox_x", "アイレリーフ ER [mm]", "Eye relief ER [mm]");
+    I18n::reg("dpo_plot_eyebox_y", "アイボックス幅 W [mm]", "Eyebox width W [mm]");
+    I18n::reg("dpo_plot_trade_x", "視野角 FOV [°]", "FOV [deg]");
+    I18n::reg("dpo_plot_trade_y", "アイボックス幅 W [mm]", "Eyebox width W [mm]");
+    I18n::reg("dpo_plot_eyebox_note",
+              "▸ W = L − 2·ER·tan(FOV/2) — 上の表とまったく同じ閉形式で、"
+              "ER に対して厳密に直線になります (傾き %1 mm/mm)。"
+              "ER = %2 mm で幅が 0 になり、それより離れると瞳が視野を外れます。"
+              "破線は目標 %3 mm、点は現在のアイレリーフ %4 mm です。"
+              "輝度の分布はレイトレースが要るので、ここには出しません。",
+              "▸ W = L − 2·ER·tan(FOV/2) — the same closed form as the table "
+              "above, exactly linear in ER (slope %1 mm/mm). The width reaches "
+              "zero at ER = %2 mm; beyond that the pupil falls outside the "
+              "field. The dashed line is the %3 mm target and the marker is the "
+              "current eye relief of %4 mm. The luminance distribution needs "
+              "ray tracing and is not shown here.");
+    I18n::reg("dpo_plot_trade_note",
+              "▸ 格子周期を %1 – %2 nm で振ったときの (FOV, アイボックス幅)。"
+              "アイボックスは FOV だけで決まる (W = L − 2·ER·tan(FOV/2)) ので、"
+              "FOV を広げれば必ず幅が縮みます。"
+              "なお FOV は周期に対して単調ではなく、Λ = 2λ/(1 + n·sinθg,max) "
+              "= %3 nm で極小になります — 同じ FOV を与える周期が 2 つあるため、"
+              "図は FOV の順に並べ替えて結んでいます。"
+              "この掃引で達成できる FOV は %5 ° 以上で、"
+              "赤の十字が現在の周期 %4 nm の動作点 (FOV %6 °、幅 %7 mm) です。"
+              "回折効率は RCWA が要るので、ここには出しません。",
+              "▸ (FOV, eyebox width) as the grating period is swept over "
+              "%1 – %2 nm. The eyebox depends on the FOV alone "
+              "(W = L − 2·ER·tan(FOV/2)), so widening the FOV always costs "
+              "width. Note that the FOV is not monotone in the period: it has a "
+              "minimum at Λ = 2λ/(1 + n·sinθg,max) = %3 nm, so two periods can "
+              "give the same FOV — the curve is therefore sorted by FOV. This "
+              "sweep can only reach %5 deg or more; the red crosshair is the "
+              "operating point of the current %4 nm period (FOV %6 deg, "
+              "width %7 mm). The diffraction efficiency needs RCWA and is not "
+              "shown here.");
+    I18n::reg("dpo_plot_novalid",
+              "この設定では 1 次回折の導波帯域が成立しないため、図を描けません "
+              "(周期・波長・基板屈折率を見直してください)。",
+              "No first-order guided band exists for these settings, so the "
+              "plot cannot be drawn (check the period, the wavelength and the "
+              "substrate index).");
 
     // OLED
     I18n::reg("dpo_oled_sec", "OLED 光取り出し / Outcoupling", "OLED outcoupling");
@@ -737,17 +785,46 @@ QWidget *DisplayOpticsTab::buildArwgPage()
     sMe->vbox()->addWidget(noteLabel(I18n::tr("dpo_metric_note"), sMe));
 
     auto *btnRow = new QHBoxLayout();
-    // プロット生成は未実装 — 無効化して明示する (絶対規則 5)
     auto *btnEyebox   = new QPushButton(I18n::tr("dpo_btn_eyebox"), sMe);
     auto *btnTradeoff = new QPushButton(I18n::tr("dpo_btn_tradeoff"), sMe);
-    tabhelp::markNotImplemented(btnEyebox, I18n::tr(tabhelp::notimpl::kPlot));
-    tabhelp::markNotImplemented(btnTradeoff, I18n::tr(tabhelp::notimpl::kPlot));
+    connect(btnEyebox, &QPushButton::clicked, this, [this] {
+        m_showEyebox = true;
+        recomputeArwg();
+    });
+    connect(btnTradeoff, &QPushButton::clicked, this, [this] {
+        m_showTradeoff = true;
+        recomputeArwg();
+    });
     btnRow->addWidget(btnEyebox);
     btnRow->addWidget(btnTradeoff);
     btnRow->addStretch(1);
     sMe->vbox()->addLayout(btnRow);
-    v->addWidget(sMe);
 
+    // 図はタブ内に出す (自動実行でも止まらないよう、別ウィンドウにしない)。
+    // 押されるまでは隠しておき、押した後は入力を変えるたびに追従する。
+    m_eyeboxPlot = new MiniPlot(sMe);
+    m_eyeboxPlot->setMinimumHeight(150);
+    m_eyeboxPlot->setLabels(I18n::tr("dpo_plot_eyebox_x"),
+                            I18n::tr("dpo_plot_eyebox_y"));
+    m_eyeboxPlot->hide();
+    sMe->vbox()->addWidget(m_eyeboxPlot);
+    m_eyeboxNote = noteLabel(QString(), sMe);
+    m_eyeboxNote->hide();
+    sMe->vbox()->addWidget(m_eyeboxNote);
+
+    m_tradeoffPlot = new MiniPlot(sMe);
+    m_tradeoffPlot->setMinimumHeight(150);
+    m_tradeoffPlot->setLabels(I18n::tr("dpo_plot_trade_x"),
+                              I18n::tr("dpo_plot_trade_y"));
+    // 現在の周期が FOV の極小の近くだと動作点が左端に来て枠に隠れる。
+    // (FOV には achievable な下限があるので、これは配置の問題ではなく物理)
+    m_tradeoffPlot->setXMargin(0.04);
+    m_tradeoffPlot->hide();
+    sMe->vbox()->addWidget(m_tradeoffPlot);
+    m_tradeoffNote = noteLabel(QString(), sMe);
+    m_tradeoffNote->hide();
+    sMe->vbox()->addWidget(m_tradeoffNote);
+    v->addWidget(sMe);
     return page;
 }
 
@@ -835,6 +912,148 @@ void DisplayOpticsTab::recomputeArwg()
                               I18n::tr("dpo_b_needstray")));
 
     fillMetricTable(m_metricTable, rows);
+    refreshArwgPlots(fov);
+}
+
+// アイボックス図とトレードオフ図。**表と同じ fov / 同じ閉形式**を使うので、
+// 図の上の動作点は表の値とかならず一致する (別々に計算し直さない)。
+void DisplayOpticsTab::refreshArwgPlots(const ofd::displayoptics::WaveguideFov &fov)
+{
+    if (!m_eyeboxPlot || !m_tradeoffPlot) return;
+    namespace dm = ofd::displayoptics;
+    const DisplayOpticsOpts &d = m_p->displayOptics();
+
+    m_eyeboxPlot->setVisible(m_showEyebox);
+    m_eyeboxNote->setVisible(m_showEyebox);
+    m_tradeoffPlot->setVisible(m_showTradeoff);
+    m_tradeoffNote->setVisible(m_showTradeoff);
+    if (!m_showEyebox && !m_showTradeoff) return;
+
+    if (!fov.valid) {
+        // 帯域が無いのに 0 の線を引かない (「計算したら 0 だった」に見える)
+        m_eyeboxPlot->setSeries({});
+        m_tradeoffPlot->setSeries({});
+        m_eyeboxNote->setText(I18n::tr("dpo_plot_novalid"));
+        m_tradeoffNote->setText(I18n::tr("dpo_plot_novalid"));
+        return;
+    }
+
+    if (m_showEyebox) {
+        // 幅が 0 になる ER の 1.3 倍まで見せる (0 になる位置が図に入るように)
+        constexpr int kN = 121;
+        double er[kN], w[kN];
+        const double t = std::tan(0.5 * fov.fov_deg * M_PI / 180.0);
+        const double er0 = (t > 0.0) ? d.outcouplerLen_mm / (2.0 * t) : 0.0;
+        const double erMax = std::max(1.3 * er0, d.eyeRelief_mm * 1.2);
+        const dm::EyeboxSweep sw = dm::eyeboxVsEyeRelief(
+            d.outcouplerLen_mm, fov.fov_deg, erMax, kN, er, w);
+        QVector<MiniSeries> ser;
+        if (sw.valid) {
+            MiniSeries curve;
+            curve.color = QColor("#0078D4");
+            curve.label = I18n::tr("dpo_plot_eyebox_y");
+            for (int i = 0; i < kN; ++i)
+                curve.pts.push_back(QPointF(er[i], w[i]));
+            ser.push_back(curve);
+
+            MiniSeries target;                       // 目標幅の水平線 (破線)
+            target.color = QColor("#888888");
+            target.dashed = true;
+            target.pts.push_back(QPointF(0.0, d.eyeboxTarget_mm));
+            target.pts.push_back(QPointF(erMax, d.eyeboxTarget_mm));
+            ser.push_back(target);
+
+            MiniSeries here;                         // 現在のアイレリーフ
+            here.color = QColor("#D83B01");
+            here.markers = true;
+            here.pts.push_back(QPointF(
+                d.eyeRelief_mm,
+                dm::eyeboxWidth_mm(d.outcouplerLen_mm, d.eyeRelief_mm,
+                                   fov.fov_deg)));
+            ser.push_back(here);
+        }
+        m_eyeboxPlot->setSeries(ser);
+        m_eyeboxNote->setText(I18n::tr("dpo_plot_eyebox_note")
+                                  .arg(fmt(sw.slope_mm_per_mm, 3))
+                                  .arg(fmt(sw.zeroEyeRelief_mm, 2))
+                                  .arg(fmt(d.eyeboxTarget_mm, 1))
+                                  .arg(fmt(d.eyeRelief_mm, 1)));
+    }
+
+    if (m_showTradeoff) {
+        constexpr int kM = 181;
+        double per[kM], fv[kM], eb[kM];
+        bool okv[kM];
+        // 現在の周期を中央に置いて上下 40% を掃引する
+        const double p0 = d.gratPeriod_nm;
+        const double pLo = std::max(1.0, 0.6 * p0), pHi = 1.4 * p0;
+        const int good = dm::fovEyeboxTradeoff(
+            pLo, pHi, kM, d.designLambda_nm, d.subIndex, d.guideMaxAngle_deg,
+            d.outcouplerLen_mm, d.eyeRelief_mm, per, fv, eb, okv);
+        QVector<MiniSeries> ser;
+        if (good > 0) {
+            // **FOV は周期に対して単調でない**ので、そのまま結ぶと折り返す。
+            // アイボックスは FOV だけで決まるため、FOV 順に並べれば 1 価。
+            QVector<QPointF> pts;
+            for (int i = 0; i < kM; ++i)
+                if (okv[i]) pts.push_back(QPointF(fv[i], eb[i]));
+            std::sort(pts.begin(), pts.end(),
+                      [](const QPointF &a, const QPointF &b) {
+                          return a.x() < b.x();
+                      });
+            MiniSeries curve;
+            curve.color = QColor("#0078D4");
+            curve.label = I18n::tr("dpo_plot_trade_y");
+            curve.pts = pts;
+            ser.push_back(curve);
+
+            // 現在の動作点。**FOV には achievable な下限がある**ため、
+            // 周期が極小 (Λ = 2λ/(1+n·sinθg,max)) の近くだと動作点は必ず
+            // 図の左端に来る。点だけだと軸ラベルに隠れて見えないので、
+            // 十字の破線で示す (どの位置でも読める)。
+            const double ebHere = dm::eyeboxWidth_mm(
+                d.outcouplerLen_mm, d.eyeRelief_mm, fov.fov_deg);
+            double yMin = pts.first().y(), yMax = pts.first().y();
+            double xMin = pts.first().x(), xMax = pts.last().x();
+            for (const QPointF &q : pts) {
+                yMin = std::min(yMin, q.y());
+                yMax = std::max(yMax, q.y());
+            }
+            MiniSeries vline;
+            vline.color = QColor("#D83B01");
+            vline.dashed = true;
+            vline.pts.push_back(QPointF(fov.fov_deg, yMin));
+            vline.pts.push_back(QPointF(fov.fov_deg, yMax));
+            ser.push_back(vline);
+
+            MiniSeries hline;
+            hline.color = QColor("#D83B01");
+            hline.dashed = true;
+            hline.pts.push_back(QPointF(xMin, ebHere));
+            hline.pts.push_back(QPointF(xMax, ebHere));
+            ser.push_back(hline);
+
+            MiniSeries here;                         // 現在の動作点 (表と同値)
+            here.color = QColor("#D83B01");
+            here.markers = true;
+            here.pts.push_back(QPointF(fov.fov_deg, ebHere));
+            ser.push_back(here);
+        }
+        m_tradeoffPlot->setSeries(ser);
+        double fovFloor = 0.0;
+        for (int i = 0; i < kM; ++i)
+            if (okv[i] && (fovFloor == 0.0 || fv[i] < fovFloor)) fovFloor = fv[i];
+        m_tradeoffNote->setText(
+            I18n::tr("dpo_plot_trade_note")
+                .arg(fmt(pLo, 0)).arg(fmt(pHi, 0))
+                .arg(fmt(dm::minFovPeriod_nm(d.designLambda_nm, d.subIndex,
+                                             d.guideMaxAngle_deg), 1))
+                .arg(fmt(p0, 1))
+                .arg(fmt(fovFloor, 2))
+                .arg(fmt(fov.fov_deg, 2))
+                .arg(fmt(dm::eyeboxWidth_mm(d.outcouplerLen_mm, d.eyeRelief_mm,
+                                            fov.fov_deg), 2)));
+    }
 }
 
 // ── OLED 光取り出し / Outcoupling ───────────────────────────────────────────

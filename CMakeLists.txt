@@ -237,6 +237,15 @@ set(CORE_SOURCES
     # 取込メッシュの 3D プレビューの投影 (どこに写るかを決める側)
     src/io/MeshProjection.cpp
     src/io/MeshProjection.h
+    # 断面上の直線に沿った線積分 (非一様格子・行 0 = +側 の規約込み)
+    src/io/SliceLineIntegral.cpp
+    src/io/SliceLineIntegral.h
+    # ASCII DXF の 2D 輪郭 (LINE / LWPOLYLINE のみ) — 遮音の仕切壁面積
+    src/io/DxfOutline.cpp
+    src/io/DxfOutline.h
+    # 直交する複数断面を互いの交線で小片に切り分ける (3D の前後判定)
+    src/io/SlicePieces.cpp
+    src/io/SlicePieces.h
     src/io/BellhopIO.cpp
     src/io/BellhopIO.h
     # BELLHOP の到達ファイル (.arr) 読み取りと受信インパルス応答の合成。
@@ -398,6 +407,9 @@ set(CORE_SOURCES
     # 参照データの (x, y) CSV — 検証タブと tidy3d タブで共有
     src/io/SeriesCsv.cpp
     src/io/SeriesCsv.h
+    # 1/3 オクターブ帯域スペクトルの CSV 書出 (上の読み手で読み戻せる形式)
+    src/io/BandSpectrumCsv.cpp
+    src/io/BandSpectrumCsv.h
 
     # 音響編集・解析エンジン (audio-editor.jsx) — Qt 非依存の GUI 層 DSP。
     # selftest からも直接検証するため CORE_SOURCES に置く

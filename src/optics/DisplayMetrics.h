@@ -47,6 +47,42 @@ WaveguideFov waveguideFov(double period_nm, double lambda_nm, double nSub,
 double eyeboxWidth_mm(double outcouplerLen_mm, double eyeRelief_mm,
                       double fov_deg);
 
+// アイレリーフを掃引したときのアイボックス幅 (作図用)。
+// W(ER) = L − 2·ER·tan(FOV/2) なので **ER に対して厳密に直線**で、
+// ER0 = L / (2·tan(FOV/2)) で 0 になる (それ以上離れると瞳が視野を外れる)。
+// 幅そのものは eyeboxWidth_mm を呼んで作る (同じ式を 2 度書かない)。
+struct EyeboxSweep {
+    bool   valid = false;
+    double zeroEyeRelief_mm = 0;    // W = 0 になるアイレリーフ ER0
+    double slope_mm_per_mm = 0;     // dW/dER = −2·tan(FOV/2)
+    // eyeRelief[i] と eyebox[i] が対になる (i = 0..n-1、eyeRelief は昇順)
+    // ※ Qt 非依存にするため呼び出し側が配列を確保して渡す
+};
+// er[] / w[] に n 点を書く (er は 0 から erMax_mm まで等間隔)。
+// 戻り値の valid が false なら配列は触らない。
+EyeboxSweep eyeboxVsEyeRelief(double outcouplerLen_mm, double fov_deg,
+                              double erMax_mm, int n,
+                              double *er, double *w);
+
+// FOV が最小になる格子周期 [nm] (閉形式)。
+// fov(Λ) = asin(u + c) − asin(u),  u = 1 − λ/Λ,  c = n·sinθg,max − 1 なので
+// d fov/du = 0 は u = −c/2、すなわち **Λ = 2λ / (1 + n·sinθg,max)**。
+// **FOV は周期に対して単調ではなく、ここに極小がある** — つまり同じ FOV を
+// 与える周期が 2 つありうる。トレードオフ図を「周期の順」に線で結ぶと折り
+// 返すので、図は FOV の順に並べ替えてから結ぶこと。
+// 帯域が成立しない (|sin| > 1) 場合もあるので、値は目安として使う。
+double minFovPeriod_nm(double lambda_nm, double nSub, double guideMax_deg);
+
+// 格子周期を掃引したときの「FOV とアイボックスのトレードオフ」(作図用)。
+// 周期を変えると導波できる角度帯域 (FOV) が変わり、FOV が広がるほど
+// 視野端の光線が瞳面で余計に削るのでアイボックスは狭くなる。
+// fov[] / eyebox[] / ok[] に n 点を書く (ok[i] = その周期で帯域が成立するか)。
+// 戻り値は帯域が成立した点の数。
+int fovEyeboxTradeoff(double periodMin_nm, double periodMax_nm, int n,
+                      double lambda_nm, double nSub, double guideMax_deg,
+                      double outcouplerLen_mm, double eyeRelief_mm,
+                      double *period, double *fov, double *eyebox, bool *ok);
+
 // 無コート平板の垂直入射透過率 (2 界面 + 多重反射, 無吸収) T = (1-R)/(1+R) [5]
 double slabTransmittance(double nSub);
 

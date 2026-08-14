@@ -17,6 +17,7 @@
 #include <QFont>
 #include <QScrollArea>
 
+#include "../em/LumpedRlc.h"
 #include "../io/SpiceNetlist.h"
 
 class QCheckBox;
@@ -50,10 +51,12 @@ private slots:
     void onPortItemChanged(QTableWidgetItem *item);   // ポート表 → model
     void updateResults();               // 集中定数モデル → 結果表 + |Z| 曲線
     void exportSpiceSubckt();           // 集中定数モデル → SPICE .subckt
+    void exportTouchstone1p();          // 集中定数モデル → Touchstone .s1p (S11)
 
 private:
     // 抽出実行 (OpenPEEC / OpenFEM を QProcess で起動する)。
     // 入力生成 → 起動 → zin.csv の読み取り → 結果表示 まで。
+    em::RlcModel rlcModelFromUi() const;   // UI の 3 欄 → 集中定数モデル
     void runExtraction();
     void onExtractionFinished(int exitCode);
     void showZinCsv(const QString &path);

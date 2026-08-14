@@ -61,6 +61,43 @@ std::vector<Mode> rectangularModes(double lengthM, double widthM,
 // rectangularModes の内部生成上限 (これを超えるモードは列挙しない)
 extern const int kEnumerationLimit;
 
+// ── 帰還 (ハウリング) 対策の notch 候補 ──────────────────────────────────
+// 拡声系のリンギングは、系のループ利得が突出する周波数で最初に起こる。
+// **どの周波数で鳴くかはマイク・スピーカの位置と指向性を含むループ応答で
+// 決まり、ここでは予測しない。** ここが返すのは「室のモードのうち、
+// 通常まず notch の候補になるもの」であって、鳴く周波数の予測ではない。
+// UI 側でその区別を必ず明示すること。
+//
+// シュレーダー周波数より上は列挙しない — そこから上はモードが密に重なって
+// 個別のモードが応答の山として立たなくなるため (統計的な領域)。
+//
+// 提案 Q はモードの半値幅から出す。減衰時間 T60 のモードの −3 dB 帯域幅は
+//   Δf = 2.2 / T60   [Hz]
+// (H. Kuttruff, "Room Acoustics", 5th ed., §3.3。残響減衰 e^{−13.8t/T60} の
+//  ローレンツ形スペクトルの半値全幅) なので Q = f / Δf = f·T60 / 2.2。
+
+struct NotchCandidate {
+    Mode   mode;            // もとになったモード (最も低い次数の代表)
+    double freqHz;          // モードの固有周波数
+    double q;               // 提案 Q = f·T60/2.2
+    double bandwidthHz;     // Δf = 2.2/T60
+    int    coincident;      // 半値幅の中に重なるモードの数 (1 = 単独)
+
+    NotchCandidate() : freqHz(0), q(0), bandwidthHz(0), coincident(1) {}
+};
+
+// シュレーダー周波数 [Hz] : f_s = 2000·√(T60 / V)
+// (M. R. Schroeder, JASA 1962。T60 [s], V [m³])。入力が非正なら 0。
+double schroederFrequency(double rt60S, double volumeM3);
+
+// notch 候補をシュレーダー周波数以下で周波数の昇順に返す。
+// maxCount > 0 のときは低い方から maxCount 個で打ち切る。
+// 寸法・音速・T60 のいずれかが非正なら空を返す。
+std::vector<NotchCandidate> notchCandidates(double lengthM, double widthM,
+                                            double heightM,
+                                            double soundSpeedMs,
+                                            double rt60S, int maxCount);
+
 } // namespace roommodes
 } // namespace acoustics
 } // namespace ofd

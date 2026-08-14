@@ -29,6 +29,8 @@ class QTreeWidgetItem;
 
 namespace ofd {
 
+class MiniPlot;
+
 class Project;
 class SectionBox;
 
@@ -104,6 +106,11 @@ struct H5SliceForScene {
     // 正規化に使う最大値 (0 = このフレームの最大値)。手動スケール指定時は
     // その値を入れて、フレーム間で明るさが比較できるようにする
     double scaleMax = 0.0;
+    // 再生コントロールの状況。3D 側だけ見ても「今どのコマか / 再生中か」が
+    // 分かるようにする (2D と 3D で別々のコマを見ている誤解を防ぐ)
+    int  frame = 0;            // 現在フレーム (0 起点)
+    int  frameCount = 0;       // 全フレーム数 (0 = 不明)
+    bool playing = false;      // 再生中か
 };
 
 class H5ViewerTab : public QScrollArea {
@@ -117,7 +124,9 @@ public:
 signals:
     // 「3D シーンに重ねる」が有効なあいだ、表示中のフレームを流す。
     // 中継は MainWindow (タブ → CenterPane の直接依存を作らない)
-    void sceneSliceReady(const ofd::H5SliceForScene &slice);
+    // 3 面ビュー表示中は 3 枚まとめて流す (3D 側が互いの交線で切り分けて
+    // 前後を正しく描く)。単一断面のときは要素 1 個
+    void sceneSlicesReady(const QVector<ofd::H5SliceForScene> &slices);
     // 重ねるのをやめた / 座標が分からず流せない
     void sceneSliceCleared();
 
@@ -155,6 +164,18 @@ private:
     // 開いている .h5 の実スキーマから h5py 読込コードを生成して保存する
     // (notebook=false: .py スクリプト / true: .ipynb ノートブック)
     void exportPythonScript(bool notebook);
+    void exportMatlabScript();   // MATLAB / Octave 読み込みスクリプト (.m)
+    // 表示中の断面について、全フレームの max / RMS を求めて下に描く
+    void showWholeSeries();
+    // 表示中の断面を全フレームぶん読む (全体時系列と Schroeder で共用)
+    bool readSliceSeries(QVector<double> &maxOut, QVector<double> &rmsOut,
+                         QVector<double> &timeOut, int &step, int &cells,
+                         QString *err);
+    // 線積分 — 入力欄を出す / 実際に積分して描く
+    void showLineIntegral();
+    void runLineIntegral();
+    // Schroeder 減衰 (断面エネルギーの後方積分)
+    void showSchroeder();
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);
@@ -192,6 +213,18 @@ private:
     // 統計 (実計算)
     QLabel      *m_statMin, *m_statMax, *m_statMean;
     QPushButton *m_schroederBtn = nullptr;    // Schroeder 減衰 (室内音響のみ表示)
+    // 全体時系列 (フレームごとの max / RMS)。押されるまで隠れている
+    QLabel   *m_tsNote = nullptr;
+    MiniPlot *m_tsPlot = nullptr;
+    // 線積分 — 面内座標 [m] で線分を指定する
+    QWidget  *m_liBox = nullptr;
+    QLineEdit *m_liU0 = nullptr, *m_liV0 = nullptr;
+    QLineEdit *m_liU1 = nullptr, *m_liV1 = nullptr;
+    QLabel   *m_liNote = nullptr;
+    MiniPlot *m_liPlot = nullptr;
+    // Schroeder 減衰 (断面エネルギーの後方積分)
+    QLabel   *m_scNote = nullptr;
+    MiniPlot *m_scPlot = nullptr;
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
@@ -230,6 +263,10 @@ private:
     QCheckBox   *m_sceneChk = nullptr;
     QLabel      *m_sceneNote = nullptr;
     void pushSceneSlice();       // 表示中フレーム → 3D (条件を満たすときだけ)
+    // 断面 1 枚ぶんを組み立てる。座標から位置が決められないときは false
+    bool buildSceneSlice(int axis, const QVector<double> &cells,
+                         int rows, int cols, const QString &planeName,
+                         H5SliceForScene *out) const;
     void refreshOverlay();       // 形状・観測点 → 場マップの重ね描き
     QCheckBox   *m_ovGeom = nullptr;   // 形状の輪郭を重ねる
     QCheckBox   *m_ovMon = nullptr;    // 観測点を重ねる
@@ -242,6 +279,11 @@ private:
     QCheckBox   *m_multiChk = nullptr;
     QWidget     *m_multiWrap = nullptr;
     FieldCanvas *m_multiCanvas[3] = { nullptr, nullptr, nullptr };
+    // 3 面ビューで読んだ 3 断面の実データ (3D シーンへ流すのに使う)。
+    // loadMultiFrames が埋め、単一断面へ戻ると空になる
+    QVector<double> m_multiData[3];
+    int m_multiRows[3] = { 0, 0, 0 };
+    int m_multiCols[3] = { 0, 0, 0 };
     QLabel      *m_multiCaption[3] = { nullptr, nullptr, nullptr };
 
     // エクスポート

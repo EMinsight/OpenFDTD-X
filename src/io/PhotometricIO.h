@@ -1,4 +1,4 @@
-// PhotometricIO.h — 配光ファイル (IES LM-63) の読み書き。
+// PhotometricIO.h — 配光ファイル (IES LM-63 / EULUMDAT) の読み書き。
 //
 // 照明設計ソフト (DIALux / AGi32 / Relux) が読む標準形式。OpenFDTD-X 側では
 // `optics/IlluminationTrace` の追跡結果 (θ ビンごとの光度) をこの形式で書き出す。
@@ -22,7 +22,31 @@
 // の並び。測光型 1 = Type C、単位 2 = メートル。光度は「倍率を掛ける前」の値
 // なので、読み側は倍率を掛けて `candela` に入れる (書き側は常に倍率 1)。
 //
-// **EULUMDAT (.ldt) は未対応**。呼び出し側はボタンを無効化して理由を出すこと。
+// ── EULUMDAT (.ldt) ───────────────────────────────────────────────────────
+//
+// 欧州系の照明ソフト (DIALux / Relux) が読む形式。**1 行 1 値**の固定順で、
+// 項目 1〜26 がヘッダ、26 の直後にランプ組 6 行 × n、続いて直射比 10 個、
+// C 角 Mc 個、γ 角 Ng 個、最後に光度 (Mc2−Mc1+1)×Ng 個が並ぶ。
+// 改行は仕様どおり CRLF で書く。
+//
+// **光度の単位は cd/1000lm** (ランプ光束 1000 lm あたり) で、IES の絶対
+// カンデラとは違う。書き出しでは
+//
+//     I[cd/1000lm] = I[cd] / (Φ_lamp / 1000),  Φ_lamp = lamps × lumensPerLamp
+//
+// と割り、読み込みでは同じ Φ_lamp を掛けて戻す。**この基準光束が無いと
+// EULUMDAT は書けない**ので、`lumensPerLamp <= 0` (IES の絶対測光) のときは
+// 配光を積分した光束そのものを基準にする (この場合 LORL は 100%)。
+//
+// 対称指定 (Isym) は**書き出しは 1 (鉛直軸まわり対称) と 0 (対称性なし) だけ**を
+// 使う。2/3/4 は「どの面で鏡映するか」の解釈が要り、間違えると配光が黙って
+// 裏返るため、読み込み側も 0/1 以外は**推測せずエラーにする** (絶対規則 5)。
+// Isym=1 のファイルは全 C 平面が同一なので、読み込みでは C 平面 1 枚
+// (= 軸対称) に畳む。
+//
+// 項目 27 の直射比 (room index k = 0.6…5 の 10 個) は **LiTG 3.5 の利用率法が
+// 要り、こちらでは計算していないので 0 を書く**。DIALux 等は配光から自前で
+// 求めるので実害は無いが、この欄を読む側のために書き出し後の案内にも明記する。
 //
 // ── 角度の取り方 (追跡結果を書き出すとき) ──────────────────────────────────
 //
@@ -75,9 +99,20 @@ public:
     static bool readIes(const QString &path, PhotometricData *d,
                         QString *err = nullptr);
 
+    // EULUMDAT (.ldt) を書く / 読む。失敗時は false で err に理由。
+    static bool writeLdt(const QString &path, const PhotometricData &d,
+                         QString *err = nullptr);
+    static bool readLdt(const QString &path, PhotometricData *d,
+                        QString *err = nullptr);
+
     // 配光を立体角で積分した光束 [lm]。鉛直方向の境界は隣り合う角度の中点
     // (端は 0° / 180°)、水平方向は C 平面が 1 枚なら全周とする。
     static double integratedFlux(const PhotometricData &d);
+
+    // 鉛直角 [g0, g1] 度の範囲だけを積分した光束 [lm]。**境界をまたぐビンは
+    // 境界で切る** (ビンごと足すと下向き光束が階段状にずれる)。
+    // g0=0 / g1=180 なら `integratedFlux()` と完全に一致する。
+    static double partialFlux(const PhotometricData &d, double g0, double g1);
 
     // 追跡結果 → 配光データ (鉛直角はビン中心。lampLumens は光源光束)
     static PhotometricData fromTrace(const illum::Result &r, double lampLumens);
