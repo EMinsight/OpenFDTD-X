@@ -18245,6 +18245,116 @@ static void testPhotometricIO()
     }
 }
 
+// ── Touchstone → 参照系列 CSV (io/Touchstone::toCsv) ───────────────────────
+// 実測の .sNp を検証タブで比較するための変換。肝は
+//   (a) dB と位相が S の定義どおりであること、
+//   (b) **計算されていない要素を列にしないこと** (0 を「測った 0 dB」にしない)、
+//   (c) 自分の参照系列リーダで読み戻せること。
+static void testTouchstoneToCsv()
+{
+    g_file = "snp-csv";
+    using ofd::Touchstone;
+    using ofd::TouchstoneData;
+
+    QTemporaryDir dir;
+    check(dir.isValid(), "snpcsv: temp dir");
+    auto writeRaw = [&dir](const char *name, const QByteArray &body) {
+        const QString p = dir.path() + QStringLiteral("/") + name;
+        QFile f(p);
+        if (!f.open(QIODevice::WriteOnly)) return QString();
+        f.write(body);
+        f.close();
+        return p;
+    };
+    QString err;
+
+    // 2 ポート・2 周波数の RI ファイル (仕様どおり S11 S21 S12 S22 の順)
+    {
+        const QByteArray body =
+            "! test\n# HZ S RI R 50\n"
+            "1e9  0.5 0.0   0.0 -0.5   0.0 -0.5   0.25 0.0\n"
+            "2e9  0.0 0.5   0.5 0.0    0.5 0.0    0.0 -0.25\n";
+        const QString p = writeRaw("m.s2p", body);
+        TouchstoneData d;
+        check(Touchstone::read(p, &d, &err), "snpcsv: read a 2-port file");
+        const QString csv = Touchstone::toCsv(d, QStringLiteral("m.s2p"), &err);
+        check(!csv.isEmpty(), "snpcsv: it converts");
+        const QStringList lines = csv.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        // `#` 3 行 + 見出し + 2 点
+        check(lines.size() == 3 + 1 + 2,
+              "snpcsv: the comment block, the header and one row per frequency");
+        check(lines[3] == QStringLiteral(
+                  "freq_Hz,S11_dB,S11_deg,S12_dB,S12_deg,S21_dB,S21_deg,"
+                  "S22_dB,S22_deg"),
+              "snpcsv: every known element becomes a dB and a degree column");
+        // S11 = 0.5 → 20log10(0.5) = -6.0206 dB, 位相 0
+        const QStringList c0 = lines[4].split(QLatin1Char(','));
+        check(c0.size() == 9 &&
+              std::fabs(c0[1].toDouble() - 20.0 * std::log10(0.5)) < 1e-9 &&
+              std::fabs(c0[2].toDouble()) < 1e-9,
+              "snpcsv: |S| becomes dB and the phase is in degrees");
+        // S21 = -0.5j → |S| = 0.5、位相 -90 度
+        check(std::fabs(c0[5].toDouble() - 20.0 * std::log10(0.5)) < 1e-9 &&
+              std::fabs(c0[6].toDouble() + 90.0) < 1e-9,
+              "snpcsv: a purely imaginary element gives -90 degrees");
+        // 既定の 1・2 列目 = 周波数と S11 の dB として読み戻せる
+        const ofd::cmp::Series ser = ofd::io::parseSeriesCsv(csv);
+        check(ser.valid() && ser.x.size() == 2 &&
+              std::fabs(ser.x[0] - 1e9) < 1e-3 &&
+              std::fabs(ser.y[0] - 20.0 * std::log10(0.5)) < 1e-9,
+              "snpcsv: parseSeriesCsv reads frequency and S11 in dB by default");
+        // 3・4 列目を指定すれば S12 も取れる
+        ofd::io::SeriesCsvOptions opt;
+        opt.xCol = 0;
+        opt.yCol = 3;
+        const ofd::cmp::Series s12 = ofd::io::parseSeriesCsv(csv, opt);
+        check(s12.valid() && std::fabs(s12.y[0] - 20.0 * std::log10(0.5)) < 1e-9,
+              "snpcsv: another element can be picked by column");
+    }
+    // カーネルの出力 (第 1 列だけ) は **S_n1 しか列にしない**
+    {
+        // 1 行 = 1 + 2*N 個 → 2 ポートの第 1 列だけ
+        const QByteArray body =
+            "# HZ S RI R 50\n"
+            "1e9  0.5 0.0   0.25 0.0\n"
+            "2e9  0.4 0.0   0.20 0.0\n";
+        const QString p = writeRaw("k.s2p", body);
+        TouchstoneData d;
+        check(Touchstone::read(p, &d, &err, 2), "snpcsv: read a column-1 file");
+        check(d.column1Only, "snpcsv: it is recognised as column-1 only");
+        const QString csv = Touchstone::toCsv(d, QString(), &err);
+        const QStringList lines = csv.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const int head = lines.indexOf(QStringLiteral("freq_Hz,S11_dB,S11_deg,"
+                                                      "S21_dB,S21_deg"));
+        check(head >= 0,
+              "snpcsv: only the computed first column becomes columns "
+              "(no S12/S22 invented from the zero fill)");
+        check(!csv.contains(QStringLiteral("S22")),
+              "snpcsv: the unknown elements appear nowhere in the file");
+        check(csv.contains(QStringLiteral("only the first column")),
+              "snpcsv: the file says so in its header");
+    }
+    // 厳密に 0 の要素は dB にできない → 変換しない (床値も -inf も置かない)
+    {
+        const QByteArray body =
+            "# HZ S RI R 50\n1e9  0.0 0.0\n2e9  0.5 0.0\n";
+        const QString p = writeRaw("zero.s1p", body);
+        TouchstoneData d;
+        check(Touchstone::read(p, &d, &err), "snpcsv: read a file with a zero");
+        check(Touchstone::toCsv(d, QString(), &err).isEmpty(),
+              "snpcsv: an element that is exactly zero stops the conversion "
+              "rather than inventing a floor value");
+        check(err.contains(QStringLiteral("S11")),
+              "snpcsv: the refusal names the element and the frequency");
+    }
+    // 空のデータからは何も作らない
+    {
+        TouchstoneData empty;
+        check(Touchstone::toCsv(empty, QString(), &err).isEmpty(),
+              "snpcsv: empty S-parameters produce no file");
+    }
+}
+
 // ── 帯域スペクトルの CSV (io/BandSpectrumCsv) ──────────────────────────────
 // 肝は「**自分が書いたものを自分の参照系列リーダで読み戻せる**」こと。
 // 遮音タブが書いた CSV は、検証タブが実測値を読むのと同じ `parseSeriesCsv`
@@ -26059,7 +26169,9 @@ int main(int argc, char *argv[])
     testIlluminationTrace();
     testPhotometricIO();
     testEulumdat();
+    testTouchstoneToCsv();
     testBandSpectrumCsv();
+    testTouchstoneToCsv();
     testOptimizer();
     testFlankingTransmission();
     testTransmissionLine();

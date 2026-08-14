@@ -215,6 +215,26 @@ const bool s_i18n = [] {
               "📊 Power-delay profile");
     I18n::reg("chn_btn_h5", "💾 チャネル係数 (.h5) 書出",
               "💾 Export channel coefficients (.h5)");
+    // 3 ボタンの「できない理由」— 汎用の「エンジンが無い」では実態と食い違う
+    I18n::reg("chn_why_heat",
+              "ボタンは要りません — カバレッジ図は上の「送受信構成」節に"
+              "常時描いています (AP 台数・しきい値を変えるとその場で更新されます)",
+              "no button is needed — the coverage map is always drawn in the "
+              "transmit/receive section above, and it updates as you change "
+              "the AP count or the threshold");
+    I18n::reg("chn_why_pdp",
+              "2 波モデルのタップは直接波と大地反射の 2 本だけで、その 2 本を"
+              "決める K-factor と遅延差 τ は上の表に数値で出ています。"
+              "多タップの電力遅延プロファイルには散乱のモデルが要ります",
+              "the two-ray model has only two taps (direct and ground "
+              "reflection), and the K-factor and excess delay that define them "
+              "are already in the table above; a multi-tap power-delay profile "
+              "needs a scattering model");
+    I18n::reg("chn_why_h5",
+              "チャネル係数 (H 行列) を計算していません — 出せるのは経路損失と "
+              "2 波モデルの K-factor までです",
+              "the channel coefficients (the H matrix) are not computed — only "
+              "the path loss and the two-ray K-factor are available");
     I18n::reg("chn_metrics_hint",
               "▸ 3GPP TR 38.901 形式のチャネルモデル係数の書出は未実装です。",
               "▸ Export as 3GPP TR 38.901 channel-model coefficients is not "
@@ -687,15 +707,22 @@ ChannelTab::ChannelTab(Project *project, QWidget *parent)
     sm->vbox()->addWidget(m_metrics);
     sm->vbox()->addWidget(makeHint(I18n::tr("chn_model_note"), sm));
 
-    // ヒートマップ / PDP / 書出のボタンはいずれも未配線 (絶対規則 5)
+    // 3 ボタンとも未配線だが、**押せない理由は 3 つとも別**。
+    // まとめて「計算エンジンが無い」にすると、実際には計算していて画面に
+    // 出ているもの (カバレッジ図・K・τ) まで無いことになってしまう
     auto *bb = new QHBoxLayout();
     auto *heatBtn = new QPushButton(I18n::tr("chn_btn_heat"), sm);
     auto *pdpBtn  = new QPushButton(I18n::tr("chn_btn_pdp"), sm);
     auto *h5Btn   = new QPushButton(I18n::tr("chn_btn_h5"), sm);
-    for (QPushButton *b : { heatBtn, pdpBtn, h5Btn }) {
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
+    // カバレッジ図は上の「送受信構成」節に常時描いている (押す必要が無い)
+    tabhelp::markNotImplemented(heatBtn, I18n::tr("chn_why_heat"));
+    // 2 波モデルのタップは直接波と大地反射の 2 本だけで、その 2 本の情報
+    // (K と τ) は上の表に数値で出ている。多タップの PDP は散乱が要る
+    tabhelp::markNotImplemented(pdpBtn, I18n::tr("chn_why_pdp"));
+    // 経路損失と 2 波の K は出せるが、チャネル係数 (H 行列) は持っていない
+    tabhelp::markNotImplemented(h5Btn, I18n::tr("chn_why_h5"));
+    for (QPushButton *b : { heatBtn, pdpBtn, h5Btn })
         bb->addWidget(b);
-    }
     bb->addStretch(1);
     sm->vbox()->addLayout(bb);
     sm->vbox()->addWidget(makeHint(I18n::tr("chn_metrics_hint"), sm));

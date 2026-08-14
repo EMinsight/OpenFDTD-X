@@ -5,6 +5,7 @@
 #include "../../src/acoustics/core/ArrayDirectivity.h"
 #include "test_common.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -143,6 +144,39 @@ int main()
         CHECK_NEAR(r.frontBackDb, 0.0, 1e-12);
         // 同相では「全周波数で後方を消す遅延」は存在しない
         CHECK_NEAR(r.optimumDelay_s, 0.0, 1e-15);
+    }
+
+    // ── 6b) 全方向に共通の減衰は正規化パターンを 1 ビットも変えない ──────
+    // 空気吸収は距離で決まる量で、遠方界パターンは同じ半径の全方向を見る。
+    // つまり全素子に同じ係数が掛かるだけなので、最大を 0 dB とした相対
+    // パターンでは**厳密に打ち消える** (音源タブの「Air absorption 補償」を
+    // この画面で無効にしている根拠)。
+    {
+        const std::vector<ArrayElement> base =
+            buildLineArray(8, 0.35, std::vector<double>(), 5.0, kC);
+        const ArrayPattern p0 = beamPattern(base, 1000.0, kC, 0.35);
+        CHECK(p0.valid);
+        // 空気吸収 (例: 1 kHz で 5 dB/100m を 30 m) 相当の共通減衰
+        const double atten = std::pow(10.0, -0.05 * 1.5);
+        std::vector<ArrayElement> scaled = base;
+        for (size_t i = 0; i < scaled.size(); ++i) scaled[i].gain *= atten;
+        const ArrayPattern p1 = beamPattern(scaled, 1000.0, kC, 0.35);
+        CHECK(p1.valid);
+        CHECK(p1.db.size() == p0.db.size());
+        double worst = 0.0;
+        for (size_t i = 0; i < p0.db.size(); ++i)
+            worst = std::max(worst, std::fabs(p1.db[i] - p0.db[i]));
+        CHECK(worst < 1e-12);
+        CHECK_NEAR(p1.peakDeg, p0.peakDeg, 1e-12);
+        // 判定が自明でないこと: **素子ごとに違う**重みなら形は変わる
+        std::vector<ArrayElement> uneven = base;
+        for (size_t i = 0; i < uneven.size(); ++i)
+            uneven[i].gain *= (i % 2 == 0) ? 1.0 : 0.5;
+        const ArrayPattern p2 = beamPattern(uneven, 1000.0, kC, 0.35);
+        double diff = 0.0;
+        for (size_t i = 0; i < p0.db.size(); ++i)
+            diff = std::max(diff, std::fabs(p2.db[i] - p0.db[i]));
+        CHECK(diff > 1.0);
     }
 
     // ── 7) 壊れた入力からは何も作らない ──────────────────────────────────
