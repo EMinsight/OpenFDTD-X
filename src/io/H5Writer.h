@@ -7,6 +7,8 @@
 #include <QString>
 #include <QVector>
 
+#include "KernelResultReader.h"
+
 namespace ofd {
 
 class Project;
@@ -19,6 +21,27 @@ public:
                       const QVector<double> &eAvg,
                       const QVector<double> &hAvg,
                       QString *err = nullptr);
+
+    // ── アンテナ特性 (給電点掃引 + 遠方界パターン) の書き出し ──────────────
+    // AntennaCharTab の CSV 書出と **同じ読み取り結果** (io/KernelResultReader)
+    // をそのまま HDF5 へ入れる。数値を作り直さないので、共通する列は CSV と
+    // 必ず一致する (単一の出所)。CSV に無い偏波成分 (E-theta / E-phi) は
+    // far1d.log に列があるときだけ足す。
+    //
+    // 構成 (自己記述的にするため単位は属性で持たせる):
+    //   /                     format="OpenFDTD-X antenna pattern", version=1
+    //   /feed/feed<N>/        属性 feed_index, z0[ohm]
+    //       frequency, rin, xin, ref_db, vswr        (各 1 次元, 属性 units)
+    //   /pattern/cut<N>/      属性 plane (文字列), frequency_hz
+    //       angle_deg, e_abs_db [, e_theta_db, e_phi_db]
+    //
+    // 中身が空 (給電点も切断面も無い) なら **書かずに false** を返す
+    // (「書けた」と言える中身が無いのに 0 バイトのファイルを残さない)。
+    static bool writeAntennaPattern(const QString &path,
+                                    const QVector<FeedSweep> &feeds,
+                                    const QVector<FarPattern> &cuts,
+                                    const QString &projectName,
+                                    QString *err = nullptr);
 };
 
 } // namespace ofd

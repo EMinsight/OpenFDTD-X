@@ -70,6 +70,7 @@
 #include "io/MeshImporter.h"
 #include "io/Touchstone.h"
 #include "io/Voxelizer.h"
+#include "io/H5Writer.h"
 #include "core/GlassCatalog.h"
 #include "optics/MaterialDispersion.h"
 #include "optics/FilmNotation.h"
@@ -8754,6 +8755,269 @@ static void testH5Reader()
               "h5: partial grid coords — missing axis is empty");
         check(xs[1] == 3.0 && zs[1] == 7.0,
               "h5: partial grid coords values (新旧レイアウト混在)");
+    }
+#endif
+}
+
+// ── アンテナ特性の HDF5 書き出し (io/H5Writer::writeAntennaPattern) ────────
+// AntennaCharTab の CSV と同じ読み取り結果 (KernelResultReader) を .h5 へ入れる
+// 経路。**カーネルのログ本文から実際に解析させてから書く**ので、タブが通る道
+// そのものを検証する。読み戻して 1 個ずつ突き合わせる。
+static void testAntennaH5()
+{
+    g_file = "antenna_h5";
+#ifndef OFD_USE_HDF5
+    check(!H5Writer::available(), "anth5: writer reports unavailable");
+    {
+        QTemporaryDir dir;
+        const QVector<FeedSweep> f(1);
+        QString err;
+        // HDF5 無しビルドでは「未実装」ではなく理由を返して false になること
+        check(!H5Writer::writeAntennaPattern(dir.filePath("x.h5"), f, {},
+                                             QStringLiteral("p.ofd"), &err),
+              "anth5: refuses without HDF5");
+        check(err.contains(QStringLiteral("USE_HDF5")),
+              "anth5: the reason names the build option");
+    }
+    std::printf("  (antenna h5 tests skipped: built without USE_HDF5)\n");
+#else
+    check(H5Writer::available(), "anth5: writer available");
+    QTemporaryDir dir;
+    check(dir.isValid(), "anth5: temp dir");
+
+    // 給電点 2 個 — **番号も z0 も点数も別々**にする (同じ値だと取り違えが
+    // 隠れる)。切断面も 5 点 / 7 点で長さを変え、**偏波成分の列は片方だけ**
+    // にする (実際の far1d.log も面によって列数が違う)。
+    const QString feedLog = QStringLiteral(
+        "Iterations = 1000, Convergence = 1.000e-03\n"
+        "\n"
+        "feed #2 (Z0[ohm] = 50.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  1.13000e+09     47.310     -3.790     21.024      1.684"
+        "    -21.470      1.187\n"
+        "  1.27000e+09     52.090      6.410     18.882     -2.323"
+        "    -18.020      1.288\n"
+        "  1.41000e+09     61.730     13.070     15.564     -3.296"
+        "    -12.940      1.611\n"
+        "\n"
+        "feed #7 (Z0[ohm] = 75.00)\n"
+        "  frequency[Hz] Rin[ohm]   Xin[ohm]    Gin[mS]    Bin[mS]"
+        "    Ref[dB]       VSWR\n"
+        "  1.13000e+09     71.550     -9.130     13.755      1.755"
+        "    -19.880      1.229\n"
+        "  1.27000e+09     79.020      4.270     12.643     -0.683"
+        "    -24.360      1.128\n"
+        "\n"
+        "=== output files ===\n");
+    const QString farLog = QStringLiteral(
+        "#1 : X-plane, frequency[Hz] = 1.13000e+09\n"
+        "  No.   deg    E-abs[dB]  E-theta[dB] E-theta[deg]    E-phi[dB]"
+        "   E-phi[deg]\n"
+        "   0    0.0      -3.1700      -3.2900     -14.6233    -240.0000"
+        "     131.3390\n"
+        "   1   45.0      -7.4100      -7.5300     136.8919    -240.0000"
+        "      -5.4757\n"
+        "   2   90.0     -21.8300     -22.0100     136.8768    -240.0000"
+        "    -159.8874\n"
+        "   3  135.0      -9.0200      -9.1900      12.4411    -240.0000"
+        "      88.2130\n"
+        "   4  180.0      -4.5500      -4.6100     -73.5502    -240.0000"
+        "     -31.7745\n"
+        "#2 : Y-plane, frequency[Hz] = 1.27000e+09\n"
+        "  No.   deg    E-abs[dB]\n"
+        "   0    0.0      -2.0900\n"
+        "   1   30.0      -5.6300\n"
+        "   2   60.0     -11.2700\n"
+        "   3   90.0     -28.4100\n"
+        "   4  120.0     -13.0600\n"
+        "   5  150.0      -6.7200\n"
+        "   6  180.0      -3.8800\n");
+    auto writeText = [&dir](const char *name, const QString &text) {
+        QFile f(dir.filePath(QString::fromLatin1(name)));
+        f.open(QIODevice::WriteOnly | QIODevice::Text);
+        f.write(text.toUtf8());
+        f.close();
+        return f.fileName();
+    };
+    const QVector<FeedSweep> feeds =
+        KernelResultReader::readFeedSweeps(writeText("case.log", feedLog));
+    const QVector<FarPattern> cuts =
+        KernelResultReader::readFar1d(writeText("far1d.log", farLog));
+    check(feeds.size() == 2 && cuts.size() == 2, "anth5: fixture parsed");
+    if (feeds.size() != 2 || cuts.size() != 2) return;
+    check(feeds[0].points.size() == 3 && feeds[1].points.size() == 2,
+          "anth5: feeds have different lengths");
+    check(cuts[0].deg.size() == 5 && cuts[1].deg.size() == 7,
+          "anth5: cuts have different lengths");
+    check(!cuts[0].eThetaDb.isEmpty() && cuts[1].eThetaDb.isEmpty(),
+          "anth5: only the first cut has polarisation columns");
+
+    const QString path = dir.filePath("antenna_pattern.h5");
+    QString err;
+    check(H5Writer::writeAntennaPattern(path, feeds, cuts,
+                                        QStringLiteral("dipole.ofd"), &err),
+          "anth5: written");
+    check(QFileInfo(path).size() > 0, "anth5: file is not empty");
+    check(H5Reader::isHdf5(path), "anth5: the result really is HDF5");
+
+    // ── データセットの構成 ────────────────────────────────────────────────
+    QVector<H5DatasetInfo> sets;
+    check(H5Reader::listDatasets(path, sets), "anth5: datasets listed");
+    QStringList names;
+    for (const H5DatasetInfo &d : sets) names << d.path;
+    names.sort();
+    QStringList want = {
+        "/feed/feed1/frequency", "/feed/feed1/ref_db", "/feed/feed1/rin",
+        "/feed/feed1/vswr", "/feed/feed1/xin",
+        "/feed/feed2/frequency", "/feed/feed2/ref_db", "/feed/feed2/rin",
+        "/feed/feed2/vswr", "/feed/feed2/xin",
+        "/pattern/cut1/angle_deg", "/pattern/cut1/e_abs_db",
+        "/pattern/cut1/e_phi_db", "/pattern/cut1/e_theta_db",
+        "/pattern/cut2/angle_deg", "/pattern/cut2/e_abs_db" };
+    want.sort();
+    check(names == want, "anth5: exactly the expected datasets");
+    if (names != want)
+        std::fprintf(stderr, "  (got: %s)\n",
+                     names.join(QStringLiteral(", ")).toUtf8().constData());
+    // 列を持たない面には**作らない** (空の配列を置くと「測ったが 0」と読める)
+    check(!names.contains(QStringLiteral("/pattern/cut2/e_theta_db")),
+          "anth5: no polarisation arrays on the cut that has no such columns");
+
+    // ── 数値が 1 個ずつ元と一致すること (double なので厳密に一致する) ─────
+    auto readCol = [&path](const QByteArray &ds) {
+        QVector<double> v;
+        QVector<qlonglong> dims;
+        H5Reader::readAll(path, QString::fromLatin1(ds), v, dims);
+        return v;
+    };
+    bool same = true;
+    for (int i = 0; i < feeds.size(); ++i) {
+        const QByteArray g = "/feed/feed" + QByteArray::number(i + 1) + "/";
+        QVector<double> f, rin, xin, ref, vswr;
+        for (const FeedSweepPoint &p : feeds[i].points) {
+            f << p.freqHz; rin << p.rin; xin << p.xin;
+            ref << p.refDb; vswr << p.vswr;
+        }
+        same = same && readCol(g + "frequency") == f
+                    && readCol(g + "rin") == rin
+                    && readCol(g + "xin") == xin
+                    && readCol(g + "ref_db") == ref
+                    && readCol(g + "vswr") == vswr;
+    }
+    check(same, "anth5: every feed column round-trips exactly");
+    bool sameCut = true;
+    for (int i = 0; i < cuts.size(); ++i) {
+        const QByteArray g = "/pattern/cut" + QByteArray::number(i + 1) + "/";
+        sameCut = sameCut && readCol(g + "angle_deg") == cuts[i].deg
+                          && readCol(g + "e_abs_db") == cuts[i].eAbsDb;
+    }
+    check(sameCut, "anth5: every pattern column round-trips exactly");
+    check(readCol("/pattern/cut1/e_theta_db") == cuts[0].eThetaDb
+          && readCol("/pattern/cut1/e_phi_db") == cuts[0].ePhiDb,
+          "anth5: the polarisation columns round-trip too");
+    // 列を取り違えていないこと — E-abs と E-theta は近い値なので、
+    // 「両方 E-abs を書いた」実装でも上の判定だけなら通りうる
+    check(readCol("/pattern/cut1/e_abs_db")
+              != readCol("/pattern/cut1/e_theta_db"),
+          "anth5: E-abs and E-theta are not the same array");
+    check(readCol("/pattern/cut1/e_abs_db")
+              != readCol("/pattern/cut2/e_abs_db"),
+          "anth5: the two cuts really carry different data");
+    check(readCol("/feed/feed1/rin") != readCol("/feed/feed1/xin"),
+          "anth5: Rin and Xin are not the same array");
+
+    // ── 属性 (単位・面名・基準インピーダンス) ─────────────────────────────
+    {
+        const hid_t f = H5Fopen(path.toLocal8Bit().constData(),
+                                H5F_ACC_RDONLY, H5P_DEFAULT);
+        check(f >= 0, "anth5: reopened for attributes");
+        auto attrD = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            double v = -1e300;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) { H5Aread(a, H5T_NATIVE_DOUBLE, &v); H5Aclose(a); }
+                H5Oclose(o);
+            }
+            return v;
+        };
+        auto attrI = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            int v = -1;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &v); H5Aclose(a); }
+                H5Oclose(o);
+            }
+            return v;
+        };
+        auto attrS = [](hid_t where, const char *obj, const char *name) {
+            const hid_t o = H5Oopen(where, obj, H5P_DEFAULT);
+            QByteArray out;
+            if (o >= 0) {
+                const hid_t a = H5Aopen(o, name, H5P_DEFAULT);
+                if (a >= 0) {
+                    const hid_t t = H5Aget_type(a);
+                    out.fill('\0', int(H5Tget_size(t)) + 1);
+                    H5Aread(a, t, out.data());
+                    H5Tclose(t);
+                    H5Aclose(a);
+                }
+                H5Oclose(o);
+            }
+            return QString::fromUtf8(out.constData());
+        };
+        // 番号は 1,2 ではなく元の 2,7。z0 も面名も入れ替わっていないこと
+        check(attrI(f, "/feed/feed1", "feed_index") == 2
+              && attrI(f, "/feed/feed2", "feed_index") == 7,
+              "anth5: the original feed numbers survive as attributes");
+        check(attrD(f, "/feed/feed1", "z0") == 50.0
+              && attrD(f, "/feed/feed2", "z0") == 75.0,
+              "anth5: the reference impedance is per feed");
+        check(attrS(f, "/pattern/cut1", "plane") == cuts[0].plane
+              && attrS(f, "/pattern/cut2", "plane") == cuts[1].plane,
+              "anth5: the plane name is kept per cut");
+        check(attrD(f, "/pattern/cut1", "frequency_hz") == cuts[0].freqHz
+              && attrD(f, "/pattern/cut2", "frequency_hz") == cuts[1].freqHz,
+              "anth5: the frequency is kept per cut");
+        // 単位が無いと外部では列の意味が分からない
+        check(attrS(f, "/feed/feed1/rin", "units") == QStringLiteral("ohm")
+              && attrS(f, "/feed/feed1/frequency", "units") == QStringLiteral("Hz")
+              && attrS(f, "/pattern/cut1/angle_deg", "units") == QStringLiteral("deg")
+              && attrS(f, "/pattern/cut1/e_abs_db", "units") == QStringLiteral("dB"),
+              "anth5: every column carries its unit");
+        check(attrS(f, "/", "format").startsWith(QStringLiteral("OpenFDTD-X")),
+              "anth5: the file says what it is");
+        check(attrI(f, "/", "version") == 1, "anth5: schema version");
+        if (f >= 0) H5Fclose(f);
+    }
+
+    // ── 中身が無いときは書かない ──────────────────────────────────────────
+    // 0 バイトの .h5 を残して「書き出しました」と言わないこと (絶対規則 5)
+    {
+        const QString none = dir.filePath("empty.h5");
+        QString e2;
+        check(!H5Writer::writeAntennaPattern(none, {}, {},
+                                             QStringLiteral("p.ofd"), &e2),
+              "anth5: refuses when there is nothing to write");
+        check(!QFileInfo::exists(none), "anth5: and leaves no file behind");
+        check(!e2.isEmpty(), "anth5: with a reason");
+    }
+
+    // ── 片方だけのときに空の群を作らないこと ──────────────────────────────
+    {
+        const QString p2 = dir.filePath("cutsonly.h5");
+        check(H5Writer::writeAntennaPattern(p2, {}, cuts,
+                                            QStringLiteral("p.ofd")),
+              "anth5: pattern-only file written");
+        QVector<H5DatasetInfo> s2;
+        H5Reader::listDatasets(p2, s2);
+        bool anyFeed = false;
+        for (const H5DatasetInfo &d : s2)
+            if (d.path.startsWith(QStringLiteral("/feed"))) anyFeed = true;
+        check(!anyFeed, "anth5: no feed datasets when there are no feeds");
+        check(s2.size() == 6, "anth5: pattern-only keeps every pattern column");
     }
 #endif
 }
@@ -24957,6 +25221,7 @@ int main(int argc, char *argv[])
     testGdsIO();
     testAimDirection();
     testH5Reader();
+    testAntennaH5();
     testOfdIntegration(dir);
     testRunGating();
     testAcousticReport();
