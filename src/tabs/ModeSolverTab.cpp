@@ -135,6 +135,12 @@ const bool s_i18n = [] {
               "→ Register as expansion monitor");
     I18n::reg("mds_to_schematic", "→ Schematic コンパクトモデル生成",
               "→ Generate Schematic compact model");
+    I18n::reg("mds_why_handoff",
+              "渡す先がありません — モード波源・モード展開モニター・Schematic "
+              "コンパクトモデルのいずれもまだ無く、計算したモードを受け取れません",
+              "there is nothing to hand it to — the mode source, the mode "
+              "expansion monitor and the Schematic compact model do not exist "
+              "yet, so the computed mode cannot be received");
     I18n::reg("mds_handoff_note",
         "▸ 上の 3 つの受け渡しは受け側モデル (モード波源・モード展開モニター・"
         "Schematic) が未実装のため無効です。",
@@ -772,7 +778,9 @@ ModeSolverTab::ModeSolverTab(Project *project, QWidget *parent)
     for (const char *key : { "mds_to_source", "mds_to_monitor",
                              "mds_to_schematic" }) {
         auto *b = new QPushButton(I18n::tr(key), s2);
-        markNotImplemented(b, I18n::tr(tabhelp::notimpl::kKernel));   // 受け側モデルが未実装
+        // 「カーネル側に入出力が無い」ではなく、**渡す先 (受け側) がまだ無い**。
+        // 何が無いのかを名指しする (下の注記と同じ内容)
+        markNotImplemented(b, I18n::tr("mds_why_handoff"));
         btnRow->addWidget(b);
     }
     btnRow->addStretch(1);
