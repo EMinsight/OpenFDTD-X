@@ -18054,6 +18054,416 @@ static void testPhotometricIO()
     }
 }
 
+// ── 配光ファイル EULUMDAT (.ldt) ───────────────────────────────────────────
+// 判定は (a) 部分光束が**解析的に分かっている値**と一致すること (境界をまたぐ
+// ビンの切り方がここで効く)、(b) cd/1000lm への正規化が基準光束で往復すること、
+// (c) 対称指定を推測しないこと、の 3 本立て。
+static void testEulumdat()
+{
+    g_file = "eulumdat";
+    namespace il = ofd::illum;
+
+    const double PI = 3.14159265358979323846;
+    auto rel = [](double a, double b) {
+        return (std::fabs(b) > 0) ? std::fabs(a - b) / std::fabs(b) : std::fabs(a - b);
+    };
+
+    QTemporaryDir dir;
+    check(dir.isValid(), "ldt: temp dir");
+    QString err;
+
+    // ファイルを行ごとの数値/文字列として読み直すための道具
+    // 行が足りないファイルでも落ちずに「違う」と言えるようにする
+    auto pick = [](const QStringList &s, int i) {
+        return (i >= 0 && i < s.size()) ? s[i] : QString();
+    };
+    auto cd = [](const PhotometricData &x, int h, int k) {
+        return (h < x.candela.size() && k < x.candela[h].size())
+                   ? x.candela[h][k] : std::numeric_limits<double>::quiet_NaN();
+    };
+    auto lines = [](const QString &p) {
+        QStringList out;
+        QFile f(p);
+        if (!f.open(QIODevice::ReadOnly)) return out;
+        const QByteArray raw = f.readAll();
+        for (const QByteArray &b : raw.split('\n'))
+            out.push_back(QString::fromUtf8(b).trimmed());
+        if (!out.isEmpty() && out.last().isEmpty()) out.removeLast();
+        return out;
+    };
+
+    // ── 1) 部分光束: 境界をまたぐビンは境界で切る ─────────────────────────
+    {
+        // 一様な光度 I なら [g0,g1] の光束は I·2π(cos g0 − cos g1) — 刻み方に
+        // よらない。**わざと 90° をまたぐビンを作る** (境界 0/22.5/72.5/140/180)
+        PhotometricData st;
+        st.horizAngles_deg = { 0.0 };
+        st.vertAngles_deg = { 0.0, 45.0, 100.0, 180.0 };
+        st.candela = { { 7.0, 7.0, 7.0, 7.0 } };
+        const double total = PhotometricIO::integratedFlux(st);
+        check(rel(total, 7.0 * 4.0 * PI) < 1e-12,
+              "ldt: a uniform distribution integrates to 4 pi I");
+        check(rel(PhotometricIO::partialFlux(st, 0.0, 90.0), 7.0 * 2.0 * PI) < 1e-12,
+              "ldt: the flux below 90 deg is 2 pi I even when a bin straddles "
+              "90 deg (the bin is cut at the boundary, not counted whole)");
+        check(rel(PhotometricIO::partialFlux(st, 0.0, 90.0) +
+                  PhotometricIO::partialFlux(st, 90.0, 180.0), total) < 1e-12,
+              "ldt: the two hemispheres add up to the whole");
+        check(PhotometricIO::partialFlux(st, 0.0, 180.0) ==
+                  PhotometricIO::integratedFlux(st),
+              "ldt: partialFlux over the full range is exactly integratedFlux");
+        check(PhotometricIO::partialFlux(st, 30.0, 30.0) == 0.0,
+              "ldt: an empty range carries no flux");
+    }
+
+    // ── 2) 追跡した配光を書いて読み直す ───────────────────────────────────
+    const double PHI = 1000.0;
+    il::Scene bare;
+    bare.source.flux_lm = PHI;
+    bare.target.distance_mm = 1000.0;
+    bare.target.half_mm = 1000.0;
+    bare.target.cells = 11;
+    const il::Result rBare = il::trace(bare, 200000);
+    check(rBare.valid, "ldt: the reference trace is valid");
+
+    PhotometricData d = PhotometricIO::fromTrace(rBare, PHI);
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = QStringLiteral("test luminaire");
+    d.lamp = QStringLiteral("white LED");
+    d.inputWatts = 12.5;
+    const int nv = d.vertAngles_deg.size();
+    const double flux = PhotometricIO::integratedFlux(d);
+
+    // ランバート面は下半球にしか出さない → 下向き光束比はちょうど 100%
+    check(rel(PhotometricIO::partialFlux(d, 0.0, 90.0), flux) < 1e-12,
+          "ldt: a Lambertian emitter puts all of its flux below 90 deg "
+          "(DFF = 100%)");
+
+    const QString path = dir.path() + QStringLiteral("/lum.ldt");
+    check(PhotometricIO::writeLdt(path, d, &err), "ldt: write EULUMDAT");
+    {
+        QFile f(path);
+        check(f.open(QIODevice::ReadOnly), "ldt: the file opens");
+        const QByteArray raw = f.readAll();
+        check(raw.count("\r\n") == raw.count('\n') && raw.count('\n') > 0,
+              "ldt: every line ends with CRLF as the format requires");
+    }
+    const QStringList L = lines(path);
+    // 26 (ヘッダ) + 6 (ランプ組 1 組) + 10 (直射比) + 24 (C 角) + Ng (γ 角)
+    // + Ng (光度、Isym=1 なので 1 面だけ)
+    check(L.size() == 26 + 6 + 10 + 24 + 2 * nv,
+          "ldt: the file has exactly the number of lines the layout implies");
+    check(pick(L, 1) == QStringLiteral("1") && pick(L, 2) == QStringLiteral("1") &&
+          pick(L, 3) == QStringLiteral("24"),
+          "ldt: an axially symmetric distribution is written as Ityp=1, "
+          "Isym=1 with 24 C-planes");
+    check(pick(L, 5).toInt() == nv,
+          "ldt: Ng is the number of vertical angles");
+    check(rel(pick(L, 21).toDouble(), 100.0) < 1e-9,
+          "ldt: the downward flux fraction written in item 22 is 100% here");
+    check(rel(pick(L, 22).toDouble(), 100.0 * flux / PHI) < 1e-5,
+          "ldt: item 23 (LORL) is the ratio of the distribution's flux to the "
+          "lamp flux");
+    check(rel(pick(L, 26 + 2).toDouble(), PHI) < 1e-9,
+          "ldt: item 26c is the total lamp flux, the reference for cd/1000lm");
+    {
+        // 27 の直射比は 0 (利用率法は未実装) — 「計算した値」に見せない
+        bool zeros = true;
+        for (int i = 0; i < 10; ++i) zeros = zeros && (pick(L, 32 + i).toDouble() == 0.0);
+        check(zeros, "ldt: the direct ratios of item 27 are written as zero");
+    }
+    {
+        const int c0 = 26 + 6 + 10;              // C 角の先頭
+        check(rel(pick(L, c0).toDouble(), 0.0) < 1e-12 &&
+              rel(pick(L, c0 + 23).toDouble(), 345.0) < 1e-9,
+              "ldt: the 24 C-plane angles run 0..345 deg");
+        const int i0 = c0 + 24 + nv;             // 光度の先頭
+        check(rel(pick(L, i0).toDouble(), d.candela[0][0] / (PHI / 1000.0)) < 1e-5,
+              "ldt: the intensities are written in cd/1000lm, not absolute "
+              "candela");
+    }
+
+    PhotometricData q;
+    check(PhotometricIO::readLdt(path, &q, &err), "ldt: read EULUMDAT back");
+    check(q.vertAngles_deg.size() == nv && q.horizAngles_deg.size() == 1 &&
+          q.candela.size() == 1,
+          "ldt: Isym=1 is folded back to a single C-plane on read");
+    check(q.lamps == 1 && rel(q.lumensPerLamp, PHI) < 1e-5 &&
+          rel(q.inputWatts, 12.5) < 1e-5,
+          "ldt: the lamp data survives the round trip");
+    check(q.manufacturer == QStringLiteral("OpenFDTD-X") &&
+          q.luminaire == QStringLiteral("test luminaire") &&
+          q.lamp == QStringLiteral("white LED"),
+          "ldt: the text fields survive the round trip");
+    check(q.test.startsWith(QStringLiteral("Computed by OpenFDTD-X")),
+          "ldt: the provenance note goes into the measurement-report field "
+          "(the format has no comment lines)");
+    {
+        bool fits = true;
+        for (int i = 0; i < 12 && i < L.size(); ++i) fits = fits && (L[i].size() <= 78);
+        check(fits && pick(L, 10).size() <= 8,
+              "ldt: the text fields are cut to the 78 characters the format "
+              "allows (the file-name field to 8)");
+    }
+    {
+        // 面数・角度数は直前の判定で見ている。ここは中身だけを見る
+        double worst = 0.0;
+        const int n = std::min(q.vertAngles_deg.size(), d.vertAngles_deg.size());
+        for (int k = 0; k < n && !q.candela.isEmpty(); ++k) {
+            worst = std::max(worst, rel(q.vertAngles_deg[k], d.vertAngles_deg[k]));
+            worst = std::max(worst, rel(cd(q, 0, k), d.candela[0][k]));
+        }
+        check(n == nv && !q.candela.isEmpty() && worst < 1e-5,
+              "ldt: angles and absolute candela survive the round trip to the "
+              "written precision");
+    }
+    check(rel(PhotometricIO::integratedFlux(q), rBare.fluxOut_lm) < 1e-5,
+          "ldt: the re-read distribution still carries the traced flux");
+
+    // 器具寸法は m → mm。長さと幅を取り違えると器具の向きが変わる
+    {
+        PhotometricData s = d;
+        s.length = 1.2; s.width = 0.3; s.height = 0.075;
+        const QString p = dir.path() + QStringLiteral("/dim.ldt");
+        check(PhotometricIO::writeLdt(p, s, &err), "ldt: write with dimensions");
+        const QStringList D = lines(p);
+        check(rel(pick(D, 12).toDouble(), 1200.0) < 1e-9 &&
+              rel(pick(D, 13).toDouble(), 300.0) < 1e-9 &&
+              rel(pick(D, 14).toDouble(), 75.0) < 1e-9,
+              "ldt: items 13/14/15 are length/width/height in mm, in that order");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read the dimensions back");
+        check(rel(b.length, 1.2) < 1e-9 && rel(b.width, 0.3) < 1e-9 &&
+              rel(b.height, 0.075) < 1e-9,
+              "ldt: the dimensions come back in metres, not swapped");
+    }
+
+    // ── 2b) 全方位に等しく出す光源なら下向き光束比はちょうど 50% ──────────
+    // (ランバートの 100% だけで見ていると「全域で積分する」誤りを見逃す)
+    {
+        PhotometricData iso;
+        iso.lamps = 1;
+        iso.lumensPerLamp = 1000.0;
+        iso.horizAngles_deg = { 0.0 };
+        for (int k = 0; k < 180; ++k) iso.vertAngles_deg.push_back(k + 0.5);
+        iso.candela = { QVector<double>(180, 10.0) };
+        check(rel(PhotometricIO::integratedFlux(iso), 10.0 * 4.0 * PI) < 1e-9,
+              "ldt: an isotropic 10 cd source carries 4 pi x 10 lm");
+        const QString p = dir.path() + QStringLiteral("/iso.ldt");
+        check(PhotometricIO::writeLdt(p, iso, &err), "ldt: write an isotropic "
+              "distribution");
+        const QStringList I = lines(p);
+        check(rel(pick(I, 21).toDouble(), 50.0) < 1e-6,
+              "ldt: item 22 (DFF) is 50% for an isotropic source — the "
+              "downward flux really is only the lower hemisphere");
+        check(rel(pick(I, 22).toDouble(), 100.0 * 10.0 * 4.0 * PI / 1000.0) < 1e-5,
+              "ldt: item 23 (LORL) may exceed 100% when the candela outrun the "
+              "nominal lamp flux");
+    }
+
+    // ── 3) 正規化の基準は「ランプ 1 本」ではなく「総光束」─────────────────
+    {
+        PhotometricData m;
+        m.lamps = 2;                      // 2 本 × 2000 lm = 4000 lm が基準
+        m.lumensPerLamp = 2000.0;
+        m.horizAngles_deg = { 0.0 };
+        m.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        m.candela = { { 400.0, 0.0, 0.0 } };
+        const QString p = dir.path() + QStringLiteral("/two.ldt");
+        check(PhotometricIO::writeLdt(p, m, &err), "ldt: write a two-lamp set");
+        const QStringList M = lines(p);
+        check(rel(pick(M, 26 + 2).toDouble(), 4000.0) < 1e-9,
+              "ldt: item 26c is lamps x lumens-per-lamp, not one lamp");
+        check(rel(pick(M, 26 + 6 + 10 + 24 + 3).toDouble(), 100.0) < 1e-9,
+              "ldt: 400 cd at a 4000 lm reference is written as 100 cd/1000lm");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read it back");
+        check(rel(cd(b, 0, 0), 400.0) < 1e-9,
+              "ldt: multiplying by the reference restores the absolute candela");
+        check(b.lamps == 2 && rel(b.lumensPerLamp, 2000.0) < 1e-9,
+              "ldt: the lamp count and per-lamp flux come back apart again");
+    }
+
+    // ── 4) 絶対測光 (ランプ光束が無い) ────────────────────────────────────
+    {
+        PhotometricData a;
+        a.lamps = 1;
+        a.lumensPerLamp = -1.0;           // IES の絶対測光
+        a.horizAngles_deg = { 0.0 };
+        a.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        a.candela = { { 250.0, 100.0, 0.0 } };
+        const double self = PhotometricIO::integratedFlux(a);
+        const QString p = dir.path() + QStringLiteral("/abs.ldt");
+        check(PhotometricIO::writeLdt(p, a, &err),
+              "ldt: absolute photometry is written using its own flux");
+        const QStringList A = lines(p);
+        check(rel(pick(A, 22).toDouble(), 100.0) < 1e-9,
+              "ldt: LORL is 100% when the distribution is its own reference");
+        check(rel(pick(A, 26 + 2).toDouble(), self) < 1e-5,
+              "ldt: the reference written is the integrated flux");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read the absolute file");
+        check(rel(cd(b, 0, 0), 250.0) < 1e-5 &&
+              rel(cd(b, 0, 1), 100.0) < 1e-5,
+              "ldt: the absolute candela come back unchanged");
+    }
+
+    // ── 5) 対称性なし (Isym=0) の全周配光 ─────────────────────────────────
+    {
+        PhotometricData f;
+        f.lamps = 1;
+        f.lumensPerLamp = 1000.0;
+        f.horizAngles_deg = { 0.0, 90.0, 180.0, 270.0 };
+        f.vertAngles_deg = { 0.0, 90.0, 180.0 };
+        f.candela = { { 100.0, 10.0, 0.0 }, { 200.0, 20.0, 0.0 },
+                      { 300.0, 30.0, 0.0 }, { 400.0, 40.0, 0.0 } };
+        const QString p = dir.path() + QStringLiteral("/quad.ldt");
+        check(PhotometricIO::writeLdt(p, f, &err), "ldt: write four C-planes");
+        const QStringList F = lines(p);
+        check(pick(F, 1) == QStringLiteral("3") && pick(F, 2) == QStringLiteral("0") &&
+              pick(F, 3) == QStringLiteral("4") && rel(pick(F, 4).toDouble(), 90.0) < 1e-9,
+              "ldt: four differing C-planes are written as Ityp=3, Isym=0, "
+              "Mc=4, Dc=90");
+        check(F.size() == 26 + 6 + 10 + 4 + 3 + 4 * 3,
+              "ldt: all four planes are written, not just one");
+        PhotometricData b;
+        check(PhotometricIO::readLdt(p, &b, &err), "ldt: read four C-planes back");
+        check(b.horizAngles_deg.size() == 4 && b.candela.size() == 4,
+              "ldt: the four planes come back as four planes");
+        double worst = 0.0;
+        for (int h = 0; h < 4; ++h) {
+            worst = std::max(worst, rel(b.horizAngles_deg[h], f.horizAngles_deg[h]));
+            for (int k = 0; k < 3; ++k)
+                worst = std::max(worst, rel(cd(b, h, k), cd(f, h, k)));
+        }
+        check(worst < 1e-5,
+              "ldt: every plane keeps its own values (the planes are not mixed "
+              "up or mirrored)");
+        check(rel(PhotometricIO::integratedFlux(b),
+                  PhotometricIO::integratedFlux(f)) < 1e-5,
+              "ldt: the flux of the asymmetric distribution survives");
+    }
+
+    // ── 6) 書けないものは書かない ─────────────────────────────────────────
+    {
+        const QString p = dir.path() + QStringLiteral("/bad.ldt");
+        PhotometricData bad;
+        check(!PhotometricIO::writeLdt(p, bad, &err),
+              "ldt: an empty distribution is not written");
+        bad.vertAngles_deg = { 0.0, 90.0 };
+        bad.horizAngles_deg = { 0.0 };
+        bad.candela = { { 1.0 } };
+        check(!PhotometricIO::writeLdt(p, bad, &err),
+              "ldt: a distribution whose counts disagree is not written");
+        // C 平面が全周をおおっていない → 鏡映の解釈を推測しない
+        PhotometricData part;
+        part.lamps = 1;
+        part.lumensPerLamp = 1000.0;
+        part.horizAngles_deg = { 0.0, 45.0, 90.0 };
+        part.vertAngles_deg = { 0.0, 180.0 };
+        part.candela = { { 1.0, 0.0 }, { 2.0, 0.0 }, { 3.0, 0.0 } };
+        check(!PhotometricIO::writeLdt(p, part, &err),
+              "ldt: C-planes that do not cover the full circle are refused "
+              "rather than guessed at");
+        // 基準にできる光束がまったく無い
+        PhotometricData dark;
+        dark.lamps = 1;
+        dark.lumensPerLamp = 0.0;
+        dark.horizAngles_deg = { 0.0 };
+        dark.vertAngles_deg = { 0.0, 180.0 };
+        dark.candela = { { 0.0, 0.0 } };
+        check(!PhotometricIO::writeLdt(p, dark, &err),
+              "ldt: without a reference flux the file is not written");
+    }
+
+    // ── 7) 読んではいけないファイル ───────────────────────────────────────
+    {
+        auto raw = [&dir](const char *name, const QByteArray &body) {
+            const QString p = dir.path() + QStringLiteral("/") + name;
+            QFile f(p);
+            if (!f.open(QIODevice::WriteOnly)) return QString();
+            f.write(body);
+            f.close();
+            return p;
+        };
+        // Isym=2 (C0-C180 面対称) — 鏡映の向きを推測すると配光が裏返る
+        QByteArray sym = "co\r\n1\r\n2\r\n24\r\n15\r\n2\r\n90\r\n";
+        for (int i = 0; i < 5; ++i) sym += "x\r\n";
+        check(!PhotometricIO::readLdt(raw("sym2.ldt", sym), &q, &err),
+              "ldt: Isym=2 is refused rather than silently mirrored");
+        check(err.contains(QStringLiteral("Isym")),
+              "ldt: the refusal says which symmetry it was");
+
+        // 途中で切れているファイル
+        check(!PhotometricIO::readLdt(raw("short.ldt", "co\r\n1\r\n1\r\n"), &q, &err),
+              "ldt: a truncated file is rejected");
+        // 数値であるべき欄が文字
+        check(!PhotometricIO::readLdt(raw("nan.ldt", "co\r\nx\r\n1\r\n24\r\n"), &q, &err),
+              "ldt: a non-numeric field is rejected");
+        // 角度の数が 0
+        QByteArray zero = "co\r\n1\r\n1\r\n0\r\n15\r\n0\r\n0\r\n";
+        check(!PhotometricIO::readLdt(raw("zero.ldt", zero), &q, &err),
+              "ldt: zero angles is rejected");
+
+        // ランプ組が 0 組 / ランプ光束 0 — 実光度に戻せない
+        auto header = [](const char *sets, const char *flux) {
+            QByteArray b = "co\r\n1\r\n1\r\n1\r\n0\r\n2\r\n90\r\n";
+            for (int i = 0; i < 5; ++i) b += "t\r\n";        // 8..12
+            for (int i = 0; i < 11; ++i) b += "0\r\n";       // 13..23
+            b += "1\r\n0\r\n";                               // 24 換算係数 / 25 傾き
+            b += sets; b += "\r\n";                          // 26
+            b += "1\r\nlamp\r\n"; b += flux; b += "\r\nn/a\r\nn/a\r\n0\r\n";
+            for (int i = 0; i < 10; ++i) b += "0\r\n";       // 27
+            b += "0\r\n";                                    // 28 (Mc=1)
+            b += "0\r\n180\r\n";                             // 29 (Ng=2)
+            b += "1000\r\n0\r\n";                            // 30
+            return b;
+        };
+        check(!PhotometricIO::readLdt(raw("nosets.ldt", header("0", "1000")), &q, &err),
+              "ldt: a file with no lamp set is rejected");
+        check(!PhotometricIO::readLdt(raw("noflux.ldt", header("1", "0")), &q, &err),
+              "ldt: a zero lamp flux is rejected (cd/1000lm cannot be undone)");
+        // 同じ骨格で光束があれば読める — 上の 2 件が「骨格が悪い」ではないこと
+        check(PhotometricIO::readLdt(raw("ok.ldt", header("1", "2000")), &q, &err),
+              "ldt: the same skeleton with a real lamp flux does read");
+        check(rel(cd(q, 0, 0), 2000.0) < 1e-9,
+              "ldt: 1000 cd/1000lm at 2000 lm is 2000 cd");
+        // 換算係数 0 は配光を丸ごと消す — 全 0 を黙って返さない
+        QByteArray z = header("1", "2000");
+        z.replace("\r\n1\r\n0\r\n1\r\n", "\r\n0\r\n0\r\n1\r\n");
+        check(z != header("1", "2000"), "ldt: the conversion factor was edited");
+        check(!PhotometricIO::readLdt(raw("conv0.ldt", z), &q, &err),
+              "ldt: a zero conversion factor is rejected (it would silently "
+              "zero the whole distribution)");
+        check(!PhotometricIO::readLdt(dir.path() + QStringLiteral("/none.ldt"),
+                                      &q, &err),
+              "ldt: a missing file is rejected");
+    }
+
+    // ── 8) 換算係数 (項目 24) を読みで適用する ────────────────────────────
+    {
+        QByteArray b = "co\r\n1\r\n1\r\n1\r\n0\r\n2\r\n90\r\n";
+        for (int i = 0; i < 5; ++i) b += "t\r\n";
+        for (int i = 0; i < 9; ++i) b += "0\r\n";     // 13..21
+        b += "50\r\n80\r\n2.5\r\n0\r\n";              // 22 DFF / 23 LORL / 24 換算 / 25 傾き
+        b += "1\r\n1\r\nlamp\r\n1000\r\nn/a\r\nn/a\r\n10\r\n";
+        for (int i = 0; i < 10; ++i) b += "0\r\n";
+        b += "0\r\n0\r\n180\r\n40\r\n0\r\n";
+        const QString p = dir.path() + QStringLiteral("/conv.ldt");
+        QFile f(p);
+        check(f.open(QIODevice::WriteOnly), "ldt: write the conversion sample");
+        f.write(b);
+        f.close();
+        PhotometricData m;
+        check(PhotometricIO::readLdt(p, &m, &err), "ldt: read a file with a "
+              "conversion factor");
+        check(rel(cd(m, 0, 0), 40.0 * 2.5) < 1e-9,
+              "ldt: the conversion factor of item 24 is applied on read");
+        check(rel(m.lumensPerLamp, 1000.0) < 1e-9 && m.lamps == 1,
+              "ldt: the lamp flux is read from the lamp set");
+    }
+}
+
 // ── 3 次収差 / ザイデル和 (optics/SeidelAberration) ─────────────────────────
 // 判定はすべて **解析的に分かっている恒等式**で、数値の丸写しではない:
 //   ペッツバール半径 = −n·f (単レンズ)、絞り密着の薄レンズで S_III = H²φ /
@@ -25384,6 +25794,7 @@ int main(int argc, char *argv[])
     testRayTrace();
     testIlluminationTrace();
     testPhotometricIO();
+    testEulumdat();
     testOptimizer();
     testFlankingTransmission();
     testTransmissionLine();

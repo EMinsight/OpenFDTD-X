@@ -3,10 +3,12 @@
 #include "../optics/IlluminationTrace.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QStringList>
 #include <QTextStream>
 
+#include <algorithm>
 #include <cmath>
 
 namespace ofd {
@@ -50,6 +52,28 @@ bool readNumbers(QTextStream &in, int count, QVector<double> *out, QString *err)
         }
     }
     return true;
+}
+
+// EULUMDAT の文字欄。改行を含めると行番号がずれるので潰し、桁も詰める
+QString ldtText(const QString &s, int maxChars)
+{
+    QString t = s;
+    t.replace('\r', ' ');
+    t.replace('\n', ' ');
+    t = t.trimmed();
+    return t.left(maxChars);
+}
+
+// 昇順・等間隔なら間隔を、そうでなければ 0 を返す (EULUMDAT の Dc / Dg)
+double uniformStep(const QVector<double> &a)
+{
+    if (a.size() < 2) return 0.0;
+    const double s = a[1] - a[0];
+    if (s <= 0.0) return 0.0;
+    for (int i = 1; i < a.size(); ++i)
+        if (std::fabs((a[i] - a[i - 1]) - s) > 1e-9 * std::max(1.0, std::fabs(s)))
+            return 0.0;
+    return s;
 }
 
 } // namespace
@@ -203,7 +227,287 @@ bool PhotometricIO::readIes(const QString &path, PhotometricData *d, QString *er
     return true;
 }
 
+bool PhotometricIO::writeLdt(const QString &path, const PhotometricData &d,
+                             QString *err)
+{
+    if (d.isEmpty()) {
+        if (err) *err = QStringLiteral("EULUMDAT: 配光データが空です");
+        return false;
+    }
+    if (d.candela.size() != d.horizAngles_deg.size()) {
+        if (err) *err = QStringLiteral("EULUMDAT: 水平角の数と配光の面数が合いません");
+        return false;
+    }
+    for (const QVector<double> &row : d.candela)
+        if (row.size() != d.vertAngles_deg.size()) {
+            if (err) *err = QStringLiteral("EULUMDAT: 鉛直角の数と光度の数が合いません");
+            return false;
+        }
+
+    const int nv = d.vertAngles_deg.size();
+    const int nh = d.horizAngles_deg.size();
+
+    // ── 基準光束 (cd/1000lm への正規化にこれが要る) ────────────────────────
+    int    lampsOut = (d.lamps > 0) ? d.lamps : 1;
+    double refFlux  = 0.0;
+    if (d.lumensPerLamp > 0.0) {
+        refFlux = lampsOut * d.lumensPerLamp;
+    } else {
+        // 絶対測光 (IES の負値) — 配光自身の光束を基準にする (LORL = 100%)
+        refFlux  = integratedFlux(d);
+        lampsOut = 1;
+    }
+    if (!(refFlux > 0.0)) {
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: 基準光束が 0 です (cd/1000lm に正規化できません)");
+        return false;
+    }
+
+    // ── 対称指定 ──────────────────────────────────────────────────────────
+    // 書き出すのは Isym = 1 (軸対称) と 0 (対称性なし) だけ。0 は「並んでいる
+    // C 平面が全周をおおう」ことが前提なので、そうでない配光は断る (絶対規則 5)
+    int    isym = 1, ityp = 1, mc = 24;
+    double dc = 15.0;
+    QVector<double> cAngles;
+    if (nh == 1) {
+        // 軸対称 — C 平面は 24 枚あるものとして角度だけ並べ、配光は 1 枚書く
+        for (int i = 0; i < mc; ++i) cAngles.push_back(dc * i);
+    } else {
+        const double step = uniformStep(d.horizAngles_deg);
+        const double full = 360.0 / nh;
+        if (std::fabs(d.horizAngles_deg.first()) > 1e-9 ||
+            step <= 0.0 || std::fabs(step - full) > 1e-6 * full) {
+            if (err) *err = QStringLiteral(
+                "EULUMDAT: C 平面が 0° から等間隔で全周をおおっていません "
+                "(%1 枚, 先頭 %2°)。鏡映の解釈を推測しないため書き出しません")
+                .arg(nh).arg(d.horizAngles_deg.first());
+            return false;
+        }
+        isym = 0;
+        ityp = 3;              // 鉛直軸まわりの対称性を持たない点光源
+        mc   = nh;
+        dc   = full;
+        cAngles = d.horizAngles_deg;
+    }
+
+    // 書く面数と手持ちの面数が食い違ったまま進むと配光を範囲外まで読む。
+    // ここで必ず突き合わせる (対称指定を足すときの安全網)
+    const int planes = (isym == 1) ? 1 : mc;
+    if (planes > d.candela.size()) {
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: 書こうとした面数 (%1) が配光の面数 (%2) を超えています")
+            .arg(planes).arg(d.candela.size());
+        return false;
+    }
+
+    const double totalFlux = integratedFlux(d);
+    const double dff  = (totalFlux > 0.0)
+                            ? 100.0 * partialFlux(d, 0.0, 90.0) / totalFlux : 0.0;
+    const double lorl = 100.0 * totalFlux / refFlux;
+
+    QFile f(path);
+    // 仕様どおり CRLF で書くため Text 変換は使わない (二重変換の防止)
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    QTextStream out(&f);
+    auto line = [&out](const QString &s) { out << s << "\r\n"; };
+    auto lineD = [&line](double v) { line(num(v)); };
+
+    // 1〜7
+    line(ldtText(d.manufacturer.isEmpty() ? QStringLiteral("OpenFDTD-X")
+                                          : d.manufacturer, 78));
+    line(QString::number(ityp));
+    line(QString::number(isym));
+    line(QString::number(mc));
+    lineD(dc);
+    line(QString::number(nv));
+    lineD(uniformStep(d.vertAngles_deg));
+    // 8〜12 (8 = 測定報告番号。値の出所をここに残す — 注記欄が無い形式なので)
+    const QString provenance = !d.test.isEmpty()
+                                   ? d.test
+                                   : (d.more.isEmpty() ? QString() : d.more.first());
+    line(ldtText(provenance, 78));
+    line(ldtText(d.luminaire, 78));
+    line(ldtText(d.lumCat, 78));
+    line(ldtText(QFileInfo(path).completeBaseName(), 8));
+    line(ldtText(d.testLab.isEmpty() ? d.issueDate
+                                     : d.issueDate + QStringLiteral(" / ") + d.testLab,
+                 78));
+    // 13〜21 器具寸法 / 発光面寸法 [mm]
+    lineD(d.length * 1000.0);
+    lineD(d.width  * 1000.0);
+    lineD(d.height * 1000.0);
+    lineD(d.length * 1000.0);
+    lineD(d.width  * 1000.0);
+    for (int i = 0; i < 4; ++i) lineD(0.0);     // C0 / C90 / C180 / C270
+    // 22〜25
+    lineD(dff);
+    lineD(lorl);
+    lineD(1.0);                                  // 光度の換算係数
+    lineD(0.0);                                  // 測定時の傾き
+    // 26 ランプ組 1 組 (6 行)
+    line(QStringLiteral("1"));
+    line(QString::number(lampsOut));
+    line(ldtText(d.lamp.isEmpty() ? QStringLiteral("n/a") : d.lamp, 78));
+    lineD(refFlux);
+    line(QStringLiteral("n/a"));                 // 光色 / 色温度 (持っていない)
+    line(QStringLiteral("n/a"));                 // 演色群 / 演色評価数 (同上)
+    lineD(d.inputWatts);
+    // 27 直射比 — LiTG 3.5 の利用率法は実装していないので 0 (.h 参照)
+    for (int i = 0; i < 10; ++i) lineD(0.0);
+    // 28 C 角 / 29 γ 角
+    for (double c : cAngles) lineD(c);
+    for (double g : d.vertAngles_deg) lineD(g);
+    // 30 光度 [cd/1000lm] — 軸対称なら 1 面、そうでなければ全 Mc 面
+    for (int h = 0; h < planes; ++h)
+        for (int k = 0; k < nv; ++k)
+            lineD(d.candela[h][k] / (refFlux / 1000.0));
+
+    out.flush();
+    f.close();
+    return true;
+}
+
+bool PhotometricIO::readLdt(const QString &path, PhotometricData *d, QString *err)
+{
+    if (!d) return false;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    QTextStream in(&f);
+    QStringList L;
+    while (!in.atEnd()) L.push_back(in.readLine().trimmed());
+
+    int at = 0;
+    bool bad = false;
+    auto text = [&L, &at, &bad]() -> QString {
+        if (at >= L.size()) { bad = true; return QString(); }
+        return L[at++];
+    };
+    auto number = [&L, &at, &bad, err]() -> double {
+        if (at >= L.size()) { bad = true; return 0.0; }
+        const QString t = L[at++].trimmed();
+        bool ok = false;
+        const double v = t.toDouble(&ok);
+        if (!ok) {
+            bad = true;
+            if (err) *err = QStringLiteral("EULUMDAT: %1 行目が数値として読めません: %2")
+                                .arg(at).arg(t);
+        }
+        return v;
+    };
+    auto truncated = [err, &at]() {
+        if (err && err->isEmpty())
+            *err = QStringLiteral("EULUMDAT: 行が足りません (%1 行目で尽きました)")
+                       .arg(at);
+        return false;
+    };
+    if (err) err->clear();
+
+    PhotometricData r;
+    r.manufacturer = text();                     // 1
+    /* ityp */ number();                         // 2 (読み替えには使わない)
+    const int isym = static_cast<int>(number()); // 3
+    const int mc   = static_cast<int>(number()); // 4
+    /* dc */ number();                           // 5
+    const int ng   = static_cast<int>(number()); // 6
+    /* dg */ number();                           // 7
+    if (bad) return truncated();
+    if (isym != 0 && isym != 1) {
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: 対称指定 Isym=%1 は未対応です (0 と 1 のみ)。"
+            "鏡映の向きを推測すると配光が黙って裏返るため読みません").arg(isym);
+        return false;
+    }
+    if (mc <= 0 || ng <= 0) {
+        if (err) *err = QStringLiteral("EULUMDAT: 角度の数が 0 以下です (Mc=%1, Ng=%2)")
+                            .arg(mc).arg(ng);
+        return false;
+    }
+
+    r.test      = text();                        // 8
+    r.luminaire = text();                        // 9
+    r.lumCat    = text();                        // 10
+    /* file name */ text();                      // 11
+    r.issueDate = text();                        // 12
+    r.length = number() / 1000.0;                // 13
+    r.width  = number() / 1000.0;                // 14
+    r.height = number() / 1000.0;                // 15
+    for (int i = 0; i < 6; ++i) number();        // 16〜21 発光面
+    /* dff */ number();                          // 22
+    /* lorl */ number();                         // 23
+    const double conv = number();                // 24
+    /* tilt */ number();                         // 25
+    const int sets = static_cast<int>(number()); // 26
+    if (bad) return truncated();
+    if (sets < 1) {
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: ランプ組が %1 組です (基準光束が決まりません)").arg(sets);
+        return false;
+    }
+    if (!(conv > 0.0)) {
+        // 0 を掛けると配光が丸ごと消える。黙って全 0 を返さない (絶対規則 5)
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: 光度の換算係数が %1 です (正の値が要ります)").arg(conv);
+        return false;
+    }
+    double refFlux = 0.0;
+    for (int s = 0; s < sets; ++s) {
+        const int    n    = static_cast<int>(number());   // 26a
+        const QString type = text();                      // 26b
+        const double flux = number();                     // 26c
+        text();                                           // 26d 光色
+        text();                                           // 26e 演色
+        const double watt = number();                     // 26f
+        if (s == 0) {                                     // 基準は 1 組目
+            r.lamps = (n > 0) ? n : 1;
+            r.lamp = type;
+            refFlux = flux;
+            r.inputWatts = watt;
+        }
+    }
+    if (bad) return truncated();
+    if (!(refFlux > 0.0)) {
+        if (err) *err = QStringLiteral(
+            "EULUMDAT: ランプ光束が %1 lm です (cd/1000lm を実光度に戻せません)")
+            .arg(refFlux);
+        return false;
+    }
+    r.lumensPerLamp = refFlux / r.lamps;
+
+    for (int i = 0; i < 10; ++i) number();       // 27 直射比 (使わないが在ること)
+    QVector<double> cAngles;
+    for (int i = 0; i < mc; ++i) cAngles.push_back(number());   // 28
+    for (int i = 0; i < ng; ++i) r.vertAngles_deg.push_back(number()); // 29
+    if (bad) return truncated();
+
+    // 30 — Isym=1 は全 C 平面が同一なので 1 面だけ入っている。畳んで持つ
+    const int planes = (isym == 1) ? 1 : mc;
+    r.horizAngles_deg = (isym == 1) ? QVector<double>{ 0.0 } : cAngles;
+    r.candela.resize(planes);
+    const double scale = (refFlux / 1000.0) * conv;
+    for (int h = 0; h < planes; ++h) {
+        QVector<double> row;
+        row.reserve(ng);
+        for (int k = 0; k < ng; ++k) row.push_back(number() * scale);
+        if (bad) return truncated();
+        r.candela[h] = row;
+    }
+
+    *d = r;
+    return true;
+}
+
 double PhotometricIO::integratedFlux(const PhotometricData &d)
+{
+    return partialFlux(d, 0.0, 180.0);
+}
+
+double PhotometricIO::partialFlux(const PhotometricData &d, double g0, double g1)
 {
     if (d.isEmpty()) return 0.0;
     const int nv = d.vertAngles_deg.size();
@@ -221,8 +525,12 @@ double PhotometricIO::integratedFlux(const PhotometricData &d)
         // 水平方向の割り当て: C 平面 1 枚なら全周、複数なら等分
         const double frac = 1.0 / nh;
         for (int k = 0; k < nv; ++k) {
-            const double a0 = edge[k] * kPi / 180.0;
-            const double a1 = edge[k + 1] * kPi / 180.0;
+            // 求める範囲でビンを切る (またぐビンを丸ごと入れない)
+            const double lo = std::max(edge[k], g0);
+            const double hi = std::min(edge[k + 1], g1);
+            if (hi <= lo) continue;
+            const double a0 = lo * kPi / 180.0;
+            const double a1 = hi * kPi / 180.0;
             const double omega = 2.0 * kPi * (std::cos(a0) - std::cos(a1));
             flux += d.candela[h][k] * omega * frac;
         }

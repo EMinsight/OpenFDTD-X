@@ -53,6 +53,7 @@ private:
     void showPolarPlot();       // 配光曲線 (極座標)
     void showIlluminanceMap();  // 評価面の照度分布
     void exportIes();           // IES LM-63 書出
+    void exportLdt();           // EULUMDAT (.ldt) 書出
 
     Project      *m_p;
     bool          m_updating = false;

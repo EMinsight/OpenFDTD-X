@@ -234,12 +234,31 @@ const bool s_i18n = [] {
               "▸ IES LM-63 書出は DIALux・AGi32 等の照明設計ソフト向け。"
               "Type C・TILT=NONE で、鉛直角はビン中心・値はそのビンの平均光度 "
               "(その旨をファイルの [MORE] 行に書きます)。EULUMDAT (.ldt) は"
-              "書式が未実装。",
+              "同じ配光を cd/1000lm で書き出します (Isym=1 軸対称)。",
               "▸ The IES LM-63 export targets lighting design tools such as "
               "DIALux and AGi32. It writes Type C with TILT=NONE; the vertical "
               "angles are bin centres and each value is that bin's mean "
               "intensity (stated in the file's [MORE] lines). EULUMDAT (.ldt) "
-              "is not implemented.");
+              "writes the same distribution in cd/1000lm (Isym=1, axially "
+              "symmetric).");
+    I18n::reg("ilm_ldt_title", "EULUMDAT (.ldt) 配光ファイルの書出",
+              "Export a EULUMDAT (.ldt) photometric file");
+    I18n::reg("ilm_ldt_filter",
+              "EULUMDAT 配光ファイル (*.ldt);;すべてのファイル (*)",
+              "EULUMDAT photometric file (*.ldt);;All files (*)");
+    I18n::reg("ilm_ldt_ok",
+              "書き出しました: %1\n基準ランプ光束 %2 lm / 配光の光束 %3 lm "
+              "(LORL %4%)、下向き光束比 (DFF) %5%。\n"
+              "光度は cd/1000lm で、読む側が基準光束 %2 lm を掛けて実光度に"
+              "戻します。項目 27 の直射比は利用率法を実装していないため 0 です"
+              " (DIALux 等は配光から自前で求めます)。",
+              "Written: %1\nReference lamp flux %2 lm / flux in the "
+              "distribution %3 lm (LORL %4%), downward flux fraction (DFF) "
+              "%5%.\nIntensities are in cd/1000lm; the reader multiplies by "
+              "the %2 lm reference to get absolute candela. The direct ratios "
+              "of item 27 are 0 because the utilisation-factor method is not "
+              "implemented (DIALux and friends derive them from the "
+              "distribution themselves).");
     I18n::reg("ilm_uw_optics",
               "TIRレンズ・導光板・蛍光体散乱の 3 要素と、面の反射モデルのうち "
               "「BSDF実測」(いずれも追跡モデルに入っていません)",
@@ -691,8 +710,8 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     sPh->vbox()->addWidget(noteLabel(I18n::tr("ilm_photo_note"), sPh));
 
     auto *btnRow = new QHBoxLayout();
-    // 配光曲線・照度分布・IES 書出はレイトレース結果から作る (実装済み)。
-    // CIE 色度図と EULUMDAT は未実装 — 無効化して明示する (絶対規則 5)
+    // 配光曲線・照度分布・IES/EULUMDAT 書出はレイトレース結果から作る (実装済み)。
+    // CIE 色度図は未実装 — 無効化して明示する (絶対規則 5)
     auto *btnPolar = new QPushButton(I18n::tr("ilm_btn_polar"), sPh);
     auto *btnIllum = new QPushButton(I18n::tr("ilm_btn_illum"), sPh);
     auto *btnIes   = new QPushButton(I18n::tr("ilm_btn_ies"), sPh);
@@ -701,14 +720,11 @@ IlluminationTab::IlluminationTab(Project *project, QWidget *parent)
     connect(btnPolar, &QPushButton::clicked, this, &IlluminationTab::showPolarPlot);
     connect(btnIllum, &QPushButton::clicked, this, &IlluminationTab::showIlluminanceMap);
     connect(btnIes,   &QPushButton::clicked, this, &IlluminationTab::exportIes);
-    // 2 つは押せない理由が別 — まとめて同じ理由にしない。
+    connect(btnLdt,   &QPushButton::clicked, this, &IlluminationTab::exportLdt);
     // CIE 色度図: 既存の等色関数は Wyman et al. の解析近似で、波長ごとに
     //   正規化するスペクトル軌跡では末端が大きく外れる (700 nm で x = 0.568、
     //   実測の表では 0.735)。CIE 1931 の数表とその出所・ライセンスが要る。
-    // EULUMDAT (.ldt): 書式の仕様を確認できていない (推測で書くと、開けるが
-    //   中身が違うファイルになる — いちばん質の悪い失敗)。
     tabhelp::markNotImplemented(btnCie, I18n::tr(tabhelp::notimpl::kData));
-    tabhelp::markNotImplemented(btnLdt, I18n::tr(tabhelp::notimpl::kFormat));
     for (QPushButton *b : { btnPolar, btnIllum, btnIes, btnCie, btnLdt })
         btnRow->addWidget(b);
     btnRow->addStretch(1);
@@ -1146,4 +1162,46 @@ void IlluminationTab::exportIes()
         I18n::tr("ilm_ies_ok").arg(path, fmt(r.fluxIn_lm, 1),
                                    fmt(PhotometricIO::integratedFlux(d), 1),
                                    fmt(r.efficiency, 4)));
+}
+
+void IlluminationTab::exportLdt()
+{
+    illum::Result r;
+    long long rays = 0;
+    if (!traceNow(&r, &rays)) {
+        QMessageBox::information(this, I18n::tr("ilm_ldt_title"),
+                                 I18n::tr("ilm_need_trace"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("ilm_ldt_title"), QStringLiteral("luminaire.ldt"),
+        I18n::tr("ilm_ldt_filter"));
+    if (path.isEmpty()) return;
+
+    PhotometricData d = PhotometricIO::fromTrace(r, m_p->illumination().flux_lm);
+    d.manufacturer = QStringLiteral("OpenFDTD-X");
+    d.luminaire = I18n::tr("ilm_title");
+    d.issueDate = QDate::currentDate().toString(Qt::ISODate);
+    // EULUMDAT に注記欄は無く、測定報告番号の欄も 78 字で切れる。
+    // 追跡結果の [MORE] をそのまま入れると文の途中で切れるので、
+    // 「測定ではない」ことがその字数で必ず残る短い文にする
+    d.test = QStringLiteral("OpenFDTD-X ray trace, %1 rays (not a measurement)")
+                 .arg(r.rays);
+
+    QString err;
+    if (!PhotometricIO::writeLdt(path, d, &err)) {
+        QMessageBox::warning(this, I18n::tr("ilm_ldt_title"),
+                             I18n::tr("ilm_ies_ng").arg(err));
+        return;
+    }
+    // 案内には「読む側が何を掛けるか」を必ず書く (cd/1000lm は絶対値ではない)
+    const double flux = PhotometricIO::integratedFlux(d);
+    const double ref  = d.lamps * d.lumensPerLamp;
+    QMessageBox::information(
+        this, I18n::tr("ilm_ldt_title"),
+        I18n::tr("ilm_ldt_ok").arg(path, fmt(ref, 1), fmt(flux, 1),
+                                   fmt(ref > 0.0 ? 100.0 * flux / ref : 0.0, 1),
+                                   fmt(flux > 0.0
+                                           ? 100.0 * PhotometricIO::partialFlux(d, 0.0, 90.0) / flux
+                                           : 0.0, 1)));
 }
