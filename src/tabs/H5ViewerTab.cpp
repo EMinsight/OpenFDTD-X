@@ -7,6 +7,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 #include "../widgets/MiniPlot.h"
+#include "../io/SliceLineIntegral.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -284,6 +285,26 @@ const bool s_i18n = [] {
         "max peaks at frame %1 with %2; RMS there is %3");
     ofd::I18n::reg("h5_stat_fft", "📈 FFT スペクトログラム", "📈 FFT spectrogram");
     ofd::I18n::reg("h5_stat_lineint", "📈 線積分", "📈 Line integral");
+    // 線積分 — 断面上の線分に沿った ∫f dl
+    ofd::I18n::reg("h5_li_need",
+        "伝搬時系列を選び、断面の座標が読めるファイルにしてください "
+        "(線分の位置を決められません)",
+        "Select a propagation time series in a file whose slice coordinates "
+        "can be read (the segment cannot be placed otherwise)");
+    ofd::I18n::reg("h5_li_from", "始点", "from");
+    ofd::I18n::reg("h5_li_to", "終点", "to");
+    ofd::I18n::reg("h5_li_run", "線積分を計算", "Integrate");
+    ofd::I18n::reg("h5_li_bad",
+        "線分が断面の外にはみ出しているか、長さが 0 です "
+        "(%1 は %2 〜 %3 m、%4 は %5 〜 %6 m)",
+        "The segment leaves the slice or has zero length "
+        "(%1 spans %2 to %3 m, %4 spans %5 to %6 m)");
+    ofd::I18n::reg("h5_li_res",
+        "∫f dl = %1 (値 × m) · 線分長 %2 m · 平均 %3 · |f| の最大 %4 · "
+        "%5 点で台形則 · 断面 %6 の現在コマ",
+        "∫f dl = %1 (value x m) · length %2 m · mean %3 · max |f| %4 · "
+        "trapezoid over %5 samples · current frame of slice %6");
+    ofd::I18n::reg("h5_li_x", "始点からの距離 [m]", "distance from start [m]");
     ofd::I18n::reg("h5_integration", "連携", "Integration");
     ofd::I18n::reg("h5_int_python", "🐍 Python (h5py) で開く",
                    "🐍 Open in Python (h5py)");
@@ -1204,6 +1225,10 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             // 全体時系列は表示中の断面から GUI 層だけで求まる (下に描く)
             connect(b, &QPushButton::clicked, this,
                     &H5ViewerTab::showWholeSeries);
+        } else if (qstrcmp(key, "h5_stat_lineint") == 0) {
+            // 線積分も断面のデータと節点座標だけで求まる
+            connect(b, &QPushButton::clicked, this,
+                    &H5ViewerTab::showLineIntegral);
         } else {
             ofd::tabhelp::markNotImplemented(
                 b, I18n::tr(tabhelp::notimpl::kExternal));
@@ -1226,6 +1251,39 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
     m_tsPlot->setMinimumHeight(150);
     m_tsPlot->setVisible(false);
     ss->vbox()->addWidget(m_tsPlot);
+
+    // 線積分の線分 (面内座標 [m])。押されるまで隠しておく
+    m_liBox = new QWidget(ss);
+    auto *lirow = new QHBoxLayout(m_liBox);
+    lirow->setContentsMargins(0, 0, 0, 0);
+    lirow->addWidget(new QLabel(I18n::tr("h5_li_from"), m_liBox));
+    m_liU0 = new QLineEdit(m_liBox);
+    m_liV0 = new QLineEdit(m_liBox);
+    lirow->addWidget(m_liU0);
+    lirow->addWidget(m_liV0);
+    lirow->addWidget(new QLabel(I18n::tr("h5_li_to"), m_liBox));
+    m_liU1 = new QLineEdit(m_liBox);
+    m_liV1 = new QLineEdit(m_liBox);
+    lirow->addWidget(m_liU1);
+    lirow->addWidget(m_liV1);
+    for (QLineEdit *e : { m_liU0, m_liV0, m_liU1, m_liV1 })
+        e->setMaximumWidth(90);
+    auto *liRun = new QPushButton(I18n::tr("h5_li_run"), m_liBox);
+    connect(liRun, &QPushButton::clicked, this,
+            &H5ViewerTab::runLineIntegral);
+    lirow->addWidget(liRun);
+    lirow->addStretch(1);
+    m_liBox->setVisible(false);
+    ss->vbox()->addWidget(m_liBox);
+    m_liNote = new QLabel(ss);
+    m_liNote->setWordWrap(true);
+    m_liNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_liNote->setVisible(false);
+    ss->vbox()->addWidget(m_liNote);
+    m_liPlot = new MiniPlot(ss);
+    m_liPlot->setMinimumHeight(150);
+    m_liPlot->setVisible(false);
+    ss->vbox()->addWidget(m_liPlot);
     v->addWidget(ss);
 
     // 連携 / Integration
@@ -2174,6 +2232,100 @@ void H5ViewerTab::exportCsvCurrent()
 // 開いている .h5 の実スキーマ (列挙結果) から h5py 読み込みコードを生成し、
 // .py スクリプト / .ipynb ノートブック (JSON 直書き) として保存する。
 // 外部ツール (python / jupyter) の起動は行わない — 生成のみ
+
+
+
+// ── 線積分 (断面上の線分に沿った ∫f dl) ───────────────────────────────────
+// 入力欄を出すだけ。既定の線分は断面の中央を横切る線にしておく
+// (何を入れればよいか分からない空欄から始めない)。
+void H5ViewerTab::showLineIntegral()
+{
+    if (!m_liBox || !m_liNote) return;
+    const int axis = sliceAxis();
+    int uAxis = 0, vAxis = 2;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    // 座標が読めないと線分の位置を決められない (推測で置かない)
+    if (!m_seriesMode || m_coord[uAxis].size() < 2
+        || m_coord[vAxis].size() < 2) {
+        m_liBox->setVisible(false);
+        m_liPlot->setVisible(false);
+        m_liNote->setVisible(true);
+        m_liNote->setText(I18n::tr("h5_li_need"));
+        return;
+    }
+    if (m_liU0->text().trimmed().isEmpty()) {
+        const double ulo = m_coord[uAxis].first(), uhi = m_coord[uAxis].last();
+        const double vmid = (m_coord[vAxis].first() + m_coord[vAxis].last())
+                            / 2.0;
+        m_liU0->setText(QString::number(ulo, 'g', 6));
+        m_liV0->setText(QString::number(vmid, 'g', 6));
+        m_liU1->setText(QString::number(uhi, 'g', 6));
+        m_liV1->setText(QString::number(vmid, 'g', 6));
+    }
+    m_liBox->setVisible(true);
+    m_liNote->setVisible(false);
+    m_liPlot->setVisible(false);
+}
+
+void H5ViewerTab::runLineIntegral()
+{
+    if (!m_liNote || !m_liPlot) return;
+    const int axis = sliceAxis();
+    int uAxis = 0, vAxis = 2;
+    H5Reader::seriesSliceAxes(axis, &uAxis, &vAxis);
+    if (!m_seriesMode || m_data.isEmpty() || m_rows <= 0 || m_cols <= 0
+        || m_coord[uAxis].size() < 2 || m_coord[vAxis].size() < 2) {
+        m_liNote->setVisible(true);
+        m_liPlot->setVisible(false);
+        m_liNote->setText(I18n::tr("h5_li_need"));
+        return;
+    }
+    const double u0 = m_liU0->text().toDouble();
+    const double v0 = m_liV0->text().toDouble();
+    const double u1 = m_liU1->text().toDouble();
+    const double v1 = m_liV1->text().toDouble();
+
+    // 台形則の分点数。断面の解像度より細かくしても意味が増えないので、
+    // 行列の対角線ぶん程度で頭打ちにする
+    const int nSamp = qBound(33, 2 * (m_rows + m_cols), 1025);
+    ofd::LineIntegralResult res;
+    if (!ofd::sliceLineIntegral(m_data, m_rows, m_cols,
+                                m_coord[uAxis], m_coord[vAxis],
+                                u0, v0, u1, v1, nSamp, &res)) {
+        // **どこまでなら引けるのかを出す** (ただ失敗と言わない)
+        static const char *const kAx[3] = { "X", "Y", "Z" };
+        m_liNote->setVisible(true);
+        m_liPlot->setVisible(false);
+        m_liNote->setText(I18n::tr("h5_li_bad")
+            .arg(QLatin1String(kAx[uAxis]),
+                 QString::number(m_coord[uAxis].first(), 'g', 4),
+                 QString::number(m_coord[uAxis].last(), 'g', 4),
+                 QLatin1String(kAx[vAxis]),
+                 QString::number(m_coord[vAxis].first(), 'g', 4),
+                 QString::number(m_coord[vAxis].last(), 'g', 4)));
+        return;
+    }
+
+    MiniSeries ser;
+    ser.pts.reserve(res.samples.size());
+    for (const ofd::LineSample &sm : res.samples)
+        ser.pts.push_back(QPointF(sm.s, sm.value));
+    ser.color = QColor("#0078D4");
+    ser.label = m_seriesComp;
+    m_liPlot->setSeries({ ser });
+    m_liPlot->setLabels(I18n::tr("h5_li_x"), m_seriesComp);
+    m_liPlot->clearYRange();
+    m_liPlot->setVisible(true);
+
+    m_liNote->setVisible(true);
+    m_liNote->setText(I18n::tr("h5_li_res")
+        .arg(QString::number(res.integral, 'g', 6),
+             QString::number(res.length, 'g', 6),
+             QString::number(res.mean, 'g', 6),
+             QString::number(res.maxAbs, 'g', 6))
+        .arg(res.samples.size())
+        .arg(sliceCaption(axis)));
+}
 
 // ── 全体時系列 (フレームごとの max / RMS) ─────────────────────────────────
 // 表示中の断面を全フレームぶん読み直して、コマごとに |値| の最大と

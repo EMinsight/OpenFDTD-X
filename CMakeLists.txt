@@ -237,6 +237,9 @@ set(CORE_SOURCES
     # 取込メッシュの 3D プレビューの投影 (どこに写るかを決める側)
     src/io/MeshProjection.cpp
     src/io/MeshProjection.h
+    # 断面上の直線に沿った線積分 (非一様格子・行 0 = +側 の規約込み)
+    src/io/SliceLineIntegral.cpp
+    src/io/SliceLineIntegral.h
     # ASCII DXF の 2D 輪郭 (LINE / LWPOLYLINE のみ) — 遮音の仕切壁面積
     src/io/DxfOutline.cpp
     src/io/DxfOutline.h

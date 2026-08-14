@@ -38,6 +38,7 @@
 #include "io/MeshProjection.h"
 #include "io/SlicePieces.h"
 #include "io/DxfOutline.h"
+#include "io/SliceLineIntegral.h"
 #include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
@@ -21153,6 +21154,137 @@ static void testBeamPatternCsv()
 }
 
 
+// ── 断面上の線積分 (io/SliceLineIntegral) ─────────────────────────────────
+// 双一次補間は 1 次多項式を厳密に再現するので、f = a·u + b·v + c なら
+// **∫f dl = 長さ × f(中点)** が解析解になる。これを基準に固定する。
+// 格子は**非一様・行数と列数を変え・原点から離す** (等間隔や対称な配置では
+// 添字計算の誤りが打ち消し合って検出できない)。
+static void testSliceLineIntegral()
+{
+    g_file = "lineint";
+    using ofd::LineIntegralResult;
+    using ofd::sliceLineIntegral;
+
+    // 列 = u (7 点)、行 = v (5 点)。どちらも**不等間隔**
+    const QVector<double> uc{ 1.0, 1.5, 2.5, 4.0, 4.25, 6.0, 9.0 };
+    const QVector<double> vc{ -2.0, -1.5, 0.5, 3.0, 3.5 };
+    const int cols = uc.size(), rows = vc.size();
+
+    // f = a·u + b·v + c。行 0 は vc の **+ 側** (末尾) に対応する
+    const double a = 0.75, b = -1.25, c = 3.5;
+    auto fAt = [&](double u, double v) { return a * u + b * v + c; };
+    QVector<double> cells(rows * cols, 0.0);
+    for (int r = 0; r < rows; ++r)
+        for (int cIdx = 0; cIdx < cols; ++cIdx)
+            cells[r * cols + cIdx] = fAt(uc[cIdx], vc[rows - 1 - r]);
+
+    auto expect = [&](double u0, double v0, double u1, double v1) {
+        const double L = std::hypot(u1 - u0, v1 - v0);
+        return L * fAt((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+    };
+
+    // (1) 斜めの線分 (軸に平行でない)
+    {
+        LineIntegralResult r;
+        const double u0 = 1.5, v0 = -1.5, u1 = 6.0, v1 = 3.0;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                u0, v0, u1, v1, 257, &r),
+              "lineint: a diagonal segment integrates");
+        const double want = expect(u0, v0, u1, v1);
+        check(r.ok && std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: the integral of a linear field matches length x f(mid)");
+        check(std::fabs(r.length - std::hypot(u1 - u0, v1 - v0)) < 1e-12,
+              "lineint: the reported length is the segment length");
+        check(std::fabs(r.mean - fAt((u0 + u1) / 2, (v0 + v1) / 2)) < 1e-9,
+              "lineint: the mean is the value at the midpoint");
+        check(r.samples.size() == 257, "lineint: every sample is returned");
+        check(std::fabs(r.samples.first().value - fAt(u0, v0)) < 1e-9
+              && std::fabs(r.samples.last().value - fAt(u1, v1)) < 1e-9,
+              "lineint: the first and last samples sit on the end points");
+        check(std::fabs(r.samples.first().s) < 1e-12
+              && std::fabs(r.samples.last().s - r.length) < 1e-12,
+              "lineint: arc length runs from 0 to the segment length");
+    }
+
+    // (2) v 方向だけの線分 — **行の向き**を取り違えると符号が変わる。
+    // b < 0 なので v が増えると f は減る。始点の値 > 終点の値になるはず
+    {
+        LineIntegralResult r;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                2.5, -2.0, 2.5, 3.5, 129, &r),
+              "lineint: a segment along v integrates");
+        const double want = expect(2.5, -2.0, 2.5, 3.5);
+        check(std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: the integral along v matches the analytic value");
+        check(r.samples.first().value > r.samples.last().value,
+              "lineint: row 0 is the + side of v (the field falls as v rises)");
+    }
+
+    // (3) u 方向だけの線分 (非一様な列間隔をまたぐ)
+    {
+        LineIntegralResult r;
+        check(sliceLineIntegral(cells, rows, cols, uc, vc,
+                                1.0, 0.5, 9.0, 0.5, 193, &r),
+              "lineint: a segment along u integrates");
+        const double want = expect(1.0, 0.5, 9.0, 0.5);
+        check(std::fabs(r.integral - want) < 1e-9 * std::fabs(want),
+              "lineint: a non-uniform column spacing is handled");
+    }
+
+    // (4) 向きを逆にしても積分値は同じ (弧長で積分しているため)
+    {
+        LineIntegralResult fwd, rev;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.5, -1.5, 6.0, 3.0, 129,
+                          &fwd);
+        sliceLineIntegral(cells, rows, cols, uc, vc, 6.0, 3.0, 1.5, -1.5, 129,
+                          &rev);
+        check(std::fabs(fwd.integral - rev.integral) < 1e-9,
+              "lineint: reversing the segment does not change the integral");
+    }
+
+    // (5) |f| の最大 — 端点のどちらかになる (線形なので)
+    {
+        LineIntegralResult r;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.0, 3.5, 9.0, -2.0, 129,
+                          &r);
+        const double e0 = std::fabs(fAt(1.0, 3.5)), e1 = std::fabs(fAt(9.0, -2.0));
+        check(std::fabs(r.maxAbs - std::max(e0, e1)) < 1e-9,
+              "lineint: maxAbs is the larger end value for a linear field");
+    }
+
+    // (6) 断りなく外挿しない — 範囲外・長さ 0・座標数の食い違いは false
+    {
+        LineIntegralResult r;
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 0.5, 0.0, 5.0, 0.0, 65, &r),
+              "lineint: a segment reaching outside the slice is refused");
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 2.0, 0.0, 2.0, 0.0, 65, &r),
+              "lineint: a zero-length segment is refused");
+        QVector<double> shortU = uc;
+        shortU.removeLast();
+        check(!sliceLineIntegral(cells, rows, cols, shortU, vc,
+                                 1.5, 0.0, 6.0, 0.0, 65, &r),
+              "lineint: coordinate counts that disagree with the matrix are refused");
+        check(!sliceLineIntegral(cells, rows, cols, uc, vc,
+                                 1.5, 0.0, 6.0, 0.0, 1, &r),
+              "lineint: fewer than two samples is refused");
+    }
+
+    // (7) 非一様格子であることが効いているかを直接見る。
+    // 中点の位置は「実座標の中点」であって「添字の中点」ではない。
+    // uc の添字中点は uc[3] = 4.0 だが実座標の中点は (1+9)/2 = 5.0 で、
+    // f が違う値になる — 等間隔と誤って扱うとこの判定が落ちる
+    {
+        LineIntegralResult r;
+        sliceLineIntegral(cells, rows, cols, uc, vc, 1.0, 0.5, 9.0, 0.5, 3, &r);
+        check(r.samples.size() == 3
+              && std::fabs(r.samples[1].value - fAt(5.0, 0.5)) < 1e-9,
+              "lineint: the middle sample sits at the coordinate midpoint, "
+              "not the index midpoint");
+    }
+}
+
 // ── ASCII DXF の輪郭読み取り (io/DxfOutline) ──────────────────────────────
 // 面積を図面から入れるための読み取り。**閉じた LWPOLYLINE の囲む面積**が
 // 唯一の出力なので、閉じ判定・靴紐公式・単位・読めなかった実体の数を固定する。
@@ -24640,6 +24772,7 @@ int main(int argc, char *argv[])
     testMeshProjection();
     testSlicePieces();
     testDxfOutline();
+    testSliceLineIntegral();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();

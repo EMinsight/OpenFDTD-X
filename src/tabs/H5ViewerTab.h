@@ -167,6 +167,9 @@ private:
     void exportMatlabScript();   // MATLAB / Octave 読み込みスクリプト (.m)
     // 表示中の断面について、全フレームの max / RMS を求めて下に描く
     void showWholeSeries();
+    // 線積分 — 入力欄を出す / 実際に積分して描く
+    void showLineIntegral();
+    void runLineIntegral();
     // 全フレームを PNG 連番に描き出す (video=true なら ffmpeg で動画化)
     void exportFrames(bool video, const QString &videoExt);
     QImage frameImage(int frame, double lo, double hi, bool *ok);
@@ -207,6 +210,12 @@ private:
     // 全体時系列 (フレームごとの max / RMS)。押されるまで隠れている
     QLabel   *m_tsNote = nullptr;
     MiniPlot *m_tsPlot = nullptr;
+    // 線積分 — 面内座標 [m] で線分を指定する
+    QWidget  *m_liBox = nullptr;
+    QLineEdit *m_liU0 = nullptr, *m_liV0 = nullptr;
+    QLineEdit *m_liU1 = nullptr, *m_liV1 = nullptr;
+    QLabel   *m_liNote = nullptr;
+    MiniPlot *m_liPlot = nullptr;
 
     // 再生
     QPushButton *m_playBtn, *m_firstBtn, *m_prevBtn, *m_nextBtn, *m_lastBtn;
