@@ -186,6 +186,19 @@ const bool s_i18n = [] {
               "range, the materials or the substrate.");
     I18n::reg("tfc_na", "—", "—");
     I18n::reg("tfc_btn_rta",   "📊 R/T/A スペクトル", "📊 R/T/A spectra");
+    // 吸収 A の併記。R/T は既に図に出ているので、A を足して R+T+A=1 を見せる
+    I18n::reg("tfc_rta_on",  "📊 R/T/A スペクトル (A を隠す)",
+                             "📊 R/T/A spectra (hide A)");
+    I18n::reg("tfc_y_rta", "R / T / A [%]", "R / T / A [%]");
+    I18n::reg("tfc_rta_note",
+        "▸ A = 1 − R − T (特性行列法の値からエネルギー保存で求めた吸収)。"
+        "この範囲での最大は s 偏光 %1 %、p 偏光 %2 % です。"
+        "吸収が 0 になるのは材料の消衰係数 k がすべて 0 のとき (透明多層膜) で、"
+        "その場合 A の線は 0 に張り付きます",
+        "▸ A = 1 - R - T (absorptance from energy conservation on the "
+        "characteristic-matrix values). Over this range the maximum is %1 % "
+        "for s and %2 % for p. A stays at zero when every material has k = 0 "
+        "(a transparent stack)");
     I18n::reg("tfc_btn_map",   "🌈 角度-波長マップ", "🌈 Angle-wavelength map");
     I18n::reg("tfc_btn_field", "📐 電界分布 (層内)",
               "📐 Field distribution (inside the stack)");
@@ -971,6 +984,13 @@ QWidget *ThinFilmTab::buildSpecPage()
     m_specPlot->setMinimumSize(360, 140);
     s->vbox()->addWidget(m_specPlot);
 
+    // R/T/A 表示中の注記 (A の出所と最大値)
+    m_rtaNote = new QLabel(s);
+    m_rtaNote->setWordWrap(true);
+    m_rtaNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_rtaNote->setVisible(false);
+    s->vbox()->addWidget(m_rtaNote);
+
     // 指標表 (すべて特性行列法の計算値)
     m_specTable = new QTableWidget(6, 4, s);
     m_specTable->setHorizontalHeaderLabels({ I18n::tr("tfc_c_metric"),
@@ -1000,7 +1020,16 @@ QWidget *ThinFilmTab::buildSpecPage()
     auto *mapBtn   = new QPushButton(I18n::tr("tfc_btn_map"), s);
     auto *fieldBtn = new QPushButton(I18n::tr("tfc_btn_field"), s);
     auto *fdtdBtn  = new QPushButton(I18n::tr("tfc_btn_fdtd"), s);
-    for (QPushButton *b : { rtaBtn, mapBtn, fieldBtn, fdtdBtn }) {
+    // R/T/A は特性行列法の値から A = 1 − R − T で出せる (追加の計算は不要)。
+    // 残り 3 つは別の計算が要るので無効のまま
+    m_rtaBtn = rtaBtn;
+    connect(rtaBtn, &QPushButton::clicked, this, [this] {
+        m_showA = !m_showA;
+        m_rtaBtn->setText(I18n::tr(m_showA ? "tfc_rta_on" : "tfc_btn_rta"));
+        recompute();
+    });
+    btnRow->addWidget(rtaBtn);
+    for (QPushButton *b : { mapBtn, fieldBtn, fdtdBtn }) {
         tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
         btnRow->addWidget(b);
     }
@@ -1438,37 +1467,58 @@ void ThinFilmTab::recompute()
                    rPeak = std::max(rPeak, std::max(p.Rs, p.Rp));
     const bool rOnly = (rPeak < 0.10);
 
-    MiniSeries rs, rp, ts, tp;
+    MiniSeries rs, rp, ts, tp, as_, ap_;
     rs.color = QColor("#0078D4");  rp.color = QColor("#0078D4"); rp.dashed = true;
     ts.color = QColor("#107C10");  tp.color = QColor("#107C10"); tp.dashed = true;
-    auto addPoint = [&](double x, double Rs, double Rp, double Ts, double Tp) {
+    as_.color = QColor("#B4009E"); ap_.color = QColor("#B4009E"); ap_.dashed = true;
+    // A は特性行列法が返す値をそのまま使う (A = 1 − R − T)。ここで別式を
+    // 立てると図の 3 本が同じ前提の値でなくなる
+    double aPeak[2] = { 0.0, 0.0 };
+    auto addPoint = [&](double x, double Rs, double Rp, double Ts, double Tp,
+                        double As, double Ap) {
+        aPeak[0] = std::max(aPeak[0], As);
+        aPeak[1] = std::max(aPeak[1], Ap);
         if (split) {
             rs.pts.push_back({ x, pct(Rs) });
             rp.pts.push_back({ x, pct(Rp) });
             ts.pts.push_back({ x, pct(Ts) });
             tp.pts.push_back({ x, pct(Tp) });
+            as_.pts.push_back({ x, pct(As) });
+            ap_.pts.push_back({ x, pct(Ap) });
         } else {
             rs.pts.push_back({ x, pct(0.5 * (Rs + Rp)) });
             ts.pts.push_back({ x, pct(0.5 * (Ts + Tp)) });
+            as_.pts.push_back({ x, pct(0.5 * (As + Ap)) });
         }
     };
     if (sweep)
         for (const optics::AnglePoint &p : ap)
-            addPoint(p.aoi_deg, p.Rs, p.Rp, p.Ts, p.Tp);
+            addPoint(p.aoi_deg, p.Rs, p.Rp, p.Ts, p.Tp, p.As, p.Ap);
     else
         for (const optics::SpectrumPoint &p : sp)
-            addPoint(p.lambda_nm, p.Rs, p.Rp, p.Ts, p.Tp);
+            addPoint(p.lambda_nm, p.Rs, p.Rp, p.Ts, p.Tp, p.As, p.Ap);
 
     QVector<MiniSeries> series;
     series << rs;
     if (split) series << rp;
-    if (!rOnly) {
+    if (!rOnly || m_showA) {          // A を出すときは T も出す (R+T+A=1)
         series << ts;
         if (split) series << tp;
     }
+    if (m_showA) {
+        series << as_;
+        if (split) series << ap_;
+    }
     m_specPlot->setLabels(I18n::tr(sweep ? "tfc_x_aoi" : "tfc_x_lam"),
-                          I18n::tr(rOnly ? "tfc_y_r" : "tfc_y_rt"));
+                          I18n::tr(m_showA ? "tfc_y_rta"
+                                           : (rOnly ? "tfc_y_r" : "tfc_y_rt")));
     m_specPlot->setSeries(series);
+    if (m_rtaNote) {
+        m_rtaNote->setVisible(m_showA);
+        m_rtaNote->setText(I18n::tr("tfc_rta_note")
+            .arg(QString::number(pct(aPeak[0]), 'f', 2),
+                 QString::number(pct(aPeak[1]), 'f', 2)));
+    }
 
     // ── 指標表 ──
     const bool wasUpdating = m_updating;

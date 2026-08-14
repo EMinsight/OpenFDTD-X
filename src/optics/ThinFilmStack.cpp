@@ -327,8 +327,8 @@ std::vector<AnglePoint> angleSweep(const StackAtLambda &stack, double lambda_nm,
         if (!rs.valid || !rp.valid) continue;
         AnglePoint p;
         p.aoi_deg = a;
-        p.Rs = rs.R; p.Ts = rs.T;
-        p.Rp = rp.R; p.Tp = rp.T;
+        p.Rs = rs.R; p.Ts = rs.T; p.As = rs.A;
+        p.Rp = rp.R; p.Tp = rp.T; p.Ap = rp.A;
         out.push_back(p);
     }
     return out;

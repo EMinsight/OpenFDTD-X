@@ -5563,7 +5563,47 @@ static void testThinFilmStack()
                   "tmm: angle sweep matches filmResponse");
             check(ap.back().Rs > ap.front().Rs,
                   "tmm: s-reflectance grows with angle");
+            // 吸収も filmResponse の値そのものであること (定義を二重に
+            // 持たない — 呼び出し側で 1−R−T を組み直さないための判定)
+            check(std::fabs(ap[30].As - r0.A) < 1e-12,
+                  "tmm: angle sweep carries the same A as filmResponse");
         }
+        // **無損失なら R + T + A = 1** (A は 0)。角度掃引の全点で成り立つ
+        bool sums = true, aZero = true;
+        for (std::size_t i = 0; i < ap.size(); ++i) {
+            if (std::fabs(ap[i].Rs + ap[i].Ts + ap[i].As - 1.0) > 1e-12)
+                sums = false;
+            if (std::fabs(ap[i].Rp + ap[i].Tp + ap[i].Ap - 1.0) > 1e-12)
+                sums = false;
+            // 1 − R − T の丸め残差があるので厳密 0 では判定しない
+            if (std::fabs(ap[i].As) > 1e-12 || std::fabs(ap[i].Ap) > 1e-12)
+                aZero = false;
+        }
+        check(sums, "tmm: R + T + A = 1 at every swept angle");
+        check(aZero, "tmm: a lossless stack absorbs nothing");
+    }
+
+    // ── (11b) 吸収のある層では A > 0 で、やはり R + T + A = 1 ────────────
+    {
+        // k > 0 の層を 1 枚入れる (**厚みと n を非対称な値にする** — 対称な
+        // 構成では偏波の取り違えが打ち消し合って検出できない)
+        const StackAtLambda lossy = [](double lam, StackSample &s) {
+            (void)lam;
+            s.n0 = 1.0; s.nsub = 1.52;
+            FilmLayer L; L.n = 2.35; L.k = 0.08; L.d_nm = 137.0;
+            s.layers.push_back(L);
+            return true;
+        };
+        const std::vector<AnglePoint> ap = angleSweep(lossy, 550.0, 0.0, 60.0, 25);
+        bool sums = true, someAbs = false;
+        for (std::size_t i = 0; i < ap.size(); ++i) {
+            if (std::fabs(ap[i].Rs + ap[i].Ts + ap[i].As - 1.0) > 1e-9)
+                sums = false;
+            if (ap[i].As > 0.01) someAbs = true;
+        }
+        check(!ap.empty() && sums,
+              "tmm: R + T + A = 1 also for an absorbing stack");
+        check(someAbs, "tmm: an absorbing layer actually absorbs");
     }
 
     // ── (12) メリット関数 ────────────────────────────────────────────────

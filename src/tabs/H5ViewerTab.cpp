@@ -285,6 +285,18 @@ const bool s_i18n = [] {
         "max の最大は コマ %1 で %2、そのときの RMS は %3",
         "max peaks at frame %1 with %2; RMS there is %3");
     ofd::I18n::reg("h5_stat_fft", "📈 FFT スペクトログラム", "📈 FFT spectrogram");
+    // 無効化の理由は「なぜできないのか」を書く
+    ofd::I18n::reg("h5_fft_why",
+        "この経路の断面データは |E| (成分の二乗和の平方根) で、既に整流されて "
+        "います。整流された量の FFT は場の周波数成分になりません — 正弦波 "
+        "sin(2πft) を |·| にすると f は消えて 2f・4f… だけが残ります。"
+        "正しいスペクトルには符号付きの時刻歴が要りますが、この読み出しは "
+        "持っていません",
+        "The slice data on this path is |E| (root of the sum of squared "
+        "components), already rectified. The FFT of a rectified quantity is "
+        "not the field spectrum: rectifying sin(2 pi f t) removes f and "
+        "leaves 2f, 4f and so on. A correct spectrum needs the signed time "
+        "history, which this reader does not provide");
     ofd::I18n::reg("h5_stat_lineint", "📈 線積分", "📈 Line integral");
     // 線積分 — 断面上の線分に沿った ∫f dl
     ofd::I18n::reg("h5_li_need",
@@ -1259,6 +1271,8 @@ H5ViewerTab::H5ViewerTab(Project *project, QWidget *parent)
             // 線積分も断面のデータと節点座標だけで求まる
             connect(b, &QPushButton::clicked, this,
                     &H5ViewerTab::showLineIntegral);
+        } else if (qstrcmp(key, "h5_stat_fft") == 0) {
+            ofd::tabhelp::markNotImplemented(b, I18n::tr("h5_fft_why"));
         } else {
             ofd::tabhelp::markNotImplemented(
                 b, I18n::tr(tabhelp::notimpl::kExternal));

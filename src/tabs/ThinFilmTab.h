@@ -113,6 +113,10 @@ private:
     QLineEdit    *m_lamMin;
     QLineEdit    *m_lamMax;
     MiniPlot     *m_specPlot;
+    // R/T/A 表示 (A = 1 − R − T を図へ足す)
+    QPushButton  *m_rtaBtn = nullptr;
+    QLabel       *m_rtaNote = nullptr;
+    bool          m_showA = false;
     QTableWidget *m_specTable;
     QLabel       *m_specNote;           // 評価波長域・除外点数
 
