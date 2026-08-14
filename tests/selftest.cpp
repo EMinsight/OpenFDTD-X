@@ -15269,6 +15269,124 @@ static void testDisplayMetrics()
               "dispmetrics: eyebox is clamped at zero");
     }
 
+    // 3b) アイボックス掃引 (作図用) — W(ER) は **ER に対して厳密に直線**
+    {
+        const double L = 27.5, fovDeg = 43.0;   // 丸い数字を避ける
+        const int n = 41;
+        double er[41], w[41];
+        const dm::EyeboxSweep sw =
+            dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, n, er, w);
+        check(sw.valid, "dispsweep: eyebox sweep computed");
+        const double t = std::tan(0.5 * fovDeg * M_PI / 180.0);
+        check(std::fabs(sw.slope_mm_per_mm - (-2.0 * t)) < 1e-12,
+              "dispsweep: the slope is -2 tan(FOV/2)");
+        check(std::fabs(sw.zeroEyeRelief_mm - L / (2.0 * t)) < 1e-12,
+              "dispsweep: the eyebox vanishes at ER = L / (2 tan(FOV/2))");
+        // 掃引の各点が閉形式と一致すること (表と同じ関数を呼んでいる証拠)
+        bool exact = true, straight = true, clamped = true;
+        for (int i = 0; i < n; ++i) {
+            if (w[i] != dm::eyeboxWidth_mm(L, er[i], fovDeg)) exact = false;
+            // 0 で打ち切られる前は厳密に直線 (差分が一定)
+            const double lin = L + sw.slope_mm_per_mm * er[i];
+            if (lin > 0.0 && std::fabs(w[i] - lin) > 1e-12) straight = false;
+            if (lin <= 0.0 && w[i] != 0.0) clamped = false;
+        }
+        check(exact, "dispsweep: every sample equals the closed form");
+        check(straight, "dispsweep: the curve is exactly linear before it hits 0");
+        check(clamped, "dispsweep: and is clamped at 0 after that");
+        check(er[0] == 0.0 && std::fabs(er[n - 1] - 40.0) < 1e-12,
+              "dispsweep: the sweep spans the requested range");
+        check(w[0] == L, "dispsweep: at ER = 0 the eyebox is the outcoupler");
+        // ER0 は掃引の範囲内にあるので、最後の点は 0 に落ちている
+        check(sw.zeroEyeRelief_mm < 40.0 && w[n - 1] == 0.0,
+              "dispsweep: the far end is past the zero crossing");
+        // 不正な入力は valid=false (推測で描かない)
+        double e2[4], w2[4];
+        check(!dm::eyeboxVsEyeRelief(0.0, fovDeg, 40.0, 4, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, 0.0, 40.0, 4, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, 1, e2, w2).valid
+              && !dm::eyeboxVsEyeRelief(L, fovDeg, 40.0, 4, nullptr, w2).valid,
+              "dispsweep: bad inputs are refused");
+    }
+
+    // 3c) FOV とアイボックスのトレードオフ (作図用)
+    {
+        const double lam = 532.0, n = 1.7, gmax = 78.0;
+        const double L = 27.5, er = 17.0;
+        const int n2 = 61;
+        double per[61], fov[61], eb[61];
+        bool ok[61];
+        const int good = dm::fovEyeboxTradeoff(380.0, 620.0, n2, lam, n, gmax,
+                                               L, er, per, fov, eb, ok);
+        check(good > 0 && good <= n2, "disptrade: some periods give a band");
+        // 各点が既存の閉形式と一致すること (表と同じ値になる)
+        bool same = true, mono = true;
+        double prevFov = -1e300, prevEb = 1e300;
+        for (int i = 0; i < n2; ++i) {
+            const dm::WaveguideFov f =
+                dm::waveguideFov(per[i], lam, n, gmax);
+            if (ok[i] != f.valid) same = false;
+            if (f.valid) {
+                if (fov[i] != f.fov_deg) same = false;
+                if (eb[i] != dm::eyeboxWidth_mm(L, er, f.fov_deg)) same = false;
+                (void)prevFov; (void)prevEb;
+            } else {
+                if (fov[i] != 0.0 || eb[i] != 0.0) same = false;
+            }
+        }
+        check(same, "disptrade: every sample equals the closed form");
+        // **FOV は周期に対して単調ではない** — 最初に単調と決めつけて判定を
+        // 書いたら落ちた。実際は Λ = 2λ/(1 + n·sinθg,max) に極小がある
+        // (下で閉形式と突き合わせる)。したがってトレードオフは「周期の順」
+        // ではなく **FOV の関数として** 成り立つ: アイボックスは FOV だけで
+        // 決まる (W = L − 2·ER·tan(FOV/2)) ので、FOV が大きい点ほど必ず狭い。
+        for (int i = 0; i < n2 && mono; ++i)
+            for (int j = 0; j < n2; ++j) {
+                if (!ok[i] || !ok[j]) continue;
+                if (fov[i] > fov[j] && eb[i] > eb[j]) { mono = false; break; }
+            }
+        check(mono, "disptrade: a wider FOV always costs eyebox");
+        // 単調でないこと自体を明示的に確かめる (「単調だ」と思い込まない)
+        bool rose = false, fell = false;
+        for (int i = 1; i < n2; ++i) {
+            if (!ok[i] || !ok[i - 1]) continue;
+            if (fov[i] > fov[i - 1]) rose = true;
+            if (fov[i] < fov[i - 1]) fell = true;
+        }
+        check(rose && fell,
+              "disptrade: FOV is NOT monotone in period (it has a minimum)");
+        // 極小の位置は閉形式 Λ = 2λ/(1 + n·sinθg,max) と一致すること
+        {
+            const double pm = dm::minFovPeriod_nm(lam, n, gmax);
+            check(std::fabs(pm - 2.0 * lam
+                            / (1.0 + n * std::sin(gmax * M_PI / 180.0))) < 1e-12,
+                  "disptrade: the min-FOV period matches its closed form");
+            // 走査して求めた極小と一致する (刻み 0.01 nm ぶんの差まで)
+            double best = 1e300, bp = 0.0;
+            for (double q = 0.5 * pm; q < 2.0 * pm; q += 0.01) {
+                const dm::WaveguideFov f = dm::waveguideFov(q, lam, n, gmax);
+                if (f.valid && f.fov_deg < best) { best = f.fov_deg; bp = q; }
+            }
+            std::fprintf(stderr, "  (min-FOV period: closed form %.4f nm, "
+                                 "scan %.4f nm)\n", pm, bp);
+            check(std::fabs(bp - pm) < 0.02,
+                  "disptrade: and matches a numerical scan of the FOV");
+        }
+        check(per[0] == 380.0 && std::fabs(per[n2 - 1] - 620.0) < 1e-9,
+              "disptrade: the sweep spans the requested periods");
+        // 帯域が成立しない周期を「0」として描かないための旗が立つこと
+        double p2[3], f2[3], b2[3];
+        bool o2[3];
+        // λ より短い周期では λ/Λ > 1 になり帯域が成立しない
+        check(dm::fovEyeboxTradeoff(200.0, 260.0, 3, lam, n, gmax, L, er,
+                                    p2, f2, b2, o2) == 0
+              && !o2[0] && !o2[1] && !o2[2],
+              "disptrade: periods with no guided band are flagged, not zeroed");
+        check(dm::fovEyeboxTradeoff(620.0, 380.0, 3, lam, n, gmax, L, er,
+                                    p2, f2, b2, o2) == 0,
+              "disptrade: a reversed range is refused");
+    }
+
     // 4) シースルー透過率: n=1 で 1、n=1.8 で 84.9%
     check(std::fabs(dm::slabTransmittance(1.0) - 1.0) < 1e-12,
           "dispmetrics: index-matched slab transmits everything");

@@ -32,6 +32,9 @@ public:
     void setImpulseMode(bool on) { m_impulse = on; update(); }
     // x が log10 値のとき、目盛りを 10^x (実周波数) で表示する
     void setXTickPow10(bool on) { m_xPow10 = on; update(); }
+    // x 範囲の左右に data 幅の frac 倍だけ余白を足す (既定 0 = 従来どおり)。
+    // 端に来る点が枠と重なって見えなくなる図でだけ使う。
+    void setXMargin(double frac) { m_xMargin = frac; update(); }
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -43,6 +46,7 @@ private:
     double  m_yLo = 0, m_yHi = 1;
     bool    m_impulse = false;
     bool    m_xPow10 = false;
+    double  m_xMargin = 0.0;
 };
 
 } // namespace ofd

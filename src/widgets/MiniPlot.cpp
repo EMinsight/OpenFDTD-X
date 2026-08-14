@@ -61,6 +61,12 @@ void MiniPlot::paintEvent(QPaintEvent *)
     if (m_fixedY) { yLo = m_yLo; yHi = m_yHi; }
     if (yLo >= yHi) { yLo -= 0.5; yHi += 0.5; }
     if (xLo >= xHi) { xLo -= 0.5; xHi += 0.5; }
+    // x 方向の余白 (既定 0 = 従来どおり)。端にある点 (動作点のマーカーなど)
+    // が枠に重なって見えなくなるのを防ぐため、使う側が明示的に足す。
+    if (m_xMargin > 0.0) {
+        const double xPad = (xHi - xLo) * m_xMargin;
+        xLo -= xPad; xHi += xPad;
+    }
     const double yPad = m_fixedY ? 0 : (yHi - yLo) * 0.08;
     yLo -= yPad; yHi += yPad;
 
