@@ -425,3 +425,71 @@ std::complex<double> Touchstone::zToS(std::complex<double> z, double z0)
 {
     return (z - z0) / (z + z0);
 }
+
+QString Touchstone::toCsv(const TouchstoneData &d, const QString &sourceName,
+                          QString *err)
+{
+    if (err) err->clear();
+    if (d.isEmpty() || d.s.size() != d.freqHz.size()) {
+        if (err) *err = QStringLiteral("S パラメータが空です");
+        return QString();
+    }
+
+    // 列にする要素 (1 始まりの行・列)。**既知のものだけ**
+    QVector<QPair<int, int>> comps;
+    for (int r = 1; r <= d.ports; ++r)
+        for (int c = 1; c <= d.ports; ++c)
+            if (d.isKnown(r, c)) comps.push_back(qMakePair(r, c));
+    if (comps.isEmpty()) {
+        if (err) *err = QStringLiteral("計算された要素がありません");
+        return QString();
+    }
+
+    // 厳密に 0 の要素があると dB に落とせない。床値も -inf も値を変えるので
+    // 変換しない (.h 参照)
+    for (int i = 0; i < d.freqHz.size(); ++i)
+        for (const QPair<int, int> &p : comps)
+            if (std::abs(d.at(i, p.first, p.second)) == 0.0) {
+                if (err)
+                    *err = QStringLiteral(
+                        "S%1%2 が %3 Hz で厳密に 0 です "
+                        "(dB に落とせないため変換しません)")
+                        .arg(p.first).arg(p.second)
+                        .arg(QString::number(d.freqHz[i], 'g', 10));
+                return QString();
+            }
+
+    const double kRad2Deg = 180.0 / 3.14159265358979323846;
+    QString out;
+    out += QStringLiteral("# OpenFDTD-X Touchstone import\n");
+    if (!sourceName.isEmpty()) {
+        QString src = sourceName;
+        src.replace('\r', ' ');
+        src.replace('\n', ' ');
+        out += QStringLiteral("# source: %1\n").arg(src.trimmed());
+    }
+    out += QStringLiteral("# ports: %1, reference: %2 ohm, points: %3\n")
+               .arg(d.ports).arg(QString::number(d.z0, 'g', 10))
+               .arg(d.freqHz.size());
+    if (d.column1Only)
+        out += QStringLiteral("# only the first column (S_n1) was computed; "
+                              "the other elements are not in this file\n");
+
+    QString head = QStringLiteral("freq_Hz");
+    for (const QPair<int, int> &p : comps)
+        head += QStringLiteral(",S%1%2_dB,S%1%2_deg").arg(p.first).arg(p.second);
+    out += head + QLatin1Char('\n');
+
+    for (int i = 0; i < d.freqHz.size(); ++i) {
+        QString line = QString::number(d.freqHz[i], 'g', 10);
+        for (const QPair<int, int> &p : comps) {
+            const std::complex<double> v = d.at(i, p.first, p.second);
+            line += QStringLiteral(",%1,%2")
+                        .arg(QString::number(20.0 * std::log10(std::abs(v)),
+                                             'g', 10),
+                             QString::number(std::arg(v) * kRad2Deg, 'g', 10));
+        }
+        out += line + QLatin1Char('\n');
+    }
+    return out;
+}

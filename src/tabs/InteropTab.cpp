@@ -2,6 +2,7 @@
 #include "InteropTab.h"
 #include "TabHelpers.h"
 #include "../core/Project.h"
+#include "../io/Touchstone.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../Theme.h"
@@ -18,6 +19,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
 #include <QSet>
@@ -102,6 +104,52 @@ const bool s_i18n = [] {
     ofd::I18n::reg("iop_sup_partial", "一部対応", "Partial");
     ofd::I18n::reg("iop_do_import", "📁 取込…", "📁 Import…");
     ofd::I18n::reg("iop_do_export", "💾 書出…", "💾 Export…");
+    // 行ごとの「できない理由」。実装がある機能は「どこでできるか」まで書く
+    ofd::I18n::reg("iop_why_elsewhere_snp",
+        "この画面からは実行できません (ポスト処理が書いた Touchstone を"
+        "「ファイル」メニューの Touchstone 出力で保存できます)",
+        "it cannot be run from this screen (save the Touchstone file written "
+        "by the post step from the File menu instead)");
+    ofd::I18n::reg("iop_why_elsewhere_spice",
+        "この画面からは実行できません (回路系電磁解析タブの「結果」ページに "
+        "SPICE サブサーキット書出があります)",
+        "it cannot be run from this screen (the circuit solvers tab has the "
+        "SPICE subcircuit export on its results page)");
+    ofd::I18n::reg("iop_why_elsewhere_tidy3d",
+        "この画面からは実行できません (tidy3d タブで .json を書き出せます)",
+        "it cannot be run from this screen (the tidy3d tab writes the .json)");
+    ofd::I18n::reg("iop_why_elsewhere_gds",
+        "この画面からは実行できません (レイアウト GDS タブで取込・書出ができます)",
+        "it cannot be run from this screen (the layout GDS tab imports and "
+        "exports it)");
+    ofd::I18n::reg("iop_why_nospec",
+        "書き出す書式の公開仕様を確認できていません (推測で書くと、開ける"
+        "けれど中身が違うファイルになります)",
+        "the published specification of the output format could not be "
+        "confirmed (guessing would produce a file that opens but is wrong)");
+    ofd::I18n::reg("iop_snp_tip",
+        "実測・他ソルバの .sNp を読み、検証タブで比較できる参照系列 CSV "
+        "(freq_Hz, S11_dB, …) に変換します。",
+        "Reads a measured or third-party .sNp and converts it to a reference "
+        "series CSV (freq_Hz, S11_dB, …) for the verification tab.");
+    ofd::I18n::reg("iop_snp_title", "Touchstone の取込", "Import Touchstone");
+    ofd::I18n::reg("iop_snp_filter",
+        "Touchstone (*.s1p *.s2p *.s3p *.s4p *.snp);;すべてのファイル (*)",
+        "Touchstone (*.s1p *.s2p *.s3p *.s4p *.snp);;All files (*)");
+    ofd::I18n::reg("iop_snp_ng", "読めませんでした: %1", "Could not read: %1");
+    ofd::I18n::reg("iop_snp_ok",
+        "取り込みました: %1\n%2 ポート / %3 点 (%4 〜 %5 Hz) / 基準 %6 Ω。\n"
+        "参照系列 CSV として保存しました: %7\n"
+        "検証タブの参照データとして読み込めます (1・2 列目が周波数と S11 の dB)。",
+        "Imported: %1\n%2 port(s) / %3 points (%4 to %5 Hz) / reference %6 ohm.\n"
+        "Saved as a reference series CSV: %7\n"
+        "The verification tab can load it (columns 1 and 2 are frequency and "
+        "S11 in dB).");
+    ofd::I18n::reg("iop_snp_col1",
+        "\nこのファイルは第 1 列 (S_n1) だけが計算されています。"
+        "残りの要素は列にしていません。",
+        "\nOnly the first column (S_n1) was computed in this file, so the "
+        "other elements are not written as columns.");
     ofd::I18n::reg("iop_bridge_note",
         "▸ 対応列は目標仕様 — 実装済みは Touchstone (.s*p) / tidy3d .json / "
         "Bellhop .env / STL のみ (他は未実装)。取込/書出は本体内蔵のパーサ・"
@@ -174,7 +222,14 @@ QLabel *hintLabel(const QString &text, QWidget *parent)
 }
 
 // ── mock の DATA / 検出表 / OSS表を転記 (検出列のみ実機スキャンに変更) ──────
-struct BridgeRow { const char *fmt, *tool, *what; bool ok; };   // ok=false → 一部対応
+// 取込/書出の実処理。既定は無し (無効化 + 理由)
+enum class BridgeAction { None = 0, TouchstoneImport };
+// why: この行だけの「できない理由」(I18n キー)。nullptr なら汎用の理由。
+// **行ごとに事情が違う**ので、全部まとめて「パーサが無い」にしない
+// (実際にはパーサを持っている書式が混ざっていた)
+struct BridgeRow { const char *fmt, *tool, *what; bool ok;
+                   const char *why = nullptr;
+                   BridgeAction action = BridgeAction::None; };   // ok=false → 一部対応
 // exe: PATH から探す実行ファイル名の候補 (';' 区切り)。pymod: python の
 // import で探すモジュール名。どちらも nullptr のツール (GUI 専用の商用製品
 // 等) は自動検出できず常に「未検出」表示になる — モックの固定 true/false は
@@ -190,13 +245,17 @@ const BridgeRow kEmIn[] = {
     { ".pre / .cfx",     "FEKO",            "形状・MoM設定",            false },
     { ".kicad_pcb",      "KiCad",           "PCB導体層 → PEEC/FDTD",    true  },
     { "ODB++ / Gerber",  "Altium/Eagle",    "PCBスタックアップ",        true  },
-    { ".s*p Touchstone", "VNA実測/他ソルバ", "測定Sパラ (検証比較)",     true  },
+    { ".s*p Touchstone", "VNA実測/他ソルバ", "測定Sパラ (検証比較)",     true,
+      nullptr, BridgeAction::TouchstoneImport },
 };
 const BridgeRow kEmOut[] = {
-    { ".s*p Touchstone",   "ADS / AWR / QUCS",   "Sパラメータ",              true  },
-    { ".ffe / .ffs",       "FEKO / CST",         "遠方界パターン",           true  },
+    { ".s*p Touchstone",   "ADS / AWR / QUCS",   "Sパラメータ",              true,
+      "iop_why_elsewhere_snp" },
+    { ".ffe / .ffs",       "FEKO / CST",         "遠方界パターン",           true,
+      "iop_why_nospec" },
     { ".msi (MSI Planet)", "電波伝搬ツール",      "アンテナパターン",         true  },
-    { ".cir / .subckt",    "SPICE系",            "等価回路 (PEEC)",          true  },
+    { ".cir / .subckt",    "SPICE系",            "等価回路 (PEEC)",          true,
+      "iop_why_elsewhere_spice" },
     { ".uan",              "Savant/EMIT",        "3D放射パターン",           false },
     { "EMC report",        "CISPR32/FCC測定所",  "放射エミッション比較表",    true  },
 };
@@ -221,14 +280,17 @@ const BridgeRow kOptIn[] = {
     { ".seq",        "CODE V",              "順次光学系",                false },
     { ".fsp",        "Lumerical FDTD",      "形状・波源・モニター",       true  },
     { ".py (MEEP)",  "MEEP",                "Python形状定義の解釈",       false },
-    { "GDSII/OASIS", "KLayout/SiEPIC",      "フォトニックICレイアウト",   true  },
+    { "GDSII/OASIS", "KLayout/SiEPIC",      "フォトニックICレイアウト",   true,
+      "iop_why_elsewhere_gds" },
 };
 const BridgeRow kOptOut[] = {
-    { ".json (td.Simulation)", "tidy3d",              "クラウド解析 (専用タブ)",       true  },
+    { ".json (td.Simulation)", "tidy3d",              "クラウド解析 (専用タブ)",       true,
+      "iop_why_elsewhere_tidy3d" },
     { ".zmx",                  "Zemax OpticStudio",   "設計逆輸出 (レンズ)",           false },
     { ".s*p / .dat",           "INTERCONNECT/Aspic",  "光Sパラ・コンパクトモデル",     true  },
     { ".fsp",                  "Lumerical",           "相互検証用",                    false },
-    { "GDSII",                 "ファウンドリ (AMF等)", "製造テープアウト (DRC済)",      true  },
+    { "GDSII",                 "ファウンドリ (AMF等)", "製造テープアウト (DRC済)",      true,
+      "iop_why_elsewhere_gds" },
     { ".mat / .npz",           "MATLAB / Python",     "場データ・スペクトル",          true  },
 };
 const ToolRow kOptTools[] = {
@@ -710,6 +772,44 @@ void InteropTab::clearManualPath()
     m_detected->setCurrentCell(r, 0);
 }
 
+// 実測・他ソルバの .sNp → 検証タブが読める参照系列 CSV。
+// **読み手も書き手も既にある** (io/Touchstone) ので、ここは配線だけ。
+void InteropTab::importTouchstone()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("iop_snp_title"), QString(), I18n::tr("iop_snp_filter"));
+    if (path.isEmpty()) return;
+
+    TouchstoneData d;
+    QString err;
+    if (!Touchstone::read(path, &d, &err)) {
+        QMessageBox::warning(this, I18n::tr("iop_snp_title"),
+                             I18n::tr("iop_snp_ng").arg(err));
+        return;
+    }
+    const QString csv = Touchstone::toCsv(d, QFileInfo(path).fileName(), &err);
+    if (csv.isEmpty()) {
+        QMessageBox::warning(this, I18n::tr("iop_snp_title"),
+                             I18n::tr("iop_snp_ng").arg(err));
+        return;
+    }
+    const QString outPath = tabhelp::saveTextFile(
+        this, I18n::tr("iop_snp_title"),
+        QFileInfo(path).completeBaseName() + QStringLiteral("_sparam.csv"),
+        QStringLiteral("CSV (*.csv);;All files (*)"), csv);
+    if (outPath.isEmpty()) return;     // 取り消し / 失敗
+
+    QString msg = I18n::tr("iop_snp_ok")
+        .arg(QFileInfo(path).fileName(), QString::number(d.ports),
+             QString::number(d.freqHz.size()),
+             QString::number(d.freqHz.first(), 'g', 6),
+             QString::number(d.freqHz.last(), 'g', 6),
+             QString::number(d.z0, 'g', 4), QFileInfo(outPath).fileName());
+    // 第 1 列だけのファイルは、その旨を必ず言う (残りを黙って 0 にしない)
+    if (d.column1Only) msg += I18n::tr("iop_snp_col1");
+    QMessageBox::information(this, I18n::tr("iop_snp_title"), msg);
+}
+
 // 🔗 インポート / エクスポート形式 (dir トグルで rows を差し替え)
 void InteropTab::rebuildBridges()
 {
@@ -727,9 +827,19 @@ void InteropTab::rebuildBridges()
         m_bridges->setCellWidget(r, 3,
             rows[r].ok ? badgeCell(I18n::tr("iop_sup_ok"), "ok")
                        : badgeCell(I18n::tr("iop_sup_partial"), "warn"));
-        // 取込/書出の実処理は未実装 — 無効化して明示する (絶対規則 5)
         auto *doBtn = new QPushButton(btn, m_bridges);
-        ofd::tabhelp::markNotImplemented(doBtn, I18n::tr(tabhelp::notimpl::kParser));
+        if (rows[r].action == BridgeAction::TouchstoneImport) {
+            // 読み手 (io/Touchstone) を持っている書式なので実際に取り込める
+            doBtn->setToolTip(I18n::tr("iop_snp_tip"));
+            connect(doBtn, &QPushButton::clicked, this,
+                    &InteropTab::importTouchstone);
+        } else {
+            // 実処理は未実装 — 無効化して明示する (絶対規則 5)。
+            // 理由は行ごとに違うので、指定があればそれを使う
+            ofd::tabhelp::markNotImplemented(
+                doBtn, I18n::tr(rows[r].why ? rows[r].why
+                                            : tabhelp::notimpl::kParser));
+        }
         m_bridges->setCellWidget(r, 4, doBtn);
     }
     m_bridges->resizeRowsToContents();

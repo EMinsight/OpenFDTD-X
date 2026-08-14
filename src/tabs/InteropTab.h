@@ -27,6 +27,8 @@ private slots:
     void updatePathButtons();   // 検出表の行選択に応じて手動パスボタンを有効化
     void setManualPath();       // 選択ツールの実行体を選ばせ QSettings に保存
     void clearManualPath();     // 選択ツールの手動パス指定を解除
+    // 実測・他ソルバの .sNp を読み、検証タブ用の参照系列 CSV に変換する
+    void importTouchstone();
 
 private:
     void rebuildDetected();     // 🧰 インストール済みツール検出

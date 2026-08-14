@@ -89,6 +89,22 @@ public:
 
     // Convert input impedance to S11 against reference Z0.
     static std::complex<double> zToS(std::complex<double> z, double z0 = 50.0);
+
+    // S パラメータ → 参照系列 CSV (`io/parseSeriesCsv` が読む 2 列以上の形)。
+    // 実測の .sNp を検証タブで比較するための入口で、列は
+    //     freq_Hz, S11_dB, S11_deg, S21_dB, S21_deg, …
+    // となる (既定の 1・2 列目 = 周波数と S11 の dB)。
+    //
+    // **計算されていない要素は列にしない** — `column1Only` のファイルは
+    // 第 1 列 (S_n1) だけを書く。0 が入っているだけの要素を列にすると
+    // 「測ったが 0 dB」と読めてしまう。
+    //
+    // 厳密に 0 の要素があるときは **変換せず空文字列を返す** (err に理由)。
+    // 20·log10(0) = −∞ で、床値を置けば嘘になり、`-inf` と書けば読み手が
+    // その行ごと落とす (どちらも黙って値を変える)。
+    static QString toCsv(const TouchstoneData &d,
+                         const QString &sourceName = QString(),
+                         QString *err = nullptr);
 };
 
 } // namespace ofd
