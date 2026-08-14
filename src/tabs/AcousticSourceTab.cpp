@@ -493,6 +493,21 @@ const bool s_i18n = [] {
     I18n::reg("asrc_airabs", "Air absorption 補償",
               "Air absorption compensation");
     I18n::reg("asrc_steer_unit", "° (下向き正)", "° (down positive)");
+    // 「未実装」ではなく「この画面の量には効かない」— 理由を取り違えると
+    // 実装すれば絵が変わると読めてしまう
+    I18n::reg("asrc_why_airabs",
+              "この節が描くのは最大を 0 dB とした相対パターンで、空気吸収は"
+              "同じ半径の全方向に共通の減衰なので形が変わりません "
+              "(補償が効くのは距離を決めたときの周波数特性です)",
+              "this section draws a pattern normalised to 0 dB at its maximum, "
+              "and air absorption attenuates every direction at the same "
+              "radius equally, so the shape does not change (compensation "
+              "acts on the frequency response at a stated distance)");
+    I18n::reg("asrc_why_render",
+              "この画面からは実行できません (畳み込みは可聴化タブが行います。"
+              "下の A/B 比較で入力 WAV を引き渡せます)",
+              "it cannot be run from this screen (the auralization tab does "
+              "the convolution; the A/B button below hands over the input WAV)");
     // ── 合成された指向性 (実計算) ────────────────────────────────────────
     I18n::reg("asrc_beam_section", "合成された指向性 (鉛直面)",
               "Synthesised directivity (vertical plane)");
@@ -2286,8 +2301,11 @@ QWidget *AcousticSourceTab::buildArrayPage()
     m_arrGrating = new QCheckBox(I18n::tr("asrc_grating"), sd);
     m_arrGrating->setChecked(true);
     auto *airabs = new QCheckBox(I18n::tr("asrc_airabs"), sd);
-    // 空気吸収は距離に依存する量で、遠方界パターン (相対値) には効かない
-    tabhelp::markNotImplemented(airabs, I18n::tr(tabhelp::notimpl::kModel));
+    // 「物理モデルが未実装」ではない — この画面が描くのは最大を 0 dB とした
+    // 相対パターンで、空気吸収は同じ半径の全方向に共通の減衰なので**厳密に
+    // 打ち消える** (tests/acoustics/test_array.cpp で 1e-12 以内を判定)。
+    // 補償が効くのは距離を決めたときの周波数特性で、この節の量ではない
+    tabhelp::markNotImplemented(airabs, I18n::tr("asrc_why_airabs"));
     chkRow->addWidget(m_arrGrating);
     chkRow->addWidget(airabs);
     chkRow->addStretch(1);
@@ -2462,8 +2480,9 @@ QWidget *AcousticSourceTab::buildAuralPage()
     auto *renderBtn = new QPushButton(I18n::tr("asrc_btn_render"), sr);
     auto *listenBtn = new QPushButton(I18n::tr("asrc_btn_listen2"), sr);
     auto *abBtn     = new QPushButton(I18n::tr("asrc_btn_ab"), sr);
-    // レンダリング (畳み込み) 自体は可聴化タブが担う — このページでは未実装
-    tabhelp::markNotImplemented(renderBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    // 畳み込みエンジンが無いのではなく、可聴化タブが担っている。
+    // 隣の A/B ボタンと同じく「どこでできるか」を理由に書く
+    tabhelp::markNotImplemented(renderBtn, I18n::tr("asrc_why_render"));
     btnRow->addWidget(renderBtn);
     btnRow->addWidget(listenBtn);
     btnRow->addWidget(abBtn);
