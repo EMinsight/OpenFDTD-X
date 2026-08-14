@@ -9,6 +9,8 @@
 
 #include "../core/RoomAcoustics.h"
 #include "../acoustics/core/SoundInsulation.h"
+#include "../io/DxfOutline.h"
+#include "../MainWindow.h"   // automation() — 自動実行でモーダルを出さない
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -18,7 +20,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QFileDialog>
+#include <QInputDialog>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -111,6 +116,47 @@ const bool s_i18n = [] {
     I18n::reg("sp_add_layer", "＋ 層を追加…", "+ Add layer…");
     I18n::reg("sp_preset_btn", "📚 標準工法プリセット", "📚 Standard build presets");
     I18n::reg("sp_dxf_btn", "📁 .dxf 取込", "📁 Import .dxf");
+    // .dxf 取込 — 閉じた LWPOLYLINE の囲む面積を仕切壁面積 S に入れる
+    I18n::reg("sp_dxf_title", ".dxf から仕切壁面積を読む",
+              "Read the partition area from a .dxf");
+    I18n::reg("sp_dxf_filter", "AutoCAD DXF (*.dxf)", "AutoCAD DXF (*.dxf)");
+    I18n::reg("sp_dxf_fail", "読めません: %1", "Cannot read: %1");
+    I18n::reg("sp_dxf_noloop",
+              "閉じた LWPOLYLINE がありません。読めたのは 線分 %1 本 / "
+              "閉じていないポリライン %2 本 / 読まなかった実体 %3 個 です。"
+              "面積は閉じたポリラインからしか求められません",
+              "No closed LWPOLYLINE found. Read: %1 line segments, "
+              "%2 open polylines, %3 entities not read. An area can only "
+              "come from a closed polyline");
+    I18n::reg("sp_dxf_unit_ask",
+              "この図面には単位がありません ($INSUNITS なし)。"
+              "図面の単位を選んでください",
+              "This drawing carries no unit ($INSUNITS absent). "
+              "Choose the unit of the drawing");
+    I18n::reg("sp_dxf_pick",
+              "使う輪郭を選んでください (仕切壁の外形)",
+              "Choose the outline to use (the partition)");
+    I18n::reg("sp_dxf_loop_item", "輪郭 %1: %2 m² (頂点 %3)",
+              "Outline %1: %2 m2 (%3 vertices)");
+    I18n::reg("sp_dxf_done",
+              "仕切壁面積 S = %1 m² を入れました (%2 の図面 · 輪郭 %3/%4)",
+              "Partition area S = %1 m2 applied (drawing in %2, "
+              "outline %3 of %4)");
+    I18n::reg("sp_dxf_arc",
+              " · 円弧の頂点が %1 個あります。面積は円弧を直線で近似した値です",
+              " · %1 vertices carry arcs; the area approximates them as "
+              "straight segments");
+    I18n::reg("sp_dxf_rest",
+              " · 読まなかった実体 %1 個 / 線分 %2 本 (輪郭には使っていません)",
+              " · %1 entities not read, %2 line segments (not used as outlines)");
+    I18n::reg("sp_dxf_auto",
+              "自動実行中は取込を行いません (単位と輪郭の選択に対話が要ります)",
+              "Import is skipped in automated runs (choosing the unit and "
+              "the outline needs a dialog)");
+    I18n::reg("sp_dxf_zero",
+              "選んだ輪郭の面積が 0 です (自己交差しているか、面積がありません)",
+              "The chosen outline has zero area (it self-intersects or is "
+              "degenerate)");
     I18n::reg("sp_rc", "コンクリート (RC)", "Concrete (RC)");
     I18n::reg("sp_alc", "ALC パネル", "ALC panel");
     I18n::reg("sp_steel", "鋼板", "Steel plate");
@@ -1050,6 +1096,104 @@ void SoundproofTab::refresh()
 }
 
 // ── 間仕切壁 (Airborne) ─────────────────────────────────────────────────────
+
+
+// ── .dxf から仕切壁面積 S を読む ──────────────────────────────────────────
+// 読み取りは io/DxfOutline (ENTITIES の LINE / LWPOLYLINE だけ)。ここは
+// 単位と輪郭の選択を利用者に決めてもらい、結果と**読まなかったもの**を
+// 画面に出すだけにする。図面を全部理解したように見せない。
+void SoundproofTab::importDxfArea(QLineEdit *areaEdit, QLabel *status)
+{
+    if (!areaEdit || !status) return;
+    // 自動実行 (--screenshot) では**モーダルを一切出さない**。押す人が居ない
+    // ので、開けば待ち続けて CI が診断なしにタイムアウトする (過去に
+    // 読み込み失敗の QMessageBox で 6 分 40 秒ハングした前例がある)。
+    // 取込は単位と輪郭の選択に対話が要るので、自動実行では行わない
+    if (MainWindow::automation()) {
+        status->setVisible(true);
+        status->setText(I18n::tr("sp_dxf_auto"));
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("sp_dxf_title"), QString(), I18n::tr("sp_dxf_filter"));
+    if (path.isEmpty()) return;
+
+    ofd::DxfOutline dxf;
+    QString err;
+    if (!ofd::loadDxfOutline(path, &dxf, &err)) {
+        status->setVisible(true);
+        status->setText(I18n::tr("sp_dxf_fail").arg(err));
+        return;
+    }
+    if (dxf.loops.isEmpty()) {
+        status->setVisible(true);
+        status->setText(I18n::tr("sp_dxf_noloop")
+                            .arg(dxf.lineSegments)
+                            .arg(dxf.openPolylines)
+                            .arg(dxf.skippedEntities));
+        return;
+    }
+
+    // 単位。$INSUNITS があればそれを使い、無ければ選ばせる
+    // (推測で m とみなすと面積が 10^6 倍ずれる)
+    ofd::DxfUnit unit = dxf.unit;
+    if (unit == ofd::DxfUnit::Unknown) {
+        const QStringList names{ "mm", "cm", "m", "inch", "ft" };
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, I18n::tr("sp_dxf_title"), I18n::tr("sp_dxf_unit_ask"),
+            names, 0, false, &ok);
+        if (!ok) return;
+        const int idx = names.indexOf(pick);
+        static const ofd::DxfUnit kUnits[5] = {
+            ofd::DxfUnit::Millimeter, ofd::DxfUnit::Centimeter,
+            ofd::DxfUnit::Meter, ofd::DxfUnit::Inch, ofd::DxfUnit::Foot };
+        unit = kUnits[qBound(0, idx, 4)];
+    }
+    const double k = ofd::dxfUnitToMeter(unit);
+    if (k <= 0.0) return;
+
+    // 輪郭が複数あるならどれが仕切壁かは図面からは決まらないので選ばせる
+    int sel = 0;
+    if (dxf.loops.size() > 1) {
+        QStringList items;
+        for (int i = 0; i < dxf.loops.size(); ++i)
+            items << I18n::tr("sp_dxf_loop_item")
+                         .arg(i + 1)
+                         .arg(QString::number(dxf.loops[i].area * k * k,
+                                              'f', 3))
+                         .arg(dxf.loops[i].x.size());
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, I18n::tr("sp_dxf_title"), I18n::tr("sp_dxf_pick"),
+            items, 0, false, &ok);
+        if (!ok) return;
+        sel = qMax(0, items.indexOf(pick));
+    }
+
+    const ofd::DxfLoop &lp = dxf.loops[sel];
+    const double area = lp.area * k * k;      // 図面単位² → m²
+    status->setVisible(true);
+    if (!(area > 0.0)) {
+        status->setText(I18n::tr("sp_dxf_zero"));
+        return;
+    }
+    areaEdit->setText(QString::number(area, 'f', 3));
+
+    QString msg = I18n::tr("sp_dxf_done")
+                      .arg(QString::number(area, 'f', 3),
+                           QLatin1String(ofd::dxfUnitName(unit)))
+                      .arg(sel + 1)
+                      .arg(dxf.loops.size());
+    if (lp.arcVertices > 0)
+        msg += I18n::tr("sp_dxf_arc").arg(lp.arcVertices);
+    if (dxf.skippedEntities > 0 || dxf.lineSegments > 0)
+        msg += I18n::tr("sp_dxf_rest")
+                   .arg(dxf.skippedEntities).arg(dxf.lineSegments);
+    status->setText(msg);
+    emit areaEdit->editingFinished();     // 評価結果を再計算させる
+}
+
 QWidget *SoundproofTab::buildPartitionPage()
 {
     auto *page = new QWidget;
@@ -1089,13 +1233,20 @@ QWidget *SoundproofTab::buildPartitionPage()
     auto *presetBtn = new QPushButton(I18n::tr("sp_preset_btn"), sb);
     hb->addWidget(presetBtn);
     auto *dxfBtn = new QPushButton(I18n::tr("sp_dxf_btn"), sb);
-    tabhelp::markNotImplemented(dxfBtn, I18n::tr(tabhelp::notimpl::kParser));      // .dxf 取込は未実装
     hb->addWidget(dxfBtn);
     hb->addStretch(1);
     // 参考値 (同種構造の公表 Rw)。計算値は評価結果セクションに出す。
     auto *rwRefLabel = new QLabel(I18n::tr("sp_rw_ref_none"), sb);
     hb->addWidget(rwRefLabel);
     sb->vbox()->addLayout(hb);
+    // .dxf 取込の結果 (何をどう読んだか)。読めなかったものも必ず出す
+    auto *dxfStatus = new QLabel(sb);
+    dxfStatus->setWordWrap(true);
+    dxfStatus->setStyleSheet("font-size:11px; color:palette(mid);");
+    dxfStatus->setVisible(false);
+    sb->vbox()->addWidget(dxfStatus);
+    connect(dxfBtn, &QPushButton::clicked, this,
+            [this, areaEdit, dxfStatus] { importDxfArea(areaEdit, dxfStatus); });
     v->addWidget(sb);
 
     // ディテール

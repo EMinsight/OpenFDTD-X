@@ -20,6 +20,9 @@
 class QButtonGroup;
 class QStackedWidget;
 
+class QLineEdit;
+class QLabel;
+
 namespace ofd {
 
 class Project;
@@ -33,6 +36,9 @@ private slots:
     void refresh();
 
 private:
+    // .dxf から仕切壁面積 S を読む (io/DxfOutline)。単位と輪郭は利用者が選ぶ
+    void importDxfArea(QLineEdit *areaEdit, QLabel *status);
+
     QWidget *buildPartitionPage();
     QWidget *buildFacadePage();
     QWidget *buildFloorPage();

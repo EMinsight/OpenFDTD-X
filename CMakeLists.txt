@@ -237,6 +237,9 @@ set(CORE_SOURCES
     # 取込メッシュの 3D プレビューの投影 (どこに写るかを決める側)
     src/io/MeshProjection.cpp
     src/io/MeshProjection.h
+    # ASCII DXF の 2D 輪郭 (LINE / LWPOLYLINE のみ) — 遮音の仕切壁面積
+    src/io/DxfOutline.cpp
+    src/io/DxfOutline.h
     # 直交する複数断面を互いの交線で小片に切り分ける (3D の前後判定)
     src/io/SlicePieces.cpp
     src/io/SlicePieces.h

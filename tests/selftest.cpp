@@ -37,6 +37,7 @@
 #include "io/AbsorptionCsv.h"
 #include "io/MeshProjection.h"
 #include "io/SlicePieces.h"
+#include "io/DxfOutline.h"
 #include "io/SliceOverlay.h"
 #include "io/VoxelSlice.h"
 #include "io/BeamPatternCsv.h"
@@ -21152,6 +21153,220 @@ static void testBeamPatternCsv()
 }
 
 
+// ── ASCII DXF の輪郭読み取り (io/DxfOutline) ──────────────────────────────
+// 面積を図面から入れるための読み取り。**閉じた LWPOLYLINE の囲む面積**が
+// 唯一の出力なので、閉じ判定・靴紐公式・単位・読めなかった実体の数を固定する。
+static QString dxfWrap(const QString &header, const QString &entities)
+{
+    // ASCII DXF は「グループコード行」と「値行」の対の繰り返し
+    QString s;
+    if (!header.isEmpty())
+        s += "0\nSECTION\n2\nHEADER\n" + header + "0\nENDSEC\n";
+    s += "0\nSECTION\n2\nENTITIES\n" + entities + "0\nENDSEC\n0\nEOF\n";
+    return s;
+}
+
+// 閉じた LWPOLYLINE 1 本 (頂点は x,y の並び)
+static QString dxfPoly(const QVector<QPointF> &pts, bool closed)
+{
+    QString s = "0\nLWPOLYLINE\n90\n" + QString::number(pts.size())
+              + "\n70\n" + QString::number(closed ? 1 : 0) + "\n";
+    for (const QPointF &p : pts)
+        s += "10\n" + QString::number(p.x(), 'g', 12)
+           + "\n20\n" + QString::number(p.y(), 'g', 12) + "\n";
+    return s;
+}
+
+static void testDxfOutline()
+{
+    g_file = "dxf";
+    using ofd::DxfOutline;
+    using ofd::DxfUnit;
+    using ofd::parseDxfOutline;
+
+    // 単位の換算は 1 箇所から (取り違えると面積が 10^6 倍ずれる)
+    check(std::fabs(ofd::dxfUnitToMeter(DxfUnit::Millimeter) - 1e-3) < 1e-15,
+          "dxf: mm converts to metres");
+    check(std::fabs(ofd::dxfUnitToMeter(DxfUnit::Foot) - 0.3048) < 1e-15,
+          "dxf: feet convert to metres");
+    check(ofd::dxfUnitToMeter(DxfUnit::Unknown) == 0.0,
+          "dxf: an unknown unit has no conversion factor");
+
+    // **辺の長さが違う長方形**にする (正方形だと x と y を取り違えても
+    // 面積が合ってしまい、取り違えを検出できない)
+    const QVector<QPointF> rect{ { 0, 0 }, { 3000, 0 }, { 3000, 2000 },
+                                 { 0, 2000 } };
+    {
+        DxfOutline o; QString err;
+        check(parseDxfOutline(dxfWrap("9\n$INSUNITS\n70\n4\n",
+                                      dxfPoly(rect, true)), &o, &err),
+              "dxf: a closed polyline parses");
+        check(o.unit == DxfUnit::Millimeter,
+              "dxf: $INSUNITS = 4 means millimetres");
+        check(o.loops.size() == 1, "dxf: one closed loop is found");
+        if (o.loops.size() == 1) {
+            // 3000 x 2000 = 6e6 (図面単位の 2 乗)
+            check(std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+                  "dxf: the shoelace area of a 3000 x 2000 rectangle");
+            check(std::fabs(o.loops[0].perimeter - 10000.0) < 1e-6,
+                  "dxf: the perimeter of the same rectangle");
+            check(o.loops[0].arcVertices == 0,
+                  "dxf: a rectangle has no arc vertices");
+            check(!o.loops[0].selfIntersecting,
+                  "dxf: a rectangle does not self-intersect");
+        }
+        // mm² → m²: 6e6 mm² = 6 m²
+        const double k = ofd::dxfUnitToMeter(o.unit);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area * k * k - 6.0) < 1e-9,
+              "dxf: 6e6 square millimetres is 6 square metres");
+        check(o.hasBBox && std::fabs(o.bbox[2] - 3000.0) < 1e-9
+              && std::fabs(o.bbox[3] - 2000.0) < 1e-9,
+              "dxf: the bounding box spans the rectangle");
+    }
+
+    // **原点に角のある軸平行な長方形だけでは靴紐公式の検算にならない。**
+    // その配置では交差項が消えるため、第 2 項の符号を反転させても答えが
+    // 変わらない (変異検査で実際に素通りした)。原点から離した長方形と、
+    // 軸に平行でない三角形を必ず入れる。
+    {
+        // 平行移動した 3000 x 2000 (面積は同じ 6e6 だが交差項が消えない)
+        const QVector<QPointF> moved{ { 1000, 500 }, { 4000, 500 },
+                                      { 4000, 2500 }, { 1000, 2500 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(moved, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+              "dxf: translating the rectangle does not change its area");
+    }
+    {
+        // 任意の三角形。面積は |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)| / 2
+        //   = |100(120-560) + 700(560-50) + 300(50-120)| / 2 = 146000
+        const QVector<QPointF> tri{ { 100, 50 }, { 700, 120 }, { 300, 560 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(tri, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 146000.0) < 1e-6,
+              "dxf: the area of a triangle that is not axis-aligned");
+    }
+
+    // 頂点の並びが逆でも面積は同じ (符号付き面積の絶対値を採っている)
+    {
+        QVector<QPointF> rev = rect;
+        std::reverse(rev.begin(), rev.end());
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rev, true)), &o, &err);
+        check(o.loops.size() == 1
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3,
+              "dxf: winding direction does not change the area");
+    }
+
+    // 閉じていない LWPOLYLINE は輪郭にしない (面積を出さない)
+    {
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rect, false)), &o, &err);
+        check(o.loops.isEmpty() && o.openPolylines == 1,
+              "dxf: an open polyline yields no area");
+    }
+
+    // $INSUNITS が無い / unitless なら Unknown (勝手に m とみなさない)
+    {
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(rect, true)), &o, &err);
+        check(o.unit == DxfUnit::Unknown,
+              "dxf: a drawing without $INSUNITS has no known unit");
+        DxfOutline o2;
+        parseDxfOutline(dxfWrap("9\n$INSUNITS\n70\n0\n",
+                                dxfPoly(rect, true)), &o2, &err);
+        check(o2.unit == DxfUnit::Unknown,
+              "dxf: $INSUNITS = 0 (unitless) is not a unit");
+    }
+
+    // 自己交差する多角形 (蝶ネクタイ) は面積を出さない。
+    // 靴紐公式は符号が打ち消し合って小さい値を返すので、そのまま出すと
+    // 「小さいが妥当に見える面積」になってしまう
+    {
+        const QVector<QPointF> bow{ { 0, 0 }, { 3000, 2000 },
+                                    { 3000, 0 }, { 0, 2000 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), dxfPoly(bow, true)), &o, &err);
+        check(o.loops.size() == 1 && o.loops[0].selfIntersecting,
+              "dxf: a bow-tie polygon is reported as self-intersecting");
+        check(o.loops.size() == 1 && o.loops[0].area == 0.0,
+              "dxf: a self-intersecting polygon yields no area");
+    }
+
+    // 円弧 (bulge) を持つ頂点は数える — 弦で近似した面積である旨を
+    // 呼び出し側が出せるように
+    {
+        QString ent = "0\nLWPOLYLINE\n90\n4\n70\n1\n";
+        ent += "10\n0\n20\n0\n42\n0.5\n";
+        ent += "10\n3000\n20\n0\n";
+        ent += "10\n3000\n20\n2000\n42\n-0.25\n";
+        ent += "10\n0\n20\n2000\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), ent), &o, &err);
+        check(o.loops.size() == 1 && o.loops[0].arcVertices == 2,
+              "dxf: vertices carrying a bulge are counted as arcs");
+    }
+
+    // LINE は本数を数えるだけで輪郭には組み立てない。読まない実体も数える
+    {
+        QString ent = "0\nLINE\n10\n0\n20\n0\n11\n3000\n21\n0\n";
+        ent += "0\nLINE\n10\n3000\n20\n0\n11\n3000\n21\n2000\n";
+        ent += "0\nCIRCLE\n10\n100\n20\n100\n40\n50\n";
+        ent += "0\nSPLINE\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(), ent), &o, &err);
+        check(o.lineSegments == 2, "dxf: LINE entities are counted");
+        check(o.loops.isEmpty(),
+              "dxf: line segments are not assembled into loops");
+        check(o.skippedEntities == 2,
+              "dxf: entity types that are not read are counted");
+        check(o.hasBBox && std::fabs(o.bbox[2] - 3000.0) < 1e-9,
+              "dxf: LINE endpoints still extend the bounding box");
+    }
+
+    // ENTITIES の外にある LWPOLYLINE は読まない (BLOCKS の定義など)
+    {
+        const QString s = "0\nSECTION\n2\nBLOCKS\n" + dxfPoly(rect, true)
+                        + "0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n"
+                          "0\nEOF\n";
+        DxfOutline o; QString err;
+        parseDxfOutline(s, &o, &err);
+        check(o.loops.isEmpty(),
+              "dxf: geometry outside ENTITIES is not read");
+    }
+
+    // 複数の輪郭 — 面積の違うものを 2 つ (どちらを使うかは呼び出し側が選ぶ)
+    {
+        const QVector<QPointF> small{ { 0, 0 }, { 1000, 0 }, { 1000, 500 },
+                                      { 0, 500 } };
+        DxfOutline o; QString err;
+        parseDxfOutline(dxfWrap(QString(),
+                                dxfPoly(rect, true) + dxfPoly(small, true)),
+                        &o, &err);
+        check(o.loops.size() == 2, "dxf: several closed loops are all kept");
+        check(o.loops.size() == 2
+              && std::fabs(o.loops[0].area - 6.0e6) < 1e-3
+              && std::fabs(o.loops[1].area - 5.0e5) < 1e-3,
+              "dxf: each loop keeps its own area");
+    }
+
+    // 壊れた入力 / バイナリ DXF は false (空の結果を成功として返さない)
+    {
+        DxfOutline o; QString err;
+        check(!parseDxfOutline(QStringLiteral("AutoCAD Binary DXF\x1a"),
+                               &o, &err),
+              "dxf: binary DXF is refused");
+        check(!parseDxfOutline(QStringLiteral("not\na\ndxf\nfile\n"),
+                               &o, &err),
+              "dxf: a file whose group codes are not integers is refused");
+        check(!parseDxfOutline(QString(), &o, &err),
+              "dxf: empty input is refused");
+    }
+}
+
 // ── 直交断面の切り分け (io/SlicePieces) ───────────────────────────────────
 // 3D シーンに断面を複数重ねるとき、面どうしが貫通するので四角形のままでは
 // 前後が決まらない。互いの位置で切ると貫通が無くなる — その「切れているか」
@@ -24424,6 +24639,7 @@ int main(int argc, char *argv[])
     testSliceOverlay();
     testMeshProjection();
     testSlicePieces();
+    testDxfOutline();
     testNkCsv();
     testAbsorptionCsv();
     testEyeDiagram();
