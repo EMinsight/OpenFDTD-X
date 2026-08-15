@@ -3789,6 +3789,42 @@ static void testAudioEditEngine()
                   "sweep-ofdx: missing key falls back to the defaults");
         }
 
+        // ── 複数音源 (.ofdx acoustic.multi_source — ADR-0010) ──
+        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致
+        {
+            ofd::Project mp;
+            QString e3;
+            const QString p3 = dir.filePath("msrc.ofd");
+            const QString sc3 = dir.filePath("msrc.ofdx");
+            auto bytes3 = [&] {
+                QFile f(sc3);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(mp.save(p3, &e3), "msrc-ofdx: default saved");
+            const QByteArray base3 = bytes3();
+            check(!base3.contains("multi_source"),
+                  "msrc-ofdx: defaults write no multi_source key");
+
+            mp.acoustic().multiSource = true;
+            check(mp.save(p3, &e3), "msrc-ofdx: enabled saved");
+            check(bytes3().contains("\"multi_source\": true"),
+                  "msrc-ofdx: enabling writes multi_source: true");
+
+            ofd::Project rd3;
+            check(rd3.load(p3, &e3), "msrc-ofdx: reloaded");
+            check(rd3.acoustic().multiSource,
+                  "msrc-ofdx: round-trips the multi-source flag");
+
+            rd3.acoustic().multiSource = false;
+            check(rd3.save(p3, &e3), "msrc-ofdx: reverted saved");
+            check(bytes3() == base3,
+                  "msrc-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o3;
+            check(!o3.acoustic().multiSource,
+                  "msrc-ofdx: missing key falls back to false (feed #1 only)");
+        }
+
         // 旧ファイル (source_wav 無し) は既定値のまま
         ofd::Project old;
         check(old.acoustic().wavTrimStart_s == 0.0

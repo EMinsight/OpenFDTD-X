@@ -10,6 +10,7 @@
 
 #include "../kernel/AcousticRunner.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -77,6 +78,7 @@ private:
     QWidget      *m_extGroup = nullptr;    // 外部プロセス設定 (FDTD/幾何のみ表示)
     QLineEdit    *m_execPath = nullptr;
     QSpinBox     *m_threads = nullptr, *m_processes = nullptr;
+    QCheckBox    *m_multiSource = nullptr; // 複数音源 (ADR-0010)
     QPushButton  *m_btnRun = nullptr, *m_btnStop = nullptr;
     QLabel       *m_resolved = nullptr;    // 解決されたバイナリ or 未検出
     QLabel       *m_status = nullptr;

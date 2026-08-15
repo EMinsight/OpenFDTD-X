@@ -10,6 +10,7 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -203,6 +204,19 @@ const bool s_i18n = [] {
     I18n::reg("acs_threads", "threads", "threads");
     I18n::reg("acs_procs", "processes", "processes");
     I18n::reg("acs_procs_note", "(>1 で mpiexec -n)", "(>1 uses mpiexec -n)");
+    I18n::reg("acs_multisrc",
+        "複数音源: 全 feed を同時発火 (multi_source)",
+        "Multi-source: fire all feeds simultaneously (multi_source)");
+    I18n::reg("acs_multisrc_note",
+        "オフ (既定) はソルバーが feed #1 のみ使用。オンで .ofdx に "
+        "acoustic.multi_source を書き、FDTD / 幾何音響の両ソルバーが全 feed を"
+        "強度 1・t = 0 で同時発火した重ね合わせを rir.wav に出す (ADR-0010)。"
+        "音源ごとのゲイン・遅延・指向性は未対応。",
+        "Off (default): the solvers use feed #1 only. On: writes "
+        "acoustic.multi_source to the .ofdx and both solvers (FDTD and "
+        "geometric) emit the superposition of all feeds fired simultaneously "
+        "at unit strength (ADR-0010). Per-source gain, delay and directivity "
+        "are not supported.");
     I18n::reg("acs_run", "▶ 実行", "▶ Run");
     I18n::reg("acs_stop", "■ 停止", "■ Stop");
     I18n::reg("acs_progress_note", "進捗は stdout の \"progress a/b\" 行を解析",
@@ -404,6 +418,13 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     pr->addStretch(1);
     ev->addLayout(pr);
 
+    // 複数音源 (ADR-0010) — .ofdx acoustic.multi_source。実行時に書き出す
+    // サイドカーへ入り、単発実行・ハイブリッド実行の両方 (同じ
+    // prepareRunInput 経路) に効く
+    m_multiSource = new QCheckBox(I18n::tr("acs_multisrc"), m_extGroup);
+    m_multiSource->setToolTip(I18n::tr("acs_multisrc_note"));
+    ev->addWidget(m_multiSource);
+
     // 解決結果のライブ表示 (実環境の探索結果 — サンプル値ではない)
     auto *rr = new QHBoxLayout();
     rr->addWidget(new QLabel(I18n::tr("acs_resolved"), m_extGroup));
@@ -574,6 +595,8 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             [this](int) { apply(); });
     connect(m_processes, &QSpinBox::valueChanged, this,
             [this](int) { apply(); });
+    connect(m_multiSource, &QCheckBox::toggled, this,
+            [this](bool) { apply(); });
     connect(btnBrowse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("acs_binary"));
@@ -665,6 +688,8 @@ void AcousticSolverTab::apply()
     s.solverExecutable = m_execPath->text();
     s.solverThreads = m_threads->value();
     s.solverProcesses = m_processes->value();
+    // 複数音源は .ofdx acoustic.multi_source (AcousticOpts) — ADR-0010
+    m_p->acoustic().multiSource = m_multiSource->isChecked();
     m_p->touch();
 }
 
@@ -677,6 +702,7 @@ void AcousticSolverTab::refresh()
     m_execPath->setText(s.solverExecutable);
     m_threads->setValue(s.solverThreads);
     m_processes->setValue(s.solverProcesses);
+    m_multiSource->setChecked(m_p->acoustic().multiSource);
     // 外部プロセス設定は ExternalFDTD / ExternalGeometric のみ
     const bool ext = s.solverBackend == 3 || s.solverBackend == 4;
     m_extGroup->setVisible(ext);
