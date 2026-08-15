@@ -130,6 +130,13 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     m_metricTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_metricTable->setMinimumHeight(220);
     sRes->vbox()->addWidget(m_metricTable);
+    // 舞台支援 (ST) の測定前提の注記。値そのものは物理量として正しいが、
+    // ISO 3382-1 Annex C の指標としては舞台上 1 m 測定の RIR が前提で、
+    // それは計算側では確認できない (絶対規則 5/6 の趣旨で明示する)
+    auto *stNote = new QLabel(I18n::tr("rir_st_note"), sRes);
+    stNote->setWordWrap(true);
+    stNote->setStyleSheet("color:#888; font-size:10px;");
+    sRes->vbox()->addWidget(stNote);
     m_warnings = new QLabel(sRes);
     m_warnings->setWordWrap(true);
     m_warnings->setVisible(false);

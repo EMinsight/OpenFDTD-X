@@ -8,6 +8,12 @@
 //   D50  : Definition 早期/全体            (ISO 3382-1 A.2.3)
 //   Ts   : 重心時間 ∫t p² dt / ∫p² dt      (ISO 3382-1 A.2.5)
 //   Early/Late 比 (50ms / 80ms, 線形エネルギー比)
+//   ST_early/ST_late : 舞台支援 (ISO 3382-1 Annex C)
+//     ST_early = 10·log10(∫20-100ms p² / ∫0-10ms p²)
+//     ST_late  = 10·log10(∫100-1000ms p² / ∫0-10ms p²)
+//     規格上は舞台上・音源から 1 m の RIR で測る指標。この前提は計算側では
+//     確認できないため、表示側が注記する (値そのものは物理量として正しい)。
+//     ST_late は直接音後 1 s 以上の信号長が無ければ無効とする (窓が欠ける)。
 //
 // 動的範囲不足 (評価下限 + 10 dB マージンがノイズフロアを下回る) の場合は
 // valid = false とし理由を warning に記す。決定係数 rSquared < 0.95 の場合は
@@ -45,6 +51,8 @@ struct AcousticMetricsSet {
     MetricValue ts;          // [s]
     MetricValue earlyLate50; // 線形比 (早期 0-50ms / 後期 50ms-)
     MetricValue earlyLate80; // 線形比 (早期 0-80ms / 後期 80ms-)
+    MetricValue stEarly;     // [dB] 舞台支援 (20-100ms / 0-10ms)
+    MetricValue stLate;      // [dB] 舞台支援 (100-1000ms / 0-10ms)
     RegressionResult edtRegression;
     RegressionResult t20Regression;
     RegressionResult t30Regression;
@@ -52,7 +60,8 @@ struct AcousticMetricsSet {
 
     AcousticMetricsSet()
         : edt(), t20(), t30(), c50(), c80(), d50(), ts(), earlyLate50(),
-          earlyLate80(), edtRegression(), t20Regression(), t30Regression(),
+          earlyLate80(), stEarly(), stLate(),
+          edtRegression(), t20Regression(), t30Regression(),
           decayNoiseFloorDb(-300.0) {}
 };
 

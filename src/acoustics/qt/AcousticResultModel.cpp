@@ -26,6 +26,10 @@ const MetricDef kMetrics[] = {
     { "C80", "dB", 1, &AcousticMetricsSet::c80 },
     { "D50", "-",  2, &AcousticMetricsSet::d50 },
     { "Ts",  "ms", 1, &AcousticMetricsSet::ts },
+    // 舞台支援 (ISO 3382-1 Annex C)。規格上は舞台上 1 m 測定の RIR が前提 —
+    // タブ側がその注記を出す
+    { "ST_early", "dB", 1, &AcousticMetricsSet::stEarly },
+    { "ST_late",  "dB", 1, &AcousticMetricsSet::stLate },
 };
 const int kMetricCount = int(sizeof(kMetrics) / sizeof(kMetrics[0]));
 
@@ -206,6 +210,9 @@ QString AcousticResultModel::toJson(const RirAnalysisResult &result)
         b["c80"] = metricJson(bm.metrics.c80);
         b["d50"] = metricJson(bm.metrics.d50);
         b["ts"]  = metricJson(bm.metrics.ts);
+        // 追加キーのみ (既存キーの改名・順序変更はしない)
+        b["st_early"] = metricJson(bm.metrics.stEarly);
+        b["st_late"]  = metricJson(bm.metrics.stLate);
         bands.append(b);
     }
     root["bands"] = bands;

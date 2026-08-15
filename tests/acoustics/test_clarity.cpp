@@ -95,5 +95,73 @@ int main() {
         CHECK(!mg.c80.valid);
     }
 
+    // ── 舞台支援 ST_early / ST_late (ISO 3382-1 Annex C) ──────────────────
+    // (a) 矩形 RIR — サンプル数で厳密に決まるケース。
+    //     [0,10ms) = 1.0, [20,100ms) = 0.5, [100,1000ms) = 0.25。
+    //     エネルギーは窓のサンプル数 × 振幅² なので期待値は厳密。
+    {
+        const std::size_t b10 = 480, b20 = 960, b100 = 4800, b1000 = 48000;
+        std::vector<double> g(b1000, 0.0);
+        for (std::size_t i = 0; i < b10; ++i) g[i] = 1.0;
+        for (std::size_t i = b20; i < b100; ++i) g[i] = 0.5;
+        for (std::size_t i = b100; i < b1000; ++i) g[i] = 0.25;
+        ArrayView<const double> gv(g.data(), g.size());
+        const AcousticMetricsSet ms = computeAcousticMetrics(gv, fs, 0);
+
+        const double ref = 1.0 * b10;
+        const double e = 0.25 * (b100 - b20);
+        const double l = 0.0625 * (b1000 - b100);
+        CHECK(ms.stEarly.valid);
+        CHECK_NEAR(ms.stEarly.value, 10.0 * std::log10(e / ref), 1e-9);
+        CHECK(ms.stLate.valid);
+        CHECK_NEAR(ms.stLate.value, 10.0 * std::log10(l / ref), 1e-9);
+        std::printf("  ST_early=%.4f dB / ST_late=%.4f dB (exact)\n",
+                    ms.stEarly.value, ms.stLate.value);
+    }
+
+    // (b) 指数減衰 RIR — 連続の閉形式 ∫a..b e^{-kt} dt と比較。
+    //     p²(t) = e^{-kt}, k = 13.8155/T (T = 1 s)。離散化誤差のみを許容。
+    {
+        const double T = 1.0;
+        const double k = 13.8155 / T;
+        const std::size_t nExp = static_cast<std::size_t>(1.2 * fs);
+        std::vector<double> g(nExp);
+        for (std::size_t i = 0; i < nExp; ++i)
+            g[i] = std::exp(-0.5 * k * (static_cast<double>(i) / fs));
+        ArrayView<const double> gv(g.data(), g.size());
+        const AcousticMetricsSet ms = computeAcousticMetrics(gv, fs, 0);
+
+        auto seg = [&](double a, double b) {
+            return (std::exp(-k * a) - std::exp(-k * b)) / k;
+        };
+        const double stE = 10.0 * std::log10(seg(0.020, 0.100) / seg(0.0, 0.010));
+        const double stL = 10.0 * std::log10(seg(0.100, 1.000) / seg(0.0, 0.010));
+        CHECK(ms.stEarly.valid);
+        CHECK_NEAR(ms.stEarly.value, stE, 0.01);   // 離散化誤差のみ (< 0.01 dB)
+        CHECK(ms.stLate.valid);
+        CHECK_NEAR(ms.stLate.value, stL, 0.01);
+        std::printf("  ST_early=%.4f dB (theory %.4f) / ST_late=%.4f dB (theory %.4f)\n",
+                    ms.stEarly.value, stE, ms.stLate.value, stL);
+    }
+
+    // (c) 窓が欠けるときは値を出さない。
+    //     0.4 s の RIR (冒頭の 2 反射ケース) は ST_late の 1 s 窓が欠ける
+    {
+        AcousticMetricsSet ms = computeAcousticMetrics(hv, fs, d.sampleIndex);
+        CHECK(ms.stEarly.valid);           // 100 ms 窓は足りている
+        CHECK(!ms.stLate.valid);           // 1 s 窓は欠ける → 無効
+    }
+
+    // (d) 基準窓 (0-10 ms) にエネルギーが無ければ両方無効
+    {
+        std::vector<double> g(static_cast<std::size_t>(1.1 * fs), 0.0);
+        g[static_cast<std::size_t>(0.030 * fs)] = 1.0;   // 30 ms に 1 発だけ
+        ArrayView<const double> gv(g.data(), g.size());
+        // 直接音位置を強制的に 0 とみなす (基準窓を空にするため)
+        const AcousticMetricsSet ms = computeAcousticMetrics(gv, fs, 0);
+        CHECK(!ms.stEarly.valid);
+        CHECK(!ms.stLate.valid);
+    }
+
     return testutil::summary("test_clarity");
 }
