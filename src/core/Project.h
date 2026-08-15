@@ -10,6 +10,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QJsonObject>
 #include "Domain.h"
 #include "Material.h"
 #include "Geometry.h"
@@ -999,6 +1000,12 @@ public:
     QStringList &extraLines() { return m_extraLines; }
     const QStringList &extraLines() const { return m_extraLines; }
 
+    // .ofdx の未知キー (読み込んだファイルにあって、この版が書き戻さないもの)。
+    // OfdxIO::load が「ファイル − 再シリアライズ結果」の差分として計算し、
+    // OfdxIO::serialize が保存時にマージして書き戻す (ADR-0003 案B)。
+    QJsonObject &ofdxExtra() { return m_ofdxExtra; }
+    const QJsonObject &ofdxExtra() const { return m_ofdxExtra; }
+
     QString filePath() const { return m_filePath; }
     void    setFilePath(const QString &p) { m_filePath = p; }
 
@@ -1063,6 +1070,7 @@ private:
     QVector<MonitorRow>       m_monitors = defaultMonitors(Domain::EM);
     QVector<AnalysisGroupRow> m_analysisGroups = defaultAnalysisGroups(Domain::EM);
     QStringList        m_extraLines;
+    QJsonObject        m_ofdxExtra;
 };
 
 } // namespace ofd

@@ -26305,6 +26305,87 @@ static void testRefractiveIndexDb(const QString &dataDir)
           "riinfo: out-of-range formulas stay unsupported");
 }
 
+
+// .ofdx の未知キー保持 (ADR-0003 案B)。別ツールが書いたキーが GUI の
+// 開く → 保存で消えないこと、既知キーは常に新しい値が勝つことを判定する。
+static void testOfdxUnknownKeys()
+{
+    QTemporaryDir td;
+    const QString f1 = td.filePath("base.ofdx");
+    const QString f2 = td.filePath("tool.ofdx");
+    const QString f3 = td.filePath("resaved.ofdx");
+
+    // 基準: この版が書くファイル
+    Project p0;
+    p0.optical().lambdaMin = 1111;              // 既知キーに目印
+    check(OfdxIO::save(f1, p0), "ofdx extra: base save");
+
+    // 未知キーが無いファイル → extra は空、出力はバイト一致 (回帰ゼロ)
+    {
+        Project q;
+        check(OfdxIO::load(f1, q, nullptr), "ofdx extra: base load");
+        check(q.ofdxExtra().isEmpty(), "ofdx extra: none for own files");
+        QFile g(f1);
+        g.open(QIODevice::ReadOnly);
+        QByteArray disk = g.readAll();
+        disk.replace("\r\n", "\n");
+        check(OfdxIO::serialize(q) == disk,
+              "ofdx extra: byte-identical when no unknown keys");
+    }
+
+    // 別ツールのキーを混ぜる: root 直下 + 既知オブジェクト (optical) の中
+    {
+        QFile g(f1);
+        g.open(QIODevice::ReadOnly);
+        QJsonObject root = QJsonDocument::fromJson(g.readAll()).object();
+        root["x_external_tool"] = QJsonObject{
+            { "version", 3 }, { "note", "keep me" } };
+        QJsonObject opt = root["optical"].toObject();
+        opt["x_vendor_hint"] = QJsonArray{ 1, 2, 3 };
+        root["optical"] = opt;
+        QFile h(f2);
+        h.open(QIODevice::WriteOnly);
+        h.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    }
+
+    Project q2;
+    check(OfdxIO::load(f2, q2, nullptr), "ofdx extra: tool file load");
+    check(!q2.ofdxExtra().isEmpty(), "ofdx extra: unknown keys captured");
+    check(std::abs(q2.optical().lambdaMin - 1111) < 1e-12,
+          "ofdx extra: known keys still load");
+
+    // 既知キーを変えて保存 → 未知キーは残り、既知キーは新しい値が勝つ
+    q2.optical().lambdaMin = 2222;
+    check(OfdxIO::save(f3, q2), "ofdx extra: resave");
+    {
+        QFile g(f3);
+        g.open(QIODevice::ReadOnly);
+        const QJsonObject root = QJsonDocument::fromJson(g.readAll()).object();
+        const QJsonObject xt = root["x_external_tool"].toObject();
+        check(xt.value("version").toInt() == 3 &&
+              xt.value("note").toString() == "keep me",
+              "ofdx extra: top-level unknown key survives verbatim");
+        const QJsonObject opt = root["optical"].toObject();
+        check(opt.contains("x_vendor_hint") &&
+              opt["x_vendor_hint"].toArray().size() == 3,
+              "ofdx extra: nested unknown key inside a known object survives");
+        const double lm = opt["wavelength"].toObject()
+                              .value("min_nm").toDouble();
+        check(std::abs(lm - 2222) < 1e-12,
+              "ofdx extra: the fresh value wins over the file");
+
+        // もう一往復しても増殖・欠落しない (安定)
+        Project q3;
+        check(OfdxIO::load(f3, q3, nullptr), "ofdx extra: second load");
+        QFile g3(f3);
+        g3.open(QIODevice::ReadOnly);
+        QByteArray disk = g3.readAll();
+        disk.replace("\r\n", "\n");
+        check(OfdxIO::serialize(q3) == disk,
+              "ofdx extra: stable across repeated round trips");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -26389,6 +26470,7 @@ int main(int argc, char *argv[])
     }
 
     testOfdPreviewExtraLines();
+    testOfdxUnknownKeys();
     testRefractiveIndexDb(dir);
     testVoxelizer();
     testGlassCatalog();
