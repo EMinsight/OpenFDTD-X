@@ -39,7 +39,7 @@
 |---|---|---|---|
 | 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
 | 2 | save が `schemaVersion: "1.0"` を書く | 1.1 ファイルの識別ができない (実害は小: 読み込みはキー有無判定) | フェーズ2 残作業 |
-| 3 | selftest に `opera_analysis` ラウンドトリップ未追加 | 永続化の回帰をテストが検出しない | フェーズ2 残作業 |
+| 3 | ~~selftest に `opera_analysis` ラウンドトリップ未追加~~ **解消済み (2026-08-15)** | (解消前: 永続化の回帰をテストが検出しない) | **完了**: 実際には往復テスト (`testOperaAcousticSettings` §2) は既に存在しており、この記述は古かった。ただし**全 25 フィールド中 20 しか設定しておらず**、後から追加された ESS 掃引逆畳み込みの 5 フィールド (`sweepDeconvolve`/`sweepStartHz`/`sweepEndHz`/`sweepSec`/`sweepHarmonics`) が往復・旧ファイル既定値の両方から漏れていた (シリアライズ実装自体は正しかったことを確認)。構造体と代入群の突き合わせで検出し、往復 (+3 checks) と旧ファイル既定値 (+1 check) を追加して全 25 フィールドを網羅した |
 | 4 | ~~`.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式)~~ **解消済み (2026-08-15)** | (解消前: 他ツールとの .ofdx 共有で相手のキーを失った) | **完了**: ADR-0003 案B を実装。ロード時に「ファイル − 再シリアライズ結果」の差分を `Project::ofdxExtra()` に保持し、save がマージして書き戻す。既知キーは常に新しい値が勝つ (差分方式なので stale 復活なし)。未知キーの無いファイルでは出力バイト不変。selftest 13 checks (往復逐語保全 / fresh 優先 / バイト不変 / 繰り返し安定)。詳細は ADR-0003 の Update 節 |
 | 5 | C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開) | 外部カーネルからの利用範囲が限定的 | 需要が出た時点で `struct_size`/`api_version` 拡張規約に従い追加 |
 | 6 | `QtAcousticAdapter::readWav` がファイル全体を QByteArray に読む | 巨大 WAV (長時間・高 fs) でメモリピーク | ストリーミング読みは必要になるまで保留 |
