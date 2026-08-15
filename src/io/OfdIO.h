@@ -22,6 +22,7 @@
 // 未知のキーは Project::extraLines() に保存し、保存時にそのまま書き戻す
 // (手編集ファイルが GUI ラウンドトリップで壊れない)。
 #pragma once
+#include <QByteArray>
 #include <QString>
 #include "../core/Project.h"
 
@@ -46,6 +47,9 @@ class OfdxIO {
 public:
     static bool load(const QString &path, Project &project, QString *err = nullptr);
     static bool save(const QString &path, const Project &project, QString *err = nullptr);
+
+    // 保存されるバイト列 (プレビュー / テスト用)。save はこれを書くだけ。
+    static QByteArray serialize(const Project &project);
 };
 
 } // namespace ofd

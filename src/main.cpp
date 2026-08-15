@@ -45,6 +45,9 @@ int main(int argc, char *argv[])
     QCommandLineOption shotOpt("screenshot",
         "Save a window screenshot to <path> and exit (for CI)", "path");
     cli.addOption(shotOpt);
+    QCommandLineOption prevOpt("open-preview",
+        "Open the save-preview dialog and screenshot it (for CI)");
+    cli.addOption(prevOpt);
     QCommandLineOption styleOpt("ui-style",
         "UI style (classic|modern|scientific)", "style");
     cli.addOption(styleOpt);
@@ -119,10 +122,15 @@ int main(int argc, char *argv[])
         w.setViewStyle(idx);
     }
 
+    // --open-preview のときは主窓ではなくプレビュー窓を撮る
+    QWidget *shotTarget = &w;
+    if (cli.isSet(prevOpt))
+        if (QWidget *dlg = w.showOfdPreview()) shotTarget = dlg;
+
     if (cli.isSet(shotOpt)) {
         const QString path = cli.value(shotOpt);
-        QTimer::singleShot(800, &w, [&w, path] {
-            w.grab().save(path);
+        QTimer::singleShot(800, &w, [shotTarget, path] {
+            shotTarget->grab().save(path);
             QApplication::quit();
         });
     }

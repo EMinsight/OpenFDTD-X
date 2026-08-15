@@ -160,6 +160,7 @@
 #include <QRegularExpression>
 #include <QDirIterator>
 #include <QTemporaryDir>
+#include "../src/io/OfdPreview.h"
 #include <QImage>
 #include <QPainter>
 
@@ -26037,6 +26038,54 @@ static void testTouchstone()
     }
 }
 
+// GUI が知らないキーの行番号 — プレビューの強調が正しい行を指すか。
+// 誤った行を強調すると「保持されている」という主張が嘘になるので判定する。
+static void testOfdPreviewExtraLines()
+{
+    const QString src =
+        "OpenFDTD 4 2\n"
+        "title = preview extra lines\n"
+        "xmesh = 0 2 1\n"
+        "ymesh = 0 2 1\n"
+        "zmesh = 0 2 1\n"
+        "mystery_key = 1 2 3\n"        // GUI が知らないキー
+        "another_unknown = abc\n"
+        "end\n";
+    Project p;
+    QString err;
+    if (!OfdIO::parse(src, p, &err)) {
+        check(false, "preview extra: parse");
+        return;
+    }
+    check(p.extraLines().size() == 2, "preview extra: kept 2 unknown keys");
+
+    const OfdPreviewText pv = buildOfdPreview(p);
+    check(pv.extraRows.size() == p.extraLines().size(),
+          "preview extra: row count matches");
+
+    const QStringList rows = pv.ofd.split('\n');
+    bool pointsAtUnknown = !pv.extraRows.isEmpty();
+    for (int i = 0; i < pv.extraRows.size(); ++i) {
+        const int r = pv.extraRows[i];
+        if (r < 0 || r >= rows.size() || rows[r] != p.extraLines()[i])
+            pointsAtUnknown = false;
+    }
+    check(pointsAtUnknown, "preview extra: rows point at the unknown keys");
+
+    // 強調行が `end` より前にあること (末尾の end を強調しない)
+    bool beforeEnd = true;
+    for (int r : pv.extraRows)
+        if (r >= rows.size() - 2) beforeEnd = false;   // 末尾は end + 空行
+    check(beforeEnd, "preview extra: rows are before end");
+
+    // 未知キーが無い .ofd では強調しない
+    Project plain;
+    check(OfdIO::parse("OpenFDTD 4 2\ntitle = t\nend\n", plain, &err),
+          "preview extra: parse plain");
+    check(buildOfdPreview(plain).extraRows.isEmpty(),
+          "preview extra: nothing to highlight when all keys are modelled");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -26088,8 +26137,39 @@ int main(int argc, char *argv[])
             continue;
         }
         compareProjects(p1, p2);
+
+        // プレビューが「保存されるもの」と一致するか (画面の主張の裏取り)。
+        // ファイルへ実際に書いて読み戻し、改行だけ揃えて突き合わせる
+        // (save は QIODevice::Text なので Windows では CRLF になる)。
+        {
+            const OfdPreviewText pv = buildOfdPreview(p1);
+            QTemporaryDir td;
+            const QString f1 = td.filePath("preview.ofd");
+            const QString f2 = td.filePath("preview.ofdx");
+            check(OfdIO::save(f1, p1), "preview: ofd save");
+            check(OfdxIO::save(f2, p1), "preview: ofdx save");
+
+            QFile g1(f1);
+            if (g1.open(QIODevice::ReadOnly)) {
+                QString onDisk = QString::fromUtf8(g1.readAll());
+                onDisk.replace("\r\n", "\n");
+                check(onDisk == pv.ofd, "preview: ofd text == saved bytes");
+            } else {
+                check(false, "preview: ofd reopen");
+            }
+            QFile g2(f2);
+            if (g2.open(QIODevice::ReadOnly)) {
+                QByteArray onDisk = g2.readAll();
+                onDisk.replace("\r\n", "\n");
+                check(onDisk == pv.ofdx, "preview: ofdx bytes == saved bytes");
+            } else {
+                check(false, "preview: ofdx reopen");
+            }
+            check(pv.ofdRows > 0 && pv.ofdBytes > 0, "preview: counts positive");
+        }
     }
 
+    testOfdPreviewExtraLines();
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();

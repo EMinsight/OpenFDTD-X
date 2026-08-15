@@ -83,6 +83,7 @@ void I18n::loadTables() {
         "The solver kernel required by this domain was not found. Click to "
         "configure the kernel paths (OpenFDTD is the core kernel; the "
         "optical / underwater kernels are only needed for those domains)");
+    add("m_ofd_preview", "保存内容のプレビュー…", "Preview what will be saved…");
     add("m_exit", "終了", "Exit");
     add("m_lang", "言語", "Language");
     add("m_lang_restart", "言語設定を保存しました。再起動後に反映されます。",

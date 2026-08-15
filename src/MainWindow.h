@@ -68,6 +68,9 @@ public slots:
     // これで止まった)。有効なときは同じ内容を標準エラーとステータスバーへ出す。
     static void setAutomation(bool on);
     static bool automation();
+
+    // 保存内容のプレビュー。自動実行中は非モーダルで開き、その窓を返す
+    QWidget *showOfdPreview();
     void saveProject();
     void saveProjectAs();
     void runSimulation();

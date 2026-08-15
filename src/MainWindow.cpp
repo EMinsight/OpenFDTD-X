@@ -1,5 +1,7 @@
 // MainWindow.cpp
 #include "MainWindow.h"
+
+#include "widgets/OfdPreviewDialog.h"
 #include "DomainBar.h"
 #include "RightDock.h"
 #include "TabNavigator.h"
@@ -174,6 +176,17 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow() = default;
 
 // ── Menus ───────────────────────────────────────────────────────────────────
+// 保存内容のプレビュー。自動実行 (--screenshot) 中はモーダルにすると先へ
+// 進めないので出しっぱなしにし、撮影対象として呼び出し側へ返す。
+QWidget *MainWindow::showOfdPreview()
+{
+    auto *dlg = new OfdPreviewDialog(m_project, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    if (automation()) { dlg->show(); return dlg; }
+    dlg->exec();
+    return nullptr;
+}
+
 void MainWindow::buildMenu()
 {
     auto *mb = menuBar();
@@ -193,6 +206,10 @@ void MainWindow::buildMenu()
                      this, &MainWindow::saveProject);
     mFile->addAction(I18n::tr("tb_saveas"), QKeySequence::SaveAs,
                      this, &MainWindow::saveProjectAs);
+    // 保存前に .ofd / .ofdx の中身を見る (読み取り専用)
+    mFile->addAction(I18n::tr("m_ofd_preview"), this, [this] {
+        OfdPreviewDialog(m_project, this).exec();
+    });
     mFile->addSeparator();
     // オペラ音響の一括レポート。ドメインに関係なく置くが、分析が未実行の
     // ときは書き出さずに理由を伝える。
