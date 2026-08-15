@@ -837,6 +837,13 @@ void I18n::loadTables() {
         "分析完了 — 総合品質: %1 / 動的範囲 %2 dB / 直接音 %3 ms",
         "Done — overall quality: %1 / dynamic range %2 dB / direct sound %3 ms");
     add("rir_result_section", "結果 (ISO 3382-1 指標)", "Results (ISO 3382-1)");
+    add("rir_st_note",
+        "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m で測った RIR を"
+        "前提とする指標です (ISO 3382-1 Annex C)。別の配置の RIR でも数値は"
+        "出ますが、規格の意味での舞台支援ではありません。",
+        "ST_early / ST_late (stage support) assume an RIR measured on stage "
+        "at 1 m from the source (ISO 3382-1 Annex C). Other configurations "
+        "still yield numbers, but not stage support in the standard's sense.");
     add("rir_metric", "指標", "Metric");
     add("rir_band", "帯域", "Band");
     add("rir_value", "値", "Value");

@@ -91,21 +91,35 @@ AcousticMetricsSet computeAcousticMetrics(ArrayView<const double> rir,
         std::floor(0.050 * sampleRateHz + 0.5));
     const std::size_t b80 = static_cast<std::size_t>(
         std::floor(0.080 * sampleRateHz + 0.5));
+    // 舞台支援 (ST) の窓境界 (ISO 3382-1 Annex C)
+    const std::size_t b10 = static_cast<std::size_t>(
+        std::floor(0.010 * sampleRateHz + 0.5));
+    const std::size_t b20 = static_cast<std::size_t>(
+        std::floor(0.020 * sampleRateHz + 0.5));
+    const std::size_t b100 = static_cast<std::size_t>(
+        std::floor(0.100 * sampleRateHz + 0.5));
+    const std::size_t b1000 = static_cast<std::size_t>(
+        std::floor(1.000 * sampleRateHz + 0.5));
 
     double total = 0.0, firstMoment = 0.0;
     double early50 = 0.0, early80 = 0.0;
+    double stRef = 0.0, stEarlySum = 0.0, stLateSum = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
         const double p2 = h[i] * h[i];
         total += p2;
         firstMoment += (static_cast<double>(i) / sampleRateHz) * p2;
         if (i < b50) early50 += p2;
         if (i < b80) early80 += p2;
+        if (i < b10) stRef += p2;
+        if (i >= b20 && i < b100) stEarlySum += p2;
+        if (i >= b100 && i < b1000) stLateSum += p2;
     }
 
     if (total <= kEnergyFloor) {
         const std::string why = "signal has no energy after direct sound";
         out.c50 = out.c80 = out.d50 = out.ts = makeInvalidMetric(why);
         out.earlyLate50 = out.earlyLate80 = makeInvalidMetric(why);
+        out.stEarly = out.stLate = makeInvalidMetric(why);
         return out;
     }
 
@@ -144,6 +158,34 @@ AcousticMetricsSet computeAcousticMetrics(ArrayView<const double> rir,
 
     // Ts (ISO 3382-1 A.2.5): 重心時間 [s]
     out.ts = makeValidMetric(firstMoment / total);
+
+    // ST_early / ST_late (ISO 3382-1 Annex C): 舞台支援。
+    // 基準は直接音を含む 0-10 ms。窓が信号長で欠けるときは値を出さない
+    // (欠けた窓の積分は常に過小で、支援が弱いように見える誤値になる)。
+    if (stRef <= kEnergyFloor) {
+        const std::string why = "ST: no reference energy (0-10 ms)";
+        out.stEarly = makeInvalidMetric(why);
+        out.stLate = makeInvalidMetric(why);
+    } else {
+        if (n < b100) {
+            out.stEarly = makeInvalidMetric(
+                "ST_early: signal shorter than 100 ms after direct");
+        } else if (stEarlySum <= kEnergyFloor) {
+            out.stEarly = makeInvalidMetric(
+                "ST_early: no energy in 20-100 ms window");
+        } else {
+            out.stEarly = makeValidMetric(10.0 * std::log10(stEarlySum / stRef));
+        }
+        if (n < b1000) {
+            out.stLate = makeInvalidMetric(
+                "ST_late: signal shorter than 1 s after direct");
+        } else if (stLateSum <= kEnergyFloor) {
+            out.stLate = makeInvalidMetric(
+                "ST_late: no energy in 100-1000 ms window");
+        } else {
+            out.stLate = makeValidMetric(10.0 * std::log10(stLateSum / stRef));
+        }
+    }
 
     return out;
 }
