@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed (2026-08-15) — ソルバー側 (OpenAcoustics の `ofdx_acoustic_fdtd` /
-`ofdx_acoustic_ga` 両バイナリ) の実装と同時に提案。GUI 側の設定 UI
-(AcousticSolverTab のトグルと `.ofdx` への書き出し) は未実装の追加課題。
+Accepted (2026-08-15) — ソルバー側 (OpenAcoustics の `ofdx_acoustic_fdtd` /
+`ofdx_acoustic_ga` 両バイナリ) は実装・検証済み。GUI 側の設定 UI
+(AcousticSolverTab のトグル → `AcousticOpts::multiSource` →
+`.ofdx` `acoustic.multi_source`) も実装済み (既定 false ならキー自体を
+書かない — 絶対規則 2。selftest がバイト一致往復を検証する)。
 
 ## Context
 
@@ -60,5 +62,7 @@ Proposed (2026-08-15) — ソルバー側 (OpenAcoustics の `ofdx_acoustic_fdtd
   強度 1・同時)。必要になったら `sources` 側に追加キーで拡張する。
 - (−) 「音源ごとの個別 RIR」(rir_s2.wav 等) も範囲外 — ファイル契約の
   変更 (ADR-0007 の改訂) を伴うため、必要になったら別 ADR にする。
-- 未決事項: GUI 側のトグル UI と `.ofdx` 書き出し (AcousticSolverTab)。
-  実装するまでは手書きの `.ofdx` でのみ有効化できる。
+- GUI 側のトグル UI (AcousticSolverTab「複数音源」) と `.ofdx` 書き出しは
+  実装済み。単発実行・ハイブリッド実行のどちらも同じ `prepareRunInput`
+  経路でサイドカーを書くので、トグル 1 つで両ソルバーに同時に効く
+  (対称性が自動的に保たれる)。

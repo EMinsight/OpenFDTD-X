@@ -796,6 +796,11 @@ QByteArray OfdxIO::serialize(const Project &p)
             {"absorption", budget}, {"noise_levels", noise},
             {"noise_sources", noiseSrc}, {"receivers", recv},
             {"sources", srcList} };
+        // 複数音源 (ADR-0010) — 既定 (false) ならキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。true のとき外部ソルバー
+        // 2 本が .ofd の全 feed を強度 1・t = 0 で同時発火した重ね合わせを
+        // rir.wav に出す (両ソルバーが同じキーを読む — 対称が契約の一部)。
+        if (a.multiSource) ac["multi_source"] = true;
         {   // 入力信号 (WAV) の前処理 — 既定のままならキー自体を書かない
             // (旧ファイルとバイト一致。絶対規則 2)
             const AcousticOpts d;
@@ -1464,6 +1469,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.surface = ac.value("surface").toDouble(a.surface);
         a.occupancy = ac.value("occupancy").toInt(a.occupancy);
         a.rtFormula = ac.value("rt_formula").toInt(a.rtFormula);
+        // 複数音源 (ADR-0010) — 追加キー。欠落時は false (旧ファイル互換)
+        a.multiSource = ac.value("multi_source").toBool(a.multiSource);
         if (ac.contains("absorption")) {
             a.absorption.clear();
             for (const QJsonValue &v : ac["absorption"].toArray()) {
