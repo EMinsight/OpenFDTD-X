@@ -2,6 +2,12 @@
 // Equivalent of the React <MiniPlot> in the mock: one or more series with
 // axis labels, auto or fixed Y range. Used by GlassCatalogTab (dispersion
 // curve) and RoomAcousticsTab (RT60 by band, NC curves, echogram …).
+//
+// 対話機能 (負債 #9):
+//   - ホバー: 最寄りの点へスナップして値を読み出す (遠いときはカーソル座標)
+//   - ドラッグ: ラバーバンドで拡大 (x/y 両方)。setSeries で解除される
+//     (データが変わったのに古い視野を残すと空の図を黙って見せることになる)
+//   - ダブルクリック: 全体表示へ戻す
 #pragma once
 #include <QColor>
 #include <QString>
@@ -38,8 +44,26 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
+    void leaveEvent(QEvent *) override;
 
 private:
+    // 描画とマウス処理が共有する視野 (プロット矩形とデータ範囲)。
+    // paintEvent の中だけで計算していた写像を取り出したもの — 2 か所で
+    // 別々に計算すると必ずずれる。
+    struct View {
+        QRectF plot;
+        double xLo = 0, xHi = 1, yLo = 0, yHi = 1;
+        double xPix(double x) const;
+        double yPix(double y) const;
+        double xData(double px) const;
+        double yData(double py) const;
+    };
+    View computeView() const;
+
     QVector<MiniSeries> m_series;
     QString m_xLabel, m_yLabel;
     bool    m_fixedY = false;
@@ -47,6 +71,14 @@ private:
     bool    m_impulse = false;
     bool    m_xPow10 = false;
     double  m_xMargin = 0.0;
+
+    // 対話状態
+    bool    m_hover = false;
+    QPoint  m_hoverPos;
+    bool    m_dragging = false;
+    QPoint  m_dragStart, m_dragCur;
+    bool    m_zoomed = false;
+    double  m_zxLo = 0, m_zxHi = 1, m_zyLo = 0, m_zyHi = 1;
 };
 
 } // namespace ofd
