@@ -16,11 +16,27 @@
 // 注意: DATA: の外にも `- type: formula A` (PROPERTIES の熱分散) が現れるので、
 // **列 0 の次のキーで DATA: 節を打ち切る**こと (実ファイル N-BK7.yml で確認)。
 //
-// 式は Sellmeier の 1 と 2 だけ対応する。どちらも公表値と照合済み:
+// 式は 1〜9 に対応する。定義は上流リポジトリ同梱の公式仕様書
+// database/doc/"Dispersion formulas.pdf" (RefractiveIndex.INFO, 2014-06-29):
+//   1: Sellmeier      n²−1 = C1 + Σ C(2i)·λ²/(λ²−C(2i+1)²)
+//   2: Sellmeier-2    n²−1 = C1 + Σ C(2i)·λ²/(λ²−C(2i+1))
+//   3: Polynomial     n²   = C1 + Σ C(2i)·λ^C(2i+1)
+//   4: RefractiveIndex.INFO
+//                     n²   = C1 + C2·λ^C3/(λ²−C4^C5) + C6·λ^C7/(λ²−C8^C9)
+//                               + Σ_{i≥10} C(2i)·λ^C(2i+1)
+//   5: Cauchy         n    = C1 + Σ C(2i)·λ^C(2i+1)
+//   6: Gases          n−1  = C1 + Σ C(2i)/(C(2i+1) − λ⁻²)
+//   7: Herzberger     n    = C1 + C2/(λ²−0.028) + C3·(1/(λ²−0.028))²
+//                               + C4λ² + C5λ⁴ + C6λ⁶
+//   8: Retro          (n²−1)/(n²+2) = C1 + C2·λ²/(λ²−C3) + C4λ² (→ n² に逆変換)
+//   9: Exotic         n²   = C1 + C2/(λ²−C3) + C4(λ−C5)/((λ−C5)²+C6)
+// 実データのアンカー (selftest):
 //   formula 1 : 溶融石英 (Malitson) n(0.5876/1.0/0.3 µm) = 1.45846/1.45042/1.48779
 //   formula 2 : N-BK7 n(0.5876/0.6563/0.4861 µm) = 1.51680/1.51432/1.52238
-// 3〜9 は対応しない (式の定義を実データで検証できていないため — 当てずっぽうで
-// 実装して静かに誤った屈折率を出すより、対応外と言う方がよい)。
+//   formula 4 : Si (Chandler-Horowitz) n(10.6 µm) = 3.4179 (CO2 レーザーの定番値)
+//   formula 6 : 空気 (Ciddor) n−1 (633 nm) = 2.765e-4 (公表の空気屈折率)
+//   formula 3 : CCl4 (Moutzouris) n(589 nm) ≈ 1.457 (CRC n_D 1.4601、温度差込み)
+// 5/7/8/9 は仕様書どおりの厳密な恒等式 (係数の極限・特別な λ) で判定する。
 #ifndef OFD_IO_REFRACTIVEINDEXDB_H
 #define OFD_IO_REFRACTIVEINDEXDB_H
 
@@ -66,7 +82,7 @@ struct RiData {
 // データファイル 1 個を読む。
 RiData parseRiData(const QByteArray &yaml);
 
-// 対応している式か (1, 2 のみ)。
+// 対応している式か (1〜9)。
 bool riFormulaSupported(int formula);
 
 // 式から n を求める。範囲外・対応外は false。

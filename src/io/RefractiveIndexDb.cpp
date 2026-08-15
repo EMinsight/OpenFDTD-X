@@ -255,7 +255,7 @@ RiData parseRiData(const QByteArray &yaml)
     return d;
 }
 
-bool riFormulaSupported(int formula) { return formula == 1 || formula == 2; }
+bool riFormulaSupported(int formula) { return formula >= 1 && formula <= 9; }
 
 QString riPlainText(const QString &src)
 {
@@ -280,25 +280,108 @@ QString riPlainText(const QString &src)
     return out.join('\n');
 }
 
-// formula 1 : n² = 1 + c0 + Σ c(2i-1)·λ² / (λ² − c(2i)²)
-// formula 2 : n² = 1 + c0 + Σ c(2i-1)·λ² / (λ² − c(2i))
+// 各式の評価 (定義はヘッダの転記 = 上流仕様書 "Dispersion formulas.pdf")。
+// 分母が 0 に近い・n² が正でない等の破綻は false (黙って NaN を出さない)。
 bool riEvalN(const RiData &d, double lambda_um, double *n)
 {
     if (!riFormulaSupported(d.formula) || d.coeff.isEmpty()) return false;
     if (d.fMax_um > d.fMin_um &&
         (lambda_um < d.fMin_um || lambda_um > d.fMax_um)) return false;
 
-    const double l2 = lambda_um * lambda_um;
-    double s = 1.0 + d.coeff[0];
-    for (int i = 1; i + 1 < d.coeff.size(); i += 2) {
-        const double a = d.coeff[i];
-        const double b = d.coeff[i + 1];
-        const double den = (d.formula == 1) ? (l2 - b * b) : (l2 - b);
-        if (std::fabs(den) < 1e-18) return false;
-        s += a * l2 / den;
+    const double l  = lambda_um;
+    const double l2 = l * l;
+    const QVector<double> &c = d.coeff;
+    auto at = [&](int i) { return (i < c.size()) ? c[i] : 0.0; };
+    const double tiny = 1e-18;
+    double n2 = 0.0;
+
+    switch (d.formula) {
+    case 1:            // Sellmeier: n²−1 = C1 + Σ C(2i)λ²/(λ²−C(2i+1)²)
+    case 2: {          // Sellmeier-2: 分母の共鳴波長が二乗済み
+        double s = 1.0 + at(0);
+        for (int i = 1; i + 1 < c.size(); i += 2) {
+            const double b = c[i + 1];
+            const double den = (d.formula == 1) ? (l2 - b * b) : (l2 - b);
+            if (std::fabs(den) < tiny) return false;
+            s += c[i] * l2 / den;
+        }
+        n2 = s;
+        break;
     }
-    if (s <= 0.0) return false;
-    if (n) *n = std::sqrt(s);
+    case 3: {          // Polynomial: n² = C1 + Σ C(2i)·λ^C(2i+1)
+        double s = at(0);
+        for (int i = 1; i + 1 < c.size(); i += 2)
+            s += c[i] * std::pow(l, c[i + 1]);
+        n2 = s;
+        break;
+    }
+    case 4: {          // C1 + 共鳴 2 項 (4 係数) + べき乗項
+        double s = at(0);
+        for (int base : { 1, 5 }) {          // C2..C5 と C6..C9
+            if (base + 1 >= c.size()) break;
+            const double den = l2 - std::pow(at(base + 2), at(base + 3));
+            if (std::fabs(den) < tiny) return false;
+            s += at(base) * std::pow(l, at(base + 1)) / den;
+        }
+        for (int i = 9; i + 1 < c.size(); i += 2)
+            s += c[i] * std::pow(l, c[i + 1]);
+        n2 = s;
+        break;
+    }
+    case 5: {          // Cauchy: n = C1 + Σ C(2i)·λ^C(2i+1)
+        double s = at(0);
+        for (int i = 1; i + 1 < c.size(); i += 2)
+            s += c[i] * std::pow(l, c[i + 1]);
+        if (s <= 0.0) return false;
+        n2 = s * s;
+        break;
+    }
+    case 6: {          // Gases: n−1 = C1 + Σ C(2i)/(C(2i+1) − λ⁻²)
+        double s = at(0);
+        const double invl2 = 1.0 / l2;
+        for (int i = 1; i + 1 < c.size(); i += 2) {
+            const double den = c[i + 1] - invl2;
+            if (std::fabs(den) < tiny) return false;
+            s += c[i] / den;
+        }
+        const double nn = 1.0 + s;
+        if (nn <= 0.0) return false;
+        n2 = nn * nn;
+        break;
+    }
+    case 7: {          // Herzberger: 分母の定数 0.028 は仕様書の定義そのもの
+        const double den = l2 - 0.028;
+        if (std::fabs(den) < tiny) return false;
+        const double L = 1.0 / den;
+        const double nn = at(0) + at(1) * L + at(2) * L * L
+                        + at(3) * l2 + at(4) * l2 * l2 + at(5) * l2 * l2 * l2;
+        if (nn <= 0.0) return false;
+        n2 = nn * nn;
+        break;
+    }
+    case 8: {          // Retro: r = (n²−1)/(n²+2) を n² に逆変換
+        const double den = l2 - at(2);
+        if (std::fabs(den) < tiny) return false;
+        const double r = at(0) + at(1) * l2 / den + at(3) * l2;
+        if (r >= 1.0) return false;         // 逆変換の分母が 0/負になる
+        n2 = (1.0 + 2.0 * r) / (1.0 - r);
+        break;
+    }
+    case 9: {          // Exotic
+        const double den1 = l2 - at(2);
+        if (std::fabs(den1) < tiny) return false;
+        const double dl = l - at(4);
+        const double den2 = dl * dl + at(5);
+        if (std::fabs(den2) < tiny) return false;
+        n2 = at(0) + at(1) / den1 + at(3) * dl / den2;
+        break;
+    }
+    default:
+        return false;
+    }
+
+    if (n2 <= 0.0) return false;
+    if (n) *n = std::sqrt(n2);
     return true;
 }
 

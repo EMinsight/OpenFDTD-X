@@ -602,6 +602,48 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
     return true;
 }
 
+
+// ── .ofdx の未知キー保持 (ADR-0003 案B) ─────────────────────────────────────
+// 「ファイルにあって、この版が書き戻さないキー」だけを保持する。
+// 全体 DOM を持たないのは stale 復活を避けるため — 条件付きで書く既知キー
+// (illumination 等) は、機能を使い始めた時点で serialize 側が完全な
+// オブジェクトを書くので、必ず新しい値が勝つ。
+
+// loaded にあって fresh に無いキーを (再帰的に) 集める。
+// 両方にあって双方オブジェクトのキーは中へ潜る (子の未知キーを拾う)。
+static QJsonObject ofdxExtraDiff(const QJsonObject &loaded,
+                                 const QJsonObject &fresh)
+{
+    QJsonObject extra;
+    for (auto it = loaded.begin(); it != loaded.end(); ++it) {
+        if (!fresh.contains(it.key())) {
+            extra[it.key()] = it.value();
+        } else if (it.value().isObject() && fresh[it.key()].isObject()) {
+            const QJsonObject sub =
+                ofdxExtraDiff(it.value().toObject(),
+                              fresh[it.key()].toObject());
+            if (!sub.isEmpty()) extra[it.key()] = sub;
+        }
+        // 両方にある非オブジェクトは既知 (fresh が勝つ) — 保持しない
+    }
+    return extra;
+}
+
+// extra を fresh へ書き足す。fresh に既にあるキーは fresh が勝ち、
+// 双方オブジェクトなら中へ潜って子の未知キーだけ足す。
+static QJsonObject ofdxMergeExtra(QJsonObject fresh, const QJsonObject &extra)
+{
+    for (auto it = extra.begin(); it != extra.end(); ++it) {
+        if (!fresh.contains(it.key())) {
+            fresh[it.key()] = it.value();
+        } else if (it.value().isObject() && fresh[it.key()].isObject()) {
+            fresh[it.key()] = ofdxMergeExtra(fresh[it.key()].toObject(),
+                                             it.value().toObject());
+        }
+    }
+    return fresh;
+}
+
 // ── .ofdx (JSON sidecar) ────────────────────────────────────────────────────
 // 保存されるバイト列そのものを返す (save もプレビューもここを通る)。
 QByteArray OfdxIO::serialize(const Project &p)
@@ -1227,6 +1269,10 @@ QByteArray OfdxIO::serialize(const Project &p)
         const QJsonObject cur = toJson(p.illumination());
         if (cur != toJson(IlluminationOpts{})) root["illumination"] = cur;
     }
+
+    // 読み込んだファイルにあってこの版が書かないキーを書き戻す (round-trip)。
+    // 未知キーが無ければ root は不変 = 出力はバイト単位で従来と一致する
+    root = ofdxMergeExtra(root, p.ofdxExtra());
 
     return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }
@@ -1935,5 +1981,15 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         i.targetHalf_mm = tr.value("target_half_mm").toDouble(i.targetHalf_mm);
         i.chipSize_mm = tr.value("chip_size_mm").toDouble(i.chipSize_mm);
     }
+
+    // 未知キーの保持 (ADR-0003 案B): 「ファイル − この版が書き戻すもの」の
+    // 差分を計算して持つ。既知キーは全て再シリアライズ結果に現れるので
+    // 差分に残るのは本当に未知のものだけ — 認識済みキーの一覧を別に
+    // 管理する必要がなく、キーを追加し忘れて誤って「未知」扱いする事故も無い。
+    // 先に空にする (再利用された Project の前回の extra を混ぜない)
+    p.ofdxExtra() = QJsonObject();
+    const QJsonDocument fresh = QJsonDocument::fromJson(serialize(p));
+    p.ofdxExtra() = ofdxExtraDiff(root, fresh.object());
+
     return true;
 }

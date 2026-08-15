@@ -200,6 +200,7 @@ void Project::clear()
     m_circuitPorts = defaultCircuitPorts();
     m_photonicNet = defaultPhotonicNetlist();
     m_extraLines.clear();
+    m_ofdxExtra = QJsonObject();
     m_filePath.clear();
 }
 
