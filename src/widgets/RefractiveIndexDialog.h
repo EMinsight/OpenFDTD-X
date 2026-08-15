@@ -28,11 +28,14 @@ public:
     // 取り込む材料 (accept 後に有効)
     const NkTable &table() const { return m_table; }
     QString        name()  const { return m_name; }
+    // 取り込んだデータの出典 (平文)。空のこともある
+    QString        reference() const { return m_reference; }
 
 private:
     void fetchCatalog();
     void fetchSelected();
     void applyFilter();
+    void showSelected();
     void setBusy(bool on, const QString &what);
 
     class Impl;
@@ -42,6 +45,7 @@ private:
     QVector<int>     m_shown;      // m_entries への索引 (絞り込み結果)
     NkTable          m_table;
     QString          m_name;
+    QString          m_reference;
 
     QLineEdit   *m_filter   = nullptr;
     QListWidget *m_list     = nullptr;

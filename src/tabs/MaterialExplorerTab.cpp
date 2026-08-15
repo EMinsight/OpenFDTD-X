@@ -74,6 +74,7 @@ const bool s_i18n = [] {
               "押したときだけ通信します",
               "Import n,k from the public refractive index database (CC0 1.0). "
               "It only connects when you press a button");
+    ofd::I18n::reg("mex_riinfo_src", "出典: %1", "Source: %1");
     ofd::I18n::reg("mex_riinfo_ok", "%1 を取り込みました (%2 点)",
               "Imported %1 (%2 points)");
     ofd::I18n::reg("mex_why_temp",
@@ -710,8 +711,11 @@ void MaterialExplorerTab::importFromRiInfo()
 
     if (m_fitStatus) {
         m_fitStatus->setStyleSheet("font-size:11px; color:#555;");
-        m_fitStatus->setText(I18n::tr("mex_riinfo_ok")
-                                 .arg(dlg.name()).arg(t.rows));
+        QString msg = I18n::tr("mex_riinfo_ok").arg(dlg.name()).arg(t.rows);
+        if (!dlg.reference().isEmpty())      // 出典を残す (誰の測定値かが分かるように)
+            msg += "\n" + I18n::tr("mex_riinfo_src")
+                               .arg(dlg.reference().section('\n', 0, 1));
+        m_fitStatus->setText(msg);
     }
 }
 

@@ -23,9 +23,12 @@ using namespace ofd;
 namespace {
 
 // データベースの配布元 (公開リポジトリ)。ファイル冒頭に CC0 1.0 と明記されている。
+// ブランチは **main** — 上流の README にある通り 2026-01-07 に master から
+// 改名された。改名時点では master も同じ内容を返す (実測で catalog-nk.yml が
+// バイト一致) が、いずれ消える側を指し続けると静かに壊れるので既定を指す。
 const char *kBase =
     "https://raw.githubusercontent.com/polyanskiy/"
-    "refractiveindex.info-database/master/database/";
+    "refractiveindex.info-database/main/database/";
 const char *kSite = "https://refractiveindex.info/";
 
 // 一覧に出す上限。カタログは 7000 件を超えるので全部並べると操作できない。
@@ -78,6 +81,8 @@ void registerStrings()
               "一覧は %1 件で打ち切りました。絞り込むと残りも探せます。",
               "The list is truncated at %1 entries. Use the filter to reach "
               "the rest.");
+    I18n::reg("ri_detail", "取得先: %1", "Will fetch: %1");
+    I18n::reg("ri_source", "出典: %1", "Source: %1");
     I18n::reg("ri_pick", "先に一覧から材料を選んでください。",
               "Select a material from the list first.");
 }
@@ -129,6 +134,8 @@ RefractiveIndexDialog::RefractiveIndexDialog(QWidget *parent)
     v->addWidget(m_filter);
 
     m_list = new QListWidget(this);
+    connect(m_list, &QListWidget::currentRowChanged,
+            this, &RefractiveIndexDialog::showSelected);
     v->addWidget(m_list, 1);
 
     m_detail = new QLabel(this);
@@ -195,6 +202,17 @@ void RefractiveIndexDialog::applyFilter()
     m_status->setText(msg);
 }
 
+// 選択した項目について「どのファイルを取りに行くか」を出す。
+// 通信先を隠さない方針の続きで、押す前に対象が分かるようにする。
+void RefractiveIndexDialog::showSelected()
+{
+    if (!m_detail) return;
+    const int row = m_list ? m_list->currentRow() : -1;
+    if (row < 0 || row >= m_shown.size()) { m_detail->clear(); return; }
+    m_detail->setText(I18n::tr("ri_detail")
+                          .arg("data/" + m_entries[m_shown[row]].dataPath));
+}
+
 #ifdef OFD_USE_NETWORK
 
 void RefractiveIndexDialog::fetchCatalog()
@@ -258,6 +276,7 @@ void RefractiveIndexDialog::fetchSelected()
         }
         m_table = t;
         m_name  = e.label();
+        m_reference = riPlainText(d.reference);
         m_status->setStyleSheet("font-size:11px; color:#555;");
         m_status->setText(I18n::tr("ri_taken")
                               .arg(t.rows)

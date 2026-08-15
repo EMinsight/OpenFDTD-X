@@ -72,6 +72,13 @@ bool riFormulaSupported(int formula);
 // 式から n を求める。範囲外・対応外は false。
 bool riEvalN(const RiData &d, double lambda_um, double *n);
 
+// REFERENCES / COMMENTS を平文にする。
+// このフィールドには HTML (<a href> / <i> / <b>) が入っており、2026-06 の
+// 上流通知で **Markdown も入る**ことになった。画面へそのまま流すと QLabel の
+// 既定 (Qt::AutoText) が HTML と解釈して表示が崩れるので、タグと Markdown の
+// 装飾記号を落として平文にしてから出す。
+QString riPlainText(const QString &s);
+
 // 取り込み用の n,k 表にする。
 // - 表があればそれを使う (k の表があれば重ねる)
 // - 表が無く式だけなら、有効範囲を samples 点で刻む

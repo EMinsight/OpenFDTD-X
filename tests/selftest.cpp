@@ -26181,6 +26181,26 @@ static void testRefractiveIndexDb(const QString &dataDir)
         if (!(s.n > 1.0) || !(s.k >= 0.0)) nPositive = false;
     check(nPositive, "riinfo: combined table is physical (n>1, k>=0)");
 
+    // ── 出典の平文化 ──
+    // REFERENCES には HTML が入っており、上流通知 (2026-06) で Markdown も
+    // 入ることになった。画面へ流す前に落とせているか実データで判定する。
+    check(agd.reference.contains("<a href"), "riinfo: fixture keeps raw HTML");
+    const QString ref = riPlainText(agd.reference);
+    check(!ref.contains('<') && !ref.contains('>'),
+          "riinfo: plain text has no tags");
+    check(ref.contains("Johnson") && ref.contains("Phys. Rev. B") &&
+          ref.contains("4370"),
+          "riinfo: plain text keeps the citation itself");
+    check(!ref.contains("https://doi.org"),
+          "riinfo: the href target is dropped, not shown as text");
+    check(riPlainText("[title](https://x/y) and **bold** and __u__")
+              == "title and bold and u",
+          "riinfo: markdown link and emphasis are unwrapped");
+    check(riPlainText("a &amp; b &lt;c&gt;") == "a & b <c>",
+          "riinfo: entities are decoded");
+    check(riPlainText("  x   y  \n\n  z ") == "x y\nz",
+          "riinfo: blank lines and runs of spaces are collapsed");
+
     // 対応外の式はそう言う (静かに誤った値を出さない)
     check(!riFormulaSupported(3) && !riFormulaSupported(9),
           "riinfo: formulas 3-9 are reported unsupported");

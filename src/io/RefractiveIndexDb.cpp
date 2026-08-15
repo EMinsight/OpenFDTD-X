@@ -257,6 +257,29 @@ RiData parseRiData(const QByteArray &yaml)
 
 bool riFormulaSupported(int formula) { return formula == 1 || formula == 2; }
 
+QString riPlainText(const QString &src)
+{
+    QString t = src;
+    // Markdown のリンク [表示](URL) は表示だけ残す
+    t.replace(QRegularExpression("\\[([^\\]]*)\\]\\([^)]*\\)"), "\\1");
+    // HTML タグを落とす (<a href=...> <i> <b> <br> …)
+    t.remove(QRegularExpression("<[^>]*>"));
+    // よく出る実体参照だけ戻す
+    t.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+     .replace("&quot;", "\"").replace("&nbsp;", " ");
+    // Markdown の強調記号 (** / __ / * / _) を落とす
+    t.replace(QRegularExpression("\\*\\*([^*]*)\\*\\*"), "\\1");
+    t.replace(QRegularExpression("__([^_]*)__"), "\\1");
+    // 行内の空白を詰める (改行は残す)
+    const QStringList rows = t.split('\n');
+    QStringList out;
+    for (const QString &r : rows) {
+        const QString c = r.simplified();
+        if (!c.isEmpty()) out << c;
+    }
+    return out.join('\n');
+}
+
 // formula 1 : n² = 1 + c0 + Σ c(2i-1)·λ² / (λ² − c(2i)²)
 // formula 2 : n² = 1 + c0 + Σ c(2i-1)·λ² / (λ² − c(2i))
 bool riEvalN(const RiData &d, double lambda_um, double *n)
