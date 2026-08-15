@@ -246,6 +246,26 @@ QString AcousticResultModel::toJson(const RirAnalysisResult &result)
     QJsonArray warnings;
     for (const std::string &w : result.warnings)
         warnings.append(QString::fromStdString(w));
+    // 実測 STI (IEC 60268-16 間接法、雑音項なし)。追加キーのみ。
+    {
+        QJsonObject sj;
+        sj["value"] = metricJson(result.sti.sti);
+        QJsonArray sb;
+        for (const StiBandResult &b : result.sti.bands) {
+            QJsonArray mtf;
+            for (double m : b.mtf) mtf.append(m);
+            sb.append(QJsonObject{
+                { "center_hz", b.centerHz },
+                { "valid", b.valid },
+                { "mti", b.mti },
+                { "mtf", mtf } });
+        }
+        sj["bands"] = sb;
+        if (!result.sti.warning.empty())
+            sj["warning"] = QString::fromStdString(result.sti.warning);
+        root["sti"] = sj;
+    }
+
     root["warnings"] = warnings;
 
     return QString::fromUtf8(

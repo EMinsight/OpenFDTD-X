@@ -17,6 +17,7 @@
 #include "BandFilter.h"
 #include "DirectSoundDetector.h"
 #include "ReflectionDetector.h"
+#include "SpeechTransmissionIndex.h"
 
 namespace ofd {
 namespace acoustics {
@@ -101,12 +102,13 @@ struct RirAnalysisResult {
     std::vector<ReflectionEvent> reflections;
     ReflectionTimeSummary reflectionSummary;
     MetricValue absoluteSplDb; // ピーク絶対 SPL。Absolute 校正時のみ valid
+    StiResult   sti;           // 実測 STI (IEC 60268-16 間接法、雑音項なし)
     AnalysisQuality overallQuality;
     std::vector<std::string> warnings;
 
     RirAnalysisResult()
         : preprocess(), directSound(), bands(), reflections(),
-          reflectionSummary(), absoluteSplDb(),
+          reflectionSummary(), absoluteSplDb(), sti(),
           overallQuality(AnalysisQuality::Invalid), warnings() {}
 };
 

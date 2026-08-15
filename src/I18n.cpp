@@ -837,6 +837,22 @@ void I18n::loadTables() {
         "分析完了 — 総合品質: %1 / 動的範囲 %2 dB / 直接音 %3 ms",
         "Done — overall quality: %1 / dynamic range %2 dB / direct sound %3 ms");
     add("rir_result_section", "結果 (ISO 3382-1 指標)", "Results (ISO 3382-1)");
+    add("rir_sti_value", "実測 STI: %1 (%2)", "Measured STI: %1 (%2)");
+    add("rir_sti_invalid", "実測 STI: 算出できません (%1)",
+        "Measured STI: not computable (%1)");
+    add("rir_sti_bad", "不良", "bad");
+    add("rir_sti_poor", "劣", "poor");
+    add("rir_sti_fair", "可", "fair");
+    add("rir_sti_good", "良", "good");
+    add("rir_sti_excellent", "優", "excellent");
+    add("rir_sti_note",
+        "▸ 実測 STI は RIR だけから求めた室の伝送性能です (IEC 60268-16 間接法)。"
+        "背景雑音は考慮していないため、雑音のある実運用での明瞭度はこれより"
+        "低くなります。等級は規格の区分 (0.30/0.45/0.60/0.75) によります。",
+        "Measured STI is the room's transmission performance derived from the "
+        "RIR alone (IEC 60268-16 indirect method). Background noise is not "
+        "included, so intelligibility in a noisy room will be lower. The grade "
+        "follows the standard's bands (0.30/0.45/0.60/0.75).");
     add("rir_st_note",
         "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m で測った RIR を"
         "前提とする指標です (ISO 3382-1 Annex C)。別の配置の RIR でも数値は"

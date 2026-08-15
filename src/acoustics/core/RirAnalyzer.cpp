@@ -157,6 +157,13 @@ RirAnalyzer::analyze(ArrayView<const double> rir, double sampleRateHz) const {
         res.bands.push_back(bm);
     }
 
+    // ── 実測 STI (IEC 60268-16 間接法) ──
+    // 前提を満たさない RIR (短い / fs 不足) では invalid が返る。
+    // 背景雑音は考慮しない (雑音項なし) — 表示側がその旨を注記する。
+    res.sti = computeSti(xv, sampleRateHz, res.directSound.sampleIndex);
+    if (!res.sti.sti.valid && !res.sti.warning.empty())
+        res.warnings.push_back(res.sti.warning);
+
     // ── 反射音検出 (広帯域) ──
     res.reflections =
         detectReflections(xv, sampleRateHz, res.directSound,

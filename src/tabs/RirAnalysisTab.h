@@ -82,6 +82,7 @@ private:
     // ③ 結果
     QTableWidget *m_metricTable = nullptr;
     QLabel       *m_warnings = nullptr;
+    QLabel       *m_stiLabel = nullptr;
 
     // ④ プロット + 反射一覧
     MiniPlot     *m_wavePlot = nullptr;
