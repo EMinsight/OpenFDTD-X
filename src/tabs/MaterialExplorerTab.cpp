@@ -67,6 +67,18 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
+    ofd::I18n::reg("mex_why_riinfo",
+              "そのデータベースの取得・解釈が未実装です — 手元に n,k の CSV が"
+              "あれば「📁 n,k 取込」でそのまま使えます",
+              "fetching and interpreting that database is not implemented — if "
+              "you already have an n,k CSV, the import button accepts it as is");
+    ofd::I18n::reg("mex_why_temp",
+              "温度依存の材料が .ofd にありません — 材料は "
+              "material = type epsr esgm amur msgm だけで温度の概念が無く、"
+              "表を作っても渡す先がありません",
+              "temperature-dependent materials do not exist in .ofd — a "
+              "material is only material = type epsr esgm amur msgm, with no "
+              "notion of temperature, so a table would have nowhere to go");
     ofd::I18n::reg("mex_nk_unit",     "波長単位", "Wavelength unit");
     ofd::I18n::reg("mex_nk_auto",     "自動", "Auto");
     ofd::I18n::reg("mex_nk_dialog",   "実測 n,k テーブルを開く",
@@ -363,7 +375,11 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
     connect(impNk, &QPushButton::clicked, this,
             &MaterialExplorerTab::importNk);
-    tabhelp::markNotImplemented(riBtn, I18n::tr(tabhelp::notimpl::kExternal));   // refractiveindex.info 連携は未配線
+    // 「外部アプリの起動が要る」ではない — refractiveindex.info は web の
+    // データベースであってアプリではないし、HTTP 取得は OceanEnvironmentTab に
+    // 実装があり、取り込んだ n,k を扱う経路もこのタブの「n,k 取り込み」に既にある。
+    // 無いのはそのデータベース専用の取得・解釈だけなので、そう書く
+    tabhelp::markNotImplemented(riBtn, I18n::tr("mex_why_riinfo"));
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
@@ -560,7 +576,9 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     applyRow->addWidget(m_addBtn);
     auto *tempBtn  = new QPushButton(I18n::tr("mex_temp_table"), sApply);
     auto *anisoBtn = new QPushButton(I18n::tr("mex_aniso"), sApply);
-    tabhelp::markNotImplemented(tempBtn, I18n::tr(tabhelp::notimpl::kData));    // 温度依存テーブルは未配線
+    // kData (データが同梱されていない) では浅い — データがあっても渡す先が無い。
+    // .ofd の材料は material = type epsr esgm amur msgm だけで温度の概念が無い
+    tabhelp::markNotImplemented(tempBtn, I18n::tr("mex_why_temp"));
     tabhelp::markNotImplemented(anisoBtn, I18n::tr(tabhelp::notimpl::kModel));   // 異方性テンソルは未配線
     applyRow->addWidget(tempBtn);
     applyRow->addWidget(anisoBtn);
