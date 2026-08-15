@@ -1968,6 +1968,13 @@ static void testOperaAcousticSettings()
         s.solverExecutable = "/opt/acoustic/solver";
         s.solverThreads = 8;
         s.solverProcesses = 2;
+        // ESS 掃引逆畳み込み (後から追加されたフィールド — 網羅漏れがあった箇所)
+        s.sweepDeconvolve = true;
+        s.sweepStartHz = 31.5;
+        s.sweepEndHz = 16000.0;
+        s.sweepSec = 7.5;
+        s.sweepHarmonics = true;
+
 
         QTemporaryFile ofdx;
         ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_opera_XXXXXX.ofdx");
@@ -2000,6 +2007,12 @@ static void testOperaAcousticSettings()
                   "opera rt solver executable");
             check(q.solverThreads == 8 && q.solverProcesses == 2,
                   "opera rt solver threads/processes");
+            // ESS 掃引逆畳み込み — 後から追加され往復検査から漏れていた 5 つ
+            check(q.sweepDeconvolve == true, "opera rt sweep deconvolve");
+            check(nearlyEq(q.sweepStartHz, 31.5) &&
+                  nearlyEq(q.sweepEndHz, 16000.0) &&
+                  nearlyEq(q.sweepSec, 7.5), "opera rt sweep f1/f2/T");
+            check(q.sweepHarmonics == true, "opera rt sweep harmonics");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -2077,6 +2090,11 @@ static void testOperaAcousticSettings()
                   "legacy ofdx leaves solver defaults");
             check(q.calibrationOffsetDb == 0.0,
                   "legacy ofdx leaves calibrationOffsetDb=0");
+            check(!q.sweepDeconvolve && !q.sweepHarmonics &&
+                  nearlyEq(q.sweepStartHz, 20.0) &&
+                  nearlyEq(q.sweepEndHz, 20000.0) &&
+                  nearlyEq(q.sweepSec, 5.0),
+                  "legacy ofdx leaves sweep defaults");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");
