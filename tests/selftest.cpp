@@ -26201,9 +26201,108 @@ static void testRefractiveIndexDb(const QString &dataDir)
     check(riPlainText("  x   y  \n\n  z ") == "x y\nz",
           "riinfo: blank lines and runs of spaces are collapsed");
 
-    // 対応外の式はそう言う (静かに誤った値を出さない)
-    check(!riFormulaSupported(3) && !riFormulaSupported(9),
-          "riinfo: formulas 3-9 are reported unsupported");
+    // ── 式 3〜9 (定義は上流同梱の公式仕様書 "Dispersion formulas.pdf") ──
+    // 実データのアンカー 3 本 + 仕様書どおりの厳密な恒等式で判定する。
+
+    // formula 6 (Gases): 空気 (Ciddor 1996)。公表の空気屈折率
+    // n−1 ≈ 2.765e-4 (633 nm) / 2.77e-4 (589 nm) と突き合わせる
+    const RiData air = parseRiData(slurp("Air-Ciddor.yml"));
+    check(air.ok && air.formula == 6, "riinfo: air is formula 6");
+    {
+        double n = 0.0;
+        check(riEvalN(air, 0.6328, &n) && std::fabs((n - 1.0) - 2.765e-4) < 2e-7,
+              "riinfo: air refractivity at 633 nm matches the published value");
+        check(riEvalN(air, 0.5893, &n) && std::fabs((n - 1.0) - 2.771e-4) < 2e-7,
+              "riinfo: air refractivity at 589 nm matches the published value");
+    }
+
+    // formula 4: Si (Chandler-Horowitz)。CO2 レーザー波長の定番値と比較
+    const RiData si4 = parseRiData(slurp("Si-ChandlerHorowitz.yml"));
+    check(si4.ok && si4.formula == 4, "riinfo: Si is formula 4");
+    {
+        double n = 0.0;
+        check(riEvalN(si4, 10.6, &n) && std::fabs(n - 3.4179) < 5e-4,
+              "riinfo: Si n(10.6 um) = 3.4179 (published)");
+        // tabulated k と組んでいるので取り込みも通ること
+        const NkTable t = riToNkTable(si4);
+        check(t.ok && t.hasK, "riinfo: Si formula 4 + tabulated k combined");
+    }
+
+    // formula 3 (Polynomial): CCl4 (Moutzouris)。CRC の n_D = 1.4601 に対し
+    // 測定温度差 (dn/dT ≈ −5.8e-4/K) 込みで ±0.005
+    const RiData ccl4 = parseRiData(slurp("CCl4-Moutzouris.yml"));
+    check(ccl4.ok && ccl4.formula == 3, "riinfo: CCl4 is formula 3");
+    {
+        double n = 0.0;
+        check(riEvalN(ccl4, 0.5893, &n) && std::fabs(n - 1.4601) < 5e-3,
+              "riinfo: CCl4 n_D within thermal spread of the CRC value");
+    }
+
+    // formula 5 (Cauchy) と 3 の恒等式: 定数 1 項なら f5(C1=a) == f3(C1=a²)
+    {
+        RiData f5; f5.ok = true; f5.formula = 5; f5.coeff = { 1.7 };
+        RiData f3; f3.ok = true; f3.formula = 3; f3.coeff = { 1.7 * 1.7 };
+        double n5 = 0.0, n3 = 0.0;
+        check(riEvalN(f5, 1.0, &n5) && riEvalN(f3, 1.0, &n3) &&
+              std::fabs(n5 - 1.7) < 1e-12 && std::fabs(n5 - n3) < 1e-12,
+              "riinfo: Cauchy and polynomial agree in the constant limit");
+        // べき乗項: n = 1.5 + 0.01·λ⁻² を λ=2 で厳密に
+        f5.coeff = { 1.5, 0.01, -2.0 };
+        check(riEvalN(f5, 2.0, &n5) && std::fabs(n5 - 1.5025) < 1e-12,
+              "riinfo: Cauchy power term is exact");
+    }
+
+    // formula 7 (Herzberger): λ² = 1.028 で 1/(λ²−0.028) = 1 になるので
+    // n = C1+C2+C3+C4·1.028+C5·1.028²+C6·1.028³ が厳密に成り立つ
+    {
+        RiData f7; f7.ok = true; f7.formula = 7;
+        f7.coeff = { 2.0, 0.3, 0.05, 0.01, 0.002, 0.0005 };
+        const double lam = std::sqrt(1.028);
+        const double want = 2.0 + 0.3 + 0.05 + 0.01 * 1.028
+                          + 0.002 * 1.028 * 1.028
+                          + 0.0005 * 1.028 * 1.028 * 1.028;
+        double n = 0.0;
+        check(riEvalN(f7, lam, &n) && std::fabs(n - want) < 1e-12,
+              "riinfo: Herzberger at the unit-denominator wavelength is exact");
+    }
+
+    // formula 8 (Retro): C2=C4=0 なら r=C1 で n²=(1+2r)/(1−r)。
+    // C1=0.25 → n=√2 (厳密)。r≥1 は破綻として弾く
+    {
+        RiData f8; f8.ok = true; f8.formula = 8; f8.coeff = { 0.25, 0.0, 0.0, 0.0 };
+        double n = 0.0;
+        check(riEvalN(f8, 1.0, &n) && std::fabs(n - std::sqrt(2.0)) < 1e-12,
+              "riinfo: retro inversion is exact");
+        f8.coeff = { 1.5, 0.0, 0.0, 0.0 };
+        check(!riEvalN(f8, 1.0, &n), "riinfo: retro refuses r >= 1");
+    }
+
+    // formula 9 (Exotic): C2=C4=0 → n=√C1 (厳密)
+    {
+        RiData f9; f9.ok = true; f9.formula = 9;
+        f9.coeff = { 2.25, 0.0, 0.0, 0.0, 0.0, 1.0 };
+        double n = 0.0;
+        check(riEvalN(f9, 1.0, &n) && std::fabs(n - 1.5) < 1e-12,
+              "riinfo: exotic constant limit is exact");
+    }
+
+    // Sellmeier 1 と 2 の恒等式: f2 の共鳴係数を f1 の二乗にすると一致する
+    {
+        RiData f1; f1.ok = true; f1.formula = 1; f1.coeff = { 0.0, 1.0, 0.1 };
+        RiData f2; f2.ok = true; f2.formula = 2; f2.coeff = { 0.0, 1.0, 0.01 };
+        double a = 0.0, b = 0.0;
+        check(riEvalN(f1, 0.6, &a) && riEvalN(f2, 0.6, &b) &&
+              std::fabs(a - b) < 1e-12,
+              "riinfo: Sellmeier 1 == Sellmeier 2 with squared resonance");
+    }
+
+    // 全部の式が「対応」と名乗ること (formula A = -1 は非対応のまま)
+    for (int f = 1; f <= 9; ++f)
+        if (!riFormulaSupported(f))
+            check(false, "riinfo: formula 1-9 must be supported");
+    check(!riFormulaSupported(-1) && !riFormulaSupported(0) &&
+          !riFormulaSupported(10),
+          "riinfo: out-of-range formulas stay unsupported");
 }
 
 int main(int argc, char *argv[])

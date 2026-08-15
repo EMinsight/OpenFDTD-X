@@ -64,10 +64,11 @@ void registerStrings()
               "Could not fetch the data: %1");
     I18n::reg("ri_parse_fail", "読めませんでした: %1", "Could not read it: %1");
     I18n::reg("ri_unsupported",
-              "この項目は式 (formula %1) で定義されていて、まだ対応していません。"
-              "対応しているのは Sellmeier の式 1 と 2、および表形式です。",
-              "This entry is defined by formula %1, which is not supported yet. "
-              "Supported: Sellmeier formulas 1 and 2, and tabulated data.");
+              "この項目の式 (formula %1) は仕様が確認できず、対応していません。"
+              "対応しているのは式 1〜9 (上流仕様書の全定義) と表形式です。",
+              "This entry uses formula %1, whose definition is not available, "
+              "so it is not supported. Supported: formulas 1-9 (all defined in "
+              "the upstream specification) and tabulated data.");
     I18n::reg("ri_taken", "%1 点 (%2–%3 µm) を取り込みます。",
               "Importing %1 points (%2–%3 µm).");
     I18n::reg("ri_nonet",
