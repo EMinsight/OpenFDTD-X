@@ -1,0 +1,35 @@
+# this file is part of refractiveindex.info database
+# refractiveindex.info database is in the public domain
+# copyright and related rights waived via CC0 1.0
+
+- DIVIDER: "Research data"
+- SHELF: main
+  name: "MAIN - simple inorganic materials"
+  content:
+    - DIVIDER: "Ag - Silver"
+    - BOOK: Ag
+      name: "Ag (Silver)"
+      content:
+        - DIVIDER: "Experimental data: bulk, thick film"
+        - PAGE: Johnson
+          name: "Johnson and Christy 1972: n,k 0.188–1.94 µm"
+          data: main/Ag/nk/Johnson.yml
+        - PAGE: Choi
+          name: "Choi et al. 2020: n,k 1.23–6.99 µm"
+          data: main/Ag/nk/Choi.yml
+        - PAGE: Ferrera-298K
+          name: "Ferrera et al. 2019: n,k 0.245–1.45 µm; 298 K"
+          data: main/Ag/nk/Ferrera-298K.yml
+        - PAGE: Ferrera-404K
+          name: "Ferrera et al. 2019: n,k 0.245–1.45 µm; 404 K"
+          data: main/Ag/nk/Ferrera-404K.yml
+        - PAGE: Ferrera-501K
+- SHELF: specs
+  name: "SPEC SHEETS - data from material suppliers"
+  content:
+    - BOOK: SCHOTT-optical
+      name: "SCHOTT - Optical glass"
+      content:
+        - PAGE: N-BK7
+          name: "N-BK7"
+          data: specs/schott/optical/N-BK7.yml

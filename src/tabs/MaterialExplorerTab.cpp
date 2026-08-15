@@ -1,5 +1,7 @@
 // MaterialExplorerTab.cpp
 #include "MaterialExplorerTab.h"
+
+#include "../widgets/RefractiveIndexDialog.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/DispersionFit.h"
@@ -67,11 +69,13 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
-    ofd::I18n::reg("mex_why_riinfo",
-              "そのデータベースの取得・解釈が未実装です — 手元に n,k の CSV が"
-              "あれば「📁 n,k 取込」でそのまま使えます",
-              "fetching and interpreting that database is not implemented — if "
-              "you already have an n,k CSV, the import button accepts it as is");
+    ofd::I18n::reg("mex_riinfo_tip",
+              "公開の屈折率データベース (CC0 1.0) から n,k を取り込みます。"
+              "押したときだけ通信します",
+              "Import n,k from the public refractive index database (CC0 1.0). "
+              "It only connects when you press a button");
+    ofd::I18n::reg("mex_riinfo_ok", "%1 を取り込みました (%2 点)",
+              "Imported %1 (%2 points)");
     ofd::I18n::reg("mex_why_temp",
               "温度依存の材料が .ofd にありません — 材料は "
               "material = type epsr esgm amur msgm だけで温度の概念が無く、"
@@ -375,11 +379,11 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
     connect(impNk, &QPushButton::clicked, this,
             &MaterialExplorerTab::importNk);
-    // 「外部アプリの起動が要る」ではない — refractiveindex.info は web の
-    // データベースであってアプリではないし、HTTP 取得は OceanEnvironmentTab に
-    // 実装があり、取り込んだ n,k を扱う経路もこのタブの「n,k 取り込み」に既にある。
-    // 無いのはそのデータベース専用の取得・解釈だけなので、そう書く
-    tabhelp::markNotImplemented(riBtn, I18n::tr("mex_why_riinfo"));
+    // 実装済み: 公開データベース (CC0) から n,k を取り込む。通信は
+    // ダイアログの中で利用者が押したときだけ行う (io/RefractiveIndexDb)
+    riBtn->setToolTip(I18n::tr("mex_riinfo_tip"));
+    connect(riBtn, &QPushButton::clicked, this,
+            &MaterialExplorerTab::importFromRiInfo);
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
@@ -691,6 +695,26 @@ void MaterialExplorerTab::buildDatabase()
 
 // 実測 n,k テーブル (CSV / TSV / 空白区切り) を読んでデータベースへ足す。
 // **波長の単位をどう決めたかを必ず画面に書く** (推測を黙って通さない)。
+// refractiveindex.info からの取り込み。ダイアログが n,k 表まで作るので、
+// ここから先は手元の CSV を読んだときとまったく同じ経路を通す。
+void MaterialExplorerTab::importFromRiInfo()
+{
+    RefractiveIndexDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const NkTable t = dlg.table();
+    if (!t.ok) return;
+
+    m_imports.push_back(t);
+    m_importNames.push_back(dlg.name());
+    buildDatabase();
+
+    if (m_fitStatus) {
+        m_fitStatus->setStyleSheet("font-size:11px; color:#555;");
+        m_fitStatus->setText(I18n::tr("mex_riinfo_ok")
+                                 .arg(dlg.name()).arg(t.rows));
+    }
+}
+
 void MaterialExplorerTab::importNk()
 {
     const QString path = QFileDialog::getOpenFileName(

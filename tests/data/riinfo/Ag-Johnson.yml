@@ -1,0 +1,21 @@
+# this file is part of refractiveindex.info database
+# refractiveindex.info database is in the public domain
+# copyright and related rights waived via CC0 1.0
+
+REFERENCES: |
+    P. B. Johnson and R. W. Christy.
+    Optical constants of the noble metals.
+    <a href="https://doi.org/10.1103/PhysRevB.6.4370"><i>Phys. Rev. B</i> <b>6</b>, 4370-4379 (1972)</a>
+COMMENTS: |
+    Room temperature
+DATA:
+  - type: tabulated nk
+    data: |
+        0.1879 1.07 1.212
+        0.1916 1.10 1.232
+        0.1953 1.12 1.255
+        0.1993 1.14 1.277
+        0.2033 1.15 1.296
+        0.2073 1.18 1.312
+        0.2119 1.20 1.325
+        0.2164 1.22 1.336

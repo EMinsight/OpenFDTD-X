@@ -273,6 +273,10 @@ src/
    同じ関数の出力をそのまま出しており、`extraLines` 由来の行 —— つまり
    GUI が知らないまま保持しているキー —— を強調表示する。
 
+   材料は **refractiveindex.info の公開データベース (CC0)** から n,k を
+   取り込める (材料 Explorer の「refractiveindex.info」)。通信は押したときだけで、
+   通信先は画面に出る。Qt6::Network が無い構成では配布ページを開く案内になる。
+
 2. **拡張ドメインは `.ofdx` (JSON) に分離** — 光・音響・水中・tidy3d の設定は
    `.ofd` と同じ basename のサイドカー JSON に保存。本家カーネルは無視するので
    **下位互換 100%**。
