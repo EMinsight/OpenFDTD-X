@@ -42,7 +42,8 @@ private slots:
     void filterTree(const QString &query);
     void addToMaterials();
     void runFit();                  // 参照データへ分散モデルを当てる (実計算)
-    void importNk();                // 実測 n,k テーブル (CSV) を読み込む
+    void importNk();
+    void importFromRiInfo();                // 実測 n,k テーブル (CSV) を読み込む
 
 private:
     // DBの1材料。glassIndex >= 0 なら GlassCatalog::all() の光学ガラス。

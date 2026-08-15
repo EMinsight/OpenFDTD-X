@@ -72,11 +72,29 @@ const bool s_i18n = [] {
               "Component candidates: p (sound pressure), etc.");
     // エクスポート (mock: エクスポート / Export)
     I18n::reg("p2x_export", "エクスポート", "Export");
+    // 「未実装」ではなく「ここには無い」— どこにあるかまで書く
     I18n::reg("p2x_export_hint",
-              "時系列データ・場分布を .h5 で保存 "
-              "(書出しは未実装 — 設定の記録のみ)",
-              "Saves time-series data and field distributions as .h5 "
-              "(export is not implemented — settings are recorded only)");
+              "場分布の HDF5 はカーネルが実行時に time_series_data.h5 として"
+              "書き出します。収束履歴の CSV とプロジェクト+収束履歴の .h5 は"
+              "メニューの「CSV出力」「HDF5出力」にあります。",
+              "The kernel writes the field distributions as "
+              "time_series_data.h5 during the run. The convergence-history CSV "
+              "and the project+convergence .h5 are on the CSV/HDF5 export "
+              "menu items.");
+    I18n::reg("p2x_why_csv",
+              "この画面からは実行できません (収束履歴の CSV はメニューの"
+              "「CSV出力」、場分布の CSV は H5アニメタブの現在フレーム書出に"
+              "あります)",
+              "it cannot be run from this screen (the convergence-history CSV "
+              "is on the CSV export menu item, and the field-slice CSV is the "
+              "current-frame export on the HDF5 animation tab)");
+    I18n::reg("p2x_why_h5",
+              "この画面からは実行できません (場分布の HDF5 はカーネルが実行時に"
+              "書き、プロジェクト+収束履歴の .h5 はメニューの「HDF5出力」に"
+              "あります)",
+              "it cannot be run from this screen (the kernel writes the field "
+              "HDF5 during the run, and the project+convergence .h5 is on the "
+              "HDF5 export menu item)");
     return true;
 }();
 
@@ -336,9 +354,11 @@ Post2Tab::Post2Tab(Project *project, QWidget *parent)
                                    + I18n::tr("pp_export_csv"), s5);
     auto *h5Btn  = new QPushButton(QString::fromUtf8("💾 ")
                                    + I18n::tr("pp_export_h5"), s5);
-    // 書出しは未配線 (Runner 側の実行時出力のみ) — 押せる形で放置しない
-    tabhelp::markNotImplemented(csvBtn, I18n::tr(tabhelp::notimpl::kKernel));
-    tabhelp::markNotImplemented(h5Btn, I18n::tr(tabhelp::notimpl::kKernel));
+    // 理由は「カーネル側に出力が無い」ではない — **逆で、既にある**。
+    // 収束履歴の CSV とプロジェクト+収束履歴の .h5 はメニューに実装済みで、
+    // 場分布の HDF5 はカーネル自身が実行時に書く。ここから作るものが無い
+    tabhelp::markNotImplemented(csvBtn, I18n::tr("p2x_why_csv"));
+    tabhelp::markNotImplemented(h5Btn, I18n::tr("p2x_why_h5"));
     r5->addWidget(csvBtn);
     r5->addWidget(h5Btn);
     r5->addWidget(makeBadge("HDF5", s5));

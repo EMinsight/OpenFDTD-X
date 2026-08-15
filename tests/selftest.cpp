@@ -160,6 +160,8 @@
 #include <QRegularExpression>
 #include <QDirIterator>
 #include <QTemporaryDir>
+#include "../src/io/OfdPreview.h"
+#include "../src/io/RefractiveIndexDb.h"
 #include <QImage>
 #include <QPainter>
 
@@ -26037,6 +26039,173 @@ static void testTouchstone()
     }
 }
 
+// GUI が知らないキーの行番号 — プレビューの強調が正しい行を指すか。
+// 誤った行を強調すると「保持されている」という主張が嘘になるので判定する。
+static void testOfdPreviewExtraLines()
+{
+    const QString src =
+        "OpenFDTD 4 2\n"
+        "title = preview extra lines\n"
+        "xmesh = 0 2 1\n"
+        "ymesh = 0 2 1\n"
+        "zmesh = 0 2 1\n"
+        "mystery_key = 1 2 3\n"        // GUI が知らないキー
+        "another_unknown = abc\n"
+        "end\n";
+    Project p;
+    QString err;
+    if (!OfdIO::parse(src, p, &err)) {
+        check(false, "preview extra: parse");
+        return;
+    }
+    check(p.extraLines().size() == 2, "preview extra: kept 2 unknown keys");
+
+    const OfdPreviewText pv = buildOfdPreview(p);
+    check(pv.extraRows.size() == p.extraLines().size(),
+          "preview extra: row count matches");
+
+    const QStringList rows = pv.ofd.split('\n');
+    bool pointsAtUnknown = !pv.extraRows.isEmpty();
+    for (int i = 0; i < pv.extraRows.size(); ++i) {
+        const int r = pv.extraRows[i];
+        if (r < 0 || r >= rows.size() || rows[r] != p.extraLines()[i])
+            pointsAtUnknown = false;
+    }
+    check(pointsAtUnknown, "preview extra: rows point at the unknown keys");
+
+    // 強調行が `end` より前にあること (末尾の end を強調しない)
+    bool beforeEnd = true;
+    for (int r : pv.extraRows)
+        if (r >= rows.size() - 2) beforeEnd = false;   // 末尾は end + 空行
+    check(beforeEnd, "preview extra: rows are before end");
+
+    // 未知キーが無い .ofd では強調しない
+    Project plain;
+    check(OfdIO::parse("OpenFDTD 4 2\ntitle = t\nend\n", plain, &err),
+          "preview extra: parse plain");
+    check(buildOfdPreview(plain).extraRows.isEmpty(),
+          "preview extra: nothing to highlight when all keys are modelled");
+}
+
+
+// refractiveindex.info の読み手。実データ (CC0) を tests/data/riinfo に置いて
+// **公表値と突き合わせる**。式を当てずっぽうで実装していないことの担保。
+static void testRefractiveIndexDb(const QString &dataDir)
+{
+    const QString dir = dataDir + "/riinfo";
+    auto slurp = [&](const char *name) {
+        QFile f(dir + "/" + QString::fromLatin1(name));
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    };
+
+    // ── カタログ ──
+    const QByteArray cat = slurp("catalog-excerpt.yml");
+    check(!cat.isEmpty(), "riinfo: catalog fixture present");
+    const QVector<RiEntry> entries = parseRiCatalog(cat);
+    check(!entries.isEmpty(), "riinfo: catalog parsed");
+
+    const RiEntry *ag = nullptr, *bk7 = nullptr;
+    for (const RiEntry &e : entries) {
+        if (e.book == "Ag" && e.page == "Johnson") ag = &e;
+        if (e.page == "N-BK7") bk7 = &e;
+    }
+    check(ag != nullptr, "riinfo: catalog has Ag/Johnson");
+    if (ag) {
+        check(ag->dataPath == "main/Ag/nk/Johnson.yml",
+              "riinfo: data path includes the nk/ component");
+        check(ag->bookName == "Ag (Silver)", "riinfo: book name follows the book");
+        check(ag->shelf == "main", "riinfo: shelf tracked");
+    }
+    check(bk7 != nullptr, "riinfo: catalog spans shelves");
+    if (bk7) {
+        check(bk7->shelf == "specs", "riinfo: second shelf tracked");
+        check(bk7->dataPath == "specs/schott/optical/N-BK7.yml",
+              "riinfo: spec sheet path");
+    }
+    // data: の無い PAGE は候補にしない (取りに行く先が無いため)
+    for (const RiEntry &e : entries)
+        if (e.dataPath.isEmpty())
+            check(false, "riinfo: entry without data path must be dropped");
+
+    // ── 表形式 (tabulated nk) ──
+    const RiData agd = parseRiData(slurp("Ag-Johnson.yml"));
+    check(agd.ok, "riinfo: Ag parsed");
+    check(agd.nkTable.size() == 8, "riinfo: Ag rows (fixture truncated to 8)");
+    if (agd.nkTable.size() >= 1) {
+        check(std::fabs(agd.nkTable[0].lambda_um - 0.1879) < 1e-9 &&
+              std::fabs(agd.nkTable[0].n - 1.07) < 1e-9 &&
+              std::fabs(agd.nkTable[0].k - 1.212) < 1e-9,
+              "riinfo: Ag first row (lambda n k)");
+    }
+    const NkTable agt = riToNkTable(agd);
+    check(agt.ok && agt.hasK, "riinfo: Ag -> n,k table with k");
+
+    // ── 式 formula 1 (Sellmeier) : 溶融石英の公表値と比較 ──
+    const RiData si = parseRiData(slurp("SiO2-Malitson.yml"));
+    check(si.ok && si.formula == 1, "riinfo: SiO2 formula 1");
+    check(si.coeff.size() == 7, "riinfo: SiO2 coefficients");
+    check(std::fabs(si.fMin_um - 0.21) < 1e-12 &&
+          std::fabs(si.fMax_um - 6.7) < 1e-12, "riinfo: SiO2 range");
+    struct { double lam, n; } refSi[] = {
+        { 0.5876, 1.45846 }, { 1.0, 1.45042 }, { 0.3, 1.48779 } };
+    for (const auto &r : refSi) {
+        double n = 0.0;
+        const bool ok = riEvalN(si, r.lam, &n);
+        check(ok && std::fabs(n - r.n) < 2e-5,
+              "riinfo: SiO2 n matches the published value");
+    }
+    double dummy = 0.0;
+    check(!riEvalN(si, 10.0, &dummy), "riinfo: outside wavelength_range is refused");
+    const NkTable sit = riToNkTable(si, 64);
+    check(sit.ok && sit.rows == 64 && !sit.hasK,
+          "riinfo: formula-only sampling has no k");
+
+    // ── 式 formula 2 + tabulated k : N-BK7 ──
+    const RiData bk = parseRiData(slurp("N-BK7.yml"));
+    check(bk.ok && bk.formula == 2, "riinfo: N-BK7 formula 2");
+    // PROPERTIES の thermal_dispersion (formula A) を拾っていないこと
+    check(bk.coeff.size() == 7, "riinfo: N-BK7 keeps the DATA coefficients");
+    struct { double lam, n; } refBk[] = {
+        { 0.5876, 1.51680 }, { 0.6563, 1.51432 }, { 0.4861, 1.52238 } };
+    for (const auto &r : refBk) {
+        double n = 0.0;
+        const bool ok = riEvalN(bk, r.lam, &n);
+        check(ok && std::fabs(n - r.n) < 2e-5,
+              "riinfo: N-BK7 n matches the published value");
+    }
+    check(!bk.kTable.empty(), "riinfo: N-BK7 has a tabulated k");
+    const NkTable bkt = riToNkTable(bk);
+    check(bkt.ok && bkt.hasK, "riinfo: formula n + tabulated k combined");
+    bool nPositive = true;
+    for (const optics::NkSample &s : bkt.points)
+        if (!(s.n > 1.0) || !(s.k >= 0.0)) nPositive = false;
+    check(nPositive, "riinfo: combined table is physical (n>1, k>=0)");
+
+    // ── 出典の平文化 ──
+    // REFERENCES には HTML が入っており、上流通知 (2026-06) で Markdown も
+    // 入ることになった。画面へ流す前に落とせているか実データで判定する。
+    check(agd.reference.contains("<a href"), "riinfo: fixture keeps raw HTML");
+    const QString ref = riPlainText(agd.reference);
+    check(!ref.contains('<') && !ref.contains('>'),
+          "riinfo: plain text has no tags");
+    check(ref.contains("Johnson") && ref.contains("Phys. Rev. B") &&
+          ref.contains("4370"),
+          "riinfo: plain text keeps the citation itself");
+    check(!ref.contains("https://doi.org"),
+          "riinfo: the href target is dropped, not shown as text");
+    check(riPlainText("[title](https://x/y) and **bold** and __u__")
+              == "title and bold and u",
+          "riinfo: markdown link and emphasis are unwrapped");
+    check(riPlainText("a &amp; b &lt;c&gt;") == "a & b <c>",
+          "riinfo: entities are decoded");
+    check(riPlainText("  x   y  \n\n  z ") == "x y\nz",
+          "riinfo: blank lines and runs of spaces are collapsed");
+
+    // 対応外の式はそう言う (静かに誤った値を出さない)
+    check(!riFormulaSupported(3) && !riFormulaSupported(9),
+          "riinfo: formulas 3-9 are reported unsupported");
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -26088,8 +26257,40 @@ int main(int argc, char *argv[])
             continue;
         }
         compareProjects(p1, p2);
+
+        // プレビューが「保存されるもの」と一致するか (画面の主張の裏取り)。
+        // ファイルへ実際に書いて読み戻し、改行だけ揃えて突き合わせる
+        // (save は QIODevice::Text なので Windows では CRLF になる)。
+        {
+            const OfdPreviewText pv = buildOfdPreview(p1);
+            QTemporaryDir td;
+            const QString f1 = td.filePath("preview.ofd");
+            const QString f2 = td.filePath("preview.ofdx");
+            check(OfdIO::save(f1, p1), "preview: ofd save");
+            check(OfdxIO::save(f2, p1), "preview: ofdx save");
+
+            QFile g1(f1);
+            if (g1.open(QIODevice::ReadOnly)) {
+                QString onDisk = QString::fromUtf8(g1.readAll());
+                onDisk.replace("\r\n", "\n");
+                check(onDisk == pv.ofd, "preview: ofd text == saved bytes");
+            } else {
+                check(false, "preview: ofd reopen");
+            }
+            QFile g2(f2);
+            if (g2.open(QIODevice::ReadOnly)) {
+                QByteArray onDisk = g2.readAll();
+                onDisk.replace("\r\n", "\n");
+                check(onDisk == pv.ofdx, "preview: ofdx bytes == saved bytes");
+            } else {
+                check(false, "preview: ofdx reopen");
+            }
+            check(pv.ofdRows > 0 && pv.ofdBytes > 0, "preview: counts positive");
+        }
     }
 
+    testOfdPreviewExtraLines();
+    testRefractiveIndexDb(dir);
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();

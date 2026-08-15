@@ -1,5 +1,7 @@
 // MaterialExplorerTab.cpp
 #include "MaterialExplorerTab.h"
+
+#include "../widgets/RefractiveIndexDialog.h"
 #include "../core/GlassCatalog.h"
 #include "../core/Project.h"
 #include "../optics/DispersionFit.h"
@@ -67,6 +69,21 @@ const bool s_i18n = [] {
     ofd::I18n::reg("mex_db_section",  "データベース", "Database");
     ofd::I18n::reg("mex_search_ph",   "🔎 材料を検索…", "🔎 Search materials…");
     ofd::I18n::reg("mex_import_nk",   "📁 n,k 取込", "📁 Import n,k");
+    ofd::I18n::reg("mex_riinfo_tip",
+              "公開の屈折率データベース (CC0 1.0) から n,k を取り込みます。"
+              "押したときだけ通信します",
+              "Import n,k from the public refractive index database (CC0 1.0). "
+              "It only connects when you press a button");
+    ofd::I18n::reg("mex_riinfo_src", "出典: %1", "Source: %1");
+    ofd::I18n::reg("mex_riinfo_ok", "%1 を取り込みました (%2 点)",
+              "Imported %1 (%2 points)");
+    ofd::I18n::reg("mex_why_temp",
+              "温度依存の材料が .ofd にありません — 材料は "
+              "material = type epsr esgm amur msgm だけで温度の概念が無く、"
+              "表を作っても渡す先がありません",
+              "temperature-dependent materials do not exist in .ofd — a "
+              "material is only material = type epsr esgm amur msgm, with no "
+              "notion of temperature, so a table would have nowhere to go");
     ofd::I18n::reg("mex_nk_unit",     "波長単位", "Wavelength unit");
     ofd::I18n::reg("mex_nk_auto",     "自動", "Auto");
     ofd::I18n::reg("mex_nk_dialog",   "実測 n,k テーブルを開く",
@@ -363,7 +380,11 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     auto *riBtn = new QPushButton(I18n::tr("mex_riinfo"), sDb);
     connect(impNk, &QPushButton::clicked, this,
             &MaterialExplorerTab::importNk);
-    tabhelp::markNotImplemented(riBtn, I18n::tr(tabhelp::notimpl::kExternal));   // refractiveindex.info 連携は未配線
+    // 実装済み: 公開データベース (CC0) から n,k を取り込む。通信は
+    // ダイアログの中で利用者が押したときだけ行う (io/RefractiveIndexDb)
+    riBtn->setToolTip(I18n::tr("mex_riinfo_tip"));
+    connect(riBtn, &QPushButton::clicked, this,
+            &MaterialExplorerTab::importFromRiInfo);
     dbBtns->addWidget(impNk);
     dbBtns->addWidget(riBtn);
     dbBtns->addStretch(1);
@@ -560,7 +581,9 @@ MaterialExplorerTab::MaterialExplorerTab(Project *project, QWidget *parent)
     applyRow->addWidget(m_addBtn);
     auto *tempBtn  = new QPushButton(I18n::tr("mex_temp_table"), sApply);
     auto *anisoBtn = new QPushButton(I18n::tr("mex_aniso"), sApply);
-    tabhelp::markNotImplemented(tempBtn, I18n::tr(tabhelp::notimpl::kData));    // 温度依存テーブルは未配線
+    // kData (データが同梱されていない) では浅い — データがあっても渡す先が無い。
+    // .ofd の材料は material = type epsr esgm amur msgm だけで温度の概念が無い
+    tabhelp::markNotImplemented(tempBtn, I18n::tr("mex_why_temp"));
     tabhelp::markNotImplemented(anisoBtn, I18n::tr(tabhelp::notimpl::kModel));   // 異方性テンソルは未配線
     applyRow->addWidget(tempBtn);
     applyRow->addWidget(anisoBtn);
@@ -673,6 +696,29 @@ void MaterialExplorerTab::buildDatabase()
 
 // 実測 n,k テーブル (CSV / TSV / 空白区切り) を読んでデータベースへ足す。
 // **波長の単位をどう決めたかを必ず画面に書く** (推測を黙って通さない)。
+// refractiveindex.info からの取り込み。ダイアログが n,k 表まで作るので、
+// ここから先は手元の CSV を読んだときとまったく同じ経路を通す。
+void MaterialExplorerTab::importFromRiInfo()
+{
+    RefractiveIndexDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const NkTable t = dlg.table();
+    if (!t.ok) return;
+
+    m_imports.push_back(t);
+    m_importNames.push_back(dlg.name());
+    buildDatabase();
+
+    if (m_fitStatus) {
+        m_fitStatus->setStyleSheet("font-size:11px; color:#555;");
+        QString msg = I18n::tr("mex_riinfo_ok").arg(dlg.name()).arg(t.rows);
+        if (!dlg.reference().isEmpty())      // 出典を残す (誰の測定値かが分かるように)
+            msg += "\n" + I18n::tr("mex_riinfo_src")
+                               .arg(dlg.reference().section('\n', 0, 1));
+        m_fitStatus->setText(msg);
+    }
+}
+
 void MaterialExplorerTab::importNk()
 {
     const QString path = QFileDialog::getOpenFileName(

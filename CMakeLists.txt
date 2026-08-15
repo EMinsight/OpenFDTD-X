@@ -217,6 +217,8 @@ set(CORE_SOURCES
     src/core/SolverSelection.h
 
     src/io/OfdIO.cpp
+    src/io/OfdPreview.cpp
+    src/io/RefractiveIndexDb.cpp
     src/io/OfdIO.h
     src/io/ActivationCurve.cpp
     src/io/ActivationCurve.h
@@ -442,6 +444,8 @@ set(GUI_SOURCES
     src/widgets/SectionBox.cpp
     src/widgets/SectionBox.h
     src/widgets/MiniPlot.cpp
+    src/widgets/OfdPreviewDialog.cpp
+    src/widgets/RefractiveIndexDialog.cpp
     src/widgets/MiniPlot.h
     # 配光曲線 (極座標) — IlluminationTab の配光表示
     src/widgets/PolarPlot.cpp

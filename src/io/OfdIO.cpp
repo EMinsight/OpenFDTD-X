@@ -603,7 +603,8 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
 }
 
 // ── .ofdx (JSON sidecar) ────────────────────────────────────────────────────
-bool OfdxIO::save(const QString &path, const Project &p, QString *err)
+// 保存されるバイト列そのものを返す (save もプレビューもここを通る)。
+QByteArray OfdxIO::serialize(const Project &p)
 {
     QJsonObject root;
     root["schemaVersion"] = "1.0";
@@ -1227,12 +1228,17 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         if (cur != toJson(IlluminationOpts{})) root["illumination"] = cur;
     }
 
+    return QJsonDocument(root).toJson(QJsonDocument::Indented);
+}
+
+bool OfdxIO::save(const QString &path, const Project &p, QString *err)
+{
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (err) *err = f.errorString();
         return false;
     }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.write(serialize(p));
     return true;
 }
 

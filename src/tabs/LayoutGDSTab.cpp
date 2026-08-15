@@ -162,6 +162,12 @@ const bool s_i18n = [] {
               "materials in the Materials tab.");
     I18n::reg("gds_convert", "選択レイヤを形状へ変換",
               "Convert the selected layers to geometry");
+    I18n::reg("gds_why_rerun",
+              "1 押しで繋ぐ経路がありません — 上の「選択レイヤを形状へ変換」で"
+              "形状に取り込んでから、ツールバー/メニューの実行で解析できます",
+              "there is no one-click path — convert the selected layers to "
+              "geometry with the button above, then run the solver from the "
+              "toolbar or menu");
     I18n::reg("gds_convert_tip",
               "取り込んだ GDS の多角形を軸平行な矩形へ分解し、レイヤーの "
               "z 範囲で押し出して直方体ユニットにします。既存の形状には"
@@ -480,9 +486,11 @@ LayoutGDSTab::LayoutGDSTab(Project *project, QWidget *parent)
     // チェックはどこにも読まれていない (apply/refresh 不在)
     sFdtd->vbox()->addWidget(tabhelp::unwiredNote(sFdtd, I18n::tr("gds_uw_fdtd")));
     auto *rerunRow = new QHBoxLayout();
-    // FDTD 再解析は未実装 — primary (実行可能な見た目) を外して無効化 (絶対規則 5)
+    // 「計算エンジンが無い」ではない — FDTD カーネルは実行できるし、
+    // レイヤ → 直方体の変換も上の「選択レイヤを形状へ変換」で動く。
+    // 無いのは**その 2 つを 1 押しで繋ぐ経路**だけなので、そう書く
     auto *rerun = new QPushButton(I18n::tr("gds_fdtd_rerun"), sFdtd);
-    tabhelp::markNotImplemented(rerun, I18n::tr(tabhelp::notimpl::kEngine));
+    tabhelp::markNotImplemented(rerun, I18n::tr("gds_why_rerun"));
     rerunRow->addWidget(rerun);
     rerunRow->addStretch(1);
     sFdtd->vbox()->addLayout(rerunRow);
