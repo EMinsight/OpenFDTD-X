@@ -29,6 +29,9 @@ struct AcousticReportInput {
     QString strengthRefFile;
     double  strengthRefLevelDb = -40.0;
     double  strengthRefDistanceM = 10.0;
+    // ST 系の測定条件 (舞台上・1 m・空席) の自己申告 (要求 §3.2)。
+    // false なら ST_early / ST_late は「測定条件不適合」として値を出さない
+    bool    stConditionDeclared = false;
 
     bool hasRir = false;
     acoustics::RirAnalysisResult rir;

@@ -868,6 +868,12 @@ QByteArray OfdxIO::serialize(const Project &p)
                 ac["opera_analysis"] = oaObj;
             }
         }
+        // ST 系の測定条件申告 (要求 §3.2) — 既定 (false) ならキーを書かない
+        if (oa.stConditionDeclared) {
+            QJsonObject oaObj = ac["opera_analysis"].toObject();
+            oaObj["st_condition_declared"] = true;
+            ac["opera_analysis"] = oaObj;
+        }
         {   // G (音の強さ) の基準 — 既定のままならキー自体を書かない
             const OperaAcousticSettings d;
             if (oa.strengthRefMode != d.strengthRefMode
@@ -1587,6 +1593,8 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 s.sweepHarmonics =
                     sw.value("harmonics").toBool(s.sweepHarmonics);
             }
+            s.stConditionDeclared =
+                oa.value("st_condition_declared").toBool(s.stConditionDeclared);
             if (oa.contains("strength")) {   // G の基準 — 追加キー
                 const QJsonObject st = oa["strength"].toObject();
                 // 壊れたファイルの範囲外値で不正モードを作らない (0..2)

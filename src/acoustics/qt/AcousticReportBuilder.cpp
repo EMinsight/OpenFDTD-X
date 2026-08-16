@@ -32,6 +32,16 @@ const bool s_i18n = [] {
     ofd::I18n::reg("rep_g_ref_file", "基準録音 %1",       "reference recording %1");
     ofd::I18n::reg("rep_g_ref_level","基準レベル %1 dB",  "reference level %1 dB");
     ofd::I18n::reg("rep_g_ref_dist", "距離 %1 m",         "distance %1 m");
+    // ST 系の測定条件申告 (要求 §3.2)
+    ofd::I18n::reg("rep_st_cond",    "ST 測定条件",       "ST measurement conditions");
+    ofd::I18n::reg("rep_st_cond_yes",
+        "自己申告あり (舞台上・音源から 1 m・空席) — ST は参考値",
+        "self-declared (on stage, 1 m from source, unoccupied) — ST values "
+        "are reference values");
+    ofd::I18n::reg("rep_st_cond_no",
+        "申告なし — ST_early / ST_late は測定条件不適合として表示しません",
+        "not declared — ST_early / ST_late are withheld as measurement "
+        "conditions not met");
     ofd::I18n::reg("rep_metric_notes",
         "ST_early / ST_late は舞台上・音源から 1 m の RIR を前提とする指標です "
         "(ISO 3382-1 Annex C)。STI は RIR だけから求めた室の伝送性能で、"
@@ -275,6 +285,11 @@ QString AcousticReportBuilder::buildHtml(const AcousticReportInput &in)
                              + QStringLiteral(" dB") });
     // G の分母。設定していないことも明示する (G が算出不可な理由になるため)
     meta.push_back({ I18n::tr("rep_g_ref"), strengthRefLabel(in) });
+    // ST 系の測定条件 (自己申告の有無)。ST 行が「測定条件不適合」になって
+    // いる理由/参考値である根拠が読み手に分かるようにする
+    meta.push_back({ I18n::tr("rep_st_cond"),
+                     in.stConditionDeclared ? I18n::tr("rep_st_cond_yes")
+                                            : I18n::tr("rep_st_cond_no") });
     h += QStringLiteral("<h2>%1</h2>\n").arg(esc(I18n::tr("rep_meta")));
     h += kvTable(meta);
 
@@ -308,7 +323,9 @@ QString AcousticReportBuilder::buildHtml(const AcousticReportInput &in)
         h += kvTable(s);
 
         h += QStringLiteral("<h3>%1</h3>\n").arg(esc(I18n::tr("rep_metrics")));
-        h += rowsTable(AcousticResultModel::metricRows(r));
+        MetricDisplayOptions dispOpts;
+        dispOpts.stConditionDeclared = in.stConditionDeclared;
+        h += rowsTable(AcousticResultModel::metricRows(r, dispOpts));
         // 測定前提の注記。数値だけを渡すと規格の意味で読まれてしまうため、
         // 表と同じ場所に必ず添える (タブ側の注記と同じ趣旨)。
         h += QStringLiteral("<p class=\"footer\">%1</p>\n")
@@ -413,9 +430,12 @@ QString AcousticReportBuilder::buildCsv(const AcousticReportInput &in)
                .arg(in.hasVocal ? QStringLiteral("done")
                                 : QStringLiteral("not_run"));
 
-    if (in.hasRir)
-        out += prefixCsv(AcousticResultModel::toCsv(in.rir),
+    if (in.hasRir) {
+        MetricDisplayOptions dispOpts;
+        dispOpts.stConditionDeclared = in.stConditionDeclared;
+        out += prefixCsv(AcousticResultModel::toCsv(in.rir, dispOpts),
                          QStringLiteral("rir"));
+    }
     if (in.hasVocal)
         out += prefixCsv(AcousticResultModel::toCsv(in.vocal),
                          QStringLiteral("vocal"));

@@ -133,6 +133,7 @@
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
+#include "acoustics/qt/AcousticResultModel.h"
 // 音源リスト → ソルバ波源 (feed) の反映本体。ofdx_selftest は GUI_SOURCES を
 // リンクしないため、ヘッダ内 inline 定義の static メソッドを直接検証する
 // (クラス自体は instantiate しない — moc 不要)。
@@ -1974,6 +1975,8 @@ static void testOperaAcousticSettings()
         s.sweepEndHz = 16000.0;
         s.sweepSec = 7.5;
         s.sweepHarmonics = true;
+        // ST 測定条件の自己申告 (要求 §3.2)
+        s.stConditionDeclared = true;
         // G (音の強さ) の基準 — 追加フィールドは往復・既定の両方を検査する
         s.strengthRefMode = 1;
         s.strengthRefFile = "/tmp/freefield_10m.wav";
@@ -2025,6 +2028,8 @@ static void testOperaAcousticSettings()
             check(nearlyEq(q.strengthRefLevelDb, -33.25) &&
                   nearlyEq(q.strengthRefDistanceM, 12.5),
                   "opera rt strength level/distance");
+            check(q.stConditionDeclared == true,
+                  "opera rt st condition declared");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -2111,6 +2116,8 @@ static void testOperaAcousticSettings()
                   nearlyEq(q.strengthRefLevelDb, -40.0) &&
                   nearlyEq(q.strengthRefDistanceM, 10.0),
                   "legacy ofdx leaves strength defaults");
+            check(!q.stConditionDeclared,
+                  "legacy ofdx leaves st condition undeclared");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");
@@ -3820,6 +3827,22 @@ static void testAudioEditEngine()
             const QByteArray base3 = bytes3();
             check(!base3.contains("\"strength\""),
                   "strength-ofdx: defaults write no strength key");
+            check(!base3.contains("st_condition_declared"),
+                  "st-ofdx: defaults write no st_condition_declared key");
+            {   // 申告 true → キーが書かれ、false へ戻すとバイト一致
+                sp.operaAcoustic().stConditionDeclared = true;
+                check(sp.save(p3, &e3), "st-ofdx: declared saved");
+                check(bytes3().contains("\"st_condition_declared\": true"),
+                      "st-ofdx: declaring writes the key");
+                ofd::Project sre;
+                check(sre.load(p3, &e3), "st-ofdx: reloaded");
+                check(sre.operaAcoustic().stConditionDeclared,
+                      "st-ofdx: round-trips the declaration");
+                sp.operaAcoustic().stConditionDeclared = false;
+                check(sp.save(p3, &e3), "st-ofdx: reverted saved");
+                check(bytes3() == base3,
+                      "st-ofdx: reverting restores byte-identical output");
+            }
 
             sp.operaAcoustic().strengthRefMode = 2;
             sp.operaAcoustic().strengthRefFile = "/tmp/ff10m.wav";
@@ -9876,6 +9899,92 @@ static void testAcousticReport()
               "report: csv carries a valid G value");
         check(AcousticReportBuilder::buildHtml(gin) == html3,
               "report: html deterministic with a G reference");
+    }
+
+    // ── ST 系の 3 値表示規則 (要求 §3.2) ──
+    // コアが Valid を返しても、測定条件 (舞台上・1 m・空席) の自己申告が
+    // 無い限り値を出さない。申告があっても Valid にはせず「参考値」とする。
+    {
+        acoustics::RirAnalysisResult sr = rir;
+        sr.bands[0].metrics.stEarly = acoustics::makeValidMetric(-12.3);
+        sr.bands[0].metrics.stLate  = acoustics::makeValidMetric(-14.1);
+
+        // 申告なし (既定): 値を出さない + 理由
+        const QVector<AcousticResultRow> undecl =
+            AcousticResultModel::metricRows(sr);
+        int stSeen = 0;
+        for (const AcousticResultRow &row : undecl) {
+            if (row.metric != "ST_early" && row.metric != "ST_late") continue;
+            ++stSeen;
+            check(!row.valid && row.valueText.isEmpty(),
+                  "st-rule: undeclared hides the value");
+            check(row.quality == "invalid"
+                      && row.warning.contains("not declared"),
+                  "st-rule: undeclared states the reason");
+        }
+        check(stSeen == 2, "st-rule: both ST rows present");
+
+        // 申告あり: 値 + Warning「参考値 (自己申告)」— Valid にはしない
+        MetricDisplayOptions decl;
+        decl.stConditionDeclared = true;
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(sr, decl)) {
+            if (row.metric != "ST_early" && row.metric != "ST_late") continue;
+            check(row.valid && !row.valueText.isEmpty(),
+                  "st-rule: declared shows the value");
+            check(row.quality == "warning"
+                      && row.warning.contains("self-declared"),
+                  "st-rule: declared is a reference value, not Valid");
+        }
+        // ST_early = -12.3 が実際に出ること (取り違え検出)
+        bool foundVal = false;
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(sr, decl))
+            if (row.metric == "ST_early" && row.valueText == "-12.3")
+                foundVal = true;
+        check(foundVal, "st-rule: declared value text matches the metric");
+
+        // コアが invalid にしたものは申告があっても復活しない
+        acoustics::RirAnalysisResult iv = rir;
+        iv.bands[0].metrics.stEarly.valid = false;
+        iv.bands[0].metrics.stEarly.quality =
+            acoustics::AnalysisQuality::Invalid;
+        iv.bands[0].metrics.stEarly.warning = "window truncated";
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(iv, decl))
+            if (row.metric == "ST_early")
+                check(!row.valid && row.warning == "window truncated",
+                      "st-rule: core-invalid stays invalid when declared");
+
+        // CSV も同じ規則 (申告なしは値なし invalid / 申告ありは warning)
+        check(AcousticResultModel::toCsv(sr)
+                  .contains("metrics,ST_early,Full band,,dB,0,invalid,"),
+              "st-rule: csv withholds ST without declaration");
+        check(AcousticResultModel::toCsv(sr, decl)
+                  .contains("metrics,ST_early,Full band,-12.3,dB,1,warning,"),
+              "st-rule: csv shows ST as warning when declared");
+        // JSON は生値 + 申告フラグの併記
+        check(AcousticResultModel::toJson(sr)
+                  .contains("\"st_condition_declared\": false"),
+              "st-rule: json carries the declaration flag (false)");
+        check(AcousticResultModel::toJson(sr, decl)
+                  .contains("\"st_condition_declared\": true"),
+              "st-rule: json carries the declaration flag (true)");
+
+        // レポート: 申告なし → 「申告なし」行、申告あり → 参考値の説明
+        AcousticReportInput rin = in;
+        rin.rir = sr;
+        const QString h0 = AcousticReportBuilder::buildHtml(rin);
+        check(h0.contains(QString::fromUtf8("申告なし")),
+              "st-rule: report states no declaration");
+        rin.stConditionDeclared = true;
+        const QString h1 = AcousticReportBuilder::buildHtml(rin);
+        check(h1.contains(QString::fromUtf8("自己申告あり")),
+              "st-rule: report states the declaration");
+        check(h1.contains("-12.3"),
+              "st-rule: report shows the ST value when declared");
+        check(!h0.contains("-12.3"),
+              "st-rule: report withholds the ST value when not declared");
     }
 }
 

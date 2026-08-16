@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../acoustics/core/RirAnalyzer.h"
+#include "../acoustics/qt/AcousticResultModel.h"
 
 class QCheckBox;
 class QComboBox;
@@ -61,6 +62,8 @@ private:
     void clearResult(const QString &statusText);
     void updateCalibOffsetEnabled();   // Absolute 時のみオフセット欄を有効化
     void updateStrengthRefEnabled();   // G 基準の入力欄をモードに応じて有効化
+    // 出力/表示が共有する表示規則オプション (ST 自己申告)
+    MetricDisplayOptions exportOpts() const;
 
     Project *m_p;
     bool     m_updating = false;
@@ -75,6 +78,7 @@ private:
     QComboBox      *m_directMethod = nullptr;
     QComboBox      *m_bandMode = nullptr;
     QCheckBox      *m_noiseCorr = nullptr;
+    QCheckBox      *m_stDeclared = nullptr;
     QDoubleSpinBox *m_minDr = nullptr;
     // G (音の強さ) の基準
     QComboBox      *m_gRefMode = nullptr;

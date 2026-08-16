@@ -535,6 +535,13 @@ struct OperaAcousticSettings {
     double  strengthRefLevelDb = -40.0;  // mode 2: 10log10(∫p_ref²dt)
     double  strengthRefDistanceM = 10.0; // 基準録音の音源距離 [m] (規格値 10)
 
+    // ── ST 系の測定条件申告 (.ofdx "opera_analysis.st_condition_declared" —
+    //    追加キー。false (既定) ならキー自体を書かない) ──
+    // ST_early / ST_late の測定条件 (舞台上・音源から 1 m・空席、
+    // ISO 3382-1 Annex C) はデータから検証できない。要求 §3.2 の
+    // 3 値表示規則に従い、この自己申告が無い限り値を表示しない。
+    bool    stConditionDeclared = false;
+
     // 可聴化 (AuralizationTab, .ofdx "opera_analysis/auralization")
     QString auralizationDryFile;      // ドライ (無響/近接) 歌唱 WAV
     QString auralizationOutputFile;   // ウェット出力 WAV

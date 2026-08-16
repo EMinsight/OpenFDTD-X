@@ -893,13 +893,31 @@ void I18n::loadTables() {
         "measured RIR were recorded through the same gain chain (source "
         "output, microphone, preamp, AD) — something the data cannot confirm. "
         "No value is shown when no reference is set.");
+    add("rir_st_declared",
+        "ST 測定条件を満たして測定した (舞台上・音源から 1 m・空席)",
+        "Measured under the ST conditions (on stage, 1 m from source, "
+        "unoccupied)");
+    add("rir_st_declared_tip",
+        "ISO 3382-1 Annex C の舞台支援 (ST_early / ST_late) は舞台上・"
+        "音源から 1 m・空席という測定条件を要求します。ソフトウェアからは"
+        "検証できないため、この自己申告が無い限り ST の値は表示されません。"
+        "申告した場合も値は「参考値 (測定条件は自己申告)」として表示されます。",
+        "Stage support (ST_early / ST_late, ISO 3382-1 Annex C) requires the "
+        "RIR to be measured on stage, 1 m from the source, unoccupied. The "
+        "software cannot verify this, so ST values are withheld unless you "
+        "declare it here. Even when declared, values are shown as reference "
+        "values (conditions self-declared).");
     add("rir_st_note",
-        "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m で測った RIR を"
-        "前提とする指標です (ISO 3382-1 Annex C)。別の配置の RIR でも数値は"
-        "出ますが、規格の意味での舞台支援ではありません。",
-        "ST_early / ST_late (stage support) assume an RIR measured on stage "
-        "at 1 m from the source (ISO 3382-1 Annex C). Other configurations "
-        "still yield numbers, but not stage support in the standard's sense.");
+        "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m・空席で測った "
+        "RIR を前提とする指標です (ISO 3382-1 Annex C)。測定条件はソフトウェア"
+        "からは検証できないため、入力欄の自己申告が無い限り値は「測定条件"
+        "不適合」として表示されません。申告した場合も「参考値 (測定条件は"
+        "自己申告)」として表示されます。",
+        "ST_early / ST_late (stage support) assume an RIR measured on stage, "
+        "1 m from the source, unoccupied (ISO 3382-1 Annex C). The software "
+        "cannot verify this, so values are withheld as not meeting the "
+        "measurement conditions unless declared in the input section; when "
+        "declared, they are shown as reference values (self-declared).");
     add("rir_metric", "指標", "Metric");
     add("rir_band", "帯域", "Band");
     add("rir_value", "値", "Value");

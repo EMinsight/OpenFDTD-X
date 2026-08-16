@@ -119,6 +119,12 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     m_minDr->setSuffix(QStringLiteral(" dB"));
     sIn->form()->addRow(I18n::tr("rir_min_dr"), m_minDr);
 
+    // ST 系の測定条件申告 (要求 §3.2 の 3 値表示規則)。申告が無い限り
+    // ST_early / ST_late は「測定条件不適合」として値を表示しない。
+    m_stDeclared = new QCheckBox(I18n::tr("rir_st_declared"), sIn);
+    m_stDeclared->setToolTip(I18n::tr("rir_st_declared_tip"));
+    sIn->form()->addRow(QString(), m_stDeclared);
+
     // ── G (音の強さ) の基準 ──
     // 基準録音 (自由音場 10 m) が無ければ G は出さない。絶対 SPL 校正とは
     // 独立で、要るのは「同じ利得系で録られていること」だけ。
@@ -273,6 +279,8 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     connect(m_noiseCorr, &QCheckBox::toggled, this, &RirAnalysisTab::apply);
     connect(m_minDr, &QDoubleSpinBox::valueChanged,
             this, &RirAnalysisTab::apply);
+    connect(m_stDeclared, &QCheckBox::toggled,
+            this, &RirAnalysisTab::apply);
     connect(m_gRefMode, &QComboBox::currentIndexChanged,
             this, &RirAnalysisTab::apply);
     connect(m_gRefBrowse, &QPushButton::clicked,
@@ -305,6 +313,7 @@ void RirAnalysisTab::refresh()
     m_bandMode->setCurrentIndex(qBound(0, s.bandMode, 3));
     m_noiseCorr->setChecked(s.noiseCorrection);
     m_minDr->setValue(s.minimumDynamicRangeDb);
+    m_stDeclared->setChecked(s.stConditionDeclared);
     m_gRefMode->setCurrentIndex(qBound(0, s.strengthRefMode, 2));
     m_gRefFile->setText(s.strengthRefFile);
     m_gRefLevel->setValue(s.strengthRefLevelDb);
@@ -327,6 +336,7 @@ void RirAnalysisTab::apply()
     s.bandMode = m_bandMode->currentIndex();
     s.noiseCorrection = m_noiseCorr->isChecked();
     s.minimumDynamicRangeDb = m_minDr->value();
+    s.stConditionDeclared = m_stDeclared->isChecked();
     s.strengthRefMode = m_gRefMode->currentIndex();
     s.strengthRefFile = m_gRefFile->text();
     s.strengthRefLevelDb = m_gRefLevel->value();
@@ -334,6 +344,15 @@ void RirAnalysisTab::apply()
     updateCalibOffsetEnabled();
     updateStrengthRefEnabled();
     m_p->touch();
+}
+
+// 出力 (CSV/JSON) が表と同じ表示規則に従うためのオプション。
+// 保存済み設定 (自己申告) から作る — 表・CSV・レポートで規則を揃える。
+MetricDisplayOptions RirAnalysisTab::exportOpts() const
+{
+    MetricDisplayOptions o;
+    o.stConditionDeclared = m_p->operaAcoustic().stConditionDeclared;
+    return o;
 }
 
 // 校正オフセットは Absolute のときだけ編集可能 (誤解防止)。
@@ -449,8 +468,10 @@ void RirAnalysisTab::showResult(const RirAnalysisResult &result,
     m_hasResult = true;
 
     // ③ 指標表
+    MetricDisplayOptions dispOpts;
+    dispOpts.stConditionDeclared = m_p->operaAcoustic().stConditionDeclared;
     const QVector<AcousticResultRow> rows =
-        AcousticResultModel::metricRows(result);
+        AcousticResultModel::metricRows(result, dispOpts);
     m_metricTable->setRowCount(rows.size());
     for (int r = 0; r < rows.size(); ++r) {
         const AcousticResultRow &row = rows[r];
@@ -592,7 +613,7 @@ void RirAnalysisTab::exportCsv()
     if (!m_hasResult) return;
     saveTextFile(this, I18n::tr("rir_export_csv"),
                  QStringLiteral("rir_analysis.csv"), "CSV (*.csv)",
-                 AcousticResultModel::toCsv(m_result));
+                 AcousticResultModel::toCsv(m_result, exportOpts()));
 }
 
 void RirAnalysisTab::exportJson()
@@ -600,5 +621,5 @@ void RirAnalysisTab::exportJson()
     if (!m_hasResult) return;
     saveTextFile(this, I18n::tr("rir_export_json"),
                  QStringLiteral("rir_analysis.json"), "JSON (*.json)",
-                 AcousticResultModel::toJson(m_result));
+                 AcousticResultModel::toJson(m_result, exportOpts()));
 }

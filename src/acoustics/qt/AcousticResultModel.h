@@ -12,6 +12,19 @@
 
 namespace ofd {
 
+// 表示規則のオプション (要求 §3.2 の 3 値表示規則)。
+// コアは物理量を無条件に計算するが、規格上の意味を持つかは測定条件に
+// 依存し、それはソフトウェアからは検証できない — 利用者の自己申告で
+// 表示を切り替える。タブ・CSV・一括レポートの全経路が同じ規則に従う。
+struct MetricDisplayOptions {
+    // ST_early / ST_late の測定条件 (舞台上・音源から 1 m・空席、
+    // ISO 3382-1 Annex C) を利用者が自己申告したか。
+    //   申告あり → 値 + Warning「参考値 (測定条件は自己申告)」
+    //   申告なし → 値を出さず「測定条件不適合」(既定 — 安全側)
+    //   コアが invalid → そのまま「算出不可」
+    bool stConditionDeclared = false;
+};
+
 // 指標表の1行 (指標 × 帯域)
 struct AcousticResultRow {
     QString metric;   // "EDT" / "T20" / "T30" / "C50" / "C80" / "D50" / "Ts"
@@ -26,9 +39,11 @@ struct AcousticResultRow {
 
 class AcousticResultModel {
 public:
-    // 指標 × 帯域の行リスト (EDT/T20/T30/C50/C80/D50/Ts の順、帯域ごと)
+    // 指標 × 帯域の行リスト (EDT/T20/T30/C50/C80/D50/Ts の順、帯域ごと)。
+    // opts 省略時は「申告なし」= ST 系を表示しない安全側の既定。
     static QVector<AcousticResultRow>
-    metricRows(const acoustics::RirAnalysisResult &result);
+    metricRows(const acoustics::RirAnalysisResult &result,
+               const MetricDisplayOptions &opts = MetricDisplayOptions());
 
     // 品質トークン ("valid"/"warning"/"invalid")
     static QString qualityToken(acoustics::AnalysisQuality q);
@@ -36,11 +51,18 @@ public:
     // 反射の時間区分ラベル: 0-20 / 20-80 / 80-200 / 200+ ms
     static QString reflectionBinLabel(double delaySeconds);
 
-    // CSV 文字列化 (指標表 + 反射一覧 + 警告)
-    static QString toCsv(const acoustics::RirAnalysisResult &result);
+    // CSV 文字列化 (指標表 + 反射一覧 + 警告)。指標行は metricRows と
+    // 同じ表示規則に従う (opts 省略時は「申告なし」)。
+    static QString toCsv(const acoustics::RirAnalysisResult &result,
+                         const MetricDisplayOptions &opts =
+                             MetricDisplayOptions());
 
-    // JSON 文字列化 (QJsonDocument 経由、前処理・直接音・帯域・反射を含む)
-    static QString toJson(const acoustics::RirAnalysisResult &result);
+    // JSON 文字列化 (QJsonDocument 経由、前処理・直接音・帯域・反射を含む)。
+    // JSON はコアの生値をそのまま持ち (機械可読の一次データ)、代わりに
+    // st_condition_declared フラグを併記して読み手が規則を適用できるようにする。
+    static QString toJson(const acoustics::RirAnalysisResult &result,
+                          const MetricDisplayOptions &opts =
+                              MetricDisplayOptions());
 
     // ── 歌声分析 (VocalAnalysisResult) ──────────────────────────────────────
     // 指標の行リスト (F0 統計 / ビブラート / HNR / スペクトル重心 /
