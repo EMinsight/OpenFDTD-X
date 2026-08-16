@@ -476,6 +476,13 @@ struct AcousticOpts {
     // 現状「配置の記録」であり計算には渡されない (タブに注記あり)。
     QVector<AcousticSourceRow> sources = defaultAcousticSources();
 
+    // ── 複数音源 (.ofdx "acoustic.multi_source" — 追加キー。ADR-0010) ──
+    // true で外部音響ソルバー (ofdx_acoustic_fdtd / ofdx_acoustic_ga) が
+    // .ofd の全 feed を強度 1・t = 0 で同時発火し、rir.wav を重ね合わせに
+    // する。false (既定) は feed #1 のみ (従来動作)。既定のままならキー
+    // 自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
+    bool    multiSource = false;
+
     // ── 入力信号 (WAV) の前処理 (.ofdx "acoustic.source_wav" — 追加キー。
     //    既定のままならキー自体を書かないので旧ファイルとバイト一致) ──
     // AcousticSourceTab の「入力信号」ページの設定で、波形プレビューと
