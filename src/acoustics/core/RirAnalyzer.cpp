@@ -164,6 +164,17 @@ RirAnalyzer::analyze(ArrayView<const double> rir, double sampleRateHz) const {
     if (!res.sti.sti.valid && !res.sti.warning.empty())
         res.warnings.push_back(res.sti.warning);
 
+    // ── G (音の強さ、ISO 3382-1 A.2.6) ──
+    // 基準録音 (自由音場 10 m) が設定されている時だけ値が出る。
+    // 未設定は「設定していないだけ」で分析の欠陥ではないので、警告は積まない
+    // (積むと基準を使わない通常の分析まで overallQuality が Warning になる)。
+    res.strength = computeSoundStrength(xv, sampleRateHz,
+                                        res.directSound.sampleIndex,
+                                        m_config.strengthReference);
+    if (m_config.strengthReference.available && !res.strength.g.valid
+        && !res.strength.warning.empty())
+        res.warnings.push_back(res.strength.warning);
+
     // ── 反射音検出 (広帯域) ──
     res.reflections =
         detectReflections(xv, sampleRateHz, res.directSound,

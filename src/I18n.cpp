@@ -853,6 +853,46 @@ void I18n::loadTables() {
         "RIR alone (IEC 60268-16 indirect method). Background noise is not "
         "included, so intelligibility in a noisy room will be lower. The grade "
         "follows the standard's bands (0.30/0.45/0.60/0.75).");
+    // G (音の強さ, ISO 3382-1 A.2.6) — 基準録音との比
+    add("rir_g_ref_mode", "G の基準", "G reference");
+    add("rir_g_mode_none", "使用しない", "not used");
+    add("rir_g_mode_file", "基準録音 (自由音場 IR)", "reference recording (free-field IR)");
+    add("rir_g_mode_level", "基準レベルを直接指定", "enter reference level");
+    add("rir_g_ref_file", "基準録音 WAV", "Reference WAV");
+    add("rir_g_ref_file_placeholder",
+        "同じ音源・同じ利得系で自由音場 10 m を録った IR",
+        "IR of the same source at 10 m in a free field, same gain chain");
+    add("rir_g_ref_level", "基準レベル", "Reference level");
+    add("rir_g_ref_level_tip",
+        "基準録音のエネルギー 10log10(∫p_ref²dt)。基準録音の代わりに"
+        "数値で与える場合に使います。",
+        "Energy of the reference recording, 10log10(int p_ref^2 dt). "
+        "Use this instead of a reference WAV.");
+    add("rir_g_ref_distance", "基準録音の距離", "Reference distance");
+    add("rir_g_ref_distance_tip",
+        "基準録音の音源距離。規格値は 10 m で、それ以外の距離で録った場合は"
+        "自由音場の逆二乗則で 10 m 相当へ補正します。",
+        "Source distance of the reference recording. The standard value is "
+        "10 m; other distances are corrected to 10 m by the free-field "
+        "inverse-square law.");
+    add("rir_g_value", "G = %1 dB", "G = %1 dB");
+    add("rir_g_early_late", "早期 %1 dB / 後期 %2 dB",
+        "early %1 dB / late %2 dB");
+    add("rir_g_distance_corr", "距離補正 %1 dB", "distance correction %1 dB");
+    add("rir_g_invalid", "G (音の強さ): 算出できません (%1)",
+        "G (sound strength): not computable (%1)");
+    add("rir_g_note",
+        "▸ G (音の強さ) は「同じ音源を自由音場 10 m で録った応答」との"
+        "エネルギー比です (ISO 3382-1)。絶対 SPL の校正は要りませんが、"
+        "基準録音と実測 RIR が同じ利得系 (音源出力・マイク・プリアンプ・AD) で"
+        "録られていることが前提で、これはデータからは確認できません。"
+        "基準を設定していないときは値を出しません。",
+        "G (sound strength) is the energy ratio to the response of the same "
+        "source recorded at 10 m in a free field (ISO 3382-1). It needs no "
+        "absolute SPL calibration, but it does assume the reference and the "
+        "measured RIR were recorded through the same gain chain (source "
+        "output, microphone, preamp, AD) — something the data cannot confirm. "
+        "No value is shown when no reference is set.");
     add("rir_st_note",
         "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m で測った RIR を"
         "前提とする指標です (ISO 3382-1 Annex C)。別の配置の RIR でも数値は"

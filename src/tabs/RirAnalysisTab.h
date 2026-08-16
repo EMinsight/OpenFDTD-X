@@ -50,6 +50,7 @@ private slots:
     void refresh();        // model → widgets
     void apply();          // widgets → model
     void browseRir();
+    void browseStrengthRef();   // G の基準録音 (自由音場 IR) を選ぶ
     void runAnalysis();
     void exportCsv();
     void exportJson();
@@ -59,6 +60,7 @@ private:
                     const std::vector<double> &samples, double sampleRateHz);
     void clearResult(const QString &statusText);
     void updateCalibOffsetEnabled();   // Absolute 時のみオフセット欄を有効化
+    void updateStrengthRefEnabled();   // G 基準の入力欄をモードに応じて有効化
 
     Project *m_p;
     bool     m_updating = false;
@@ -74,6 +76,15 @@ private:
     QComboBox      *m_bandMode = nullptr;
     QCheckBox      *m_noiseCorr = nullptr;
     QDoubleSpinBox *m_minDr = nullptr;
+    // G (音の強さ) の基準
+    QComboBox      *m_gRefMode = nullptr;
+    QLineEdit      *m_gRefFile = nullptr;
+    QPushButton    *m_gRefBrowse = nullptr;
+    QLabel         *m_gRefFileLabel = nullptr;
+    QDoubleSpinBox *m_gRefLevel = nullptr;
+    QLabel         *m_gRefLevelLabel = nullptr;
+    QDoubleSpinBox *m_gRefDistance = nullptr;
+    QLabel         *m_gRefDistanceLabel = nullptr;
 
     // ② 実行
     QPushButton *m_runBtn = nullptr;
@@ -83,6 +94,7 @@ private:
     QTableWidget *m_metricTable = nullptr;
     QLabel       *m_warnings = nullptr;
     QLabel       *m_stiLabel = nullptr;
+    QLabel       *m_strengthLabel = nullptr;
 
     // ④ プロット + 反射一覧
     MiniPlot     *m_wavePlot = nullptr;

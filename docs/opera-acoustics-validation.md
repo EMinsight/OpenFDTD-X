@@ -125,6 +125,33 @@ h(t) = e^{-t/2τ}·cos(2πfc t) なら h²(t) = e^{-t/τ}·(1+cos(2·2πfc t))/2
 RIR が最低変調周波数 0.63 Hz の 1 周期 (≈1.6 s) 未満、直接音位置が範囲外、空入力。
 **背景雑音は考慮しない** (雑音項なし = 室の伝送性能のみ) 旨をタブが注記する。
 
+### G (音の強さ) (ISO 3382-1 A.2.6, 2026-08-16 追加 — test_strength 89 checks PASS)
+
+G = 10log10(∫p²dt / ∫p₁₀²dt) は**比**なので、閉形式アンカーは代数だけで
+厳密に書ける (フィルタも回帰も挟まらない)。
+
+| ケース | 期待値の出所 | 許容 |
+|---|---|---|
+| 恒等 (実測 = 基準) | G = 0 dB | ±1e-12 dB |
+| 相似 (実測 = k × 基準, k = 0.1〜10) | G = 20log10(k) | ±1e-9 dB |
+| 距離補正 (基準を r = 1/5/10/20 m で測定) | −20log10(r/10) だけずれる | ±1e-9 dB |
+| fs 非依存 (基準 48/96 kHz × 実測 48/44.1 kHz) | 矩形パルスの E = D·A² は fs に依らない | ±1e-9 dB |
+| 早期/後期の分解 | 10^(Ge/10) + 10^(Gl/10) = 10^(G/10) | 相対 1e-12 |
+| 指数減衰 (τ = 0.25 s) | 等比級数 E = A²/fs·(1−q^N)/(1−q), q = e^{-1/(fs·τ)} | ±1e-6 dB |
+
+**エネルギーは Σx²/fs で積分する** (∫p²dt の矩形近似)。この 1/fs を落とすと
+実測と基準の fs が違うときに G がずれる (上の fs 非依存ケースが番人)。
+
+前提を満たさない入力は invalid にする: **基準録音なし** (0 dB を出すと
+「基準と同じ強さ」に見えるため)、無音の実測/基準、非有限値、空入力、
+直接音位置が範囲外、距離 ≤ 0、基準レベル ≤ −300 dB。RIR が直接音後 80 ms に
+満たないときは G は出すが G_early / G_late は invalid にする (窓が欠ける)。
+
+**G に絶対 SPL 校正は不要**である (calibrationState / calibrationOffsetDb とは
+独立)。要るのは「基準録音と実測 RIR が同じ利得系 (音源出力・マイク感度・
+プリアンプ・AD) で録られていること」の 1 点だけで、これはデータからは
+確認できないため RIR 分析タブが注記する。
+
 ## 4. 直接音検出 (test_direct_sound — 25 checks PASS)
 
 - 単一デルタの位置・時刻・振幅・Valid 品質。
@@ -266,22 +293,29 @@ count=0 かつ警告なし (出力は正規化されず 1.8 のまま)。
 
 | テスト | checks | failures |
 |---|---|---|
+| test_array | 65 | 0 |
 | test_bandfilter | 563 | 0 |
-| test_clarity | 19 | 0 |
+| test_clarity | 31 | 0 |
 | test_clipping | 60 | 0 |
 | test_convolution | 34 | 0 |
 | test_direct_sound | 25 | 0 |
 | test_estimator | 42 | 0 |
 | test_fft | 33 | 0 |
+| test_fitzroy | 11 | 0 |
 | test_formant | 72 | 0 |
+| test_inr | 65 | 0 |
 | test_reflections | 44 | 0 |
 | test_reverberation | 88 | 0 |
 | test_schroeder | 125 | 0 |
+| test_sti | 23 | 0 |
+| test_strength | 89 | 0 |
+| test_sweep | 47 | 0 |
+| test_testsignal | 41 | 0 |
 | test_vocal | 61 | 0 |
 | test_wav | 52 | 0 |
 | test_c_api | 39 | 0 |
-| test_acoustic_runner | 35 | 0 |
-| **合計 (ctest 15 テスト)** | **1292** | **0** |
+| test_acoustic_runner | 45 | 0 |
+| **合計 (ctest 22 テスト)** | **1655** | **0** |
 
 (フェーズ1 記録時点の集計は 7 テスト 392 checks。以降のフェーズ 3/4/5 と
 負債 #7 / #8 の解消分を含めた現在値が上表。)

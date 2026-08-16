@@ -688,6 +688,7 @@ add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/ArrayDirectivity.cpp
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/SpeechTransmissionIndex.cpp
+    src/acoustics/core/SoundStrength.cpp
     src/acoustics/core/ConvolutionEngine.cpp
     # 有理比ポリフェーズ Kaiser 窓 sinc リサンプラ (負債 #12) —
     # 可聴化の fs 不一致時に RIR をドライ側 fs へ変換する実体
@@ -815,6 +816,7 @@ if(BUILD_TESTS)
         reflections
         reverberation
         sti
+        strength
         vocal
         schroeder
         wav

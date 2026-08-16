@@ -265,6 +265,20 @@ QString AcousticResultModel::toJson(const RirAnalysisResult &result)
             sj["warning"] = QString::fromStdString(result.sti.warning);
         root["sti"] = sj;
     }
+    // G (音の強さ、ISO 3382-1)。基準録音が無いときも参考値
+    // (measured_energy_db) は出すが、value は invalid のままにする。
+    {
+        QJsonObject gj;
+        gj["value"] = metricJson(result.strength.g);
+        gj["early"] = metricJson(result.strength.gEarly);
+        gj["late"]  = metricJson(result.strength.gLate);
+        gj["measured_energy_db"] = result.strength.measuredEnergyDb;
+        gj["reference_energy_db"] = result.strength.referenceEnergyDb;
+        gj["distance_correction_db"] = result.strength.distanceCorrectionDb;
+        if (!result.strength.warning.empty())
+            gj["warning"] = QString::fromStdString(result.strength.warning);
+        root["strength"] = gj;
+    }
 
     root["warnings"] = warnings;
 

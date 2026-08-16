@@ -17,6 +17,7 @@
 #include "BandFilter.h"
 #include "DirectSoundDetector.h"
 #include "ReflectionDetector.h"
+#include "SoundStrength.h"
 #include "SpeechTransmissionIndex.h"
 
 namespace ofd {
@@ -43,13 +44,17 @@ struct RirAnalyzerConfig {
     DirectSoundConfig directSound;
     MetricsOptions metrics;
     ReflectionDetectorConfig reflections;
+    // G (音の強さ) の分母。available == false なら G を計算しない。
+    // 絶対 SPL 校正 (calibration/calibrationOffsetDb) とは独立で、
+    // 「基準録音と同じ利得系で録った RIR か」だけが前提 (SoundStrength.h)。
+    SoundStrengthReference strengthReference;
 
     RirAnalyzerConfig()
         : calibration(CalibrationState::Uncalibrated), calibrationOffsetDb(0.0),
           bandSet(BandSet::Compat6), zeroPhaseFiltering(true), removeDc(true),
           minDurationSeconds(0.05), minDynamicRangeDb(10.0),
           warnDynamicRangeDb(30.0), clipThreshold(0.999), clipRunLength(3),
-          directSound(), metrics(), reflections() {}
+          directSound(), metrics(), reflections(), strengthReference() {}
 };
 
 // 前処理の結果情報
@@ -103,12 +108,13 @@ struct RirAnalysisResult {
     ReflectionTimeSummary reflectionSummary;
     MetricValue absoluteSplDb; // ピーク絶対 SPL。Absolute 校正時のみ valid
     StiResult   sti;           // 実測 STI (IEC 60268-16 間接法、雑音項なし)
+    SoundStrengthResult strength; // G (ISO 3382-1)。基準録音がある時のみ valid
     AnalysisQuality overallQuality;
     std::vector<std::string> warnings;
 
     RirAnalysisResult()
         : preprocess(), directSound(), bands(), reflections(),
-          reflectionSummary(), absoluteSplDb(), sti(),
+          reflectionSummary(), absoluteSplDb(), sti(), strength(),
           overallQuality(AnalysisQuality::Invalid), warnings() {}
 };
 

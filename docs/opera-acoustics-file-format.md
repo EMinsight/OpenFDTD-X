@@ -38,9 +38,31 @@
 | `analysis_settings.minimum_dynamic_range_db` | double | `35.0` | これ未満の動的範囲はエラー扱い |
 | `auralization` | object | — | 可聴化 (フェーズ4) のネスト (§2.1) |
 | `solver` | object | — | 外部ソルバー (フェーズ5) のネスト (§2.2) |
+| `sweep` | object | — | ESS 逆畳み込みのネスト。**既定のままならキー自体を書かない** |
+| `strength` | object | — | G (音の強さ) の基準のネスト (§2.3)。**既定のままならキー自体を書かない** |
 
 enum を int で永続化しているため、**対応する C++ enum の値の並び替え・
 挿入は禁止** (既存 `AbsorptionRow::Role` と同じ制約)。追加は末尾のみ可。
+
+### 2.3 `opera_analysis.strength` — G (音の強さ) の基準
+
+G = 10log10(∫p²dt / ∫p₁₀²dt) (ISO 3382-1 A.2.6) の**分母**の指定。
+既存キー不変・ネスト追加のみ (ADR-0003)。**全フィールドが既定値のときは
+`strength` キー自体を書かない**ので、G を使わないファイルの出力は
+1 バイトも変わらない (selftest がバイト一致を検査する)。
+
+| キー | 型 | 既定値 | 意味 |
+|---|---|---|---|
+| `ref_mode` | int | `0` | 0=基準なし (G を出さない) 1=基準録音 (WAV) 2=基準レベルを dB で直接指定 |
+| `ref_file` | string | `""` | `ref_mode` = 1: 自由音場の基準インパルス応答 WAV |
+| `ref_level_db` | double | `-40.0` | `ref_mode` = 2: 10log10(∫p_ref²dt) |
+| `ref_distance_m` | double | `10.0` | 基準録音の音源距離 [m]。10 以外なら −20log10(r/10) で補正する |
+
+**G に絶対 SPL 校正 (`calibration_state` / `calibration_offset_db`) は
+不要**である。前提は「基準録音と実測 RIR が同じ利得系で録られていること」
+の 1 点で、これはファイルからは確認できないため UI が注記する。
+`ref_mode` = 0 (既定) のときは G を計算しない — 基準が無いまま 0 dB を
+出すと「基準と同じ強さ」に見えるため。
 
 ### 2.1 `opera_analysis.auralization` (フェーズ4)
 

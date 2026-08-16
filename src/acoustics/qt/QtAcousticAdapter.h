@@ -37,6 +37,15 @@ public:
     static acoustics::RirAnalyzerConfig
     toAnalyzerConfig(const OperaAcousticSettings &settings);
 
+    // G (音の強さ) の基準を settings から作る。
+    // strengthRefMode 0=なし (available=false を返す) / 1=基準録音 (WAV を
+    // 読んでエネルギーを積分) / 2=基準レベル [dB] を直接指定。
+    // 失敗時は available=false を返し、理由を outError に入れる
+    // (基準が用意できないまま G を 0 dB で出さないため)。
+    static acoustics::SoundStrengthReference
+    makeStrengthReference(const OperaAcousticSettings &settings,
+                          QString *outError = nullptr);
+
     // 選択済み 1ch 信号を分析する
     static acoustics::AcousticResult<acoustics::RirAnalysisResult>
     analyze(const std::vector<double> &samples, double sampleRateHz,

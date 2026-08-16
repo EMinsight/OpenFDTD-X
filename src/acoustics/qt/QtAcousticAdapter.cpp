@@ -105,7 +105,47 @@ QtAcousticAdapter::toAnalyzerConfig(const OperaAcousticSettings &s)
     cfg.minDynamicRangeDb = s.minimumDynamicRangeDb;
     cfg.warnDynamicRangeDb =
         std::max(cfg.warnDynamicRangeDb, s.minimumDynamicRangeDb);
+    // G (音の強さ) の基準。用意できなければ available=false のままで、
+    // コア側が G を invalid にする (0 dB を出さない)。
+    cfg.strengthReference = makeStrengthReference(s);
     return cfg;
+}
+
+SoundStrengthReference
+QtAcousticAdapter::makeStrengthReference(const OperaAcousticSettings &s,
+                                         QString *outError)
+{
+    if (outError) outError->clear();
+    if (s.strengthRefMode == 0) return SoundStrengthReference();  // 未設定
+
+    if (s.strengthRefMode == 2) {   // 基準レベルを dB で直接指定
+        const AcousticResult<SoundStrengthReference> r =
+            makeSoundStrengthReferenceDb(s.strengthRefLevelDb,
+                                         s.strengthRefDistanceM);
+        if (!r.success()) {
+            if (outError)
+                *outError = QString::fromUtf8(r.message().c_str());
+            return SoundStrengthReference();
+        }
+        return r.value();
+    }
+
+    // mode 1: 自由音場の基準インパルス応答 (WAV) を読んでエネルギーを積分。
+    // 分析のたびに読み直すが、基準 IR は無響録音で短いため実害はない。
+    const AcousticResult<AudioBuffer> wav = readWav(s.strengthRefFile);
+    if (!wav.success()) {
+        if (outError) *outError = QString::fromUtf8(wav.message().c_str());
+        return SoundStrengthReference();
+    }
+    const std::vector<double> ref = selectChannel(wav.value(), s.channelMode);
+    const AcousticResult<SoundStrengthReference> r = makeSoundStrengthReference(
+        ArrayView<const double>(ref), wav.value().sampleRateHz,
+        s.strengthRefDistanceM);
+    if (!r.success()) {
+        if (outError) *outError = QString::fromUtf8(r.message().c_str());
+        return SoundStrengthReference();
+    }
+    return r.value();
 }
 
 AcousticResult<RirAnalysisResult>

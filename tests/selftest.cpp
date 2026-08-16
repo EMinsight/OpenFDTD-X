@@ -1974,6 +1974,11 @@ static void testOperaAcousticSettings()
         s.sweepEndHz = 16000.0;
         s.sweepSec = 7.5;
         s.sweepHarmonics = true;
+        // G (音の強さ) の基準 — 追加フィールドは往復・既定の両方を検査する
+        s.strengthRefMode = 1;
+        s.strengthRefFile = "/tmp/freefield_10m.wav";
+        s.strengthRefLevelDb = -33.25;
+        s.strengthRefDistanceM = 12.5;
 
 
         QTemporaryFile ofdx;
@@ -2013,6 +2018,13 @@ static void testOperaAcousticSettings()
                   nearlyEq(q.sweepEndHz, 16000.0) &&
                   nearlyEq(q.sweepSec, 7.5), "opera rt sweep f1/f2/T");
             check(q.sweepHarmonics == true, "opera rt sweep harmonics");
+            // G の基準 (負債 #10 の残件)
+            check(q.strengthRefMode == 1, "opera rt strength refMode");
+            check(q.strengthRefFile == "/tmp/freefield_10m.wav",
+                  "opera rt strength refFile");
+            check(nearlyEq(q.strengthRefLevelDb, -33.25) &&
+                  nearlyEq(q.strengthRefDistanceM, 12.5),
+                  "opera rt strength level/distance");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -2095,6 +2107,10 @@ static void testOperaAcousticSettings()
                   nearlyEq(q.sweepEndHz, 20000.0) &&
                   nearlyEq(q.sweepSec, 5.0),
                   "legacy ofdx leaves sweep defaults");
+            check(q.strengthRefMode == 0 && q.strengthRefFile.isEmpty() &&
+                  nearlyEq(q.strengthRefLevelDb, -40.0) &&
+                  nearlyEq(q.strengthRefDistanceM, 10.0),
+                  "legacy ofdx leaves strength defaults");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");
@@ -3789,6 +3805,55 @@ static void testAudioEditEngine()
                   "sweep-ofdx: missing key falls back to the defaults");
         }
 
+        // ── G (音の強さ) の基準 (.ofdx opera_analysis.strength) ──
+        // 同じ規約: 既定ならキーを書かず、戻せばバイト一致に戻る
+        {
+            ofd::Project sp;
+            QString e3;
+            const QString p3 = dir.filePath("strength.ofd");
+            const QString sc3 = dir.filePath("strength.ofdx");
+            auto bytes3 = [&] {
+                QFile f(sc3);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(sp.save(p3, &e3), "strength-ofdx: default saved");
+            const QByteArray base3 = bytes3();
+            check(!base3.contains("\"strength\""),
+                  "strength-ofdx: defaults write no strength key");
+
+            sp.operaAcoustic().strengthRefMode = 2;
+            sp.operaAcoustic().strengthRefFile = "/tmp/ff10m.wav";
+            sp.operaAcoustic().strengthRefLevelDb = -27.5;
+            sp.operaAcoustic().strengthRefDistanceM = 8.0;
+            check(sp.save(p3, &e3), "strength-ofdx: enabled saved");
+            check(bytes3().contains("\"strength\""),
+                  "strength-ofdx: non-default settings write the key");
+
+            ofd::Project rd3;
+            check(rd3.load(p3, &e3), "strength-ofdx: reloaded");
+            check(rd3.operaAcoustic().strengthRefMode == 2
+                  && rd3.operaAcoustic().strengthRefFile == "/tmp/ff10m.wav"
+                  && rd3.operaAcoustic().strengthRefLevelDb == -27.5
+                  && rd3.operaAcoustic().strengthRefDistanceM == 8.0,
+                  "strength-ofdx: round-trips the strength settings");
+
+            const ofd::OperaAcousticSettings d3;
+            rd3.operaAcoustic().strengthRefMode = d3.strengthRefMode;
+            rd3.operaAcoustic().strengthRefFile = d3.strengthRefFile;
+            rd3.operaAcoustic().strengthRefLevelDb = d3.strengthRefLevelDb;
+            rd3.operaAcoustic().strengthRefDistanceM = d3.strengthRefDistanceM;
+            check(rd3.save(p3, &e3), "strength-ofdx: reverted saved");
+            check(bytes3() == base3,
+                  "strength-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o3;
+            check(o3.operaAcoustic().strengthRefMode == 0
+                  && o3.operaAcoustic().strengthRefFile.isEmpty()
+                  && o3.operaAcoustic().strengthRefLevelDb == -40.0
+                  && o3.operaAcoustic().strengthRefDistanceM == 10.0,
+                  "strength-ofdx: missing key falls back to the defaults");
+        }
+
         // 旧ファイル (source_wav 無し) は既定値のまま
         ofd::Project old;
         check(old.acoustic().wavTrimStart_s == 0.0
@@ -3953,6 +4018,47 @@ static void testCalibrationOffsetGate()
         const OperaAcousticSettings d;
         check(QtAcousticAdapter::toAnalyzerConfig(d).calibrationOffsetDb == 0.0,
               "gate: default settings keep offset 0");
+    }
+
+    // ── G (音の強さ) の基準の配線 ──
+    // G は基準録音との比なので**校正状態とは独立**。ここでは
+    // 「基準が無ければ available=false のまま」「レベル直接指定が
+    // エネルギーへ正しく変換される」「読めないファイルは黙って通さない」
+    // の 3 点を確認する。
+    {
+        OperaAcousticSettings gs;   // 既定 = 基準なし
+        check(!QtAcousticAdapter::makeStrengthReference(gs).available,
+              "strength: default settings supply no reference");
+        check(!QtAcousticAdapter::toAnalyzerConfig(gs)
+                   .strengthReference.available,
+              "strength: analyzer config carries no reference by default");
+
+        gs.strengthRefMode = 2;             // レベル直接指定
+        gs.strengthRefLevelDb = -30.0;
+        gs.strengthRefDistanceM = 20.0;
+        const acoustics::SoundStrengthReference r =
+            QtAcousticAdapter::makeStrengthReference(gs);
+        check(r.available, "strength: level mode yields a reference");
+        check(nearlyEq(r.energy, std::pow(10.0, -3.0)),
+              "strength: level dB converted to energy");
+        check(nearlyEq(r.distanceM, 20.0), "strength: distance carried");
+        check(QtAcousticAdapter::toAnalyzerConfig(gs)
+                  .strengthReference.available,
+              "strength: analyzer config carries the reference");
+
+        // 校正状態を変えても G の基準は影響を受けない (独立であること)
+        gs.calibrationState = 2;            // Uncalibrated
+        check(QtAcousticAdapter::toAnalyzerConfig(gs)
+                  .strengthReference.available,
+              "strength: reference is independent of calibration state");
+
+        // 読めないファイルは available=false + 理由つき (0 dB を出さない)
+        gs.strengthRefMode = 1;
+        gs.strengthRefFile = "/nonexistent/free_field_10m.wav";
+        QString err;
+        check(!QtAcousticAdapter::makeStrengthReference(gs, &err).available,
+              "strength: unreadable reference file yields no reference");
+        check(!err.isEmpty(), "strength: unreadable reference reports why");
     }
 }
 
