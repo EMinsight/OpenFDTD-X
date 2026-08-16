@@ -133,6 +133,7 @@
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
+#include "acoustics/qt/AcousticResultModel.h"
 // 音源リスト → ソルバ波源 (feed) の反映本体。ofdx_selftest は GUI_SOURCES を
 // リンクしないため、ヘッダ内 inline 定義の static メソッドを直接検証する
 // (クラス自体は instantiate しない — moc 不要)。
@@ -1974,6 +1975,13 @@ static void testOperaAcousticSettings()
         s.sweepEndHz = 16000.0;
         s.sweepSec = 7.5;
         s.sweepHarmonics = true;
+        // ST 測定条件の自己申告 (要求 §3.2)
+        s.stConditionDeclared = true;
+        // G (音の強さ) の基準 — 追加フィールドは往復・既定の両方を検査する
+        s.strengthRefMode = 1;
+        s.strengthRefFile = "/tmp/freefield_10m.wav";
+        s.strengthRefLevelDb = -33.25;
+        s.strengthRefDistanceM = 12.5;
 
 
         QTemporaryFile ofdx;
@@ -2013,6 +2021,15 @@ static void testOperaAcousticSettings()
                   nearlyEq(q.sweepEndHz, 16000.0) &&
                   nearlyEq(q.sweepSec, 7.5), "opera rt sweep f1/f2/T");
             check(q.sweepHarmonics == true, "opera rt sweep harmonics");
+            // G の基準 (負債 #10 の残件)
+            check(q.strengthRefMode == 1, "opera rt strength refMode");
+            check(q.strengthRefFile == "/tmp/freefield_10m.wav",
+                  "opera rt strength refFile");
+            check(nearlyEq(q.strengthRefLevelDb, -33.25) &&
+                  nearlyEq(q.strengthRefDistanceM, 12.5),
+                  "opera rt strength level/distance");
+            check(q.stConditionDeclared == true,
+                  "opera rt st condition declared");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -2095,6 +2112,12 @@ static void testOperaAcousticSettings()
                   nearlyEq(q.sweepEndHz, 20000.0) &&
                   nearlyEq(q.sweepSec, 5.0),
                   "legacy ofdx leaves sweep defaults");
+            check(q.strengthRefMode == 0 && q.strengthRefFile.isEmpty() &&
+                  nearlyEq(q.strengthRefLevelDb, -40.0) &&
+                  nearlyEq(q.strengthRefDistanceM, 10.0),
+                  "legacy ofdx leaves strength defaults");
+            check(!q.stConditionDeclared,
+                  "legacy ofdx leaves st condition undeclared");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");
@@ -3789,39 +3812,104 @@ static void testAudioEditEngine()
                   "sweep-ofdx: missing key falls back to the defaults");
         }
 
-        // ── 複数音源 (.ofdx acoustic.multi_source — ADR-0010) ──
-        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致
+        // ── G (音の強さ) の基準 (.ofdx opera_analysis.strength) ──
+        // 同じ規約: 既定ならキーを書かず、戻せばバイト一致に戻る
         {
-            ofd::Project mp;
+            ofd::Project sp;
             QString e3;
-            const QString p3 = dir.filePath("msrc.ofd");
-            const QString sc3 = dir.filePath("msrc.ofdx");
+            const QString p3 = dir.filePath("strength.ofd");
+            const QString sc3 = dir.filePath("strength.ofdx");
             auto bytes3 = [&] {
                 QFile f(sc3);
                 return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
             };
-            check(mp.save(p3, &e3), "msrc-ofdx: default saved");
+            check(sp.save(p3, &e3), "strength-ofdx: default saved");
             const QByteArray base3 = bytes3();
-            check(!base3.contains("multi_source"),
+            check(!base3.contains("\"strength\""),
+                  "strength-ofdx: defaults write no strength key");
+            check(!base3.contains("st_condition_declared"),
+                  "st-ofdx: defaults write no st_condition_declared key");
+            {   // 申告 true → キーが書かれ、false へ戻すとバイト一致
+                sp.operaAcoustic().stConditionDeclared = true;
+                check(sp.save(p3, &e3), "st-ofdx: declared saved");
+                check(bytes3().contains("\"st_condition_declared\": true"),
+                      "st-ofdx: declaring writes the key");
+                ofd::Project sre;
+                check(sre.load(p3, &e3), "st-ofdx: reloaded");
+                check(sre.operaAcoustic().stConditionDeclared,
+                      "st-ofdx: round-trips the declaration");
+                sp.operaAcoustic().stConditionDeclared = false;
+                check(sp.save(p3, &e3), "st-ofdx: reverted saved");
+                check(bytes3() == base3,
+                      "st-ofdx: reverting restores byte-identical output");
+            }
+
+            sp.operaAcoustic().strengthRefMode = 2;
+            sp.operaAcoustic().strengthRefFile = "/tmp/ff10m.wav";
+            sp.operaAcoustic().strengthRefLevelDb = -27.5;
+            sp.operaAcoustic().strengthRefDistanceM = 8.0;
+            check(sp.save(p3, &e3), "strength-ofdx: enabled saved");
+            check(bytes3().contains("\"strength\""),
+                  "strength-ofdx: non-default settings write the key");
+
+            ofd::Project rd3;
+            check(rd3.load(p3, &e3), "strength-ofdx: reloaded");
+            check(rd3.operaAcoustic().strengthRefMode == 2
+                  && rd3.operaAcoustic().strengthRefFile == "/tmp/ff10m.wav"
+                  && rd3.operaAcoustic().strengthRefLevelDb == -27.5
+                  && rd3.operaAcoustic().strengthRefDistanceM == 8.0,
+                  "strength-ofdx: round-trips the strength settings");
+
+            const ofd::OperaAcousticSettings d3;
+            rd3.operaAcoustic().strengthRefMode = d3.strengthRefMode;
+            rd3.operaAcoustic().strengthRefFile = d3.strengthRefFile;
+            rd3.operaAcoustic().strengthRefLevelDb = d3.strengthRefLevelDb;
+            rd3.operaAcoustic().strengthRefDistanceM = d3.strengthRefDistanceM;
+            check(rd3.save(p3, &e3), "strength-ofdx: reverted saved");
+            check(bytes3() == base3,
+                  "strength-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o3;
+            check(o3.operaAcoustic().strengthRefMode == 0
+                  && o3.operaAcoustic().strengthRefFile.isEmpty()
+                  && o3.operaAcoustic().strengthRefLevelDb == -40.0
+                  && o3.operaAcoustic().strengthRefDistanceM == 10.0,
+                  "strength-ofdx: missing key falls back to the defaults");
+        }
+
+        // ── 複数音源 (.ofdx acoustic.multi_source — ADR-0010) ──
+        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致
+        {
+            ofd::Project mp;
+            QString e4;
+            const QString p4 = dir.filePath("msrc.ofd");
+            const QString sc4 = dir.filePath("msrc.ofdx");
+            auto bytes4 = [&] {
+                QFile f(sc4);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(mp.save(p4, &e4), "msrc-ofdx: default saved");
+            const QByteArray base4 = bytes4();
+            check(!base4.contains("multi_source"),
                   "msrc-ofdx: defaults write no multi_source key");
 
             mp.acoustic().multiSource = true;
-            check(mp.save(p3, &e3), "msrc-ofdx: enabled saved");
-            check(bytes3().contains("\"multi_source\": true"),
+            check(mp.save(p4, &e4), "msrc-ofdx: enabled saved");
+            check(bytes4().contains("\"multi_source\": true"),
                   "msrc-ofdx: enabling writes multi_source: true");
 
-            ofd::Project rd3;
-            check(rd3.load(p3, &e3), "msrc-ofdx: reloaded");
-            check(rd3.acoustic().multiSource,
+            ofd::Project rd4;
+            check(rd4.load(p4, &e4), "msrc-ofdx: reloaded");
+            check(rd4.acoustic().multiSource,
                   "msrc-ofdx: round-trips the multi-source flag");
 
-            rd3.acoustic().multiSource = false;
-            check(rd3.save(p3, &e3), "msrc-ofdx: reverted saved");
-            check(bytes3() == base3,
+            rd4.acoustic().multiSource = false;
+            check(rd4.save(p4, &e4), "msrc-ofdx: reverted saved");
+            check(bytes4() == base4,
                   "msrc-ofdx: reverting restores byte-identical output");
 
-            ofd::Project o3;
-            check(!o3.acoustic().multiSource,
+            ofd::Project o4;
+            check(!o4.acoustic().multiSource,
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
         }
 
@@ -3989,6 +4077,47 @@ static void testCalibrationOffsetGate()
         const OperaAcousticSettings d;
         check(QtAcousticAdapter::toAnalyzerConfig(d).calibrationOffsetDb == 0.0,
               "gate: default settings keep offset 0");
+    }
+
+    // ── G (音の強さ) の基準の配線 ──
+    // G は基準録音との比なので**校正状態とは独立**。ここでは
+    // 「基準が無ければ available=false のまま」「レベル直接指定が
+    // エネルギーへ正しく変換される」「読めないファイルは黙って通さない」
+    // の 3 点を確認する。
+    {
+        OperaAcousticSettings gs;   // 既定 = 基準なし
+        check(!QtAcousticAdapter::makeStrengthReference(gs).available,
+              "strength: default settings supply no reference");
+        check(!QtAcousticAdapter::toAnalyzerConfig(gs)
+                   .strengthReference.available,
+              "strength: analyzer config carries no reference by default");
+
+        gs.strengthRefMode = 2;             // レベル直接指定
+        gs.strengthRefLevelDb = -30.0;
+        gs.strengthRefDistanceM = 20.0;
+        const acoustics::SoundStrengthReference r =
+            QtAcousticAdapter::makeStrengthReference(gs);
+        check(r.available, "strength: level mode yields a reference");
+        check(nearlyEq(r.energy, std::pow(10.0, -3.0)),
+              "strength: level dB converted to energy");
+        check(nearlyEq(r.distanceM, 20.0), "strength: distance carried");
+        check(QtAcousticAdapter::toAnalyzerConfig(gs)
+                  .strengthReference.available,
+              "strength: analyzer config carries the reference");
+
+        // 校正状態を変えても G の基準は影響を受けない (独立であること)
+        gs.calibrationState = 2;            // Uncalibrated
+        check(QtAcousticAdapter::toAnalyzerConfig(gs)
+                  .strengthReference.available,
+              "strength: reference is independent of calibration state");
+
+        // 読めないファイルは available=false + 理由つき (0 dB を出さない)
+        gs.strengthRefMode = 1;
+        gs.strengthRefFile = "/nonexistent/free_field_10m.wav";
+        QString err;
+        check(!QtAcousticAdapter::makeStrengthReference(gs, &err).available,
+              "strength: unreadable reference file yields no reference");
+        check(!err.isEmpty(), "strength: unreadable reference reports why");
     }
 }
 
@@ -9732,6 +9861,131 @@ static void testAcousticReport()
           "report: csv vocal status done");
     check(csv2.contains("vocal,metrics,F0 median,Full band,440.0,Hz,1,valid,"),
           "report: csv vocal F0 row");
+
+    // ── 広帯域指標 (STI / G) の取り込み ──
+    // metricRows に足したので、タブの表・CSV・レポートの 3 経路に同時に載る。
+    // 基準未設定の G は「算出不可」+ 理由で出る (0 dB を出さない)。
+    {
+        check(csv2.contains("rir,metrics,STI,Full band,"),
+              "report: csv carries the STI row");
+        check(csv2.contains("rir,metrics,G,Full band,,dB,0,invalid,"),
+              "report: G without a reference is invalid, not 0 dB");
+        check(csv2.contains("rir,metrics,G_early,Full band,")
+              && csv2.contains("rir,metrics,G_late,Full band,"),
+              "report: csv carries G_early / G_late rows");
+
+        const QString html2 = AcousticReportBuilder::buildHtml(in);
+        check(html2.contains(QString::fromUtf8("G の基準")),
+              "report: html shows the G reference row");
+        check(html2.contains(QString::fromUtf8("未設定 (G は算出しません)")),
+              "report: html states that no G reference is set");
+        check(html2.contains(QString::fromUtf8("ISO 3382-1 Annex C"))
+              && html2.contains(QString::fromUtf8("IEC 60268-16")),
+              "report: html carries the measurement caveats");
+
+        // 基準を設定すると分母がレポートに出る (読み手が確認できる)
+        AcousticReportInput gin = in;
+        gin.strengthRefMode = 1;
+        gin.strengthRefFile = "freefield_10m.wav";
+        gin.strengthRefDistanceM = 12.5;
+        gin.rir.strength.g = acoustics::makeValidMetric(4.3);
+        const QString html3 = AcousticReportBuilder::buildHtml(gin);
+        check(html3.contains("freefield_10m.wav"),
+              "report: html shows the reference recording");
+        check(html3.contains(QString::fromUtf8("距離 12.50 m")),
+              "report: html shows the reference distance");
+        check(AcousticReportBuilder::buildCsv(gin)
+                  .contains("rir,metrics,G,Full band,4.3,dB,1,valid,"),
+              "report: csv carries a valid G value");
+        check(AcousticReportBuilder::buildHtml(gin) == html3,
+              "report: html deterministic with a G reference");
+    }
+
+    // ── ST 系の 3 値表示規則 (要求 §3.2) ──
+    // コアが Valid を返しても、測定条件 (舞台上・1 m・空席) の自己申告が
+    // 無い限り値を出さない。申告があっても Valid にはせず「参考値」とする。
+    {
+        acoustics::RirAnalysisResult sr = rir;
+        sr.bands[0].metrics.stEarly = acoustics::makeValidMetric(-12.3);
+        sr.bands[0].metrics.stLate  = acoustics::makeValidMetric(-14.1);
+
+        // 申告なし (既定): 値を出さない + 理由
+        const QVector<AcousticResultRow> undecl =
+            AcousticResultModel::metricRows(sr);
+        int stSeen = 0;
+        for (const AcousticResultRow &row : undecl) {
+            if (row.metric != "ST_early" && row.metric != "ST_late") continue;
+            ++stSeen;
+            check(!row.valid && row.valueText.isEmpty(),
+                  "st-rule: undeclared hides the value");
+            check(row.quality == "invalid"
+                      && row.warning.contains("not declared"),
+                  "st-rule: undeclared states the reason");
+        }
+        check(stSeen == 2, "st-rule: both ST rows present");
+
+        // 申告あり: 値 + Warning「参考値 (自己申告)」— Valid にはしない
+        MetricDisplayOptions decl;
+        decl.stConditionDeclared = true;
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(sr, decl)) {
+            if (row.metric != "ST_early" && row.metric != "ST_late") continue;
+            check(row.valid && !row.valueText.isEmpty(),
+                  "st-rule: declared shows the value");
+            check(row.quality == "warning"
+                      && row.warning.contains("self-declared"),
+                  "st-rule: declared is a reference value, not Valid");
+        }
+        // ST_early = -12.3 が実際に出ること (取り違え検出)
+        bool foundVal = false;
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(sr, decl))
+            if (row.metric == "ST_early" && row.valueText == "-12.3")
+                foundVal = true;
+        check(foundVal, "st-rule: declared value text matches the metric");
+
+        // コアが invalid にしたものは申告があっても復活しない
+        acoustics::RirAnalysisResult iv = rir;
+        iv.bands[0].metrics.stEarly.valid = false;
+        iv.bands[0].metrics.stEarly.quality =
+            acoustics::AnalysisQuality::Invalid;
+        iv.bands[0].metrics.stEarly.warning = "window truncated";
+        for (const AcousticResultRow &row :
+             AcousticResultModel::metricRows(iv, decl))
+            if (row.metric == "ST_early")
+                check(!row.valid && row.warning == "window truncated",
+                      "st-rule: core-invalid stays invalid when declared");
+
+        // CSV も同じ規則 (申告なしは値なし invalid / 申告ありは warning)
+        check(AcousticResultModel::toCsv(sr)
+                  .contains("metrics,ST_early,Full band,,dB,0,invalid,"),
+              "st-rule: csv withholds ST without declaration");
+        check(AcousticResultModel::toCsv(sr, decl)
+                  .contains("metrics,ST_early,Full band,-12.3,dB,1,warning,"),
+              "st-rule: csv shows ST as warning when declared");
+        // JSON は生値 + 申告フラグの併記
+        check(AcousticResultModel::toJson(sr)
+                  .contains("\"st_condition_declared\": false"),
+              "st-rule: json carries the declaration flag (false)");
+        check(AcousticResultModel::toJson(sr, decl)
+                  .contains("\"st_condition_declared\": true"),
+              "st-rule: json carries the declaration flag (true)");
+
+        // レポート: 申告なし → 「申告なし」行、申告あり → 参考値の説明
+        AcousticReportInput rin = in;
+        rin.rir = sr;
+        const QString h0 = AcousticReportBuilder::buildHtml(rin);
+        check(h0.contains(QString::fromUtf8("申告なし")),
+              "st-rule: report states no declaration");
+        rin.stConditionDeclared = true;
+        const QString h1 = AcousticReportBuilder::buildHtml(rin);
+        check(h1.contains(QString::fromUtf8("自己申告あり")),
+              "st-rule: report states the declaration");
+        check(h1.contains("-12.3"),
+              "st-rule: report shows the ST value when declared");
+        check(!h0.contains("-12.3"),
+              "st-rule: report withholds the ST value when not declared");
+    }
 }
 
 // ── 光導波路 断面 FDE ソルバ (src/optics/FdeModeSolver) ─────────────────────

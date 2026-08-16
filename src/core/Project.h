@@ -524,6 +524,24 @@ struct OperaAcousticSettings {
     double  sweepSec     = 5.0;       // 掃引長 T
     bool    sweepHarmonics = false;   // 高調波分離 (THD・次数別レベル) の表示
 
+    // ── G (音の強さ、ISO 3382-1) の基準 (.ofdx "opera_analysis.strength" —
+    //    追加キー。既定のままならキー自体を書かない) ──
+    // G は「自由音場 10 m の基準録音」との比なので、絶対 SPL 校正
+    // (calibrationState/calibrationOffsetDb) とは独立に求まる。前提は
+    // 「基準録音と実測 RIR が同じ利得系で録られていること」の 1 点
+    // (src/acoustics/core/SoundStrength.h)。
+    int     strengthRefMode = 0;         // 0=なし 1=基準録音 (WAV) 2=レベル直接
+    QString strengthRefFile;             // mode 1: 自由音場の基準 IR (WAV)
+    double  strengthRefLevelDb = -40.0;  // mode 2: 10log10(∫p_ref²dt)
+    double  strengthRefDistanceM = 10.0; // 基準録音の音源距離 [m] (規格値 10)
+
+    // ── ST 系の測定条件申告 (.ofdx "opera_analysis.st_condition_declared" —
+    //    追加キー。false (既定) ならキー自体を書かない) ──
+    // ST_early / ST_late の測定条件 (舞台上・音源から 1 m・空席、
+    // ISO 3382-1 Annex C) はデータから検証できない。要求 §3.2 の
+    // 3 値表示規則に従い、この自己申告が無い限り値を表示しない。
+    bool    stConditionDeclared = false;
+
     // 可聴化 (AuralizationTab, .ofdx "opera_analysis/auralization")
     QString auralizationDryFile;      // ドライ (無響/近接) 歌唱 WAV
     QString auralizationOutputFile;   // ウェット出力 WAV

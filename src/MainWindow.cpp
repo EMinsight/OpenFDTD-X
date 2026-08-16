@@ -1556,6 +1556,13 @@ void MainWindow::exportAcousticReport()
     in.voiceFile           = QFileInfo(op.voicePath).fileName();
     in.calibrationState    = op.calibrationState;
     in.calibrationOffsetDb = op.calibrationOffsetDb;
+    // G (音の強さ) の分母。ファイル名だけを載せる (パスは出さない — 他の
+    // ファイル欄と同じ扱い)
+    in.stConditionDeclared  = op.stConditionDeclared;
+    in.strengthRefMode      = op.strengthRefMode;
+    in.strengthRefFile      = QFileInfo(op.strengthRefFile).fileName();
+    in.strengthRefLevelDb   = op.strengthRefLevelDb;
+    in.strengthRefDistanceM = op.strengthRefDistanceM;
     in.auralizationDryFile = QFileInfo(op.auralizationDryFile).fileName();
     in.auralizationOutputFile =
         QFileInfo(op.auralizationOutputFile).fileName();

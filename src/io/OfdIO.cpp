@@ -868,6 +868,27 @@ QByteArray OfdxIO::serialize(const Project &p)
                 ac["opera_analysis"] = oaObj;
             }
         }
+        // ST 系の測定条件申告 (要求 §3.2) — 既定 (false) ならキーを書かない
+        if (oa.stConditionDeclared) {
+            QJsonObject oaObj = ac["opera_analysis"].toObject();
+            oaObj["st_condition_declared"] = true;
+            ac["opera_analysis"] = oaObj;
+        }
+        {   // G (音の強さ) の基準 — 既定のままならキー自体を書かない
+            const OperaAcousticSettings d;
+            if (oa.strengthRefMode != d.strengthRefMode
+                || oa.strengthRefFile != d.strengthRefFile
+                || oa.strengthRefLevelDb != d.strengthRefLevelDb
+                || oa.strengthRefDistanceM != d.strengthRefDistanceM) {
+                QJsonObject oaObj = ac["opera_analysis"].toObject();
+                oaObj["strength"] = QJsonObject{
+                    {"ref_mode", oa.strengthRefMode},
+                    {"ref_file", oa.strengthRefFile},
+                    {"ref_level_db", oa.strengthRefLevelDb},
+                    {"ref_distance_m", oa.strengthRefDistanceM} };
+                ac["opera_analysis"] = oaObj;
+            }
+        }
         root["acoustic"] = ac;
     }
     {
@@ -1571,6 +1592,20 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 s.sweepSec     = sw.value("duration_s").toDouble(s.sweepSec);
                 s.sweepHarmonics =
                     sw.value("harmonics").toBool(s.sweepHarmonics);
+            }
+            s.stConditionDeclared =
+                oa.value("st_condition_declared").toBool(s.stConditionDeclared);
+            if (oa.contains("strength")) {   // G の基準 — 追加キー
+                const QJsonObject st = oa["strength"].toObject();
+                // 壊れたファイルの範囲外値で不正モードを作らない (0..2)
+                s.strengthRefMode =
+                    qBound(0, st.value("ref_mode").toInt(s.strengthRefMode), 2);
+                s.strengthRefFile =
+                    st.value("ref_file").toString(s.strengthRefFile);
+                s.strengthRefLevelDb =
+                    st.value("ref_level_db").toDouble(s.strengthRefLevelDb);
+                s.strengthRefDistanceM =
+                    st.value("ref_distance_m").toDouble(s.strengthRefDistanceM);
             }
             s.directSoundMethod =
                 oa.value("direct_sound_method").toInt(s.directSoundMethod);

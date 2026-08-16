@@ -29,6 +29,20 @@ using namespace ofd::acoustics;
 // src/tabs/TabHelpers.{h,cpp} に集約 (3 タブで共有)。
 using namespace ofd::tabhelp;
 
+namespace {
+
+// 実測 STI の等級 (IEC 60268-16 の区分 0.30 / 0.45 / 0.60 / 0.75)
+QString stiGradeText(double sti)
+{
+    if (sti < 0.30) return I18n::tr("rir_sti_bad");
+    if (sti < 0.45) return I18n::tr("rir_sti_poor");
+    if (sti < 0.60) return I18n::tr("rir_sti_fair");
+    if (sti < 0.75) return I18n::tr("rir_sti_good");
+    return I18n::tr("rir_sti_excellent");
+}
+
+} // namespace
+
 // ── construction ────────────────────────────────────────────────────────────
 RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     : QScrollArea(parent), m_p(project)
@@ -104,6 +118,49 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     m_minDr->setDecimals(1);
     m_minDr->setSuffix(QStringLiteral(" dB"));
     sIn->form()->addRow(I18n::tr("rir_min_dr"), m_minDr);
+
+    // ST 系の測定条件申告 (要求 §3.2 の 3 値表示規則)。申告が無い限り
+    // ST_early / ST_late は「測定条件不適合」として値を表示しない。
+    m_stDeclared = new QCheckBox(I18n::tr("rir_st_declared"), sIn);
+    m_stDeclared->setToolTip(I18n::tr("rir_st_declared_tip"));
+    sIn->form()->addRow(QString(), m_stDeclared);
+
+    // ── G (音の強さ) の基準 ──
+    // 基準録音 (自由音場 10 m) が無ければ G は出さない。絶対 SPL 校正とは
+    // 独立で、要るのは「同じ利得系で録られていること」だけ。
+    m_gRefMode = new QComboBox(sIn);
+    m_gRefMode->addItems({ I18n::tr("rir_g_mode_none"),
+                           I18n::tr("rir_g_mode_file"),
+                           I18n::tr("rir_g_mode_level") });
+    sIn->form()->addRow(I18n::tr("rir_g_ref_mode"), m_gRefMode);
+
+    auto *gFileRow = new QHBoxLayout();
+    m_gRefFile = new QLineEdit(sIn);
+    m_gRefFile->setReadOnly(true);
+    m_gRefFile->setPlaceholderText(I18n::tr("rir_g_ref_file_placeholder"));
+    m_gRefBrowse = new QPushButton(I18n::tr("rir_browse"), sIn);
+    gFileRow->addWidget(m_gRefFile, 1);
+    gFileRow->addWidget(m_gRefBrowse);
+    m_gRefFileLabel = new QLabel(I18n::tr("rir_g_ref_file"), sIn);
+    sIn->form()->addRow(m_gRefFileLabel, gFileRow);
+
+    m_gRefLevel = new QDoubleSpinBox(sIn);
+    m_gRefLevel->setRange(-200.0, 200.0);
+    m_gRefLevel->setDecimals(2);
+    m_gRefLevel->setSuffix(QStringLiteral(" dB"));
+    m_gRefLevel->setToolTip(I18n::tr("rir_g_ref_level_tip"));
+    m_gRefLevelLabel = new QLabel(I18n::tr("rir_g_ref_level"), sIn);
+    m_gRefLevelLabel->setToolTip(I18n::tr("rir_g_ref_level_tip"));
+    sIn->form()->addRow(m_gRefLevelLabel, m_gRefLevel);
+
+    m_gRefDistance = new QDoubleSpinBox(sIn);
+    m_gRefDistance->setRange(0.1, 1000.0);
+    m_gRefDistance->setDecimals(2);
+    m_gRefDistance->setSuffix(QStringLiteral(" m"));
+    m_gRefDistance->setToolTip(I18n::tr("rir_g_ref_distance_tip"));
+    m_gRefDistanceLabel = new QLabel(I18n::tr("rir_g_ref_distance"), sIn);
+    m_gRefDistanceLabel->setToolTip(I18n::tr("rir_g_ref_distance_tip"));
+    sIn->form()->addRow(m_gRefDistanceLabel, m_gRefDistance);
     v->addWidget(sIn);
 
     // ② 実行
@@ -137,6 +194,24 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     stNote->setWordWrap(true);
     stNote->setStyleSheet("color:#888; font-size:10px;");
     sRes->vbox()->addWidget(stNote);
+    // 実測 STI (IEC 60268-16 間接法) — 表と別枠。等級は規格の区分。
+    m_stiLabel = new QLabel(sRes);
+    m_stiLabel->setWordWrap(true);
+    m_stiLabel->setVisible(false);
+    sRes->vbox()->addWidget(m_stiLabel);
+    auto *stiNote = new QLabel(I18n::tr("rir_sti_note"), sRes);
+    stiNote->setWordWrap(true);
+    stiNote->setStyleSheet("color:#888; font-size:10px;");
+    sRes->vbox()->addWidget(stiNote);
+    // G (音の強さ, ISO 3382-1) — 基準録音がある時だけ値が出る
+    m_strengthLabel = new QLabel(sRes);
+    m_strengthLabel->setWordWrap(true);
+    m_strengthLabel->setVisible(false);
+    sRes->vbox()->addWidget(m_strengthLabel);
+    auto *gNote = new QLabel(I18n::tr("rir_g_note"), sRes);
+    gNote->setWordWrap(true);
+    gNote->setStyleSheet("color:#888; font-size:10px;");
+    sRes->vbox()->addWidget(gNote);
     m_warnings = new QLabel(sRes);
     m_warnings->setWordWrap(true);
     m_warnings->setVisible(false);
@@ -204,6 +279,16 @@ RirAnalysisTab::RirAnalysisTab(Project *project, QWidget *parent)
     connect(m_noiseCorr, &QCheckBox::toggled, this, &RirAnalysisTab::apply);
     connect(m_minDr, &QDoubleSpinBox::valueChanged,
             this, &RirAnalysisTab::apply);
+    connect(m_stDeclared, &QCheckBox::toggled,
+            this, &RirAnalysisTab::apply);
+    connect(m_gRefMode, &QComboBox::currentIndexChanged,
+            this, &RirAnalysisTab::apply);
+    connect(m_gRefBrowse, &QPushButton::clicked,
+            this, &RirAnalysisTab::browseStrengthRef);
+    connect(m_gRefLevel, &QDoubleSpinBox::valueChanged,
+            this, &RirAnalysisTab::apply);
+    connect(m_gRefDistance, &QDoubleSpinBox::valueChanged,
+            this, &RirAnalysisTab::apply);
     connect(m_runBtn, &QPushButton::clicked,
             this, &RirAnalysisTab::runAnalysis);
     connect(m_csvBtn, &QPushButton::clicked, this, &RirAnalysisTab::exportCsv);
@@ -228,6 +313,12 @@ void RirAnalysisTab::refresh()
     m_bandMode->setCurrentIndex(qBound(0, s.bandMode, 3));
     m_noiseCorr->setChecked(s.noiseCorrection);
     m_minDr->setValue(s.minimumDynamicRangeDb);
+    m_stDeclared->setChecked(s.stConditionDeclared);
+    m_gRefMode->setCurrentIndex(qBound(0, s.strengthRefMode, 2));
+    m_gRefFile->setText(s.strengthRefFile);
+    m_gRefLevel->setValue(s.strengthRefLevelDb);
+    m_gRefDistance->setValue(s.strengthRefDistanceM);
+    updateStrengthRefEnabled();
     m_updating = false;
 }
 
@@ -245,8 +336,23 @@ void RirAnalysisTab::apply()
     s.bandMode = m_bandMode->currentIndex();
     s.noiseCorrection = m_noiseCorr->isChecked();
     s.minimumDynamicRangeDb = m_minDr->value();
+    s.stConditionDeclared = m_stDeclared->isChecked();
+    s.strengthRefMode = m_gRefMode->currentIndex();
+    s.strengthRefFile = m_gRefFile->text();
+    s.strengthRefLevelDb = m_gRefLevel->value();
+    s.strengthRefDistanceM = m_gRefDistance->value();
     updateCalibOffsetEnabled();
+    updateStrengthRefEnabled();
     m_p->touch();
+}
+
+// 出力 (CSV/JSON) が表と同じ表示規則に従うためのオプション。
+// 保存済み設定 (自己申告) から作る — 表・CSV・レポートで規則を揃える。
+MetricDisplayOptions RirAnalysisTab::exportOpts() const
+{
+    MetricDisplayOptions o;
+    o.stConditionDeclared = m_p->operaAcoustic().stConditionDeclared;
+    return o;
 }
 
 // 校正オフセットは Absolute のときだけ編集可能 (誤解防止)。
@@ -255,6 +361,33 @@ void RirAnalysisTab::updateCalibOffsetEnabled()
     const bool absolute = (m_calibration->currentIndex() == 0);
     m_calibOffset->setEnabled(absolute);
     m_calibOffsetLabel->setEnabled(absolute);
+}
+
+// G の基準はモードに応じて必要な欄だけ有効化する
+// (使われない欄が編集できると、設定したのに効かないように見える)。
+void RirAnalysisTab::updateStrengthRefEnabled()
+{
+    const int mode = m_gRefMode->currentIndex();
+    const bool useFile  = (mode == 1);
+    const bool useLevel = (mode == 2);
+    m_gRefFile->setEnabled(useFile);
+    m_gRefBrowse->setEnabled(useFile);
+    m_gRefFileLabel->setEnabled(useFile);
+    m_gRefLevel->setEnabled(useLevel);
+    m_gRefLevelLabel->setEnabled(useLevel);
+    // 距離補正はどちらのモードでも効く (基準が 10 m でない場合の補正)
+    m_gRefDistance->setEnabled(mode != 0);
+    m_gRefDistanceLabel->setEnabled(mode != 0);
+}
+
+void RirAnalysisTab::browseStrengthRef()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, I18n::tr("rir_g_ref_file"), m_gRefFile->text(),
+        I18n::tr("rir_wav_filter"));
+    if (path.isEmpty()) return;
+    m_gRefFile->setText(path);
+    apply();
 }
 
 // 音響ソルバ連携タブが rir.wav を設定した — WAV 欄を最新化してヒントを出す。
@@ -316,6 +449,10 @@ void RirAnalysisTab::clearResult(const QString &statusText)
     m_reflTable->setRowCount(0);
     m_warnings->clear();
     m_warnings->setVisible(false);
+    m_stiLabel->clear();
+    m_stiLabel->setVisible(false);
+    m_strengthLabel->clear();
+    m_strengthLabel->setVisible(false);
     m_wavePlot->setSeries({});
     m_decayPlot->setSeries({});
     m_csvBtn->setEnabled(false);
@@ -331,8 +468,10 @@ void RirAnalysisTab::showResult(const RirAnalysisResult &result,
     m_hasResult = true;
 
     // ③ 指標表
+    MetricDisplayOptions dispOpts;
+    dispOpts.stConditionDeclared = m_p->operaAcoustic().stConditionDeclared;
     const QVector<AcousticResultRow> rows =
-        AcousticResultModel::metricRows(result);
+        AcousticResultModel::metricRows(result, dispOpts);
     m_metricTable->setRowCount(rows.size());
     for (int r = 0; r < rows.size(); ++r) {
         const AcousticResultRow &row = rows[r];
@@ -354,6 +493,49 @@ void RirAnalysisTab::showResult(const RirAnalysisResult &result,
         m_metricTable->setItem(r, 4, badge);
         m_metricTable->setItem(r, 5,
                                roItem(row.valid ? row.warning : QString()));
+    }
+
+    // 実測 STI (IEC 60268-16 間接法)
+    if (result.sti.sti.valid) {
+        m_stiLabel->setText(I18n::tr("rir_sti_value")
+                                .arg(QString::number(result.sti.sti.value, 'f', 2),
+                                     stiGradeText(result.sti.sti.value)));
+    } else {
+        m_stiLabel->setText(I18n::tr("rir_sti_invalid")
+                                .arg(result.sti.warning.empty()
+                                         ? I18n::tr("rir_not_computable")
+                                         : QString::fromStdString(
+                                               result.sti.warning)));
+    }
+    m_stiLabel->setVisible(true);
+
+    // G (音の強さ)。基準録音が無いときは「基準未設定」と明示して値は出さない。
+    {
+        const SoundStrengthResult &g = result.strength;
+        QString text;
+        if (g.g.valid) {
+            QStringList parts;
+            parts << I18n::tr("rir_g_value")
+                         .arg(QString::number(g.g.value, 'f', 1));
+            if (g.gEarly.valid && g.gLate.valid) {
+                parts << I18n::tr("rir_g_early_late")
+                             .arg(QString::number(g.gEarly.value, 'f', 1),
+                                  QString::number(g.gLate.value, 'f', 1));
+            }
+            if (std::fabs(g.distanceCorrectionDb) > 1e-9) {
+                parts << I18n::tr("rir_g_distance_corr")
+                             .arg(QString::number(g.distanceCorrectionDb,
+                                                  'f', 1));
+            }
+            text = parts.join(QStringLiteral(" / "));
+        } else {
+            text = I18n::tr("rir_g_invalid")
+                       .arg(g.warning.empty()
+                                ? I18n::tr("rir_not_computable")
+                                : QString::fromStdString(g.warning));
+        }
+        m_strengthLabel->setText(text);
+        m_strengthLabel->setVisible(true);
     }
 
     // 警告リスト
@@ -431,7 +613,7 @@ void RirAnalysisTab::exportCsv()
     if (!m_hasResult) return;
     saveTextFile(this, I18n::tr("rir_export_csv"),
                  QStringLiteral("rir_analysis.csv"), "CSV (*.csv)",
-                 AcousticResultModel::toCsv(m_result));
+                 AcousticResultModel::toCsv(m_result, exportOpts()));
 }
 
 void RirAnalysisTab::exportJson()
@@ -439,5 +621,5 @@ void RirAnalysisTab::exportJson()
     if (!m_hasResult) return;
     saveTextFile(this, I18n::tr("rir_export_json"),
                  QStringLiteral("rir_analysis.json"), "JSON (*.json)",
-                 AcousticResultModel::toJson(m_result));
+                 AcousticResultModel::toJson(m_result, exportOpts()));
 }

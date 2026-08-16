@@ -837,13 +837,87 @@ void I18n::loadTables() {
         "分析完了 — 総合品質: %1 / 動的範囲 %2 dB / 直接音 %3 ms",
         "Done — overall quality: %1 / dynamic range %2 dB / direct sound %3 ms");
     add("rir_result_section", "結果 (ISO 3382-1 指標)", "Results (ISO 3382-1)");
+    add("rir_sti_value", "実測 STI: %1 (%2)", "Measured STI: %1 (%2)");
+    add("rir_sti_invalid", "実測 STI: 算出できません (%1)",
+        "Measured STI: not computable (%1)");
+    add("rir_sti_bad", "不良", "bad");
+    add("rir_sti_poor", "劣", "poor");
+    add("rir_sti_fair", "可", "fair");
+    add("rir_sti_good", "良", "good");
+    add("rir_sti_excellent", "優", "excellent");
+    add("rir_sti_note",
+        "▸ 実測 STI は RIR だけから求めた室の伝送性能です (IEC 60268-16 間接法)。"
+        "背景雑音は考慮していないため、雑音のある実運用での明瞭度はこれより"
+        "低くなります。等級は規格の区分 (0.30/0.45/0.60/0.75) によります。",
+        "Measured STI is the room's transmission performance derived from the "
+        "RIR alone (IEC 60268-16 indirect method). Background noise is not "
+        "included, so intelligibility in a noisy room will be lower. The grade "
+        "follows the standard's bands (0.30/0.45/0.60/0.75).");
+    // G (音の強さ, ISO 3382-1 A.2.6) — 基準録音との比
+    add("rir_g_ref_mode", "G の基準", "G reference");
+    add("rir_g_mode_none", "使用しない", "not used");
+    add("rir_g_mode_file", "基準録音 (自由音場 IR)", "reference recording (free-field IR)");
+    add("rir_g_mode_level", "基準レベルを直接指定", "enter reference level");
+    add("rir_g_ref_file", "基準録音 WAV", "Reference WAV");
+    add("rir_g_ref_file_placeholder",
+        "同じ音源・同じ利得系で自由音場 10 m を録った IR",
+        "IR of the same source at 10 m in a free field, same gain chain");
+    add("rir_g_ref_level", "基準レベル", "Reference level");
+    add("rir_g_ref_level_tip",
+        "基準録音のエネルギー 10log10(∫p_ref²dt)。基準録音の代わりに"
+        "数値で与える場合に使います。",
+        "Energy of the reference recording, 10log10(int p_ref^2 dt). "
+        "Use this instead of a reference WAV.");
+    add("rir_g_ref_distance", "基準録音の距離", "Reference distance");
+    add("rir_g_ref_distance_tip",
+        "基準録音の音源距離。規格値は 10 m で、それ以外の距離で録った場合は"
+        "自由音場の逆二乗則で 10 m 相当へ補正します。",
+        "Source distance of the reference recording. The standard value is "
+        "10 m; other distances are corrected to 10 m by the free-field "
+        "inverse-square law.");
+    add("rir_g_value", "G = %1 dB", "G = %1 dB");
+    add("rir_g_early_late", "早期 %1 dB / 後期 %2 dB",
+        "early %1 dB / late %2 dB");
+    add("rir_g_distance_corr", "距離補正 %1 dB", "distance correction %1 dB");
+    add("rir_g_invalid", "G (音の強さ): 算出できません (%1)",
+        "G (sound strength): not computable (%1)");
+    add("rir_g_note",
+        "▸ G (音の強さ) は「同じ音源を自由音場 10 m で録った応答」との"
+        "エネルギー比です (ISO 3382-1)。絶対 SPL の校正は要りませんが、"
+        "基準録音と実測 RIR が同じ利得系 (音源出力・マイク・プリアンプ・AD) で"
+        "録られていることが前提で、これはデータからは確認できません。"
+        "基準を設定していないときは値を出しません。",
+        "G (sound strength) is the energy ratio to the response of the same "
+        "source recorded at 10 m in a free field (ISO 3382-1). It needs no "
+        "absolute SPL calibration, but it does assume the reference and the "
+        "measured RIR were recorded through the same gain chain (source "
+        "output, microphone, preamp, AD) — something the data cannot confirm. "
+        "No value is shown when no reference is set.");
+    add("rir_st_declared",
+        "ST 測定条件を満たして測定した (舞台上・音源から 1 m・空席)",
+        "Measured under the ST conditions (on stage, 1 m from source, "
+        "unoccupied)");
+    add("rir_st_declared_tip",
+        "ISO 3382-1 Annex C の舞台支援 (ST_early / ST_late) は舞台上・"
+        "音源から 1 m・空席という測定条件を要求します。ソフトウェアからは"
+        "検証できないため、この自己申告が無い限り ST の値は表示されません。"
+        "申告した場合も値は「参考値 (測定条件は自己申告)」として表示されます。",
+        "Stage support (ST_early / ST_late, ISO 3382-1 Annex C) requires the "
+        "RIR to be measured on stage, 1 m from the source, unoccupied. The "
+        "software cannot verify this, so ST values are withheld unless you "
+        "declare it here. Even when declared, values are shown as reference "
+        "values (conditions self-declared).");
     add("rir_st_note",
-        "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m で測った RIR を"
-        "前提とする指標です (ISO 3382-1 Annex C)。別の配置の RIR でも数値は"
-        "出ますが、規格の意味での舞台支援ではありません。",
-        "ST_early / ST_late (stage support) assume an RIR measured on stage "
-        "at 1 m from the source (ISO 3382-1 Annex C). Other configurations "
-        "still yield numbers, but not stage support in the standard's sense.");
+        "▸ ST_early / ST_late (舞台支援) は舞台上・音源から 1 m・空席で測った "
+        "RIR を前提とする指標です (ISO 3382-1 Annex C)。測定条件はソフトウェア"
+        "からは検証できないため、入力欄の自己申告が無い限り値は「測定条件"
+        "不適合」として表示されません。申告した場合も「参考値 (測定条件は"
+        "自己申告)」として表示されます。",
+        "ST_early / ST_late (stage support) assume an RIR measured on stage, "
+        "1 m from the source, unoccupied (ISO 3382-1 Annex C). The software "
+        "cannot verify this, so values are withheld as not meeting the "
+        "measurement conditions unless declared in the input section; when "
+        "declared, they are shown as reference values (self-declared).");
     add("rir_metric", "指標", "Metric");
     add("rir_band", "帯域", "Band");
     add("rir_value", "値", "Value");

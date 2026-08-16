@@ -23,6 +23,15 @@ struct AcousticReportInput {
     QString voiceFile;            // 歌唱 WAV (表示用の名前)
     int     calibrationState = 2; // 0=Absolute 1=Relative 2=Uncalibrated
     double  calibrationOffsetDb = 0.0;
+    // G (音の強さ) の基準。読み手が分母を確認できるように載せる
+    // (0=なし 1=基準録音 2=基準レベル直接。OperaAcousticSettings と同順)
+    int     strengthRefMode = 0;
+    QString strengthRefFile;
+    double  strengthRefLevelDb = -40.0;
+    double  strengthRefDistanceM = 10.0;
+    // ST 系の測定条件 (舞台上・1 m・空席) の自己申告 (要求 §3.2)。
+    // false なら ST_early / ST_late は「測定条件不適合」として値を出さない
+    bool    stConditionDeclared = false;
 
     bool hasRir = false;
     acoustics::RirAnalysisResult rir;

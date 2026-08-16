@@ -84,8 +84,37 @@ QString AcousticResultModel::reflectionBinLabel(double delaySeconds)
     return QStringLiteral("200+ms");
 }
 
+namespace {
+
+// ST 系 (ST_early / ST_late) の 3 値表示規則 (要求 §3.2)。
+// 測定条件 (舞台上・音源から 1 m・空席) はデータから検証できないため、
+// 利用者の自己申告が無い限り値を出さない。申告があっても Valid には
+// しない — 「参考値」であることを品質列で常に示す。
+void applyStConditionRule(AcousticResultRow &row, bool declared)
+{
+    if (!row.valid) return;   // コアが算出不可にしたものはそのまま
+    if (!declared) {
+        row.valid = false;
+        row.valueText.clear();
+        row.quality = QStringLiteral("invalid");
+        row.warning = QStringLiteral(
+            "measurement conditions not declared (ISO 3382-1 Annex C: "
+            "on stage, 1 m from source, unoccupied)");
+        return;
+    }
+    row.quality = QStringLiteral("warning");
+    row.warning = row.warning.isEmpty()
+        ? QStringLiteral("reference value (measurement conditions "
+                         "self-declared)")
+        : row.warning + QStringLiteral("; reference value (measurement "
+                                       "conditions self-declared)");
+}
+
+} // namespace
+
 QVector<AcousticResultRow>
-AcousticResultModel::metricRows(const RirAnalysisResult &result)
+AcousticResultModel::metricRows(const RirAnalysisResult &result,
+                                const MetricDisplayOptions &opts)
 {
     QVector<AcousticResultRow> rows;
     rows.reserve(int(result.bands.size()) * kMetricCount);
@@ -109,18 +138,52 @@ AcousticResultModel::metricRows(const RirAnalysisResult &result)
                 row.quality = qualityToken(m.quality);
                 row.warning = QString::fromStdString(m.warning);
             }
+            if (row.metric == QLatin1String("ST_early")
+                || row.metric == QLatin1String("ST_late"))
+                applyStConditionRule(row, opts.stConditionDeclared);
+            rows.push_back(row);
+        }
+    }
+    // 広帯域の指標 (帯域別ではない) を末尾に足す。ここに置くことで
+    // タブの表・CSV・一括レポートの 3 経路へ同時に載る (1 か所で決める)。
+    //   STI  — IEC 60268-16 間接法 (雑音項なし)
+    //   G    — ISO 3382-1 A.2.6 (基準録音が無ければ invalid)
+    {
+        const struct {
+            const char *name;
+            const char *unit;
+            int decimals;
+            const MetricValue *value;
+        } wide[] = {
+            { "STI",     "-",  2, &result.sti.sti },
+            { "G",       "dB", 1, &result.strength.g },
+            { "G_early", "dB", 1, &result.strength.gEarly },
+            { "G_late",  "dB", 1, &result.strength.gLate },
+        };
+        for (const auto &w : wide) {
+            AcousticResultRow row;
+            row.metric = QLatin1String(w.name);
+            row.band = QStringLiteral("Full band");
+            row.unit = QLatin1String(w.unit);
+            row.valid = w.value->valid;
+            row.value = w.value->value;
+            if (row.valid)
+                row.valueText = QString::number(row.value, 'f', w.decimals);
+            row.quality = qualityToken(w.value->quality);
+            row.warning = QString::fromStdString(w.value->warning);
             rows.push_back(row);
         }
     }
     return rows;
 }
 
-QString AcousticResultModel::toCsv(const RirAnalysisResult &result)
+QString AcousticResultModel::toCsv(const RirAnalysisResult &result,
+                                   const MetricDisplayOptions &opts)
 {
     QString out;
     out += QStringLiteral("section,metric,band,value,unit,valid,quality,warning\n");
 
-    for (const AcousticResultRow &r : metricRows(result)) {
+    for (const AcousticResultRow &r : metricRows(result, opts)) {
         out += QStringLiteral("metrics,%1,%2,%3,%4,%5,%6,%7\n")
                    .arg(r.metric, csvEscape(r.band),
                         r.valid ? r.valueText : QString(),
@@ -169,10 +232,14 @@ QString AcousticResultModel::toCsv(const RirAnalysisResult &result)
     return out;
 }
 
-QString AcousticResultModel::toJson(const RirAnalysisResult &result)
+QString AcousticResultModel::toJson(const RirAnalysisResult &result,
+                                    const MetricDisplayOptions &opts)
 {
     QJsonObject root;
     root["overall_quality"] = qualityToken(result.overallQuality);
+    // JSON はコアの生値を持つ一次データ。ST 系の 3 値表示規則 (要求 §3.2)
+    // を読み手が適用できるよう、申告状態だけを併記する。
+    root["st_condition_declared"] = opts.stConditionDeclared;
 
     const PreprocessInfo &pp = result.preprocess;
     root["preprocess"] = QJsonObject{
@@ -246,6 +313,40 @@ QString AcousticResultModel::toJson(const RirAnalysisResult &result)
     QJsonArray warnings;
     for (const std::string &w : result.warnings)
         warnings.append(QString::fromStdString(w));
+    // 実測 STI (IEC 60268-16 間接法、雑音項なし)。追加キーのみ。
+    {
+        QJsonObject sj;
+        sj["value"] = metricJson(result.sti.sti);
+        QJsonArray sb;
+        for (const StiBandResult &b : result.sti.bands) {
+            QJsonArray mtf;
+            for (double m : b.mtf) mtf.append(m);
+            sb.append(QJsonObject{
+                { "center_hz", b.centerHz },
+                { "valid", b.valid },
+                { "mti", b.mti },
+                { "mtf", mtf } });
+        }
+        sj["bands"] = sb;
+        if (!result.sti.warning.empty())
+            sj["warning"] = QString::fromStdString(result.sti.warning);
+        root["sti"] = sj;
+    }
+    // G (音の強さ、ISO 3382-1)。基準録音が無いときも参考値
+    // (measured_energy_db) は出すが、value は invalid のままにする。
+    {
+        QJsonObject gj;
+        gj["value"] = metricJson(result.strength.g);
+        gj["early"] = metricJson(result.strength.gEarly);
+        gj["late"]  = metricJson(result.strength.gLate);
+        gj["measured_energy_db"] = result.strength.measuredEnergyDb;
+        gj["reference_energy_db"] = result.strength.referenceEnergyDb;
+        gj["distance_correction_db"] = result.strength.distanceCorrectionDb;
+        if (!result.strength.warning.empty())
+            gj["warning"] = QString::fromStdString(result.strength.warning);
+        root["strength"] = gj;
+    }
+
     root["warnings"] = warnings;
 
     return QString::fromUtf8(
