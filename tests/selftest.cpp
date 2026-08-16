@@ -9802,6 +9802,45 @@ static void testAcousticReport()
           "report: csv vocal status done");
     check(csv2.contains("vocal,metrics,F0 median,Full band,440.0,Hz,1,valid,"),
           "report: csv vocal F0 row");
+
+    // ── 広帯域指標 (STI / G) の取り込み ──
+    // metricRows に足したので、タブの表・CSV・レポートの 3 経路に同時に載る。
+    // 基準未設定の G は「算出不可」+ 理由で出る (0 dB を出さない)。
+    {
+        check(csv2.contains("rir,metrics,STI,Full band,"),
+              "report: csv carries the STI row");
+        check(csv2.contains("rir,metrics,G,Full band,,dB,0,invalid,"),
+              "report: G without a reference is invalid, not 0 dB");
+        check(csv2.contains("rir,metrics,G_early,Full band,")
+              && csv2.contains("rir,metrics,G_late,Full band,"),
+              "report: csv carries G_early / G_late rows");
+
+        const QString html2 = AcousticReportBuilder::buildHtml(in);
+        check(html2.contains(QString::fromUtf8("G の基準")),
+              "report: html shows the G reference row");
+        check(html2.contains(QString::fromUtf8("未設定 (G は算出しません)")),
+              "report: html states that no G reference is set");
+        check(html2.contains(QString::fromUtf8("ISO 3382-1 Annex C"))
+              && html2.contains(QString::fromUtf8("IEC 60268-16")),
+              "report: html carries the measurement caveats");
+
+        // 基準を設定すると分母がレポートに出る (読み手が確認できる)
+        AcousticReportInput gin = in;
+        gin.strengthRefMode = 1;
+        gin.strengthRefFile = "freefield_10m.wav";
+        gin.strengthRefDistanceM = 12.5;
+        gin.rir.strength.g = acoustics::makeValidMetric(4.3);
+        const QString html3 = AcousticReportBuilder::buildHtml(gin);
+        check(html3.contains("freefield_10m.wav"),
+              "report: html shows the reference recording");
+        check(html3.contains(QString::fromUtf8("距離 12.50 m")),
+              "report: html shows the reference distance");
+        check(AcousticReportBuilder::buildCsv(gin)
+                  .contains("rir,metrics,G,Full band,4.3,dB,1,valid,"),
+              "report: csv carries a valid G value");
+        check(AcousticReportBuilder::buildHtml(gin) == html3,
+              "report: html deterministic with a G reference");
+    }
 }
 
 // ── 光導波路 断面 FDE ソルバ (src/optics/FdeModeSolver) ─────────────────────

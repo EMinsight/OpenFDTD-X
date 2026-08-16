@@ -112,6 +112,36 @@ AcousticResultModel::metricRows(const RirAnalysisResult &result)
             rows.push_back(row);
         }
     }
+    // 広帯域の指標 (帯域別ではない) を末尾に足す。ここに置くことで
+    // タブの表・CSV・一括レポートの 3 経路へ同時に載る (1 か所で決める)。
+    //   STI  — IEC 60268-16 間接法 (雑音項なし)
+    //   G    — ISO 3382-1 A.2.6 (基準録音が無ければ invalid)
+    {
+        const struct {
+            const char *name;
+            const char *unit;
+            int decimals;
+            const MetricValue *value;
+        } wide[] = {
+            { "STI",     "-",  2, &result.sti.sti },
+            { "G",       "dB", 1, &result.strength.g },
+            { "G_early", "dB", 1, &result.strength.gEarly },
+            { "G_late",  "dB", 1, &result.strength.gLate },
+        };
+        for (const auto &w : wide) {
+            AcousticResultRow row;
+            row.metric = QLatin1String(w.name);
+            row.band = QStringLiteral("Full band");
+            row.unit = QLatin1String(w.unit);
+            row.valid = w.value->valid;
+            row.value = w.value->value;
+            if (row.valid)
+                row.valueText = QString::number(row.value, 'f', w.decimals);
+            row.quality = qualityToken(w.value->quality);
+            row.warning = QString::fromStdString(w.value->warning);
+            rows.push_back(row);
+        }
+    }
     return rows;
 }
 

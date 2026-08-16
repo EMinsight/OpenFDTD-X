@@ -61,7 +61,12 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
 見えるため)。**この作業中に、前日実装した実測 STI の表示がタブに
 配線されていなかったこと (`m_stiLabel` と `rir_sti_*` の I18n キーは
 存在するのにラベルを生成・更新するコードが無く、値は JSON にしか
-出ていなかった) を発見して併せて修正した**) | 舞台支援・声の届きの定量値が不足 (G の解消で残るのは校正ワークフロー拡充と、一括レポートへの STI / G の取り込み) | **レポート出力は完了**: `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
+出ていなかった) を発見して併せて修正した**) | 舞台支援・声の届きの定量値が不足 (G の解消で残るのは校正ワークフロー拡充のみ) | **レポート出力は完了** (2026-08-16 追補: STI / G / G_early / G_late を
+`AcousticResultModel::metricRows` の末尾に広帯域行として足したので、
+タブの指標表・CSV・一括レポートの 3 経路へ同時に載るようになった。
+レポートの「対象」表には G の分母 (基準録音 / 基準レベル / 距離、未設定なら
+その旨) を出し、指標表の直下に ST・STI・G の測定前提の注記を添える):
+`src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
 | 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。他の fs 不一致箇所 (AudioEditEngine 等) への展開は別課題 |
 | 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD / ExternalGeometric とも解消済み** (FDTD 2026-08-05 / 幾何音響 2026-08-06) | — | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
@@ -96,7 +101,8 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
 - **2026-08-16 実測値**: `ofdx_selftest` = 24 files loaded,
   **11264 checks, 0 failures** (HDF5=ON) / **11160 checks, 0 failures**
   (`USE_HDF5=OFF`)。G の基準 (負債 #10) の
-  .ofdx 往復・旧ファイル既定・既定バイト不変・アダプタ配線で +22。
+  .ofdx 往復・旧ファイル既定・既定バイト不変・アダプタ配線で +22、
+  一括レポートへの STI / G 取り込みで +10 (**11274 / 11170**)。
   `ctest` = **22 テスト / 合計 1655 checks, 0 failures**
   (`acoustics.strength` 89 checks を新規追加)。
 - 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,

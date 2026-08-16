@@ -25,6 +25,26 @@ const bool s_i18n = [] {
     ofd::I18n::reg("rep_calib_unc",  "Uncalibrated (未校正)",
                                      "Uncalibrated");
     ofd::I18n::reg("rep_calib_off",  "校正オフセット",    "Calibration offset");
+    // G (音の強さ) の分母 (ISO 3382-1 A.2.6)
+    ofd::I18n::reg("rep_g_ref",      "G の基準",          "G reference");
+    ofd::I18n::reg("rep_g_ref_none", "未設定 (G は算出しません)",
+                                     "not set (G is not computed)");
+    ofd::I18n::reg("rep_g_ref_file", "基準録音 %1",       "reference recording %1");
+    ofd::I18n::reg("rep_g_ref_level","基準レベル %1 dB",  "reference level %1 dB");
+    ofd::I18n::reg("rep_g_ref_dist", "距離 %1 m",         "distance %1 m");
+    ofd::I18n::reg("rep_metric_notes",
+        "ST_early / ST_late は舞台上・音源から 1 m の RIR を前提とする指標です "
+        "(ISO 3382-1 Annex C)。STI は RIR だけから求めた室の伝送性能で、"
+        "背景雑音を考慮していません (IEC 60268-16 間接法)。G は自由音場 "
+        "10 m の基準録音とのエネルギー比で、基準録音と実測 RIR が同じ利得系で"
+        "録られていることが前提です。いずれも測定条件は数値からは確認できません。",
+        "ST_early / ST_late assume an RIR measured on stage 1 m from the source "
+        "(ISO 3382-1 Annex C). STI is the room's transmission performance from "
+        "the RIR alone, excluding background noise (IEC 60268-16 indirect "
+        "method). G is the energy ratio to a free-field reference recorded at "
+        "10 m, and assumes the reference and the measured RIR share the same "
+        "gain chain. None of these measurement conditions can be verified from "
+        "the numbers alone.");
     ofd::I18n::reg("rep_sec_rir",    "1. 実測 RIR 分析 (ISO 3382-1)",
                                      "1. Measured RIR analysis (ISO 3382-1)");
     ofd::I18n::reg("rep_sec_vocal",  "2. 歌声分析",       "2. Singing voice analysis");
@@ -158,6 +178,21 @@ QString orNotSet(const QString &s)
     return s.isEmpty() ? I18n::tr("rep_not_set") : s;
 }
 
+// G (音の強さ) の分母の説明。基準距離が 10 m でなければ補正量も添える。
+QString strengthRefLabel(const AcousticReportInput &in)
+{
+    if (in.strengthRefMode == 0) return I18n::tr("rep_g_ref_none");
+    QString s = (in.strengthRefMode == 2)
+                    ? I18n::tr("rep_g_ref_level")
+                          .arg(QString::number(in.strengthRefLevelDb, 'f', 2))
+                    : I18n::tr("rep_g_ref_file")
+                          .arg(orNotSet(in.strengthRefFile));
+    s += QStringLiteral(" / ")
+         + I18n::tr("rep_g_ref_dist")
+               .arg(QString::number(in.strengthRefDistanceM, 'f', 2));
+    return s;
+}
+
 // 各行に source 列を足して結合 CSV に組み込む
 QString prefixCsv(const QString &csv, const QString &source)
 {
@@ -238,6 +273,8 @@ QString AcousticReportBuilder::buildHtml(const AcousticReportInput &in)
         meta.push_back({ I18n::tr("rep_calib_off"),
                          QString::number(in.calibrationOffsetDb, 'f', 1)
                              + QStringLiteral(" dB") });
+    // G の分母。設定していないことも明示する (G が算出不可な理由になるため)
+    meta.push_back({ I18n::tr("rep_g_ref"), strengthRefLabel(in) });
     h += QStringLiteral("<h2>%1</h2>\n").arg(esc(I18n::tr("rep_meta")));
     h += kvTable(meta);
 
@@ -272,6 +309,10 @@ QString AcousticReportBuilder::buildHtml(const AcousticReportInput &in)
 
         h += QStringLiteral("<h3>%1</h3>\n").arg(esc(I18n::tr("rep_metrics")));
         h += rowsTable(AcousticResultModel::metricRows(r));
+        // 測定前提の注記。数値だけを渡すと規格の意味で読まれてしまうため、
+        // 表と同じ場所に必ず添える (タブ側の注記と同じ趣旨)。
+        h += QStringLiteral("<p class=\"footer\">%1</p>\n")
+                 .arg(esc(I18n::tr("rep_metric_notes")));
 
         h += QStringLiteral("<h3>%1</h3>\n").arg(esc(I18n::tr("rep_reflections")));
         h += QStringLiteral("<table>\n<tr><th>%1</th><th>%2</th><th>%3</th>"
