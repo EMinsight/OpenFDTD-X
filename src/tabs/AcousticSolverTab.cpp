@@ -13,6 +13,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -211,12 +212,32 @@ const bool s_i18n = [] {
         "オフ (既定) はソルバーが feed #1 のみ使用。オンで .ofdx に "
         "acoustic.multi_source を書き、FDTD / 幾何音響の両ソルバーが全 feed を"
         "強度 1・t = 0 で同時発火した重ね合わせを rir.wav に出す (ADR-0010)。"
-        "音源ごとのゲイン・遅延・指向性は未対応。",
+        "feed ごとのゲイン・遅延は下の表で指定できる。指向性は未対応。",
         "Off (default): the solvers use feed #1 only. On: writes "
         "acoustic.multi_source to the .ofdx and both solvers (FDTD and "
         "geometric) emit the superposition of all feeds fired simultaneously "
-        "at unit strength (ADR-0010). Per-source gain, delay and directivity "
-        "are not supported.");
+        "at unit strength (ADR-0010). Per-feed gain and delay are set in the "
+        "table below; directivity is not supported.");
+    I18n::reg("acs_feeds", "feed ごとのゲイン・遅延",
+              "Per-feed gain and delay");
+    I18n::reg("acs_feeds_note",
+        "既定 (ゲイン 1・遅延 0) のままなら .ofdx には何も書かない。"
+        "変更すると acoustic.feeds を書き、両ソルバーが feed i を "
+        "t = 遅延 に強度 ゲイン で発火する (ADR-0010 Decision 7)。"
+        "複数音源がオフでも 1 行目は feed #1 に効く。負のゲインは極性反転。"
+        "計算時間は最大遅延のぶん自動延長される。",
+        "Left at the defaults (gain 1, delay 0) nothing is written to the "
+        ".ofdx. Edited, it writes acoustic.feeds and both solvers fire feed i "
+        "at t = delay with the given gain (ADR-0010 Decision 7). Row 1 "
+        "applies to feed #1 even when multi-source is off. A negative gain "
+        "inverts polarity. The solve duration is extended by the largest "
+        "delay.");
+    I18n::reg("acs_feeds_col_no", "feed", "Feed");
+    I18n::reg("acs_feeds_col_pos", "位置 [m]", "Position [m]");
+    I18n::reg("acs_feeds_col_gain", "ゲイン", "Gain");
+    I18n::reg("acs_feeds_col_delay", "遅延 [ms]", "Delay [ms]");
+    I18n::reg("acs_feeds_none",
+              "(.ofd に feed 行がありません)", "(no feed lines in the .ofd)");
     I18n::reg("acs_run", "▶ 実行", "▶ Run");
     I18n::reg("acs_stop", "■ 停止", "■ Stop");
     I18n::reg("acs_progress_note", "進捗は stdout の \"progress a/b\" 行を解析",
@@ -424,6 +445,25 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     m_multiSource = new QCheckBox(I18n::tr("acs_multisrc"), m_extGroup);
     m_multiSource->setToolTip(I18n::tr("acs_multisrc_note"));
     ev->addWidget(m_multiSource);
+
+    // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — .ofdx acoustic.feeds。
+    // 行は .ofd の feed 行と 1 対 1 で、行数は refresh が合わせる。
+    // 複数音源がオフでも 1 行目は feed #1 に効くので、トグルとは独立に出す。
+    {
+        auto *fl = new QLabel(I18n::tr("acs_feeds"), m_extGroup);
+        fl->setToolTip(I18n::tr("acs_feeds_note"));
+        ev->addWidget(fl);
+        m_feedTable = new QTableWidget(0, 4, m_extGroup);
+        m_feedTable->setHorizontalHeaderLabels(
+            { I18n::tr("acs_feeds_col_no"), I18n::tr("acs_feeds_col_pos"),
+              I18n::tr("acs_feeds_col_gain"), I18n::tr("acs_feeds_col_delay") });
+        m_feedTable->horizontalHeader()->setSectionResizeMode(
+            QHeaderView::Stretch);
+        m_feedTable->verticalHeader()->setVisible(false);
+        m_feedTable->setToolTip(I18n::tr("acs_feeds_note"));
+        m_feedTable->setMinimumHeight(3 * 26 + 40);
+        ev->addWidget(m_feedTable);
+    }
 
     // 解決結果のライブ表示 (実環境の探索結果 — サンプル値ではない)
     auto *rr = new QHBoxLayout();
@@ -690,7 +730,82 @@ void AcousticSolverTab::apply()
     s.solverProcesses = m_processes->value();
     // 複数音源は .ofdx acoustic.multi_source (AcousticOpts) — ADR-0010
     m_p->acoustic().multiSource = m_multiSource->isChecked();
+    // feed ごとのゲイン・遅延 (ADR-0010 Decision 7)。表に出ていない行
+    // (feed 数を超える手書きの entry) は触らずに残す。
+    {
+        QVector<AcousticOpts::FeedDrive> fd = m_p->acoustic().feedDrives;
+        const int rows = m_feedTable->rowCount();
+        if (fd.size() < rows) fd.resize(rows);
+        for (int r = 0; r < rows; ++r) {
+            auto *g = qobject_cast<QDoubleSpinBox *>(
+                m_feedTable->cellWidget(r, 2));
+            auto *d = qobject_cast<QDoubleSpinBox *>(
+                m_feedTable->cellWidget(r, 3));
+            if (!g || !d) continue;
+            fd[r].gain = g->value();
+            fd[r].delaySec = d->value() / 1000.0;   // 表は ms、契約は s
+        }
+        m_p->acoustic().feedDrives = fd;
+    }
     m_p->touch();
+}
+
+// feed 表を .ofd の feed 行に合わせて作り直す (model → widgets)。
+// モデル (feedDrives) は書き換えない — 足りない行は既定値で表示するだけで、
+// 実際の格納は apply() が行う (キー省略時のバイト一致を壊さないため)。
+void AcousticSolverTab::refreshFeedTable()
+{
+    const QVector<Feed> &feeds = m_p->feeds();
+    const QVector<AcousticOpts::FeedDrive> &fd = m_p->acoustic().feedDrives;
+    const int rows = feeds.size();
+
+    if (m_feedTable->rowCount() != rows) m_feedTable->setRowCount(rows);
+    for (int r = 0; r < rows; ++r) {
+        const AcousticOpts::FeedDrive drv =
+            (r < fd.size()) ? fd[r] : AcousticOpts::FeedDrive{};
+
+        auto *no = new QTableWidgetItem(QString::number(r + 1));
+        no->setFlags(no->flags() & ~Qt::ItemIsEditable);
+        no->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_feedTable->setItem(r, 0, no);
+
+        auto *pos = new QTableWidgetItem(
+            QStringLiteral("%1, %2, %3").arg(feeds[r].x).arg(feeds[r].y)
+                .arg(feeds[r].z));
+        pos->setFlags(pos->flags() & ~Qt::ItemIsEditable);   // .ofd 側が正
+        m_feedTable->setItem(r, 1, pos);
+
+        // 値域は契約 (ADR-0010 Decision 7) と同じ。範囲外はソルバーが
+        // 非零終了するので、UI 側で入力できないようにしておく。
+        auto *gain = qobject_cast<QDoubleSpinBox *>(
+            m_feedTable->cellWidget(r, 2));
+        if (!gain) {
+            gain = new QDoubleSpinBox(m_feedTable);
+            gain->setRange(-1000.0, 1000.0);
+            gain->setDecimals(3);
+            gain->setSingleStep(0.1);
+            m_feedTable->setCellWidget(r, 2, gain);
+            connect(gain, &QDoubleSpinBox::valueChanged, this,
+                    [this](double) { apply(); });
+        }
+        auto *delay = qobject_cast<QDoubleSpinBox *>(
+            m_feedTable->cellWidget(r, 3));
+        if (!delay) {
+            delay = new QDoubleSpinBox(m_feedTable);
+            delay->setRange(0.0, 1000.0);      // 表は ms (契約は 0..1 s)
+            delay->setDecimals(2);
+            delay->setSingleStep(1.0);
+            m_feedTable->setCellWidget(r, 3, delay);
+            connect(delay, &QDoubleSpinBox::valueChanged, this,
+                    [this](double) { apply(); });
+        }
+        gain->setValue(drv.gain);
+        delay->setValue(drv.delaySec * 1000.0);
+    }
+    // feed が無い .ofd では表の代わりに理由を出す (空表を放置しない)
+    m_feedTable->setVisible(rows > 0);
+    if (rows == 0) m_feedTable->setToolTip(I18n::tr("acs_feeds_none"));
+    else m_feedTable->setToolTip(I18n::tr("acs_feeds_note"));
 }
 
 void AcousticSolverTab::refresh()
@@ -703,6 +818,7 @@ void AcousticSolverTab::refresh()
     m_threads->setValue(s.solverThreads);
     m_processes->setValue(s.solverProcesses);
     m_multiSource->setChecked(m_p->acoustic().multiSource);
+    refreshFeedTable();
     // 外部プロセス設定は ExternalFDTD / ExternalGeometric のみ
     const bool ext = s.solverBackend == 3 || s.solverBackend == 4;
     m_extGroup->setVisible(ext);

@@ -2,13 +2,15 @@
 
 ## Status
 
-Accepted (2026-08-15、2026-08-16 改訂: Decision 7 で音源ごとの
-ゲイン・遅延を追加) — ソルバー側 (OpenAcoustics の `ofdx_acoustic_fdtd` /
-`ofdx_acoustic_ga` 両バイナリ) は Decision 7 まで実装・検証済み。GUI 側の
-設定 UI (AcousticSolverTab のトグル → `AcousticOpts::multiSource` →
-`.ofdx` `acoustic.multi_source`) も実装済み (既定 false ならキー自体を
-書かない — 絶対規則 2。selftest がバイト一致往復を検証する)。
-Decision 7 の GUI 編集 UI のみ未実装 (Decision 7 の末尾参照)。
+Accepted (2026-08-15、2026-08-16 改訂: Decision 7 で feed ごとの
+ゲイン・遅延を追加、2026-08-17 改訂: そのキー名を `acoustic.sources` から
+`acoustic.feeds` へ修正 — 音源一覧との衝突。Decision 7 参照) —
+ソルバー側 (OpenAcoustics の `ofdx_acoustic_fdtd` / `ofdx_acoustic_ga`
+両バイナリ) は Decision 7 まで実装・検証済み。GUI 側の設定 UI
+(AcousticSolverTab のトグルと feed 表 → `AcousticOpts::multiSource` /
+`feedDrives` → `.ofdx` `acoustic.multi_source` / `acoustic.feeds`) も
+実装済み (既定のままならキー自体を書かない — 絶対規則 2。selftest が
+バイト一致往復を検証する)。**本 ADR に未実装の項目は無い。**
 
 ## Context
 
@@ -53,14 +55,24 @@ Decision 7 の GUI 編集 UI のみ未実装 (Decision 7 の末尾参照)。
      (離散更新の線形性。L2 相対誤差 ≤ 1e-5、float32 量子化が支配項)
    - 幾何音響 (K): 2 音源の直接音がそれぞれ 1/(4πr_i)・t_i = r_i/c (±1%)、
      既定 (キー省略) は feed #1 のみ + warning、室外の音源は非零終了
-7. **音源ごとのゲイン・遅延は `.ofdx` の `acoustic.sources[]` で与える**
-   (2026-08-16 改訂で追加。指向性は引き続き範囲外):
+7. **feed ごとのゲイン・遅延は `.ofdx` の `acoustic.feeds[]` で与える**
+   (2026-08-16 追加、2026-08-17 にキー名を修正。指向性は引き続き範囲外):
    ```json
    "acoustic": {
      "multi_source": true,
-     "sources": [ { "gain": 0.5 }, { "gain": 2.0, "delay_s": 0.005 } ]
+     "feeds": [ { "gain": 0.5 }, { "gain": 2.0, "delay_s": 0.005 } ]
    }
    ```
+   **キー名は `sources` ではない。** GUI は `acoustic.sources` を
+   **音源一覧** (AcousticSourceTab の配置表 — `name` / `kind` / `pos_m` /
+   `level_db`、新規プロジェクトの既定は 3 行) として以前から常時書いて
+   いる。初版はそこへ相乗りしてしまい、(a) GUI 由来の `.ofdx` を読むたび
+   ソルバーが「feed 数より多い」warning を出す、(b) 音源一覧に `gain` 列が
+   増えた瞬間、並びの違う音源へ静かに別のゲインが掛かる、という状態に
+   なっていた。GUI 側のキーは先行実装かつ改名禁止 (絶対規則 1) なので、
+   後から入れた本キーを `feeds` に改める (`.ofd` の feed 行と 1 対 1 で
+   あることが名前から分かる)。ソルバーは `acoustic.sources` を未知キーと
+   して読み飛ばす。**この 2 つを再び同じキーに載せないこと。**
    - 配列の並びは `.ofd` の feed 行の順 (entry #1 = feed #1)。行・キーの
      省略は既定値 `gain = 1` / `delay_s = 0` — キー自体を省略すれば
      Decision 1〜5 の従来動作と完全一致 (後方互換)。feed 数を超える行は
@@ -81,16 +93,20 @@ Decision 7 の GUI 編集 UI のみ未実装 (Decision 7 の末尾参照)。
      `sigma_s` / `t0_s` / `fmax_hz` は不変 (遅延は t0_s に**足し込まない** —
      ADR-0008 Decision 2 の音源逆フィルタは遅延・定数倍と可換なので、
      重ね合わせ RIR に対してそのまま有効)。
-   - ソルバー側の番人 (OpenAcoustics `acoustic_check.sh`):
+   - ソルバー側の番人 (OpenAcoustics `acoustic_check.sh`) — キー名は
+     `acoustic.feeds`:
      FDTD (h2) — gain = 0.5 の RIR が gain = 1 の RIR のちょうど 0.5 倍
      (2 の冪のスケールは IEEE 丸めと可換)、delay = 5 ms で直接音ピークが
      5 ms 移動、ゲイン・遅延つき 2 feed の重ね合わせが単独実行の和に一致。
      幾何音響 (K2) — 直接音がそれぞれ gain_i/(4πr_i)・t = delay_i + r_i/c
      (±1%)。両者とも範囲外の値の非零終了を含む。
-   - GUI 側の編集 UI (feed ごとのゲイン・遅延の表) は未実装 — 手書きした
-     `acoustic.sources` は `.ofdx` の未知キー往復保全で保存時も保持される。
-     UI を付けるときは `AcousticOpts` に載せて絶対規則 2 (無効時バイト
-     不変) を守ること。
+   - GUI 側の編集 UI は実装済み: AcousticSolverTab の「feed ごとの
+     ゲイン・遅延」表 (行は `.ofd` の feed 行と 1 対 1、ゲイン/遅延は
+     契約と同じ値域のスピンボックス) → `AcousticOpts::feedDrives` →
+     `.ofdx` `acoustic.feeds`。**全行が既定 (gain 1 / delay 0) ならキー
+     自体を書かない** (絶対規則 2 — selftest がバイト一致往復と、手書きの
+     範囲外値を契約の値域へクランプして読むことを検証する)。
+     複数音源トグルがオフでも 1 行目は feed #1 に効く。
 
 ## Consequences
 
@@ -99,7 +115,7 @@ Decision 7 の GUI 編集 UI のみ未実装 (Decision 7 の末尾参照)。
 - (+) モック・AcousticRunner・HybridRir に変更不要 (ファイル契約が不変、
   GUI が読む metadata キーの意味も不変)。
 - (−) 音源の**指向性**は本 ADR の範囲外 (全て無指向)。ゲイン・遅延は
-  Decision 7 (2026-08-16 改訂) で `acoustic.sources[]` として対応した。
+  Decision 7 で `acoustic.feeds[]` として対応した。
   指向性が必要になったら同じ `sources` 側に追加キーで拡張する
   (バンド別の指向性パターンの定義を伴うため、別途判断)。
 - (−) 「音源ごとの個別 RIR」(rir_s2.wav 等) も範囲外 — ファイル契約の

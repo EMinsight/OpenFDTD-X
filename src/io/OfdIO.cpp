@@ -801,6 +801,27 @@ QByteArray OfdxIO::serialize(const Project &p)
         // 2 本が .ofd の全 feed を強度 1・t = 0 で同時発火した重ね合わせを
         // rir.wav に出す (両ソルバーが同じキーを読む — 対称が契約の一部)。
         if (a.multiSource) ac["multi_source"] = true;
+        {   // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 全行が既定
+            // (gain = 1, delay = 0) ならキー自体を書かない (旧ファイルと
+            // バイト一致。絶対規則 2)。キー名が "sources" でないのは、
+            // そちらを音源一覧 (AcousticSourceTab の配置表) が既に使って
+            // いるため — 意味も並びも別物なので分けてある (混ぜると
+            // ソルバーが feed のゲインとして静かに誤読する)。
+            const AcousticOpts::FeedDrive def;
+            bool any = false;
+            for (const AcousticOpts::FeedDrive &f : a.feedDrives)
+                if (f.gain != def.gain || f.delaySec != def.delaySec) {
+                    any = true;
+                    break;
+                }
+            if (any) {
+                QJsonArray fd;
+                for (const AcousticOpts::FeedDrive &f : a.feedDrives)
+                    fd.append(QJsonObject{ {"gain", f.gain},
+                                           {"delay_s", f.delaySec} });
+                ac["feeds"] = fd;
+            }
+        }
         {   // 入力信号 (WAV) の前処理 — 既定のままならキー自体を書かない
             // (旧ファイルとバイト一致。絶対規則 2)
             const AcousticOpts d;
@@ -1540,10 +1561,29 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         }
         // 音源リスト — 追加キー。キーが無い旧ファイルは既定 3 行のまま
         // (旧ファイル互換)。空配列は「音源なし」として尊重する。
+        // 注意: これは AcousticSourceTab の**音源一覧**で、外部ソルバーが
+        // 読む feed ごとのゲイン・遅延 (acoustic.feeds) とは別物。
         if (ac.contains("sources")) {
             a.sources.clear();
             for (const QJsonValue &v : ac["sources"].toArray())
                 a.sources.push_back(sourceRowFromJson(v.toObject()));
+        }
+        // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 追加キー。
+        // キーが無い旧ファイルは空 (= 全 feed が既定 gain 1 / delay 0)。
+        // 手書きファイルの範囲外値でソルバーが拒否する .ofdx を作らない
+        // よう、契約の値域へクランプして読む。
+        if (ac.contains("feeds")) {
+            a.feedDrives.clear();
+            for (const QJsonValue &v : ac["feeds"].toArray()) {
+                const QJsonObject o = v.toObject();
+                AcousticOpts::FeedDrive f;
+                f.gain = qBound(-1000.0, o.value("gain").toDouble(f.gain),
+                                1000.0);
+                f.delaySec = qBound(0.0,
+                                    o.value("delay_s").toDouble(f.delaySec),
+                                    1.0);
+                a.feedDrives.push_back(f);
+            }
         }
         // 受音点リスト — 追加キー。キーが無い旧ファイルは既存の mic_count 個
         // の既定点で埋め、「受音点数」と表の行数が食い違わないようにする。
