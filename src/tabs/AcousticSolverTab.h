@@ -18,6 +18,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
+class QTableWidget;
 class QWidget;
 
 namespace ofd {
@@ -32,6 +33,12 @@ public:
 
     void apply();     // widgets → model (+ touch)
     void refresh();   // model → widgets (m_updating ガード付き)
+
+private:
+    // feed 表を .ofd の feed 行に合わせて作り直す (refresh から呼ぶ)
+    void refreshFeedTable();
+
+public:
 
 signals:
     // 契約検証済みの rir.wav を operaAcoustic().rirPath へ書き込んだ直後に
@@ -79,6 +86,10 @@ private:
     QLineEdit    *m_execPath = nullptr;
     QSpinBox     *m_threads = nullptr, *m_processes = nullptr;
     QCheckBox    *m_multiSource = nullptr; // 複数音源 (ADR-0010)
+    // feed ごとのゲイン・遅延 (.ofdx acoustic.feeds — ADR-0010 Decision 7)。
+    // 行は .ofd の feed 行と 1 対 1 (行数は refresh で feeds().size() に
+    // 合わせる)。ゲイン/遅延のセルは QDoubleSpinBox で契約の値域を保証する。
+    QTableWidget *m_feedTable = nullptr;
     QPushButton  *m_btnRun = nullptr, *m_btnStop = nullptr;
     QLabel       *m_resolved = nullptr;    // 解決されたバイナリ or 未検出
     QLabel       *m_status = nullptr;

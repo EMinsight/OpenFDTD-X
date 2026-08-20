@@ -483,6 +483,22 @@ struct AcousticOpts {
     // 自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
     bool    multiSource = false;
 
+    // ── feed ごとのゲイン・遅延 (.ofdx "acoustic.feeds" — 追加キー。
+    //    ADR-0010 Decision 7) ──
+    // 並びは .ofd の feed 行の順 (entry #1 = feed #1)。音源 i は
+    // t = delaySec に強度 gain で発火する (負の gain は極性反転)。
+    // 全行が既定 (gain = 1, delay = 0) ならキー自体を書かない
+    // (旧ファイルとバイト一致 — 絶対規則 2)。
+    // キーが "sources" でないのは、上の AcousticSourceRow のリストが
+    // acoustic.sources を**音源一覧**として既に使っているため。あちらは
+    // GUI が置いた音源、こちらは .ofd の feed 行で並びも意味も別物なので、
+    // 名前を分けてある (混ぜるとソルバーが静かに誤読する)。
+    struct FeedDrive {
+        double gain = 1.0;      // 線形ゲイン (|gain| <= 1000)
+        double delaySec = 0.0;  // 発火遅延 [s] (0 .. 1)
+    };
+    QVector<FeedDrive> feedDrives;
+
     // ── 入力信号 (WAV) の前処理 (.ofdx "acoustic.source_wav" — 追加キー。
     //    既定のままならキー自体を書かないので旧ファイルとバイト一致) ──
     // AcousticSourceTab の「入力信号」ページの設定で、波形プレビューと

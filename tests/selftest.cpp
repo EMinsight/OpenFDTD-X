@@ -3913,6 +3913,86 @@ static void testAudioEditEngine()
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
         }
 
+        // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
+        //    ADR-0010 Decision 7) ──
+        // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、
+        // 戻せばバイト一致。キー名は音源一覧 (acoustic.sources) と別物で、
+        // 互いに干渉しないことも確かめる。
+        {
+            ofd::Project fp;
+            QString e5;
+            const QString p5 = dir.filePath("feeddrive.ofd");
+            const QString sc5 = dir.filePath("feeddrive.ofdx");
+            auto bytes5 = [&] {
+                QFile f(sc5);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(fp.save(p5, &e5), "feeds-ofdx: default saved");
+            const QByteArray base5 = bytes5();
+            check(!base5.contains("\"feeds\""),
+                  "feeds-ofdx: no rows writes no feeds key");
+
+            // 既定値だけの行を積んでもキーは書かない (絶対規則 2)
+            fp.acoustic().feedDrives = { {}, {} };
+            check(fp.save(p5, &e5), "feeds-ofdx: default rows saved");
+            check(bytes5() == base5,
+                  "feeds-ofdx: all-default rows stay byte-identical");
+
+            fp.acoustic().feedDrives = { { 0.5, 0.0 }, { 2.0, 0.005 } };
+            check(fp.save(p5, &e5), "feeds-ofdx: edited saved");
+            const QByteArray edited5 = bytes5();
+            check(edited5.contains("\"feeds\"")
+                  && edited5.contains("\"gain\": 0.5")
+                  && edited5.contains("\"delay_s\": 0.005"),
+                  "feeds-ofdx: editing writes gain and delay_s");
+            // 音源一覧 (acoustic.sources) は別キーとして残る — 契約の衝突
+            // (ソルバーが音源一覧を feed のゲインとして読む) を防ぐ番人
+            check(edited5.contains("\"sources\""),
+                  "feeds-ofdx: the source list keeps its own sources key");
+
+            ofd::Project rd5;
+            check(rd5.load(p5, &e5), "feeds-ofdx: reloaded");
+            check(rd5.acoustic().feedDrives.size() == 2
+                  && rd5.acoustic().feedDrives[0].gain == 0.5
+                  && rd5.acoustic().feedDrives[0].delaySec == 0.0
+                  && rd5.acoustic().feedDrives[1].gain == 2.0
+                  && rd5.acoustic().feedDrives[1].delaySec == 0.005,
+                  "feeds-ofdx: round-trips gain and delay per feed");
+
+            rd5.acoustic().feedDrives.clear();
+            check(rd5.save(p5, &e5), "feeds-ofdx: reverted saved");
+            check(bytes5() == base5,
+                  "feeds-ofdx: reverting restores byte-identical output");
+
+            // 手書きの範囲外値は契約の値域へクランプして読む
+            // (ソルバーが非零終了する .ofdx を GUI が作らない)
+            {
+                QFile f(sc5);
+                check(f.open(QIODevice::ReadOnly), "feeds-ofdx: sidecar open");
+                QJsonObject root =
+                    QJsonDocument::fromJson(f.readAll()).object();
+                f.close();
+                QJsonObject acObj = root["acoustic"].toObject();
+                acObj["feeds"] = QJsonArray{
+                    QJsonObject{ {"gain", 5000.0}, {"delay_s", -1.0} } };
+                root["acoustic"] = acObj;
+                QFile w(sc5);
+                check(w.open(QIODevice::WriteOnly), "feeds-ofdx: sidecar write");
+                w.write(QJsonDocument(root).toJson());
+                w.close();
+                ofd::Project cl;
+                check(cl.load(p5, &e5), "feeds-ofdx: clamped reload");
+                check(cl.acoustic().feedDrives.size() == 1
+                      && cl.acoustic().feedDrives[0].gain == 1000.0
+                      && cl.acoustic().feedDrives[0].delaySec == 0.0,
+                      "feeds-ofdx: out-of-range values clamp to the contract");
+            }
+
+            ofd::Project o5;
+            check(o5.acoustic().feedDrives.isEmpty(),
+                  "feeds-ofdx: missing key means every feed at gain 1 / delay 0");
+        }
+
         // 旧ファイル (source_wav 無し) は既定値のまま
         ofd::Project old;
         check(old.acoustic().wavTrimStart_s == 0.0
