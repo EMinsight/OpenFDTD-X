@@ -207,6 +207,33 @@ openfdtd_x --check-kernels
 インピーダンス表 (21 周波数 × Rin/Xin/Ref/VSWR) は 4 構成とも表示精度で
 一致。CUDA 版の収束履歴 `<E>` `<H>` は 6 桁目で ±1 の差 (float の総和順序)。
 
+### MPI の検証 (領域分割不変性 + GUI 経由の実行)
+
+**(1) 領域分割不変性** — 本家の検証手順どおり、プロセス数と分割方向を変えても
+結果が変わらないことを確認した (dipole、`ofd_mpi`):
+
+| 実行 | インピーダンス表 (21 点) | 収束履歴 (12 点) |
+|---|---|---|
+| `-n 1 -p 1 1 1` (基準) | — | — |
+| `-n 2 -p 2 1 1` / `1 2 1` / `1 1 2` | 一致 | 一致 |
+| `-n 4 -p 2 2 1` / `1 2 2` | 一致 | 一致 |
+| `-n 8 -p 2 2 2` | 一致 | 一致 |
+
+x / y / z のどの方向に切っても、また 8 プロセスまで増やしても差が出ない。
+
+**(2) GUI の `Runner` 経由** — `tests/test_runner_mpi.cpp` (ctest の
+`kernel.runner_mpi`、22 checks)。`OFDX_OFD_BIN` があるときだけ走り、無ければ
+skip する。純関数の検証 (selftest) では届かない次を見る:
+
+- `Runner` が **mpiexec を実際に起動**する (PATH に無いユーザー空間の MS-MPI を
+  探索して見つけたパスで起動したことをコマンド行で確認)
+- `mpiexec -n <process>` と、カーネルへの `-n <thread>` が**両方**渡る
+- `progress()` が飛び、総ステップ数が `maxiter` と一致する
+- カーネルが 2 プロセスで完走し `normal end` を書く
+- **MPI 実行のインピーダンス表が CPU 実行と完全一致**する
+- GPU+MPI では `ofd_cuda_mpi` が起動し、**CUDA カーネルには `-n` を渡さない**
+  (引数規約の変更が実機で効いていること)
+
 ### HDF5 出力の中身の突き合わせ (h5py)
 
 ログや解析解では見えない差を潰すため、`time_series_data.h5` の**全データ
@@ -245,8 +272,12 @@ build-h5\ofdx_selftest.exe
 
 | ビルド / 環境 | 結果 |
 |---|---|
-| 既定 (`USE_HDF5=OFF`、カーネル無し) | 24 files, **11,250 checks**, 0 failures |
-| `USE_HDF5=ON` + `OFDX_OFD_BIN` + `OFDX_BELLHOP_BIN` | 24 files, **11,447 checks**, 0 failures |
+| 既定 (`USE_HDF5=OFF`、カーネル無し) | 24 files, **11,250 checks**, 0 failures / ctest 22 中 22 |
+| `OFDX_OFD_BIN` + `OFDX_BELLHOP_BIN` | 24 files, **11,335 checks**, 0 failures / ctest **23 中 23** |
+| `USE_HDF5=ON` + 上記 | 24 files, **11,447 checks**, 0 failures |
+
+ctest の 23 本目が `kernel.runner_mpi` — **GUI の `Runner` が実際に mpiexec を
+起動して完走するところまで**を見る統合テスト (下記 §4 の MPI 検証を参照)。
 
 差の +197 checks が、これまでこの PC で一度も動いていなかった分:
 H5 リーダ (`io/H5Reader` — カーネルの `time_series_data.h5` を GUI が読む経路)、

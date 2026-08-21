@@ -899,6 +899,20 @@ if(BUILD_TESTS)
     )
     add_test(NAME roomac.fitzroy COMMAND ofdx_test_fitzroy)
 
+    # Runner の MPI 統合テスト (実カーネルを mpiexec 経由で起動する)。
+    # selftest は Runner の純関数だけを見るので、実際に mpiexec を起動して
+    # 完走し結果が CPU 実行と一致するところはこちらで見る。実カーネルが
+    # 要るため $OFDX_OFD_BIN が無ければテスト側が skip して 0 を返す。
+    qt_add_executable(ofdx_test_runner_mpi tests/test_runner_mpi.cpp)
+    target_include_directories(ofdx_test_runner_mpi PRIVATE src)
+    target_link_libraries(ofdx_test_runner_mpi PRIVATE ofdx_gui)
+    set_target_properties(ofdx_test_runner_mpi PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE    OFF
+    )
+    add_test(NAME kernel.runner_mpi COMMAND ofdx_test_runner_mpi
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
+
     # 人工 RIR 生成 CLI (wav はコミットせず実行時に生成する)
     add_executable(ofdx_generate_synthetic_rir
         tests/generators/generate_synthetic_rir.cpp)
