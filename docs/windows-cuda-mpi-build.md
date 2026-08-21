@@ -187,6 +187,41 @@ openfdtd_x --check-kernels
 - この比較で上記の `Niter` 欠落 (CUDA の `convergence/*` が 12 点 → 11 点)
   を検出した。修正後は 5 構成すべてが `Niter = 12` / `iter` 末尾 550 で一致。
 
+### GUI の統合テスト (実カーネル + HDF5) を全部走らせる
+
+`ofdx_selftest` には**環境変数で有効になる統合テスト**があり、既定では
+skip される。実カーネルを揃えたこの PC では全部走らせられる:
+
+```bat
+cmake -B build-h5 -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_PREFIX_PATH=%QT_ROOT% ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DUSE_HDF5=ON
+cmake --build build-h5 -j
+set QT_QPA_PLATFORM=offscreen
+set OFDX_OFD_BIN=C:\Users\<you>\Downloads\OpenFDTD\bin\ofd.exe
+set OFDX_BELLHOP_BIN=C:\Users\<you>\Downloads\bellhopcuda\bin\bellhopcxx.exe
+build-h5\ofdx_selftest.exe
+```
+
+| ビルド / 環境 | 結果 |
+|---|---|
+| 既定 (`USE_HDF5=OFF`、カーネル無し) | 24 files, **11,250 checks**, 0 failures |
+| `USE_HDF5=ON` + `OFDX_OFD_BIN` + `OFDX_BELLHOP_BIN` | 24 files, **11,447 checks**, 0 failures |
+
+差の +197 checks が、これまでこの PC で一度も動いていなかった分:
+H5 リーダ (`io/H5Reader` — カーネルの `time_series_data.h5` を GUI が読む経路)、
+`ofd` 統合 (実行 → `ofd.log` の給電点表を GUI のパーサで読む → GUI の
+Courant 推定がカーネルの `Dt` と一致することの確認)、bellhop 統合
+(GUI の `BellhopIO` が書いた `.env` を実カーネルで走らせ `.shd` 生成まで)。
+`OFDX_PEEC_BIN` / `OFDX_OFE_BIN` (回路抽出) だけは対応リポジトリを未ビルドの
+ため skip のまま。
+
+GUI の画面でも、カーネルを設定するとステータスバーの
+「⚠ カーネル未検出: bellhopcxx.exe」が消えて「● 準備完了」になることを
+4 ドメインのスクリーンショットで確認した (`--screenshot`。Windows では
+`QT_QPA_FONTDIR=C:\Windows\Fonts` が要る)。
+
 ## 5. 既知の制約
 
 - CUDA 版は単精度 (`real_t = float`) のため CPU 版とビット一致しない。

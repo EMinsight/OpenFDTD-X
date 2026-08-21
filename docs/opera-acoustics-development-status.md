@@ -1151,6 +1151,15 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
 - 外部音響ソルバー [OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics)
   も確認したが、こちらは OpenMP のみで CUDA / MPI 変種を持たない
   (`AcousticRunner` の契約どおり単一実行ファイル)。
+- **環境変数ゲートの統合テストをこの PC で初めて全部走らせた**。
+  `USE_HDF5=ON` でビルドし `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` を実カーネルに
+  向けると **11,250 → 11,447 checks (0 failures)**。増えた 197 checks は
+  H5 リーダ (`io/H5Reader` — カーネルの `time_series_data.h5` を読む経路)、
+  `ofd` 統合 (実行 → `ofd.log` の給電点表を GUI のパーサで読む → GUI の
+  Courant 推定がカーネルの `Dt` と一致)、bellhop 統合 (`BellhopIO` が書いた
+  `.env` を実カーネルで走らせ `.shd` 生成まで) の分。`OFDX_PEEC_BIN` /
+  `OFDX_OFE_BIN` は対応リポジトリ未ビルドのため skip のまま。
+  手順は `docs/windows-cuda-mpi-build.md` §4 に記載。
 
 ## 5. 次の作業 (優先順)
 
