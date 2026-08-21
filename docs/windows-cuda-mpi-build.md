@@ -14,6 +14,7 @@ OpenFDTD-X の実行エンジン「CPU+MPI」「GPU (CUDA)」「GPU+MPI」は、
 | OpenFDTD `ofd` | ✓ | ✓ (CPU とビット一致) | ✓ | ✓ | CUDA 版は float の和の順序で収束履歴の 6 桁目が異なるのみ。インピーダンス表は表示精度で一致 |
 | OpenRCWA `orcwa` | ✓ | ✓ | ✓ | ✓ (*) | **MPI / CUDA 版は FDTD 専用** — RCWA / FMM (`rcwalayer`) は `orcwa` (CPU) だけが計算できる (他は理由を出して終了) |
 | OpenBPM `obpm` | ✓ | ✓ (*) | ✓ | ✓ (*) | **MPI 版 (`obpm_mpi` / `obpm_cuda_mpi`) は FDTD 専用** — BPM は `obpm` (CPU) か `obpm_cuda` |
+| bellhopcuda `bellhopcxx` | ✓ | — | ✓ (`bellhopcuda`) | — | 水中音響。**MPI 版は存在しない** (GUI もその旨を表示する)。GPU 版は CPU 版と別名の実行ファイル。CUDA の対象アーキテクチャは同リポジトリの CMake が `native` (実機自動判定) |
 
 (*) `orcwa_cuda_mpi` / `obpm_mpi` / `obpm_cuda_mpi` は **2 ランク以上では
 `time_series_data.h5` を書かない** (理由を出して出力だけ止める)。並列 HDF5 の
@@ -101,6 +102,27 @@ cmake -B build-cuda-mpi %OPTS% %PAR% -DWITH_CUDA=ON  -DWITH_MPI=ON && cmake --bu
   `WITH_RCWA_LEGACY_TESTS` (MSVC 既定 OFF) で切り離した。MPI / CUDA 版の
   main は RCWA 入力 (`rcwalayer`) を受けると理由を出して終了する
   (以前はメッシュ 0 のまま走って落ちていた)。
+- **3 リポジトリ共通: `cuda/solve.cu` だけ収束履歴の最後の 1 点が落ちていた**。
+  `Niter` の加算が収束判定の `break` より後にあり、収束して抜けた点が
+  記録されない (CPU / MPI / CUDA+MPI は格納直後に加算しており、この実装
+  だけがずれていた)。実測では `convergence/iter` が CPU の 0..550 (12 点)
+  に対し CUDA は 0..500 (11 点)。**解析解との比較にもログの回帰基準値にも
+  現れないため、HDF5 の中身を構成間で突き合わせて初めて分かる種類の不具合。**
+
+### bellhopcuda (水中音響) のビルド
+
+CUDA の対象アーキテクチャは同リポジトリの CMake が `native` (実機から自動
+判定) にしているので、指定は要らない。glm サブモジュールの取得が必須。
+
+```bat
+git clone https://github.com/Sirokujira/bellhopcuda.git
+cd bellhopcuda && git submodule update --init --recursive
+cmake -B build-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DBHC_ENABLE_CUDA=ON -DBHC_BUILD_EXAMPLES=OFF
+cmake --build build-cuda -j --target bellhopcxx bellhopcuda   rem → bin\
+```
+
+MPI 版は存在しない (GUI もエンジン選択でその旨を出す)。CUDA 版は
+テンプレート実体化が多く、ビルドに数分〜十数分かかる。
 
 ## 3. GUI 側の設定
 
@@ -141,9 +163,29 @@ openfdtd_x --check-kernels
 | `mpiexec -n 2 orcwa_cuda_mpi dipole.ofd` | converged, normal end (HDF5 は 2 ランクでは書かない旨を表示) |
 | `obpm` / `obpm_cuda` (fiber.ofd) | normal end |
 | `mpiexec -n 2 obpm_mpi` / `obpm_cuda_mpi` (FDTD 入力 dipole.ofd) | converged, normal end (同上。修正前は 2 ランクで H5Fclose 待ちのままハング) |
+| `bellhopcxx MunkB_Coh` / `bellhopcuda MunkB_Coh` | 両方 normal end。`.shd` (4 MB) を同リポジトリ同梱の `compare_shdfil.py` (ULP 単位の比較) で突き合わせ、**差分なし** |
 
 インピーダンス表 (21 周波数 × Rin/Xin/Ref/VSWR) は 4 構成とも表示精度で
 一致。CUDA 版の収束履歴 `<E>` `<H>` は 6 桁目で ±1 の差 (float の総和順序)。
+
+### HDF5 出力の中身の突き合わせ (h5py)
+
+ログや解析解では見えない差を潰すため、`time_series_data.h5` の**全データ
+セット**を構成間で比較した (dipole、CPU を基準、複合型は成分ごとに数値比較):
+
+| 構成 | 最大相対差 | 判定 |
+|---|---|---|
+| `mpiexec -n 2 ofd_mpi` | 3.4e-16 (`convergence/H`) | 実質ビット一致 |
+| `mpiexec -n 4 ofd_mpi` | 1.0e-15 (`convergence/H`) | 同上 (分割数を変えても不変) |
+| `ofd_cuda` (HDM 既定) | 1.1e-6 (`freqdomain/H`) | 単精度 DFT の差、想定内 |
+| `ofd_cuda -um` | 1.1e-6 (同上) | HDM と同値 |
+| `mpiexec -n 2 ofd_cuda_mpi` | 1.1e-6 (同上) | 同上 |
+
+- `metadata/input_impedance` (複合型) も全 7 成分を数値比較して一致。
+- **CPU 版にしかない `loss/P_loss` を除き、データセットの構成も一致**する
+  (熱解析レイヤは `ofd` のみ — README「実装ごとの対応状況」のとおり)。
+- この比較で上記の `Niter` 欠落 (CUDA の `convergence/*` が 12 点 → 11 点)
+  を検出した。修正後は 5 構成すべてが `Niter = 12` / `iter` 末尾 550 で一致。
 
 ## 5. 既知の制約
 
@@ -155,3 +197,10 @@ openfdtd_x --check-kernels
   CUDA 版である。
 - Windows の `QT_QPA_PLATFORM=offscreen` でスクリーンショットを撮るときは
   `QT_QPA_FONTDIR=C:\Windows\Fonts` を設定しないと文字が描画されない。
+- `orcwa_cuda_mpi` / `obpm_mpi` / `obpm_cuda_mpi` の並列 HDF5 は**出力を
+  止めているだけで直っていない** (上記 (*))。根本修正は `orcwa_mpi` と同じ
+  「グローバル添字での集団書き込み」への作り替えで、`OpenRCWA/mpi/solve.c`
+  が手本になる (同ファイルの `g_Ni` / `w_i0` 群と `H5FD_MPIO_COLLECTIVE` の
+  書き込み、および metadata 節を全 rank で作成し書き込みだけ rank 0 に
+  限定する形)。`OpenBPM/mpi/solve.c` は `OpenRCWA/mpi/solve.c` の修正前版と
+  include 3 行を除いてバイト一致なので、そのまま移植できる。

@@ -1127,6 +1127,31 @@ zip を展開) と MS-MPI 10.1 (conda-forge パッケージを展開) をユー�
 MPI ランチャ探索 6、仕様判定 9)、ctest 22/22。
 Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通った。
 
+**追補 (同日): 水中音響の GPU 版と、HDF5 の中身の突き合わせ。**
+
+- **bellhopcuda (水中音響) の GPU 版をビルドして検証**。CUDA の対象
+  アーキテクチャは同リポジトリが `native` (実機自動判定) なので追加設定は
+  不要だった (glm サブモジュールの取得は必須)。`bellhopcxx` (CPU) と
+  `bellhopcuda` (GPU) で `MunkB_Coh` を走らせ、`.shd` (4 MB) を同リポジトリ
+  同梱の `compare_shdfil.py` (ULP 単位) で突き合わせて**差分なし**。
+  `--check-kernels` で GUI からも GPU エンジンが「usable」になった。
+  MPI 版は存在しないので、その旨は従来どおり `checkAvailability` が出す。
+- **`time_series_data.h5` の全データセットを構成間で比較** (h5py、dipole、
+  CPU 基準、複合型は成分ごとに数値比較)。MPI (n=2 / n=4) は 1e-15 以下で
+  実質ビット一致、CUDA 3 構成 (HDM / UM / CUDA+MPI) は最大 1.1e-6
+  (`freqdomain/H`、単精度 DFT の差)。データセットの構成も `loss/P_loss`
+  (熱解析 = CPU 版のみ、README のとおり) を除いて一致。
+- この比較で **CUDA 単体版が収束履歴の最後の 1 点を落とす**バグを検出し、
+  3 リポジトリとも修正した (`cuda/solve.cu` の `Niter` 加算が収束判定の
+  `break` より後にあった。CPU / MPI / CUDA+MPI は格納直後に加算しており、
+  この実装だけがずれていた)。実測で `convergence/iter` が CPU の 0..550
+  (12 点) に対し CUDA は 0..500 (11 点)、`metadata/Niter` も 12 対 11。
+  修正後は 5 構成すべて一致。**ログの回帰基準値にも解析解の比較にも現れず、
+  HDF5 の中身を構成間で突き合わせて初めて分かる種類の不具合**だった。
+- 外部音響ソルバー [OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics)
+  も確認したが、こちらは OpenMP のみで CUDA / MPI 変種を持たない
+  (`AcousticRunner` の契約どおり単一実行ファイル)。
+
 ## 5. 次の作業 (優先順)
 
 1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。
