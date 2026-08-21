@@ -10,6 +10,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# MSVC: ソースは UTF-8 (日本語コメント・文字列)。/utf-8 を付けないと日本語
+# ロケール (コードページ 932) の PC で UTF-8 の文字列リテラルが Shift-JIS と
+# して誤読され C2001 / C2017 になる (英語ロケールの CI では警告 C4819 止まりで
+# 顕在化しない)。個別ターゲットの指定に漏れ (テスト生成ツール等) があったので
+# 全ターゲットへ一律に付ける。
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # Qt6 Widgets is the only hard requirement (classic C++ Qt, NOT QML/Quick).
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 # Qt6::Network は「あれば使う」— 海洋データセットの直接ダウンロードだけに

@@ -128,13 +128,87 @@ QString Runner::resolvedSolverPath(const RunConfig &cfg)
     return QString();
 }
 
-QString Runner::findMpiLauncher()
+QString Runner::mpiLauncherSetting()
 {
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    return s.value(QStringLiteral("MPI_LAUNCHER")).toString();
+}
+
+void Runner::setMpiLauncherSetting(const QString &path)
+{
+    QSettings s(QSettings::UserScope,
+                QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
+    if (path.isEmpty()) s.remove(QStringLiteral("MPI_LAUNCHER"));
+    else                s.setValue(QStringLiteral("MPI_LAUNCHER"), path);
+}
+
+QString Runner::findMpiLauncher(const RunConfig &cfg)
+{
+    // 1. GUI 設定 — 利用者が明示した実行ファイルが最優先
+    const QString setting = mpiLauncherSetting();
+    if (!setting.isEmpty() && QFileInfo(setting).isFile()) return setting;
+
+    // 2. PATH
     for (const char *name : { "mpiexec", "mpirun" }) {
         const QString p = QStandardPaths::findExecutable(QLatin1String(name));
         if (!p.isEmpty()) return p;
     }
+
+    // 3.-5. MS-MPI の環境変数・標準インストール先・カーネルの探索ディレクトリ。
+    //   QStandardPaths::findExecutable(name, dirs) は Windows では PATHEXT
+    //   (.exe) を補って探すので、名前に拡張子を付ける必要はない。
+    QStringList dirs;
+    dirs << qEnvironmentVariable("MSMPI_BIN");
+#ifdef Q_OS_WIN
+    dirs << QStringLiteral("C:/Program Files/Microsoft MPI/Bin");
+#endif
+    const QString kernelDirs[] = {
+        cfg.binaryDir,
+        kernelDirSetting(cfg.kernel),
+        qEnvironmentVariable(homeVarFor(cfg.kernel)),
+        QCoreApplication::applicationDirPath() + "/kernel",
+        QCoreApplication::applicationDirPath(),
+    };
+    for (const QString &d : kernelDirs) {
+        if (d.isEmpty()) continue;
+        dirs << d << QDir(d).absoluteFilePath(QStringLiteral("bin"));
+    }
+    dirs.removeAll(QString());
+    for (const char *name : { "mpiexec", "mpirun" }) {
+        const QString p =
+            QStandardPaths::findExecutable(QLatin1String(name), dirs);
+        if (!p.isEmpty()) return p;
+    }
     return QString();
+}
+
+QStringList Runner::solverArguments(const RunConfig &cfg,
+                                    const QString &inputPath)
+{
+    QStringList args;
+    if (cfg.kernel == Kernel::Bellhop) {
+        // bellhopcxx <FILEROOT> — 引数は拡張子を除いたケース名のみ。
+        // 作業ディレクトリで実行するので相対ベース名を渡す。
+        args << QFileInfo(inputPath).completeBaseName();
+        return args;
+    }
+    const bool gpu = (cfg.engine == Engine::GPU || cfg.engine == Engine::GPU_MPI);
+    // CUDA 版 (ofd_cuda / ofd_cuda_mpi / orcwa_cuda / obpm_cuda …) は
+    // -n <thread> を受け付けない (src/cuda_Main.cu の args() 参照)。
+    if (!gpu) args << "-n" << QString::number(qMax(1, cfg.threads));
+    args << inputPath;
+    return args;
+}
+
+QStringList Runner::postArguments(const RunConfig &cfg,
+                                  const QString &inputPath)
+{
+    QStringList args;
+    args << "-n" << QString::number(qMax(1, cfg.threads));
+    if (cfg.evHtml) args << "-html";
+    args << inputPath;
+    return args;
 }
 
 Runner::Availability Runner::checkAvailability(Kernel kernel)
@@ -154,17 +228,19 @@ Runner::Availability Runner::checkAvailability(Kernel kernel)
     if (kernel == Kernel::Bellhop) {
         a.mpiReason = QStringLiteral("bellhopcxx に MPI 版はありません");
     } else {
-        a.mpiLauncher = findMpiLauncher();
         RunConfig mpiCfg;
         mpiCfg.kernel = kernel;
         mpiCfg.engine = Engine::CPU_MPI;
+        a.mpiLauncher = findMpiLauncher(mpiCfg);
         const QString mpiBin = resolvedSolverPath(mpiCfg);
         if (a.mpiLauncher.isEmpty() && mpiBin.isEmpty())
             a.mpiReason =
                 QStringLiteral("mpiexec と %1_mpi のどちらも見つかりません")
                     .arg(kernelPrefix(kernel));
         else if (a.mpiLauncher.isEmpty())
-            a.mpiReason = QStringLiteral("mpiexec / mpirun が PATH にありません");
+            a.mpiReason = QStringLiteral(
+                "mpiexec / mpirun が見つかりません (PATH・$MSMPI_BIN・"
+                "カーネルディレクトリを探索。カーネルパスの設定… で指定できます)");
         else if (mpiBin.isEmpty())
             a.mpiReason = QStringLiteral("%1_mpi のバイナリが見つかりません")
                               .arg(kernelPrefix(kernel));
@@ -190,6 +266,31 @@ QString Runner::runLogName(Kernel k)
     case Kernel::RCWA: return QStringLiteral("orcwa.log");
     case Kernel::BPM:  return QStringLiteral("obpm.log");
     default:           return QString();
+    }
+}
+
+QString Runner::engineUnsupportedReason(const Project &project, Engine engine)
+{
+    if (engine == Engine::CPU) return QString();
+    if (project.activeDomain() != Domain::Optical) return QString();
+    const OpticalOpts &o = project.optical();
+    const bool mpi = (engine == Engine::CPU_MPI || engine == Engine::GPU_MPI);
+    switch (o.solver) {
+    case OpticalSolver::RCWA:
+    case OpticalSolver::FMM:
+        // rcwalayer を書き出すのは層スタックが有効なときだけ (OfdIO と同じ
+        // 判定)。無効なら orcwa は FDTD として走るので変種間の差は無い。
+        if (!isValidRcwaStack(o.rcwaLayerList)) return QString();
+        return QStringLiteral(
+            "RCWA / FMM (rcwalayer) を計算できるのは orcwa (CPU) だけです — "
+            "orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi は FDTD 専用");
+    case OpticalSolver::BPM:
+        if (!mpi) return QString();   // obpm_cuda は BPM 対応
+        return QStringLiteral(
+            "obpm_mpi / obpm_cuda_mpi は FDTD 専用で BPM を計算しません "
+            "(BPM は CPU か GPU (obpm_cuda) で実行)");
+    default:
+        return QString();
     }
 }
 
@@ -334,31 +435,29 @@ void Runner::launch(bool solverPhase)
 {
     QString program;
     QStringList args;
+    QString launcherDir;   // MPI ランチャのディレクトリ (子プロセスの PATH へ足す)
 
-    if (solverPhase && m_cfg.kernel == Kernel::Bellhop) {
-        // bellhopcxx <FILEROOT> — 引数は拡張子を除いたケース名のみ。
-        // 作業ディレクトリで実行するので相対ベース名を渡す。
-        program = solverBinary(m_cfg);
-        args << QFileInfo(m_ofdPath).completeBaseName();
-    } else if (solverPhase) {
+    const bool mpi = solverPhase && m_cfg.kernel != Kernel::Bellhop
+                  && (m_cfg.engine == Engine::CPU_MPI
+                      || m_cfg.engine == Engine::GPU_MPI);
+    if (solverPhase) {
         const QString bin = solverBinary(m_cfg);
-        if (m_cfg.engine == Engine::CPU_MPI || m_cfg.engine == Engine::GPU_MPI) {
+        if (mpi) {
             // mpiexec が無い環境 (MPICH ではなく OpenMPI だけ、等) では
             // mpirun に倒す。どちらも無ければ mpiexec のまま起動を試みて
             // FailedToStart のエラーメッセージを出す。
-            const QString launcher = findMpiLauncher();
+            const QString launcher = findMpiLauncher(m_cfg);
             program = launcher.isEmpty() ? QStringLiteral("mpiexec") : launcher;
+            if (!launcher.isEmpty())
+                launcherDir = QFileInfo(launcher).absolutePath();
             args << "-n" << QString::number(qMax(1, m_cfg.processes)) << bin;
         } else {
             program = bin;
         }
-        args << "-n" << QString::number(m_cfg.threads);
-        args << m_ofdPath;
+        args << solverArguments(m_cfg, m_ofdPath);
     } else {
         program = postBinary(m_cfg);
-        args << "-n" << QString::number(m_cfg.threads);
-        if (m_cfg.evHtml) args << "-html";
-        args << m_ofdPath;
+        args << postArguments(m_cfg, m_ofdPath);
     }
 
     m_proc = new QProcess(this);
@@ -370,13 +469,27 @@ void Runner::launch(bool solverPhase)
     // GPU カーネル (ofd_cuda 等) 用のデバイス指定
     if (m_cfg.engine == Engine::GPU || m_cfg.engine == Engine::GPU_MPI)
         env.insert("CUDA_VISIBLE_DEVICES", QString::number(m_cfg.device));
+    // MPI ランチャのディレクトリを子プロセスの PATH の先頭に足す。
+    // Windows の MS-MPI では <kernel>_mpi.exe が msmpi.dll を実行時に要求し、
+    // その DLL は mpiexec.exe と同じディレクトリにある。システムに MS-MPI を
+    // インストールしていない構成 (PATH に無い場所へ展開しただけ) では、
+    // これが無いとランクの起動が "DLL が見つからない" で失敗する。
+    // (mpiexec は環境をランクへそのまま引き継ぐ)
+    if (!launcherDir.isEmpty()) {
+        const QString key = QStringLiteral("PATH");
+        const QString cur = env.value(key);
+        env.insert(key, cur.isEmpty()
+                            ? QDir::toNativeSeparators(launcherDir)
+                            : QDir::toNativeSeparators(launcherDir)
+                                  + QDir::listSeparator() + cur);
+    }
     m_proc->setProcessEnvironment(env);
 
     connect(m_proc, &QProcess::readyRead, this, &Runner::onReadyRead);
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &Runner::onFinished);
     connect(m_proc, &QProcess::errorOccurred, this,
-            [this](QProcess::ProcessError e) {
+            [this, mpi](QProcess::ProcessError e) {
         emit logLine("error: " + m_proc->errorString()
                      + " (" + m_proc->program() + ")");
         // FailedToStart だけは QProcess::finished が発火しないので
@@ -407,6 +520,18 @@ void Runner::launch(bool solverPhase)
                 "ツール > カーネルパスの設定… (or set $%1 to the repository "
                 "root — bin/ is searched too). See README 'カーネル'")
                 .arg(QLatin1String(homeVar)));
+            if (mpi) {
+                // MPI 系は「見つからなかったのが mpiexec なのかカーネルなのか」
+                // を切り分ける手掛かりを出す (program は mpiexec 側)。
+                emit logLine(QStringLiteral(
+                    "hint: MPI engines launch through mpiexec — searched "
+                    "the launcher setting=%1, PATH, $MSMPI_BIN=%2, "
+                    "'C:/Program Files/Microsoft MPI/Bin' and the kernel "
+                    "directories (and their bin/). Install MS-MPI / OpenMPI / "
+                    "MPICH or set the launcher in カーネルパスの設定…")
+                    .arg(orUnset(mpiLauncherSetting()),
+                         orUnset(qEnvironmentVariable("MSMPI_BIN"))));
+            }
             emit logLine(QStringLiteral("=== failed (kernel not found) ==="));
             emit finished(false);
         }

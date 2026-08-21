@@ -3,11 +3,15 @@
 #include <QFont>
 #include <QCommandLineParser>
 #include <QFile>
+#include <QFileInfo>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStyleFactory>
+#include <QTextStream>
 #include <QTimer>
 
 #include "MainWindow.h"
+#include "kernel/Runner.h"
 #include "widgets/RefractiveIndexDialog.h"
 #include "I18n.h"
 #include "Theme.h"
@@ -69,7 +73,80 @@ int main(int argc, char *argv[])
     QCommandLineOption ctabOpt("center-tab",
         "Select the center tab whose title contains <text> (for CI)", "text");
     cli.addOption(ctabOpt);
+    QCommandLineOption kernOpt("check-kernels",
+        "Print where each solver kernel and mpiexec were found and which "
+        "engines (CPU / CPU+MPI / GPU / GPU+MPI) are usable, then exit "
+        "(setup diagnostics; UTF-8 output)");
+    cli.addOption(kernOpt);
     cli.process(app);
+
+    // --check-kernels: カーネルと MPI ランチャの検出結果を表示して終了する。
+    // 画面を出さないので、ヘッドレス環境や「CUDA / MPI 版を入れたのに GUI で
+    // 選べない」の切り分けに使える。判定は GUI と同じ Runner の関数。
+    if (cli.isSet(kernOpt)) {
+        QTextStream out(stdout);
+        out.setEncoding(QStringConverter::Utf8);
+        const auto orUnset = [](const QString &v) {
+            return v.isEmpty() ? QStringLiteral("(unset)") : v;
+        };
+        const QString launcher = ofd::Runner::findMpiLauncher();
+        out << "MPI launcher : "
+            << (launcher.isEmpty() ? QStringLiteral("(not found)") : launcher) << "\n"
+            << "  setting=" << orUnset(ofd::Runner::mpiLauncherSetting())
+            << "  $MSMPI_BIN=" << orUnset(qEnvironmentVariable("MSMPI_BIN")) << "\n";
+        const struct { ofd::Kernel k; const char *name; } kernels[] = {
+            { ofd::Kernel::FDTD,    "OpenFDTD (ofd)" },
+            { ofd::Kernel::RCWA,    "OpenRCWA (orcwa)" },
+            { ofd::Kernel::BPM,     "OpenBPM (obpm)" },
+            { ofd::Kernel::Bellhop, "bellhopcuda (bellhopcxx)" },
+        };
+        const struct { ofd::Engine e; const char *name; } engines[] = {
+            { ofd::Engine::CPU,     "CPU" },
+            { ofd::Engine::CPU_MPI, "CPU+MPI" },
+            { ofd::Engine::GPU,     "GPU" },
+            { ofd::Engine::GPU_MPI, "GPU+MPI" },
+        };
+        for (const auto &kd : kernels) {
+            const char *home = ofd::Runner::homeVarFor(kd.k);
+            out << "\n" << kd.name
+                << "  [$" << home << "=" << orUnset(qEnvironmentVariable(home))
+                << ", setting=" << orUnset(ofd::Runner::kernelDirSetting(kd.k))
+                << "]\n";
+            for (const auto &ed : engines) {
+                ofd::RunConfig cfg;
+                cfg.kernel = kd.k;
+                cfg.engine = ed.e;
+                const QString p = ofd::Runner::resolvedSolverPath(cfg);
+                out << "  " << QString::fromLatin1(ed.name).leftJustified(8) << ": "
+                    << (p.isEmpty()
+                            ? QStringLiteral("(not found: %1)").arg(
+                                  QFileInfo(ofd::Runner::solverBinary(cfg)).fileName())
+                            : p)
+                    << "\n";
+            }
+            ofd::RunConfig pc;
+            pc.kernel = kd.k;
+            const QString post = ofd::Runner::postBinary(pc);
+            const QString postPath = QFileInfo::exists(post)
+                ? post : QStandardPaths::findExecutable(post);
+            out << "  post    : "
+                << (postPath.isEmpty()
+                        ? QStringLiteral("(not found: %1)").arg(QFileInfo(post).fileName())
+                        : postPath)
+                << "\n";
+            const ofd::Runner::Availability av = ofd::Runner::checkAvailability(kd.k);
+            out << "  MPI engines : "
+                << (av.mpi ? QStringLiteral("usable")
+                           : QStringLiteral("unavailable — %1").arg(av.mpiReason))
+                << "\n"
+                << "  CUDA engines: "
+                << (av.cuda ? QStringLiteral("usable")
+                            : QStringLiteral("unavailable — %1").arg(av.cudaReason))
+                << "\n";
+        }
+        out.flush();
+        return 0;
+    }
 
     // i18n: CLI option > saved setting > ja
     const QString lang = cli.isSet(langOpt)

@@ -160,6 +160,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QDirIterator>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include "../src/io/OfdPreview.h"
 #include "../src/io/RefractiveIndexDb.h"
@@ -6970,6 +6971,193 @@ static void testRunGating()
               "avail: bellhop GPU maps to the bellhopcuda binary");
         check(bh.cuda == !Runner::resolvedSolverPath(bgc).isEmpty(),
               "avail: bellhop cuda tracks the bellhopcuda binary");
+    }
+
+    // ── カーネル引数 (solverArguments / postArguments) ────────────────────
+    // 本家 CLI の引数規約との整合 (OpenFDTD src/*_Main.c|.cu の args()):
+    //   ofd / ofd_mpi        : [-n <thread>] <datafile>
+    //   ofd_cuda / _cuda_mpi : [-gpu|-cpu] [-device <n>] <datafile> — -n は無い
+    // CUDA 版に -n を渡すと未知の引数として入力ファイル名に取り違えられる
+    // ので GPU 系エンジンでは渡さない。MPI 系は mpiexec 側の -n <process> とは
+    // 別にカーネルへ -n <thread> を渡す (ofd_mpi は OpenMP スレッド数を受ける)。
+    {
+        RunConfig c;
+        c.kernel = Kernel::FDTD;
+        c.threads = 6;
+        const QString in = QStringLiteral("/work/dipole.ofd");
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: CPU passes -n <thread> and the input");
+        c.engine = Engine::CPU_MPI;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: CPU+MPI passes -n <thread> to the kernel "
+              "(mpiexec adds its own -n <process>)");
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: GPU omits -n (ofd_cuda has no thread option)");
+        c.engine = Engine::GPU_MPI;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: GPU+MPI omits -n (ofd_cuda_mpi has no thread option)");
+        // 同じ規約は姉妹カーネル (orcwa / obpm) にも適用される
+        c.kernel = Kernel::BPM;
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: obpm_cuda omits -n");
+        c.kernel = Kernel::RCWA;
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: orcwa takes -n");
+        // スレッド数 0 以下は 1 に丸める (カーネル側の args() と同じ下限)
+        c.threads = 0;
+        check(Runner::solverArguments(c, in).value(1) == QLatin1String("1"),
+              "args: thread count is clamped to >= 1");
+        c.threads = 6;
+        // bellhopcxx / bellhopcuda は拡張子を除いたケース名だけ
+        c.kernel = Kernel::Bellhop;
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, "/work/case1.env")
+                  == QStringList({ "case1" }),
+              "args: bellhopcxx takes the bare case name");
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, "/work/case1.env")
+                  == QStringList({ "case1" }),
+              "args: bellhopcuda takes the bare case name too");
+        // ポスト: -n <thread> [-html] <datafile>。エンジンに依らない
+        // (ofd_post に GPU / MPI 版は無い)。
+        RunConfig pc;
+        pc.kernel = Kernel::FDTD;
+        pc.threads = 3;
+        check(Runner::postArguments(pc, in) == QStringList({ "-n", "3", in }),
+              "args: post passes -n and the input");
+        pc.evHtml = true;
+        check(Runner::postArguments(pc, in)
+                  == QStringList({ "-n", "3", "-html", in }),
+              "args: post adds -html only when requested");
+        pc.engine = Engine::GPU_MPI;
+        check(Runner::postArguments(pc, in)
+                  == QStringList({ "-n", "3", "-html", in }),
+              "args: post arguments ignore the engine");
+    }
+
+    // ── MPI ランチャの探索 (findMpiLauncher) ─────────────────────────────
+    // 管理者権限なしで MS-MPI を展開した PC では mpiexec が PATH に無いので、
+    // GUI 設定 → PATH → $MSMPI_BIN → 標準の場所 → カーネルディレクトリ
+    // (直下と bin/) の順に探索する。環境に依存しない部分 (設定と binaryDir)
+    // を検証する。PATH に本物の mpiexec がある環境 (CI の MPI ジョブ等) でも
+    // 成り立つように、PATH 側の結果を見て期待値を切り替える。
+    {
+        QTemporaryDir mdir;
+        if (mdir.isValid()) {
+            const auto touchExec = [](const QString &path) {
+                QDir().mkpath(QFileInfo(path).path());
+                QFile f(path);
+                f.open(QIODevice::WriteOnly);
+                f.close();
+                f.setPermissions(f.permissions() | QFileDevice::ExeOwner
+                                 | QFileDevice::ExeUser | QFileDevice::ExeGroup
+                                 | QFileDevice::ExeOther);
+            };
+            // カーネルと同居した mpiexec (binaryDir/bin/)。Windows は
+            // findExecutable が PATHEXT (.exe) を補うので両方の名前を置く
+            touchExec(mdir.path() + "/bin/mpiexec");
+            touchExec(mdir.path() + "/bin/mpiexec.exe");
+            const QString onPath =
+                QStandardPaths::findExecutable(QStringLiteral("mpiexec"));
+            const QString prevSetting = Runner::mpiLauncherSetting();
+            Runner::setMpiLauncherSetting(QString());
+            RunConfig kc;
+            kc.binaryDir = mdir.path();
+            const QString found = Runner::findMpiLauncher(kc);
+            check(onPath.isEmpty() ? found.startsWith(mdir.path())
+                                   : found == onPath,
+                  "mpi: launcher found next to the kernel (binaryDir/bin) "
+                  "when PATH has none, PATH wins otherwise");
+            // 検索ディレクトリを与えなければ、PATH に無い限り見つからない
+            // (偽の mpiexec で「使える」と言わない)
+            RunConfig none;
+            check(onPath.isEmpty() ? !Runner::findMpiLauncher(none)
+                                          .startsWith(mdir.path())
+                                   : true,
+                  "mpi: a temp dir outside the search list is not consulted");
+            // GUI 設定は PATH より優先
+            const QString explicitPath = mdir.path() + "/mpiexec-custom"
+#ifdef Q_OS_WIN
+                + ".exe";
+#else
+                ;
+#endif
+            touchExec(explicitPath);
+            Runner::setMpiLauncherSetting(explicitPath);
+            check(Runner::mpiLauncherSetting() == explicitPath,
+                  "mpi: launcher setting round-trips");
+            check(Runner::findMpiLauncher(kc) == explicitPath,
+                  "mpi: explicit launcher setting wins over PATH and "
+                  "the search dirs");
+            // 設定が実在しないファイルなら無視して探索を続ける
+            const QString dangling = mdir.path() + "/does-not-exist";
+            Runner::setMpiLauncherSetting(dangling);
+            const QString fallback = Runner::findMpiLauncher(kc);
+            check(!fallback.isEmpty() && fallback != dangling,
+                  "mpi: a dangling launcher setting is ignored");
+            Runner::setMpiLauncherSetting(QString());
+            check(Runner::mpiLauncherSetting().isEmpty(),
+                  "mpi: launcher setting cleared");
+            Runner::setMpiLauncherSetting(prevSetting);
+        }
+    }
+
+    // ── エンジン × ソルバー設定の仕様上できない組合せ ──────────────────────
+    // (Runner::engineUnsupportedReason)。実機で確認した事実:
+    //   orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi は FDTD 専用で、rcwalayer 入力
+    //   (RCWA / FMM の有効な層スタック) ではメッシュ 0 のまま走って落ちる。
+    //   obpm_mpi / obpm_cuda_mpi は FDTD 専用で BPM を計算しない
+    //   (obpm_cuda は BPM 対応)。
+    {
+        const Engine all[] = { Engine::CPU, Engine::CPU_MPI, Engine::GPU,
+                               Engine::GPU_MPI };
+        const auto allEmpty = [&](const Project &pr) {
+            for (Engine e : all)
+                if (!Runner::engineUnsupportedReason(pr, e).isEmpty()) return false;
+            return true;
+        };
+        Project ep;
+        ep.setActiveDomain(Domain::EM);
+        check(allEmpty(ep), "spec: EM projects can use every engine variant");
+
+        ep.setActiveDomain(Domain::Optical);
+        OpticalOpts &eo = ep.optical();
+        eo.solver = OpticalSolver::RCWA;
+        eo.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                             RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                             RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        check(Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: RCWA runs on orcwa (CPU)");
+        check(!Runner::engineUnsupportedReason(ep, Engine::CPU_MPI).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU_MPI).isEmpty(),
+              "spec: RCWA refuses orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi "
+              "(FDTD-only variants)");
+        eo.solver = OpticalSolver::FMM;
+        check(!Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: FMM follows the RCWA rule (same kernel)");
+        eo.rcwaLayerList.clear();
+        check(allEmpty(ep),
+              "spec: without a valid layer stack orcwa runs FDTD, so every "
+              "variant is fine");
+        eo.solver = OpticalSolver::BPM;
+        check(Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: BPM allows obpm (CPU) and obpm_cuda (GPU)");
+        check(!Runner::engineUnsupportedReason(ep, Engine::CPU_MPI).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU_MPI).isEmpty(),
+              "spec: BPM refuses the FDTD-only MPI variants");
+        eo.solver = OpticalSolver::FDTD;
+        check(allEmpty(ep), "spec: optical FDTD has no variant restriction");
+        ep.setActiveDomain(Domain::Underwater);
+        check(allEmpty(ep),
+              "spec: underwater has no variant-specific restriction here "
+              "(the missing MPI build is reported by checkAvailability)");
     }
 }
 

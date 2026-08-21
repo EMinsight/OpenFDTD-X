@@ -159,6 +159,33 @@ cmake --build OpenFDTD/build -j
 `kernel/` → アプリ実行ディレクトリ → `PATH`。
 水中音響は `BELLHOPCUDA_HOME` (バイナリ名 `bellhopcxx`)。
 
+#### CPU+MPI / GPU (CUDA) / GPU+MPI エンジン
+
+ツールバーのエンジンは `<kernel>_mpi` / `<kernel>_cuda` / `<kernel>_cuda_mpi` を
+起動する。選択肢は実機の状態で自動的に有効/無効になる (`Runner::checkAvailability`
+= mpiexec と変種バイナリの有無、`Runner::engineUnsupportedReason` = 仕様上
+できない組合せ)。使えない理由はツールチップに出る。
+
+| 状況 | 挙動 |
+|---|---|
+| mpiexec / `_mpi` バイナリが無い | CPU+MPI / GPU+MPI を無効化 |
+| `_cuda` バイナリが無い | GPU / GPU+MPI を無効化 (GPU 実機の有無は起動してみるまで判定しない) |
+| 光 RCWA / FMM (層スタック有効) | CPU のみ — RCWA コアは `orcwa` (CPU) だけに結線されている (MPI / CUDA 版は FDTD 専用) |
+| 光 BPM | CPU と GPU (`obpm_cuda`) のみ — `obpm_mpi` / `obpm_cuda_mpi` は FDTD 専用 |
+| 室内音響 | CPU のみ (外部音響ソルバーは AcousticRunner) |
+
+- MPI ランチャ (`mpiexec` / `mpirun`) は **ツール → カーネルパスの設定… → 並列実行 (MPI)**
+  で指定できる。空欄なら PATH → `$MSMPI_BIN` → `C:\Program Files\Microsoft MPI\Bin` →
+  各カーネルディレクトリ (直下と `bin/`) を探索し、見つけた mpiexec のフォルダを
+  子プロセスの PATH に足す (Windows で `msmpi.dll` をシステムに入れていなくても動く)。
+- MPI プロセス数はツールバーの **リソース**、OpenMP スレッド数は **スレッド数**、
+  GPU は **デバイス番号** (`CUDA_VISIBLE_DEVICES`)。CUDA 版は `-n <thread>` を
+  受け付けないので渡さない (`Runner::solverArguments`)。
+- 検出結果は `openfdtd_x --check-kernels` で画面なしに確認できる
+  (各カーネル × エンジンの解決パス、mpiexec の所在、使えない理由)。
+- Windows で CUDA Toolkit / MS-MPI を管理者権限なしで用意してカーネルを
+  ビルドする手順と実機検証結果は `docs/windows-cuda-mpi-build.md`。
+
 #### macOS での実行
 
 macOS ではアプリが `.app` バンドル (`openfdtd_x.app` / `openuwa.app`) として

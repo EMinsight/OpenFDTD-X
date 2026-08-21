@@ -508,7 +508,12 @@ void MainWindow::updateEngineItems(Domain d)
             if (cpuOnly) {
                 why = I18n::tr("run_engine_cpu_only");
             } else {
-                if (needsMpi && !av.mpi) { ok = false; why = av.mpiReason; }
+                // 仕様上できない組合せ (orcwa の MPI/CUDA 版は FDTD 専用で
+                // RCWA を計算できない、obpm の MPI 版は BPM を計算しない) を
+                // バイナリの有無より先に見る — 「入れれば使える」と誤解させない
+                why = Runner::engineUnsupportedReason(*m_project, Engine(i));
+                if (!why.isEmpty()) ok = false;
+                if (ok && needsMpi && !av.mpi) { ok = false; why = av.mpiReason; }
                 if (ok && needsCuda && !av.cuda) { ok = false; why = av.cudaReason; }
             }
             item->setEnabled(ok);
@@ -1073,6 +1078,21 @@ void MainWindow::updateLevelHint()
 void MainWindow::onProjectChanged()
 {
     updateKernelWarn();   // 光ドメインはソルバー設定でカーネルが変わる
+    // エンジンの選択肢は「ドメイン × 光ソルバー × RCWA 層スタックの有効性」で
+    // 変わる (orcwa の MPI/CUDA 版は RCWA を計算できない、等)。changed() は
+    // 編集のたびに来るので、この署名が変わったときだけ再評価する
+    // (updateEngineItems はバイナリ探索を伴う)。
+    if (m_engineBox) {
+        const OpticalOpts &oo = m_project->optical();
+        const QString sig = QStringLiteral("%1:%2:%3")
+            .arg(int(m_project->activeDomain()))
+            .arg(int(oo.solver))
+            .arg(isValidRcwaStack(oo.rcwaLayerList) ? 1 : 0);
+        if (sig != m_engineSig) {
+            m_engineSig = sig;
+            updateEngineItems(m_project->activeDomain());
+        }
+    }
     m_sbCells->setText(QStringLiteral("cells: %L1").arg(m_project->totalCells()));
     m_sbMem->setText(QStringLiteral("mem: %1 MB")
         .arg(m_project->estimatedMemoryMB(), 0, 'f', 1));
@@ -1353,6 +1373,20 @@ void MainWindow::runSimulation()
     if (m_engineBox->currentIndex() > 3) {
         showCloudDialog();
         return;
+    }
+    // エンジン × ソルバー設定の仕様上できない組合せ (orcwa の MPI/CUDA 版は
+    // FDTD 専用で RCWA を計算できない、等)。選択肢は updateEngineItems が
+    // 無効化しているが、ソルバー設定をあとから変えた場合に備えて直前にも見る
+    // (走らせて初めて失敗する組合せを開始しない — 絶対規則 5)。
+    {
+        const QString why = Runner::engineUnsupportedReason(
+            *m_project, Engine(qMin(m_engineBox->currentIndex(), 3)));
+        if (!why.isEmpty()) {
+            QMessageBox::warning(this, I18n::tr("tb_calc"),
+                                 I18n::tr("run_engine_na").arg(why));
+            updateEngineItems(m_project->activeDomain());
+            return;
+        }
     }
     // RCWA / FMM (どちらも orcwa カーネル): 層スタックが空または不正なら
     // 実行前にエラー表示して止める。OfdIO 側のゲートは不正な rcwa 設定を

@@ -1072,6 +1072,61 @@ H5 ビューアで「時間範囲の入力が再生に反映されない」「�
 減らない** (面の位置と標本格子の噛み合わせで上下する) ため、判定は
 単調性ではなく「N ≥ 4 で 1% 未満」にしてある。
 
+### Windows での CUDA+MPI 対応と Runner の実行規約 (2026-08-21)
+
+管理者権限の無い Windows PC (RTX 3060, MSVC 14.36) で CUDA 13.1 (NVIDIA redist
+zip を展開) と MS-MPI 10.1 (conda-forge パッケージを展開) をユーザー空間に
+用意し、OpenFDTD / OpenRCWA / OpenBPM の **4 構成 × 3 リポジトリ = 12 本**の
+カーネルをすべてビルドして実機で動かした。手順と結果は
+`docs/windows-cuda-mpi-build.md`。GUI 側の変更:
+
+- **`Runner::findMpiLauncher(cfg)`** — PATH だけでなく GUI 設定
+  (`mpiLauncherSetting`、カーネルパス設定ダイアログの「並列実行 (MPI)」行) →
+  `$MSMPI_BIN` → `C:\Program Files\Microsoft MPI\Bin` → 各カーネルディレクトリ
+  (直下と `bin/`) を探索し、見つけた mpiexec のフォルダを子プロセスの PATH に
+  足す (システムに `msmpi.dll` が無くても `<kernel>_mpi.exe` が起動する)。
+- **`Runner::solverArguments` / `postArguments`** — CUDA 版 (`ofd_cuda` 等) は
+  `-n <thread>` を受け付けない (未知の引数として入力名に取り違える) ので
+  GPU 系エンジンには渡さない。純関数にして selftest で検証 (+13 checks)。
+- **`Runner::engineUnsupportedReason`** — 実機で判明した「仕様上できない」
+  組合せ: orcwa の MPI / CUDA 版は FDTD 専用で RCWA / FMM (`rcwalayer`) を
+  計算できない (メッシュ 0 のまま走って落ちる)、obpm の MPI 版は FDTD 専用で
+  BPM を計算しない (`obpm_cuda` は BPM 対応)。`updateEngineItems` が選択肢を
+  理由つきで無効化し、`runSimulation` 直前にも再確認、`onProjectChanged` は
+  「ドメイン:光ソルバー:層スタック有効」の署名が変わったときだけ再評価する
+  (+9 checks)。
+- **`openfdtd_x --check-kernels`** — 各カーネル × エンジンの解決パス・mpiexec
+  の所在・使えない理由を画面なしで表示する診断 CLI。
+- CMake: MSVC の `/utf-8` を全ターゲットへ (テスト生成ツールに無く、日本語
+  ロケール (CP932) の PC で C2001 になっていた — 英語ロケールの CI では警告止まり)。
+
+カーネル側 (各リポジトリのローカルブランチ、未 push):
+
+- 3 リポジトリ共通: `CMAKE_CUDA_ARCHITECTURES` の 60 固定を「利用者指定を
+  尊重、未指定なら nvcc<13 → 60 / nvcc≥13 → 75」へ (CUDA 13 は sm_60/70 を
+  打ち切った)。MSVC に無い `pthread` / `m` の直リンク除去、`/utf-8` を
+  CUDA には `-Xcompiler` で中継、MPI / CUDA 実行ファイルにも `/STACK:16MB`。
+- OpenFDTD: **HDM (既定) で `ofd_cuda` / `ofd_cuda_mpi` が HDF5 スナップショット
+  の device メモリを host から読んで 0xC0000005 で落ちる**バグを修正
+  (`snapshot_host_fields`)。`-cpu` / UM では出ないので GPU の無い CI は検出
+  できなかった。修正後、`ofd_mpi` (2 ランク) は CPU とビット一致、CUDA 系は
+  float の総和順序で収束履歴 6 桁目のみ差、インピーダンス表は一致。
+- OpenRCWA: MPI / CUDA 版の main が RCWA 入力を受けたら理由を出して終了。
+  GPU 版 RCWA テスト (gdstk + cuSOLVER + MAGMA) を `WITH_RCWA_LEGACY_TESTS`
+  で切り離し。`hdf5::hdf5` → `HDF5::HDF5`。
+- OpenRCWA `orcwa_cuda_mpi` / OpenBPM `obpm_mpi` / `obpm_cuda_mpi`: 並列 HDF5 の
+  集団操作を rank 0 だけが呼ぶ構造で **2 ランク以上でデッドロック**していた。
+  寸法も rank 0 のローカル NN で多ランクでは中身が正しくないため、直すまでは
+  2 ランク以上で HDF5 出力を止めて理由を出す (`.log` / `.out` は出る)。
+  根本修正 (`orcwa_mpi` と同じ集団書き込み化、または OpenFDTD と同じ rank 0
+  直列ドライバ化) は未着手 — GUI 側は上の仕様判定でこれらの変種を BPM /
+  RCWA プロジェクトから外しているので、到達するのは光 RCWA で層スタックが
+  無効 (= FDTD として走る) の場合だけ。
+
+検証: `ofdx_selftest` 24 files, **11,250 checks, 0 failures** (+27 — 引数規約 12、
+MPI ランチャ探索 6、仕様判定 9)、ctest 22/22。
+Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通った。
+
 ## 5. 次の作業 (優先順)
 
 1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。

@@ -88,6 +88,27 @@ const bool s_i18n = [] {
         "external solver itself is developed in a separate repository.");
     ofd::I18n::reg("kp_browse_file", "実行ファイルを選択",
                    "Choose solver executable");
+    // MPI ランチャ: CPU+MPI / GPU+MPI エンジンは mpiexec 経由でカーネルを起動する
+    ofd::I18n::reg("kp_grp_mpi", "並列実行 (MPI)", "Parallel execution (MPI)");
+    ofd::I18n::reg("kp_mpi", "MPI ランチャ (mpiexec)", "MPI launcher (mpiexec)");
+    ofd::I18n::reg("kp_mpi_ph", "mpiexec / mpirun (空欄 = 自動探索)",
+                   "mpiexec / mpirun (empty = auto-detect)");
+    ofd::I18n::reg("kp_mpi_note",
+        "▸ 「CPU+MPI」「GPU+MPI」エンジンはここで見つかった mpiexec 経由で "
+        "<b>&lt;カーネル&gt;_mpi</b> / <b>_cuda_mpi</b> を起動します。空欄なら "
+        "PATH → $MSMPI_BIN → C:\\Program Files\\Microsoft MPI\\Bin → 上の各カーネル"
+        "ディレクトリ (直下と bin/) の順に探索します。Windows は MS-MPI "
+        "(mpiexec.exe と msmpi.dll が同じフォルダ) を想定し、その場所を実行時の "
+        "PATH に足すので、システムにインストールしていなくても動きます。",
+        "The CPU+MPI / GPU+MPI engines launch <b>&lt;kernel&gt;_mpi</b> / "
+        "<b>_cuda_mpi</b> through the mpiexec found here. Leave empty to search "
+        "PATH, $MSMPI_BIN, C:\\Program Files\\Microsoft MPI\\Bin and the kernel "
+        "folders above (and their bin/). On Windows this expects MS-MPI "
+        "(mpiexec.exe next to msmpi.dll); its folder is added to the run-time "
+        "PATH, so a system-wide installation is not required.");
+    ofd::I18n::reg("kp_mpi_notfound",
+                   "未検出 — CPU+MPI / GPU+MPI エンジンは選べません",
+                   "Not found — the CPU+MPI / GPU+MPI engines stay disabled");
     return true;
 }();
 
@@ -116,22 +137,28 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
     // 並びは「基幹カーネル」→ 光専用 → 室内音響専用 → 水中音響。
     // ofd をドメイン別に置くと「電磁波専用」と誤解されるため独立させ、
     // 実際の 3 用途を kp_em_note で明示する。
-    const struct { const char *group, *note; bool acoustic; Kernel kernel; }
+    // 末尾の「並列実行 (MPI)」はカーネルではなくランチャ (mpiexec) の行。
+    // カーネル行の後ろに置くのは、探索順 (カーネルディレクトリも見る) が
+    // 上の行に依存するため。
+    const struct { const char *group, *note; bool acoustic, mpi; Kernel kernel; }
     kDefs[] = {
-        { "kp_grp_core",     "kp_em_note",  false, Kernel::FDTD    },
-        { "kp_grp_optical",  nullptr,       false, Kernel::RCWA    },
-        { nullptr,           "kp_opt_note", false, Kernel::BPM     },
-        { "kp_grp_acoustic", nullptr,       true,  Kernel::FDTD    }, // kernel 未使用
-        { "kp_grp_uw",       nullptr,       false, Kernel::Bellhop },
+        { "kp_grp_core",     "kp_em_note",  false, false, Kernel::FDTD    },
+        { "kp_grp_optical",  nullptr,       false, false, Kernel::RCWA    },
+        { nullptr,           "kp_opt_note", false, false, Kernel::BPM     },
+        { "kp_grp_acoustic", nullptr,       true,  false, Kernel::FDTD    }, // kernel 未使用
+        { "kp_grp_uw",       nullptr,       false, false, Kernel::Bellhop },
         // 回路パラメータ抽出 (姉妹リポジトリ OpenPEEC / OpenFEM)
-        { "kp_grp_circuit",  nullptr,       false, Kernel::PEEC    },
-        { nullptr,           "kp_cir_note", false, Kernel::FEM     },
+        { "kp_grp_circuit",  nullptr,       false, false, Kernel::PEEC    },
+        { nullptr,           "kp_cir_note", false, false, Kernel::FEM     },
+        // MPI ランチャ (mpiexec)。kernel は未使用
+        { "kp_grp_mpi",      "kp_mpi_note", false, true,  Kernel::FDTD    },
     };
     for (const auto &d : kDefs) {
         Row r;
         r.groupKey = d.group;
         r.noteKey = d.note;
         r.acoustic = d.acoustic;
+        r.mpi = d.mpi;
         r.kernel = d.kernel;
         m_rows.push_back(r);
     }
@@ -168,16 +195,18 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
         auto *h = new QHBoxLayout();
         row.dir = new QLineEdit(
             row.acoustic ? AcousticRunner::solverPathSetting()
+          : row.mpi      ? Runner::mpiLauncherSetting()
                          : Runner::kernelDirSetting(row.kernel), this);
         row.dir->setPlaceholderText(
             row.acoustic ? I18n::tr("kp_acoustic_ph")
+          : row.mpi      ? I18n::tr("kp_mpi_ph")
                          : QLatin1String(Runner::homeVarFor(row.kernel)));
         h->addWidget(row.dir, 1);
         auto *browse = new QPushButton(I18n::tr("kp_browse"), this);
         connect(browse, &QPushButton::clicked, this, [this, i] {
             Row &r = m_rows[i];
-            // 室内音響は実行ファイル、他はディレクトリを選ばせる
-            const QString picked = r.acoustic
+            // 室内音響と MPI ランチャは実行ファイル、他はディレクトリを選ばせる
+            const QString picked = (r.acoustic || r.mpi)
                 ? QFileDialog::getOpenFileName(this,
                       I18n::tr("kp_browse_file"), r.dir->text())
                 : QFileDialog::getExistingDirectory(this,
@@ -191,8 +220,8 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
         cell->addWidget(row.status);
 
         // 現在のプロジェクトが起動する行に印を付ける (どれが要るのかを示す)
-        if (haveProject && !row.acoustic && row.kernel == activeKernel
-            && !activeIsAcoustic) {
+        if (haveProject && !row.acoustic && !row.mpi
+            && row.kernel == activeKernel && !activeIsAcoustic) {
             auto *act = new QLabel(I18n::tr("kp_active"), this);
             act->setStyleSheet(QStringLiteral(
                 "font-size:11px; font-weight:600; color:%1;")
@@ -201,6 +230,7 @@ KernelPathDialog::KernelPathDialog(QWidget *parent, const Project *project)
         }
 
         form->addRow(row.acoustic ? I18n::tr("kp_acoustic")
+                   : row.mpi      ? I18n::tr("kp_mpi")
                                   : I18n::tr(rowLabelKey(row.kernel)), cell);
 
         connect(row.dir, &QLineEdit::textChanged, this,
@@ -242,6 +272,16 @@ void KernelPathDialog::updateStatus(int i)
         AcousticRunConfig cfg;
         cfg.executable = row.dir->text().trimmed();
         bin = AcousticRunner::resolveSolver(cfg);
+    } else if (row.mpi) {
+        // 入力欄に実在する実行ファイルがあればそれ、空欄 (または不正) なら
+        // findMpiLauncher の自動探索 (PATH / $MSMPI_BIN / 標準の場所 /
+        // カーネルディレクトリ) の結果を出す。保存前の上のカーネル行の編集は
+        // 反映しない (保存済みの設定で探索する)。
+        const QString typed = row.dir->text().trimmed();
+        if (!typed.isEmpty() && QFileInfo(typed).isFile())
+            bin = typed;
+        else
+            bin = Runner::findMpiLauncher();
     } else {
         RunConfig cfg;
         cfg.kernel = row.kernel;
@@ -252,7 +292,7 @@ void KernelPathDialog::updateStatus(int i)
         row.status->setText(I18n::tr("kp_found").arg(bin));
         row.status->setStyleSheet("font-size:11px; color:#0F7B0F;");
     } else {
-        row.status->setText(I18n::tr("kp_notfound"));
+        row.status->setText(I18n::tr(row.mpi ? "kp_mpi_notfound" : "kp_notfound"));
         row.status->setStyleSheet("font-size:11px; color:#9D5D00;");
     }
 }
@@ -261,7 +301,8 @@ void KernelPathDialog::saveAll()
 {
     for (const Row &row : m_rows) {
         const QString value = row.dir->text().trimmed();
-        if (row.acoustic) AcousticRunner::setSolverPathSetting(value);
-        else              Runner::setKernelDirSetting(row.kernel, value);
+        if (row.acoustic)  AcousticRunner::setSolverPathSetting(value);
+        else if (row.mpi)  Runner::setMpiLauncherSetting(value);
+        else               Runner::setKernelDirSetting(row.kernel, value);
     }
 }

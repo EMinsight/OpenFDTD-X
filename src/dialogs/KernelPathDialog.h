@@ -46,7 +46,8 @@ private:
         const char *groupKey = nullptr;   // 見出し (nullptr = 直前の行と同じ)
         const char *noteKey = nullptr;    // 行の下に出す補足 (nullptr = なし)
         bool       acoustic = false;  // true = 外部音響ソルバー (実行ファイル指定)
-        Kernel     kernel = Kernel::FDTD;   // acoustic=false のとき有効
+        bool       mpi = false;       // true = MPI ランチャ mpiexec (実行ファイル指定)
+        Kernel     kernel = Kernel::FDTD;   // acoustic=false && mpi=false のとき有効
         QLineEdit *dir = nullptr;
         QLabel    *status = nullptr;
     };
