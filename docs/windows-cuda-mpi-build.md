@@ -124,6 +124,45 @@ cmake --build build-cuda -j --target bellhopcxx bellhopcuda   rem → bin\
 MPI 版は存在しない (GUI もエンジン選択でその旨を出す)。CUDA 版は
 テンプレート実体化が多く、ビルドに数分〜十数分かかる。
 
+## 2.5 ビルドした実行ファイルを単体で起動できるようにする
+
+ビルド直後の実行ファイルは、**ビルドに使ったシェル (Qt や MS-MPI を PATH に
+持つシェル) からしか起動できない**。Explorer からのダブルクリックや素の
+コマンドプロンプトでは `0xC0000135` (DLL not found) で**何も表示されずに落ちる**。
+依存を実行ファイルの隣へ置いて解決する。
+
+| 実行ファイル | 素の環境で起動できるか | 必要な措置 |
+|---|---|---|
+| `openfdtd_x.exe` / `openuwa.exe` | ✗ Qt6Core/Gui/Widgets/Network.dll が要る | `windeployqt` (下記) |
+| `ofd.exe` / `ofd_cuda.exe` / `bellhopcxx.exe` / `bellhopcuda.exe` | ✓ そのまま起動できる | **不要** — CUDA ランタイムも静的リンクされている |
+| `*_mpi.exe` / `*_cuda_mpi.exe` | ✗ `msmpi.dll` が要る | `msmpi.dll` を隣へコピー (または `%MSMPI_BIN%` を PATH へ) |
+
+```bat
+rem GUI: Qt の DLL とプラグインを実行ファイルの隣へ配置する
+"%QT_ROOT%\bin\windeployqt.exe" --release --no-translations ^
+    --no-system-d3d-compiler --no-opengl-sw build\openfdtd_x.exe
+"%QT_ROOT%\bin\windeployqt.exe" --release --no-translations ^
+    --no-system-d3d-compiler --no-opengl-sw build\openuwa.exe
+
+rem ヘッドレス実行 (--screenshot / CI) をするなら offscreen プラグインも要る。
+rem windeployqt は qwindows.dll しか置かないので手でコピーする。
+rem これが無いと QT_QPA_PLATFORM=offscreen で「プラグインが見つからない」の
+rem モーダルダイアログが出たまま止まる (バッチからだと無応答に見える)。
+copy "%QT_ROOT%\plugins\platforms\qoffscreen.dll" build\platforms\
+copy "%QT_ROOT%\plugins\platforms\qminimal.dll"   build\platforms\
+
+rem MPI 版カーネル: msmpi.dll を隣へ
+copy "%MSMPI_BIN%\msmpi.dll" C:\Users\<you>\Downloads\OpenFDTD\bin\
+```
+
+GUI から起動する分には `Runner` が mpiexec のフォルダを子プロセスの PATH に
+足すので `msmpi.dll` のコピーは不要だが、`*_mpi.exe` を手で叩くときに要る。
+
+**カーネルの場所は GUI の設定に入れる。** Explorer から起動したアプリには
+`OPENFDTD_HOME` 等の環境変数が届かないため、**ツール → カーネルパスの設定…**
+で指定する (QSettings に永続化され、次回以降どの起動経路でも有効)。設定前は
+ステータスバーに「⚠ カーネル未検出: ofd.exe」が出る。
+
 ## 3. GUI 側の設定
 
 1. **ツール → カーネルパスの設定…** で各リポジトリのルートを指定する

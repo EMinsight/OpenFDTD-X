@@ -1160,6 +1160,15 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
   `.env` を実カーネルで走らせ `.shd` 生成まで) の分。`OFDX_PEEC_BIN` /
   `OFDX_OFE_BIN` は対応リポジトリ未ビルドのため skip のまま。
   手順は `docs/windows-cuda-mpi-build.md` §4 に記載。
+- **ビルドした実行ファイルが単体で起動できない件も解消**。ビルドに使った
+  シェル (Qt を PATH に持つ) からしか起動できず、Explorer からのダブル
+  クリックでは `0xC0000135` (DLL not found) で無言のまま落ちていた。
+  `windeployqt` で Qt の DLL とプラグインを実行ファイルの隣へ配置し、
+  ヘッドレス用に `qoffscreen.dll` / `qminimal.dll` も手でコピーする
+  (windeployqt は `qwindows.dll` しか置かず、無いと offscreen 起動時に
+  モーダルダイアログが出たまま止まる)。MPI 版カーネルは `msmpi.dll` を隣へ。
+  `ofd_cuda` / `bellhopcuda` は CUDA ランタイムまで静的なので措置不要。
+  手順と対応表は `docs/windows-cuda-mpi-build.md` §2.5。
 
 ## 5. 次の作業 (優先順)
 
