@@ -16,12 +16,14 @@ OpenFDTD-X の実行エンジン「CPU+MPI」「GPU (CUDA)」「GPU+MPI」は、
 | OpenBPM `obpm` | ✓ | ✓ (*) | ✓ | ✓ (*) | **MPI 版 (`obpm_mpi` / `obpm_cuda_mpi`) は FDTD 専用** — BPM は `obpm` (CPU) か `obpm_cuda` |
 | bellhopcuda `bellhopcxx` | ✓ | — | ✓ (`bellhopcuda`) | — | 水中音響。**MPI 版は存在しない** (GUI もその旨を表示する)。GPU 版は CPU 版と別名の実行ファイル。CUDA の対象アーキテクチャは同リポジトリの CMake が `native` (実機自動判定) |
 
-(*) `orcwa_cuda_mpi` / `obpm_mpi` / `obpm_cuda_mpi` は **2 ランク以上では
-`time_series_data.h5` を書かない** (理由を出して出力だけ止める)。並列 HDF5 の
-集団操作を rank 0 だけが呼ぶ構造で、2 ランク以上では H5Fclose で待ち合って
-デッドロックしていた (実測: 1 ランクは通り 2 ランクでハング)。`.log` / `.out`
-(→ `*_post`) は従来どおり出る。`orcwa_mpi` だけは集団書き込みに直されており
-HDF5 も出る。
+(*) `orcwa_cuda_mpi` / `obpm_mpi` / `obpm_cuda_mpi` は当初、並列 HDF5 の集団操作を
+rank 0 だけが呼ぶ構造で **2 ランク以上では `H5Fclose` で待ち合ってデッドロック**して
+いた (実測: 1 ランクは通り 2 ランクでハング)。**現在は集団書き込みに作り替えて解決
+済み**で、どのランク数でも `time_series_data.h5` が出る (OpenRCWA PR #17 /
+OpenBPM PR #23)。手本は `OpenRCWA/mpi/solve.c` (同 PR #16) で、全体配列の添字で
+担当範囲を分けて `H5FD_MPIO_COLLECTIVE` で書き、metadata 節は全 rank で作成して
+書き込みだけ rank 0 に限定する。CUDA 版では加えて `memcopy3_gpu()` を `if (io)` の
+外へ出す必要がある (rank 0 だけコピーすると非 rank 0 が未初期化の host 配列を書く)。
 
 GUI は上の「仕様上できない組合せ」を `Runner::engineUnsupportedReason` で
 判定し、エンジンの選択肢を理由つきで無効化する (実行直前にも再確認する)。
@@ -302,10 +304,7 @@ GUI の画面でも、カーネルを設定するとステータスバーの
   CUDA 版である。
 - Windows の `QT_QPA_PLATFORM=offscreen` でスクリーンショットを撮るときは
   `QT_QPA_FONTDIR=C:\Windows\Fonts` を設定しないと文字が描画されない。
-- `orcwa_cuda_mpi` / `obpm_mpi` / `obpm_cuda_mpi` の並列 HDF5 は**出力を
-  止めているだけで直っていない** (上記 (*))。根本修正は `orcwa_mpi` と同じ
-  「グローバル添字での集団書き込み」への作り替えで、`OpenRCWA/mpi/solve.c`
-  が手本になる (同ファイルの `g_Ni` / `w_i0` 群と `H5FD_MPIO_COLLECTIVE` の
-  書き込み、および metadata 節を全 rank で作成し書き込みだけ rank 0 に
-  限定する形)。`OpenBPM/mpi/solve.c` は `OpenRCWA/mpi/solve.c` の修正前版と
-  include 3 行を除いてバイト一致なので、そのまま移植できる。
+- 並列 HDF5 のデッドロックは**解決済み** (上記 (*))。1 / 2 / 3 / 4 ランクで
+  `obpm_mpi` (全 87 データセット、最大相対差 1.9e-15)、`orcwa_cuda_mpi` /
+  `obpm_cuda_mpi` (全 63 データセット、最大相対差 3.2e-07 = 単精度の差、
+  インピーダンス表は完全一致) を突き合わせて確認した。
