@@ -29,6 +29,32 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+### 関連リポジトリをまとめて更新・ビルドする
+
+GUI とカーネル群 (OpenFDTD / OpenRCWA / OpenBPM / bellhopcuda / OpenAcoustics) は
+別々のリポジトリなので、全部を `git pull` してビルドし直すスクリプトを用意している。
+**ビルドする構成は実行環境から自動判定する** (nvcc があれば CUDA、mpiexec があれば
+MPI)。作らなかったものは黙って飛ばさず、最後の一覧に理由を出す。
+
+```bash
+tools/update-and-build.sh                    # macOS / Linux
+tools/update-and-build.sh --configs cpu      # CPU 版だけ
+tools/update-and-build.sh --clone --tests    # 無いリポジトリは取得し、テストまで
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\update-and-build.ps1
+... -Configs cpu ; ... -Clone -Tests          # 同上
+```
+
+Windows 版は後始末までやる — `windeployqt` で Qt の DLL とプラグインを実行ファイルの
+隣へ置き (これが無いと Explorer からのダブルクリックが `0xC0000135` で無言のまま
+落ちる)、ヘッドレス用の `qoffscreen.dll` / `qminimal.dll` も入れ、MPI 版カーネルの
+隣に `msmpi.dll` を置く。詳しい前提と手順は
+[docs/windows-cuda-mpi-build.md](docs/windows-cuda-mpi-build.md) を参照。
+
+`--help` / `-?` で全オプションが出る。ビルドの出力は `<repo>/build-<構成>.log`。
+
 ### オプション
 | オプション | 既定 | 説明 |
 |---|---|---|
