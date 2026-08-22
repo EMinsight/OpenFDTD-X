@@ -1072,6 +1072,104 @@ H5 ビューアで「時間範囲の入力が再生に反映されない」「�
 減らない** (面の位置と標本格子の噛み合わせで上下する) ため、判定は
 単調性ではなく「N ≥ 4 で 1% 未満」にしてある。
 
+### Windows での CUDA+MPI 対応と Runner の実行規約 (2026-08-21)
+
+管理者権限の無い Windows PC (RTX 3060, MSVC 14.36) で CUDA 13.1 (NVIDIA redist
+zip を展開) と MS-MPI 10.1 (conda-forge パッケージを展開) をユーザー空間に
+用意し、OpenFDTD / OpenRCWA / OpenBPM の **4 構成 × 3 リポジトリ = 12 本**の
+カーネルをすべてビルドして実機で動かした。手順と結果は
+`docs/windows-cuda-mpi-build.md`。GUI 側の変更:
+
+- **`Runner::findMpiLauncher(cfg)`** — PATH だけでなく GUI 設定
+  (`mpiLauncherSetting`、カーネルパス設定ダイアログの「並列実行 (MPI)」行) →
+  `$MSMPI_BIN` → `C:\Program Files\Microsoft MPI\Bin` → 各カーネルディレクトリ
+  (直下と `bin/`) を探索し、見つけた mpiexec のフォルダを子プロセスの PATH に
+  足す (システムに `msmpi.dll` が無くても `<kernel>_mpi.exe` が起動する)。
+- **`Runner::solverArguments` / `postArguments`** — CUDA 版 (`ofd_cuda` 等) は
+  `-n <thread>` を受け付けない (未知の引数として入力名に取り違える) ので
+  GPU 系エンジンには渡さない。純関数にして selftest で検証 (+13 checks)。
+- **`Runner::engineUnsupportedReason`** — 実機で判明した「仕様上できない」
+  組合せ: orcwa の MPI / CUDA 版は FDTD 専用で RCWA / FMM (`rcwalayer`) を
+  計算できない (メッシュ 0 のまま走って落ちる)、obpm の MPI 版は FDTD 専用で
+  BPM を計算しない (`obpm_cuda` は BPM 対応)。`updateEngineItems` が選択肢を
+  理由つきで無効化し、`runSimulation` 直前にも再確認、`onProjectChanged` は
+  「ドメイン:光ソルバー:層スタック有効」の署名が変わったときだけ再評価する
+  (+9 checks)。
+- **`openfdtd_x --check-kernels`** — 各カーネル × エンジンの解決パス・mpiexec
+  の所在・使えない理由を画面なしで表示する診断 CLI。
+- CMake: MSVC の `/utf-8` を全ターゲットへ (テスト生成ツールに無く、日本語
+  ロケール (CP932) の PC で C2001 になっていた — 英語ロケールの CI では警告止まり)。
+
+カーネル側 (各リポジトリのローカルブランチ、未 push):
+
+- 3 リポジトリ共通: `CMAKE_CUDA_ARCHITECTURES` の 60 固定を「利用者指定を
+  尊重、未指定なら nvcc<13 → 60 / nvcc≥13 → 75」へ (CUDA 13 は sm_60/70 を
+  打ち切った)。MSVC に無い `pthread` / `m` の直リンク除去、`/utf-8` を
+  CUDA には `-Xcompiler` で中継、MPI / CUDA 実行ファイルにも `/STACK:16MB`。
+- OpenFDTD: **HDM (既定) で `ofd_cuda` / `ofd_cuda_mpi` が HDF5 スナップショット
+  の device メモリを host から読んで 0xC0000005 で落ちる**バグを修正
+  (`snapshot_host_fields`)。`-cpu` / UM では出ないので GPU の無い CI は検出
+  できなかった。修正後、`ofd_mpi` (2 ランク) は CPU とビット一致、CUDA 系は
+  float の総和順序で収束履歴 6 桁目のみ差、インピーダンス表は一致。
+- OpenRCWA: MPI / CUDA 版の main が RCWA 入力を受けたら理由を出して終了。
+  GPU 版 RCWA テスト (gdstk + cuSOLVER + MAGMA) を `WITH_RCWA_LEGACY_TESTS`
+  で切り離し。`hdf5::hdf5` → `HDF5::HDF5`。
+- OpenRCWA `orcwa_cuda_mpi` / OpenBPM `obpm_mpi` / `obpm_cuda_mpi`: 並列 HDF5 の
+  集団操作を rank 0 だけが呼ぶ構造で **2 ランク以上でデッドロック**していた。
+  寸法も rank 0 のローカル NN で多ランクでは中身が正しくないため、直すまでは
+  2 ランク以上で HDF5 出力を止めて理由を出す (`.log` / `.out` は出る)。
+  根本修正 (`orcwa_mpi` と同じ集団書き込み化、または OpenFDTD と同じ rank 0
+  直列ドライバ化) は未着手 — GUI 側は上の仕様判定でこれらの変種を BPM /
+  RCWA プロジェクトから外しているので、到達するのは光 RCWA で層スタックが
+  無効 (= FDTD として走る) の場合だけ。
+
+検証: `ofdx_selftest` 24 files, **11,250 checks, 0 failures** (+27 — 引数規約 12、
+MPI ランチャ探索 6、仕様判定 9)、ctest 22/22。
+Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通った。
+
+**追補 (同日): 水中音響の GPU 版と、HDF5 の中身の突き合わせ。**
+
+- **bellhopcuda (水中音響) の GPU 版をビルドして検証**。CUDA の対象
+  アーキテクチャは同リポジトリが `native` (実機自動判定) なので追加設定は
+  不要だった (glm サブモジュールの取得は必須)。`bellhopcxx` (CPU) と
+  `bellhopcuda` (GPU) で `MunkB_Coh` を走らせ、`.shd` (4 MB) を同リポジトリ
+  同梱の `compare_shdfil.py` (ULP 単位) で突き合わせて**差分なし**。
+  `--check-kernels` で GUI からも GPU エンジンが「usable」になった。
+  MPI 版は存在しないので、その旨は従来どおり `checkAvailability` が出す。
+- **`time_series_data.h5` の全データセットを構成間で比較** (h5py、dipole、
+  CPU 基準、複合型は成分ごとに数値比較)。MPI (n=2 / n=4) は 1e-15 以下で
+  実質ビット一致、CUDA 3 構成 (HDM / UM / CUDA+MPI) は最大 1.1e-6
+  (`freqdomain/H`、単精度 DFT の差)。データセットの構成も `loss/P_loss`
+  (熱解析 = CPU 版のみ、README のとおり) を除いて一致。
+- この比較で **CUDA 単体版が収束履歴の最後の 1 点を落とす**バグを検出し、
+  3 リポジトリとも修正した (`cuda/solve.cu` の `Niter` 加算が収束判定の
+  `break` より後にあった。CPU / MPI / CUDA+MPI は格納直後に加算しており、
+  この実装だけがずれていた)。実測で `convergence/iter` が CPU の 0..550
+  (12 点) に対し CUDA は 0..500 (11 点)、`metadata/Niter` も 12 対 11。
+  修正後は 5 構成すべて一致。**ログの回帰基準値にも解析解の比較にも現れず、
+  HDF5 の中身を構成間で突き合わせて初めて分かる種類の不具合**だった。
+- 外部音響ソルバー [OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics)
+  も確認したが、こちらは OpenMP のみで CUDA / MPI 変種を持たない
+  (`AcousticRunner` の契約どおり単一実行ファイル)。
+- **環境変数ゲートの統合テストをこの PC で初めて全部走らせた**。
+  `USE_HDF5=ON` でビルドし `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` を実カーネルに
+  向けると **11,250 → 11,447 checks (0 failures)**。増えた 197 checks は
+  H5 リーダ (`io/H5Reader` — カーネルの `time_series_data.h5` を読む経路)、
+  `ofd` 統合 (実行 → `ofd.log` の給電点表を GUI のパーサで読む → GUI の
+  Courant 推定がカーネルの `Dt` と一致)、bellhop 統合 (`BellhopIO` が書いた
+  `.env` を実カーネルで走らせ `.shd` 生成まで) の分。`OFDX_PEEC_BIN` /
+  `OFDX_OFE_BIN` は対応リポジトリ未ビルドのため skip のまま。
+  手順は `docs/windows-cuda-mpi-build.md` §4 に記載。
+- **ビルドした実行ファイルが単体で起動できない件も解消**。ビルドに使った
+  シェル (Qt を PATH に持つ) からしか起動できず、Explorer からのダブル
+  クリックでは `0xC0000135` (DLL not found) で無言のまま落ちていた。
+  `windeployqt` で Qt の DLL とプラグインを実行ファイルの隣へ配置し、
+  ヘッドレス用に `qoffscreen.dll` / `qminimal.dll` も手でコピーする
+  (windeployqt は `qwindows.dll` しか置かず、無いと offscreen 起動時に
+  モーダルダイアログが出たまま止まる)。MPI 版カーネルは `msmpi.dll` を隣へ。
+  `ofd_cuda` / `bellhopcuda` は CUDA ランタイムまで静的なので措置不要。
+  手順と対応表は `docs/windows-cuda-mpi-build.md` §2.5。
+
 ## 5. 次の作業 (優先順)
 
 1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。

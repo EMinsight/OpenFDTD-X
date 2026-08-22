@@ -195,6 +195,9 @@ private:
             *m_tabAcSolver = nullptr;
 
     QComboBox *m_engineBox = nullptr;
+    // エンジン選択肢を最後に評価したときの「ドメイン:光ソルバー:RCWA 層
+    // スタック有効」の署名。onProjectChanged で変化したときだけ再評価する
+    QString    m_engineSig;
     QComboBox *m_modeBox = nullptr;
     QSpinBox  *m_threadsBox = nullptr;
     QSpinBox  *m_deviceBox = nullptr;        // GPU デバイス番号

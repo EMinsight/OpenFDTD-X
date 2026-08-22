@@ -75,8 +75,8 @@ public:
     // ── 実行環境の可用性 ────────────────────────────────────────────────
     // 「選べるのに実行できない」を防ぐための実機検出。GUI はこれを見て
     // エンジンの選択肢を無効化し、理由を出す (絶対規則 5)。
-    // MPI: mpiexec (または mpirun) が PATH にあり、かつ <kernel>_mpi の
-    //      バイナリが解決できること。両方そろって初めて実行できる。
+    // MPI: mpiexec (または mpirun) が見つかり (findMpiLauncher)、かつ
+    //      <kernel>_mpi のバイナリが解決できること。両方そろって初めて実行できる。
     // CUDA: <kernel>_cuda のバイナリが解決できること (GPU 実機の有無は
     //      起動してみるまで分からないので、ここでは判定しない)。
     struct Availability {
@@ -87,8 +87,53 @@ public:
         QString cudaReason;
     };
     static Availability checkAvailability(Kernel kernel);
-    // MPI ランチャ (mpiexec → mpirun の順で PATH を探す)。無ければ空。
-    static QString findMpiLauncher();
+
+    // MPI ランチャ (mpiexec / mpirun) の探索。見つからなければ空。探索順:
+    //   1. GUI 設定 (mpiLauncherSetting — 実行ファイルの絶対パス)
+    //   2. PATH
+    //   3. $MSMPI_BIN (MS-MPI のインストーラが設定する環境変数)
+    //   4. Windows の標準インストール先 C:/Program Files/Microsoft MPI/Bin
+    //   5. カーネルの探索ディレクトリ (cfg.binaryDir → カーネルパス設定 →
+    //      $<KERNEL>_HOME → <app dir>/kernel → <app dir>、各直下と bin/)
+    //      — カーネルと一緒に mpiexec を配置した構成 (管理者権限なしで
+    //      MS-MPI を展開した PC など) のため
+    // Windows の MS-MPI は SMPD サービス無しでも単一ノードなら mpiexec が
+    // 動く (ローカルに smpd を起動する) ので、サービスの有無は判定しない。
+    static QString findMpiLauncher(const RunConfig &cfg = RunConfig());
+    // GUI で設定した mpiexec のパス (QSettings "OpenFDTD/Kernels"、
+    // カーネルパス設定ダイアログが書く)。空文字列で設定削除。
+    static QString mpiLauncherSetting();
+    static void    setMpiLauncherSetting(const QString &path);
+
+    // カーネルへ渡す引数 (mpiexec の分は含まない)。本家 CLI の規約:
+    //   ofd / ofd_mpi         : [-n <thread>] <datafile>   (OpenMP スレッド数)
+    //   ofd_cuda / _cuda_mpi  : [-gpu|-cpu] [-device <n>] <datafile> — -n は無い。
+    //                           渡すと未知の引数として入力ファイル名に取り違え
+    //                           られる (最後の引数で上書きされ実害は無いが、
+    //                           規約外なので GPU 系には渡さない)。GPU の選択は
+    //                           環境変数 CUDA_VISIBLE_DEVICES で行う (launch)。
+    //   bellhopcxx            : <FILEROOT> (拡張子を除いたケース名のみ)
+    //   *_post                : [-n <thread>] [-html] <datafile>
+    // 純関数なので selftest で検証する (プロセスを起動しない)。
+    static QStringList solverArguments(const RunConfig &cfg,
+                                       const QString &inputPath);
+    static QStringList postArguments(const RunConfig &cfg,
+                                     const QString &inputPath);
+
+    // ── エンジン × ソルバー設定の「仕様上できない」組合せ ──────────────────
+    // バイナリの有無 (checkAvailability) とは独立に、その変種が計算できない
+    // 理由を返す。空文字列 = 問題なし。実機で確認した事実に基づく:
+    //   光 RCWA / FMM (rcwalayer を出力する有効な層スタック):
+    //     RCWA コアは orcwa (CPU) だけに結線されている (sol/rcwa_bridge.cpp)。
+    //     orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi は FDTD 専用で、rcwalayer
+    //     入力ではメッシュ 0 のまま走ろうとして落ちる。
+    //   光 BPM: obpm_mpi / obpm_cuda_mpi は FDTD 専用 (BPM 未対応)。
+    //     obpm_cuda は BPM に対応している (cuda/solve_bpm.cu)。
+    //   それ以外 (電磁 / 光 FDTD / 水中音響): 変種間に仕様差は無い
+    //     (水中音響の MPI 版不在は checkAvailability が扱う)。
+    // MainWindow はこれを見てエンジンの選択肢を無効化し、実行直前にも
+    // 再確認する (絶対規則 5: 走らせて初めて失敗する組合せを選ばせない)。
+    static QString engineUnsupportedReason(const Project &project, Engine engine);
 
     // アクティブドメインとソルバー設定から実行カーネルを決める
     // (MainWindow の実行設定と selftest で共用)。
