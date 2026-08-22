@@ -1,0 +1,10 @@
+# シェルスクリプトは必ず LF で取り出す。Windows の core.autocrlf=true 環境で
+# コミットすると CRLF になり、macOS / Linux で
+#   /usr/bin/env: 'bash\r': No such file or directory
+# となって実行できなくなる。
+*.sh text eol=lf
+
+# PowerShell は逆に CRLF を保つ。あわせて、日本語を含む .ps1 は BOM 付き
+# UTF-8 でなければ PowerShell 5.1 が ANSI と誤読する (バイナリ扱いにはせず、
+# BOM はファイル自体が持っている)。
+*.ps1 text eol=crlf
