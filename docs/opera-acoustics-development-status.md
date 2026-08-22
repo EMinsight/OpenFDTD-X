@@ -1115,13 +1115,15 @@ zip を展開) と MS-MPI 10.1 (conda-forge パッケージを展開) をユー�
   GPU 版 RCWA テスト (gdstk + cuSOLVER + MAGMA) を `WITH_RCWA_LEGACY_TESTS`
   で切り離し。`hdf5::hdf5` → `HDF5::HDF5`。
 - OpenRCWA `orcwa_cuda_mpi` / OpenBPM `obpm_mpi` / `obpm_cuda_mpi`: 並列 HDF5 の
-  集団操作を rank 0 だけが呼ぶ構造で **2 ランク以上でデッドロック**していた。
-  寸法も rank 0 のローカル NN で多ランクでは中身が正しくないため、直すまでは
-  2 ランク以上で HDF5 出力を止めて理由を出す (`.log` / `.out` は出る)。
-  根本修正 (`orcwa_mpi` と同じ集団書き込み化、または OpenFDTD と同じ rank 0
-  直列ドライバ化) は未着手 — GUI 側は上の仕様判定でこれらの変種を BPM /
-  RCWA プロジェクトから外しているので、到達するのは光 RCWA で層スタックが
-  無効 (= FDTD として走る) の場合だけ。
+  集団操作を rank 0 だけが呼ぶ構造で **2 ランク以上でデッドロック**していた
+  (寸法も rank 0 のローカル NN で多ランクでは中身が正しくない)。**集団書き込みへの
+  作り替えで解決済み** (OpenRCWA PR #17 / OpenBPM PR #23)。手本は
+  `OpenRCWA/mpi/solve.c` — 全体配列の添字 (`g_Ni` / `w_i0` 群) で担当範囲を分けて
+  `H5FD_MPIO_COLLECTIVE` で書き、metadata 節は全 rank で作成して書き込みだけ
+  rank 0 に限定する。CUDA 版ではさらに `memcopy3_gpu()` を `if (io)` の外へ出す
+  必要がある (rank 0 だけコピーすると非 rank 0 が未初期化の host 配列を書く)。
+  検証は 1/2/3/4 ランクでの HDF5 全データセット突き合わせ (`obpm_mpi` は
+  1.9e-15、CUDA 系は 3.2e-07 = 単精度の差、インピーダンス表は完全一致)。
 
 検証: `ofdx_selftest` 24 files, **11,250 checks, 0 failures** (+27 — 引数規約 12、
 MPI ランチャ探索 6、仕様判定 9)、ctest 22/22。
